@@ -221,6 +221,14 @@ Cover-letter buttons in Telegram stay broken until the Vercel webhook is repoint
 4. ~~Repoint the cron-job.org job at the new workflow URL and re-scope its PAT (§7).~~ Done.
 5. ~~Repoint both Vercel projects and fix `GITHUB_REPOSITORY` (§4).~~ Done — both projects now
    build `amitbaz/career-platform` with root directories `apps/job-hunter` and `apps/relay`.
-6. Reissue `GITHUB_STATE_TOKEN` and `GITHUB_DISPATCH_TOKEN` against `career-platform` (§4).
-   Outstanding. The daily run does not need these; only the Telegram cover-letter button does.
+6. ~~Reissue `GITHUB_STATE_TOKEN` and `GITHUB_DISPATCH_TOKEN` against `career-platform`
+   (§4).~~ Done — one fine-grained PAT scoped to `career-platform` with Actions: Read (the
+   state token reads artifacts) and Contents: Read and write (the dispatch token posts to
+   `/dispatches`), set as both variables, then redeployed so the running instance picks them
+   up.
 7. Trigger `job-hunter-daily.yml` manually and confirm it restores state, runs, and uploads.
+
+The three Gmail secrets (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`) were
+deliberately not migrated. The Gmail sync step is `continue-on-error`, so the daily run
+succeeds without them and simply skips inbox intelligence. Add them with `gh secret set` if
+that step is wanted again.
