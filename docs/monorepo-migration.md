@@ -123,8 +123,13 @@ latest `job-hunter-state` artifact. That artifact history lives on `amitbaz/job-
 so without seeding, the first scheduled run here starts from an empty database and re-notifies
 jobs it has already seen.
 
-`.github/workflows/job-hunter-bootstrap-state.yml` copies the newest artifact across. Run it
-**once**, after this branch is on `main`:
+**This is done.** `job-hunter-bootstrap-state.yml` copied the newest artifact across on
+2026-09-05 (20,376,963 bytes, byte-identical to the source) and has since been deleted, since
+re-running it would overwrite newer state with the old repository's snapshot.
+
+The rest of this section is kept as a record of how it was done. To repeat it, restore the
+workflow from history — `git show 7a27774:.github/workflows/job-hunter-bootstrap-state.yml` —
+and run:
 
 ```bash
 gh workflow run job-hunter-bootstrap-state.yml --repo amitbaz/career-platform
@@ -208,8 +213,11 @@ Cover-letter buttons in Telegram stay broken until the Vercel webhook is repoint
 ## Order of operations
 
 1. ~~Merge PR #2.~~ Done.
-2. Add the nine Actions secrets (§2).
-3. Run the state bootstrap workflow once, then delete it (§5).
-4. Repoint both Vercel projects and fix `GITHUB_REPOSITORY` plus the two PATs (§4).
-5. Repoint the cron-job.org job at the new workflow URL and re-scope its PAT (§7).
+2. ~~Add the Actions secrets (§2).~~ Done — the six the daily run needs. The three Gmail
+   secrets are still outstanding; the Gmail sync step is `continue-on-error`, so the run works
+   without them, it just skips inbox intelligence.
+3. ~~Run the state bootstrap workflow once, then delete it (§5).~~ Done — 20,376,963 bytes,
+   byte-identical to the old repository's latest artifact. The workflow has been deleted.
+4. ~~Repoint the cron-job.org job at the new workflow URL and re-scope its PAT (§7).~~ Done.
+5. Repoint both Vercel projects and fix `GITHUB_REPOSITORY` plus the two PATs (§4).
 6. Trigger `job-hunter-daily.yml` manually and confirm it restores state, runs, and uploads.
