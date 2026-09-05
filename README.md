@@ -78,3 +78,7 @@ Both apps deploy from this repository as separate Vercel projects. Each project'
 
 The Telegram webhook dispatches GitHub workflows through `GITHUB_REPOSITORY`, which must now
 be set to `amitbaz/career-platform`.
+
+The configuration steps still outstanding from the repository consolidation — Actions secrets,
+Vercel project settings, the Job Hunter state artifact, the Telegram webhook — are tracked in
+[docs/monorepo-migration.md](docs/monorepo-migration.md).

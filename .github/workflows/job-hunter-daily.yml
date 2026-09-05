@@ -1,9 +1,9 @@
 name: Daily Job Hunter
+# Scheduling is external: cron-job.org calls the workflow_dispatch API. There is
+# deliberately no `schedule:` trigger here, so GitHub never starts a second run
+# of its own. Do not add one back without retiring the cron-job.org job first.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '30 9 * * *'
-      timezone: "Europe/Berlin"
 permissions:
   contents: read
   actions: read

@@ -1,0 +1,215 @@
+# Monorepo migration runbook
+
+The code move (issue #1) is done in this repository. The remaining work is configuration that
+lives outside Git: GitHub Actions secrets, Vercel project settings, the Job Hunter state
+artifact, and the Telegram webhook.
+
+Work through the sections in order. Each one ends with a check you can run.
+
+---
+
+## 1. GitHub Actions variables — done
+
+The five non-secret variables were copied from `amitbaz/job-hunter-bot`:
+
+| Variable                     | Value                    |
+| ---------------------------- | ------------------------ |
+| `BRAVE_MONTHLY_QUERY_LIMIT`  | `1000`                   |
+| `GEMINI_FREE_RPD`            | `500`                    |
+| `GEMINI_FREE_RPM`            | `15`                     |
+| `GEMINI_FREE_TPM`            | `250000`                 |
+| `GEMINI_MODEL`               | `gemini-3.5-flash-lite`  |
+
+Check: `gh variable list --repo amitbaz/career-platform`
+
+---
+
+## 2. GitHub Actions secrets — manual
+
+Secret values cannot be read back out of GitHub, so these have to be re-entered by hand. All
+nine are used by `job-hunter-daily.yml` and/or `job-hunter-generate-cover-letter.yml`.
+
+| Secret                       | Used by                          |
+| ---------------------------- | -------------------------------- |
+| `GEMINI_API_KEY`             | daily run, cover letter          |
+| `BRAVE_SEARCH_API_KEY`       | daily run                        |
+| `TELEGRAM_BOT_TOKEN`         | daily run, cover letter          |
+| `TELEGRAM_CHAT_ID`           | daily run, cover letter          |
+| `CANDIDATE_PROFILE_B64`      | daily run, cover letter          |
+| `COVER_LETTER_TEMPLATE_B64`  | daily run, cover letter          |
+| `GMAIL_CLIENT_ID`            | daily Gmail sync                 |
+| `GMAIL_CLIENT_SECRET`        | daily Gmail sync                 |
+| `GMAIL_REFRESH_TOKEN`        | daily Gmail sync                 |
+
+Add them at
+<https://github.com/amitbaz/career-platform/settings/secrets/actions>, or from a shell:
+
+```bash
+gh secret set GEMINI_API_KEY --repo amitbaz/career-platform
+# ...repeat per secret; each command prompts for the value
+```
+
+If you keep them in a local `.env`, this loop sets all nine at once:
+
+```bash
+cd ~/job-hunter-bot   # wherever your populated .env lives
+for k in GEMINI_API_KEY BRAVE_SEARCH_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID \
+         CANDIDATE_PROFILE_B64 COVER_LETTER_TEMPLATE_B64 \
+         GMAIL_CLIENT_ID GMAIL_CLIENT_SECRET GMAIL_REFRESH_TOKEN; do
+  v=$(grep "^$k=" .env | cut -d= -f2-)
+  [ -n "$v" ] && printf '%s' "$v" | gh secret set "$k" --repo amitbaz/career-platform && echo "set $k"
+done
+```
+
+Check: `gh secret list --repo amitbaz/career-platform` shows all nine names.
+
+---
+
+## 3. Local development env
+
+Both apps read their own env file; neither reads the repository root.
+
+`apps/job-hunter/.env` — copy from `apps/job-hunter/.env.example`. Beyond the nine secrets
+above it needs `GEMINI_MODEL`, `BRAVE_MONTHLY_QUERY_LIMIT`, `GEMINI_FREE_RPM`,
+`GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`, and — only if you run the Telegram webhook locally —
+`TELEGRAM_WEBHOOK_SECRET`, `GITHUB_REPOSITORY`, `GITHUB_STATE_TOKEN`, `GITHUB_DISPATCH_TOKEN`.
+
+`apps/relay/.env.local` — copy from `apps/relay/.env.example`:
+`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `GEMINI_API_KEY`,
+`GEMINI_MODEL`.
+
+---
+
+## 4. Vercel — manual
+
+Two projects currently build from the old repositories:
+
+| Project           | Currently linked to        | Needs to become                                    |
+| ----------------- | -------------------------- | -------------------------------------------------- |
+| `interviewer-app` | `amitbaz/interviewer-app`  | `amitbaz/career-platform`, root `apps/relay`        |
+| `job-hunter-bot`  | `amitbaz/job-hunter-bot`   | `amitbaz/career-platform`, root `apps/job-hunter`   |
+
+For each project, in Settings:
+
+1. **Git** → disconnect the old repository, connect `amitbaz/career-platform`.
+   `career-platform` is private, so the Vercel GitHub app needs access granted to it.
+2. **Build and Deployment → Root Directory** → set to `apps/relay` or `apps/job-hunter`.
+   Leave *Include files outside the root directory* **enabled** — Relay needs the workspace
+   `pnpm-lock.yaml` at the repository root.
+3. **Environment Variables** → these carry over unchanged, except `GITHUB_REPOSITORY` on the
+   Job Hunter project, which becomes `amitbaz/career-platform`.
+
+Job Hunter project env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
+`GITHUB_REPOSITORY`, `GITHUB_STATE_TOKEN`, `GITHUB_DISPATCH_TOKEN`, and optionally
+`GITHUB_STATE_ARTIFACT_NAME` / `GITHUB_STATE_CACHE_DIR`.
+
+Relay project env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`,
+`GEMINI_API_KEY`, `GEMINI_MODEL`.
+
+> `GITHUB_STATE_TOKEN` and `GITHUB_DISPATCH_TOKEN` are personal access tokens scoped to a
+> repository. `career-platform` is private, so both must be reissued or re-scoped to grant
+> `actions: read` (state) and `contents: write` / `repository_dispatch` (dispatch) on
+> `amitbaz/career-platform`. Tokens scoped only to `job-hunter-bot` will fail silently at
+> runtime.
+
+Check: push to `main`, then confirm one successful deployment per project.
+
+---
+
+## 5. Job Hunter state artifact — one-shot
+
+`scripts/restore_state.py` restores `var/job_hunter.sqlite3` from the *current* repository's
+latest `job-hunter-state` artifact. That artifact history lives on `amitbaz/job-hunter-bot`,
+so without seeding, the first scheduled run here starts from an empty database and re-notifies
+jobs it has already seen.
+
+`.github/workflows/job-hunter-bootstrap-state.yml` copies the newest artifact across. Run it
+**once**, after this branch is on `main`:
+
+```bash
+gh workflow run job-hunter-bootstrap-state.yml --repo amitbaz/career-platform
+gh run watch --repo amitbaz/career-platform
+```
+
+Then confirm the artifact landed:
+
+```bash
+gh api repos/amitbaz/career-platform/actions/artifacts \
+  --jq '.artifacts[] | select(.name=="job-hunter-state") | {id, size_in_bytes, created_at}'
+```
+
+It should be roughly 20 MB. Once it is there, delete the bootstrap workflow — it exists only
+for this migration and re-running it would overwrite newer state with the old repository's
+snapshot.
+
+Artifacts expire after 90 days, so do this before the old repository's artifacts age out.
+
+---
+
+## 6. Telegram webhook — manual
+
+The webhook only needs re-registering if the Job Hunter deployment URL changed. Repointing an
+existing Vercel project keeps its domain, so usually there is nothing to do.
+
+If the URL did change:
+
+```bash
+cd apps/job-hunter
+TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... \
+  .venv/bin/python scripts/set_telegram_webhook.py --url https://<new-domain>/telegram/webhook
+```
+
+Check: `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` reports the expected URL and
+no `last_error_message`.
+
+---
+
+## 7. Scheduling — cron-job.org
+
+The daily run is scheduled externally by cron-job.org, which calls the GitHub
+`workflow_dispatch` API. `job-hunter-daily.yml` therefore has **no `schedule:` trigger** — that
+is deliberate, so GitHub never starts a second run alongside the external one.
+
+The cron-job.org job still points at the old repository. Update its request URL to:
+
+```text
+POST https://api.github.com/repos/amitbaz/career-platform/actions/workflows/job-hunter-daily.yml/dispatches
+```
+
+Note the workflow filename changed from `daily.yml` to `job-hunter-daily.yml`. The body stays
+`{"ref":"main"}`, and the headers stay `Accept: application/vnd.github+json` plus
+`Authorization: Bearer <PAT>`.
+
+> `career-platform` is private. The PAT that cron-job.org sends must be re-scoped or reissued
+> with `actions: write` on `amitbaz/career-platform`; a token scoped only to `job-hunter-bot`
+> returns 404 rather than a clear permission error.
+
+Check: trigger the cron-job.org job manually and confirm a `workflow_dispatch` run appears via
+`gh run list --repo amitbaz/career-platform --workflow job-hunter-daily.yml`.
+
+---
+
+## 8. Old repositories
+
+`amitbaz/job-hunter-bot` and `amitbaz/interviewer-app` stay in place, but the Job Hunter
+workflows there are disabled so the two repositories cannot both run the hunt, send Telegram
+messages, and write divergent state:
+
+```bash
+gh workflow disable daily.yml --repo amitbaz/job-hunter-bot
+gh workflow disable generate-cover-letter.yml --repo amitbaz/job-hunter-bot
+```
+
+Cover-letter buttons in Telegram stay broken until the Vercel webhook is repointed at
+`career-platform` (§4), since the webhook dispatches to whatever `GITHUB_REPOSITORY` names.
+
+---
+
+## Order of operations
+
+1. ~~Merge PR #2.~~ Done.
+2. Add the nine Actions secrets (§2).
+3. Run the state bootstrap workflow once, then delete it (§5).
+4. Repoint both Vercel projects and fix `GITHUB_REPOSITORY` plus the two PATs (§4).
+5. Repoint the cron-job.org job at the new workflow URL and re-scope its PAT (§7).
+6. Trigger `job-hunter-daily.yml` manually and confirm it restores state, runs, and uploads.
