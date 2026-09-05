@@ -106,6 +106,19 @@ def _run(args: argparse.Namespace) -> int:
         summary.skipped,
         summary.errors,
     )
+    if summary.evaluation_attempted and summary.evaluated == 0:
+        # Isolated source/job failures stay non-fatal (see summary.errors above),
+        # but if every fresh evaluation this run failed to produce a decision,
+        # the core pipeline is unusable -- fail the run so GitHub Actions goes
+        # red instead of quietly reporting success on a run that produced
+        # nothing.
+        logger.error(
+            "core evaluation catastrophically unsuccessful: %d attempted, 0 evaluated "
+            "(errors=%d)",
+            summary.evaluation_attempted,
+            summary.errors,
+        )
+        return 1
     return 0
 
 

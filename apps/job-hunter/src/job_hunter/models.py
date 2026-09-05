@@ -383,3 +383,11 @@ class RunSummary:
     possible_matches: int = 0
     skipped: int = 0
     errors: int = 0
+    # Core-evaluation health, distinct from `errors` (which also counts
+    # unrelated post-decision failures like company-watch promotion).
+    # `evaluation_attempted` counts jobs where a fresh Gemini evaluation was
+    # actually made (excludes already-evaluated and quota-deferred jobs);
+    # `evaluated` counts how many of those produced a decision. The run is
+    # catastrophic when jobs were attempted but none produced a decision.
+    evaluation_attempted: int = 0
+    evaluated: int = 0

@@ -478,11 +478,18 @@ def _evaluate_and_deliver_job(
     gemini: GeminiClient,
     digest_items: list[DigestItem],
     summary: RunSummary,
-) -> tuple[bool, bool, str | None]:
-    """Evaluate one job and add it to the digest."""
+) -> tuple[bool, bool, str | None, bool]:
+    """Evaluate one job and add it to the digest.
+
+    Returns (promoted, blocked, decision, attempted). `attempted` is True
+    only when a fresh Gemini evaluation was actually made for this job (not
+    for the already-evaluated shortcut below), so callers can tell "nothing
+    new to do" apart from "the evaluation itself failed" -- both of which
+    otherwise look identical from the outside (decision=None).
+    """
     if store.get_evaluation(job_id) is not None and store.has_delivery(job_id, "telegram_message"):
         store.complete_ai_work("job_evaluation", job_id)
-        return False, False, None
+        return False, False, None, False
 
     while True:
         try:
@@ -506,11 +513,11 @@ def _evaluate_and_deliver_job(
                 job_id,
             )
             store.enqueue_ai_work("job_evaluation", job_id)
-            return False, True, None
+            return False, True, None, False
         except Exception:
             logger.exception("evaluation failed for job_id=%s", job_id)
             summary.errors += 1
-            return False, False, None
+            return False, False, None, True
 
     store.save_evaluation(job_id, evaluation)
     store.complete_ai_work("job_evaluation", job_id)
@@ -558,7 +565,7 @@ def _evaluate_and_deliver_job(
     else:
         summary.skipped += 1
 
-    return promoted, False, evaluation.decision
+    return promoted, False, evaluation.decision, True
 
 def _format_gemini_usage_log(summary: GeminiUsageSummary) -> str:
     """One structured log line at run completion: totals plus per-purpose counts."""
@@ -686,7 +693,6 @@ def run_pipeline(
     decision_counts: dict[str, dict[str, int]] = {}
     decision_counts_by_source: dict[str, dict[str, int]] = {}
     deferred_by_budget = max(0, len(ranked) - len(selected))
-    evaluated_count = 0
     quota_deferred_count = 0
     logger.info(
         "discovery: raw=%s unique=%s prefilter_rejected=%s profession_rejected=%s eligible=%s selected=%s deferred_by_budget=%s canonical_network_attempts=%s sources=%s",
@@ -729,11 +735,13 @@ def run_pipeline(
         if job is None:
             store.complete_ai_work("job_evaluation", job_id)
             continue
-        promoted, blocked, decision = _evaluate_and_deliver_job(
+        promoted, blocked, decision, attempted = _evaluate_and_deliver_job(
             job_id, job, candidate_context, settings, store, gemini, digest_items, summary
         )
+        if attempted:
+            summary.evaluation_attempted += 1
         if decision is not None:
-            evaluated_count += 1
+            summary.evaluated += 1
         if blocked:
             quota_deferred_count += 1
         _record_decision(decision_counts, job.market_id, decision)
@@ -749,11 +757,13 @@ def run_pipeline(
             store.enqueue_ai_work("job_evaluation", job_id)
             quota_deferred_count += 1
             continue
-        promoted, blocked, decision = _evaluate_and_deliver_job(
+        promoted, blocked, decision, attempted = _evaluate_and_deliver_job(
             job_id, job, candidate_context, settings, store, gemini, digest_items, summary
         )
+        if attempted:
+            summary.evaluation_attempted += 1
         if decision is not None:
-            evaluated_count += 1
+            summary.evaluated += 1
         if blocked:
             quota_deferred_count += 1
         _record_decision(decision_counts, job.market_id, decision)
@@ -765,7 +775,7 @@ def run_pipeline(
     logger.info(
         "evaluation_capacity selected=%s evaluated=%s deferred_by_budget=%s quota_deferred=%s",
         len(selected),
-        evaluated_count,
+        summary.evaluated,
         deferred_by_budget,
         quota_deferred_count,
     )
