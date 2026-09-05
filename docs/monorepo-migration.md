@@ -219,5 +219,8 @@ Cover-letter buttons in Telegram stay broken until the Vercel webhook is repoint
 3. ~~Run the state bootstrap workflow once, then delete it (§5).~~ Done — 20,376,963 bytes,
    byte-identical to the old repository's latest artifact. The workflow has been deleted.
 4. ~~Repoint the cron-job.org job at the new workflow URL and re-scope its PAT (§7).~~ Done.
-5. Repoint both Vercel projects and fix `GITHUB_REPOSITORY` plus the two PATs (§4).
-6. Trigger `job-hunter-daily.yml` manually and confirm it restores state, runs, and uploads.
+5. ~~Repoint both Vercel projects and fix `GITHUB_REPOSITORY` (§4).~~ Done — both projects now
+   build `amitbaz/career-platform` with root directories `apps/job-hunter` and `apps/relay`.
+6. Reissue `GITHUB_STATE_TOKEN` and `GITHUB_DISPATCH_TOKEN` against `career-platform` (§4).
+   Outstanding. The daily run does not need these; only the Telegram cover-letter button does.
+7. Trigger `job-hunter-daily.yml` manually and confirm it restores state, runs, and uploads.
