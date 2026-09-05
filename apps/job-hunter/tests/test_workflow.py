@@ -3,8 +3,13 @@ from pathlib import Path
 import yaml
 
 
+# Workflows live at the monorepo root, three levels above apps/job-hunter/tests.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DAILY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "job-hunter-daily.yml"
+
+
 def _load_workflow_steps():
-    workflow = yaml.safe_load(Path(".github/workflows/daily.yml").read_text())
+    workflow = yaml.safe_load(DAILY_WORKFLOW.read_text())
     job = workflow["jobs"]["run"]
     gmail_step = next(
         step

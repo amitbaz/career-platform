@@ -1,11 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const migrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608290008_legacy_blueprint_state.sql",
-);
+const migrationPath = supabaseMigration("202608290008_legacy_blueprint_state.sql");
 
 describe("legacy blueprint state migration", () => {
   it("backfills legacy conversation sessions to limited-grounding when no persisted blueprint exists", async () => {

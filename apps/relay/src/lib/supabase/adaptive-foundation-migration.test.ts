@@ -1,11 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const migrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608290002_complete_adaptive_interview_loop.sql",
-);
+const migrationPath = supabaseMigration("202608290002_complete_adaptive_interview_loop.sql");
 
 describe("complete adaptive interview loop migration", () => {
   it("adds owned session evaluations protected by all four RLS operations", async () => {

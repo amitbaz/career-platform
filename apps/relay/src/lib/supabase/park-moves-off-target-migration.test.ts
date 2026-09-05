@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const sql = readFileSync("supabase/migrations/202609040001_park_moves_off_target.sql", "utf8");
+const sql = readFileSync(supabaseMigration("202609040001_park_moves_off_target.sql"), "utf8");
 
 describe("park moves off target migration", () => {
   it("adds the set-aside marker and the unscored-exchange log", () => {

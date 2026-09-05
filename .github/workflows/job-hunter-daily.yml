@@ -10,6 +10,9 @@ permissions:
 concurrency:
   group: job-hunter-state
   cancel-in-progress: false
+defaults:
+  run:
+    working-directory: apps/job-hunter
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -20,6 +23,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+          cache-dependency-path: apps/job-hunter/pyproject.toml
       - run: pip install -e .
       - name: Restore prior state
         continue-on-error: true
@@ -57,9 +61,9 @@ jobs:
           COVER_LETTER_TEMPLATE_B64: ${{ secrets.COVER_LETTER_TEMPLATE_B64 }}
         run: python -m job_hunter run
       - name: Upload state artifact
-        if: always() && hashFiles('var/job_hunter.sqlite3') != ''
+        if: always() && hashFiles('apps/job-hunter/var/job_hunter.sqlite3') != ''
         uses: actions/upload-artifact@v4
         with:
           name: job-hunter-state
-          path: var/job_hunter.sqlite3
+          path: apps/job-hunter/var/job_hunter.sqlite3
           retention-days: 90

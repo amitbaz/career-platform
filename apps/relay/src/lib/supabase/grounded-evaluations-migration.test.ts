@@ -1,11 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const migrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608290007_grounded_evaluations.sql",
-);
+const migrationPath = supabaseMigration("202608290007_grounded_evaluations.sql");
 
 describe("grounded interview evaluation migration", () => {
   it("adds grounded evaluation columns to question and session feedback tables", async () => {

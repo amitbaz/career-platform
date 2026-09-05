@@ -118,7 +118,7 @@ Set these as **server-side Vercel environment variables**:
 ```text
 TELEGRAM_BOT_TOKEN=<same bot token used by the daily runner>
 TELEGRAM_WEBHOOK_SECRET=<random URL-safe secret>
-GITHUB_REPOSITORY=amitbaz/job-hunter-bot
+GITHUB_REPOSITORY=amitbaz/career-platform
 GITHUB_STATE_TOKEN=<repository-scoped token with Actions read access>
 GITHUB_DISPATCH_TOKEN=<repository-scoped token with permission to trigger repository_dispatch>
 GITHUB_STATE_ARTIFACT_NAME=job-hunter-state

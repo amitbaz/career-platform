@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const sql = readFileSync("supabase/migrations/202609020001_coverage_target_required.sql", "utf8");
+const sql = readFileSync(supabaseMigration("202609020001_coverage_target_required.sql"), "utf8");
 
 describe("coverage target required migration", () => {
   it("adds the question required column with a backward-compatible default", () => {

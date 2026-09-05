@@ -1,15 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const migrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608290001_adaptive_interview_foundation.sql",
-);
-const competencyMigrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608290009_competency_names.sql",
-);
+const migrationPath = supabaseMigration("202608290001_adaptive_interview_foundation.sql");
+const competencyMigrationPath = supabaseMigration("202608290009_competency_names.sql");
 
 describe("adaptive interview foundation schema", () => {
   it("requires child records to reference parents owned by the same user", async () => {

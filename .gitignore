@@ -1,1 +1,66 @@
+# dependencies
 node_modules/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+coverage/
+.pytest_cache/
+
+# next.js
+.next/
+out/
+
+# build output
+build/
+dist/
+*.egg-info/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# job hunter local state
+var/
+*.sqlite3
+*.pdf
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Personal POC data
+apps/relay/data/
+
+# Supabase CLI project-link metadata
+/supabase/.temp/
+
+# Agent tooling
+.worktrees/
+.superpowers/
+.claude/
+.vscode/

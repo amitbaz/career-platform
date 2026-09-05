@@ -1,12 +1,18 @@
 {
   "name": "career-platform",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Monorepo for the Job Hunter and Relay career platform",
+  "license": "ISC",
+  "packageManager": "pnpm@9.10.0",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
+    "relay:dev": "pnpm --filter relay dev",
+    "relay:build": "pnpm --filter relay build",
+    "relay:start": "pnpm --filter relay start",
+    "relay:lint": "pnpm --filter relay lint",
+    "relay:test": "pnpm --filter relay test",
+    "job-hunter:install": "cd apps/job-hunter && python3 -m pip install -e '.[test,webhook]'",
+    "job-hunter:test": "cd apps/job-hunter && python3 -m pytest -q",
+    "test": "pnpm run relay:test && pnpm run job-hunter:test"
+  }
 }

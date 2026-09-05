@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const sql = readFileSync("supabase/migrations/202609010001_adaptive_interviewer.sql", "utf8");
+const sql = readFileSync(supabaseMigration("202609010001_adaptive_interviewer.sql"), "utf8");
 
 describe("adaptive interviewer migration", () => {
   it("adds the session round and mode columns with backward-compatible defaults", () => {

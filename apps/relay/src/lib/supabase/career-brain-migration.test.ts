@@ -1,36 +1,18 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { supabaseMigration } from "@/test/supabase-paths";
 
-const migrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608300001_stable_profile_evidence.sql",
-);
+const migrationPath = supabaseMigration("202608300001_stable_profile_evidence.sql");
 
-const opportunitiesMigrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608300002_opportunities.sql",
-);
+const opportunitiesMigrationPath = supabaseMigration("202608300002_opportunities.sql");
 
-const careerStoriesMigrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608300003_career_stories.sql",
-);
+const careerStoriesMigrationPath = supabaseMigration("202608300003_career_stories.sql");
 
-const coachObservationsMigrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608300004_coach_observations.sql",
-);
+const coachObservationsMigrationPath = supabaseMigration("202608300004_coach_observations.sql");
 
-const practicePlansMigrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608300005_practice_plans.sql",
-);
+const practicePlansMigrationPath = supabaseMigration("202608300005_practice_plans.sql");
 
-const sessionCareerContextMigrationPath = resolve(
-  process.cwd(),
-  "supabase/migrations/202608300006_session_career_context.sql",
-);
+const sessionCareerContextMigrationPath = supabaseMigration("202608300006_session_career_context.sql");
 
 describe("stable profile evidence migration", () => {
   it("adds the durable identity columns to profile_evidence", async () => {
