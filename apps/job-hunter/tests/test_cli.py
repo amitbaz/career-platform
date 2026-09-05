@@ -102,6 +102,46 @@ def test_run_unhandled_exception_returns_nonzero(monkeypatch, tmp_path):
     assert exit_code == 1
 
 
+def test_run_fails_when_every_evaluation_this_run_failed(monkeypatch, tmp_path):
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    monkeypatch.setattr(
+        cli,
+        "run_pipeline",
+        lambda s, **kwargs: RunSummary(errors=3, evaluation_attempted=3, evaluated=0),
+    )
+
+    exit_code = cli.main(["run"])
+
+    assert exit_code == 1
+
+
+def test_run_succeeds_when_some_evaluations_this_run_succeeded(monkeypatch, tmp_path):
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    monkeypatch.setattr(
+        cli,
+        "run_pipeline",
+        lambda s, **kwargs: RunSummary(errors=1, evaluation_attempted=2, evaluated=1),
+    )
+
+    exit_code = cli.main(["run"])
+
+    assert exit_code == 0
+
+
+def test_run_succeeds_when_no_evaluation_was_needed(monkeypatch, tmp_path):
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    monkeypatch.setattr(
+        cli, "run_pipeline", lambda s, **kwargs: RunSummary(evaluation_attempted=0, evaluated=0)
+    )
+
+    exit_code = cli.main(["run"])
+
+    assert exit_code == 0
+
+
 def test_parser_accepts_sync_gmail_dry_run():
     args = cli.build_parser().parse_args(["sync-gmail", "--dry-run"])
 

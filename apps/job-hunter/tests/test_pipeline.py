@@ -1007,6 +1007,37 @@ def test_pipeline_counts_promotion_failure_but_continues_delivery(
     assert summary.ready_to_apply == 1
     assert len(telegram.messages) == 1
     assert len(telegram.documents) == 0
+    # Promotion failure happens after a decision is already reached, so it
+    # must not look like a core-evaluation failure.
+    assert summary.evaluation_attempted == 1
+    assert summary.evaluated == 1
+
+
+def test_pipeline_marks_evaluation_attempted_but_not_evaluated_on_failure(
+    settings, monkeypatch
+):
+    store = JobStore(settings.db_path)
+
+    def raise_evaluation_failure(*args, **kwargs):
+        raise RuntimeError("gemini evaluation exploded")
+
+    monkeypatch.setattr(
+        "job_hunter.pipeline.evaluate_job",
+        raise_evaluation_failure,
+        raising=False,
+    )
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([_job()])],
+        store=store,
+        gemini=FakeGemini(),
+        telegram=FakeTelegram(),
+    )
+
+    assert summary.errors == 1
+    assert summary.evaluation_attempted == 1
+    assert summary.evaluated == 0
 
 
 def test_pipeline_isolates_broken_source(settings):
