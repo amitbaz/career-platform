@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "flask",
+  "installCommand": "pip install -e '.[webhook]'",
+  "functions": {
+    "main.py": {
+      "maxDuration": 30,
+      "excludeFiles": "{tests/**,.superpowers/**,docs/**,var/**}"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+var/
+*.sqlite3
+*.pdf
+__pycache__/
+*.pyc
+.env
+dist/
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.claude/
+.worktrees/
+.vscode/
