@@ -1,0 +1,25 @@
+name: Job Hunter CI
+on:
+  push:
+    paths:
+      - 'apps/job-hunter/**'
+      - '.github/workflows/job-hunter-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/job-hunter/**'
+      - '.github/workflows/job-hunter-ci.yml'
+defaults:
+  run:
+    working-directory: apps/job-hunter
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/job-hunter/pyproject.toml
+      - run: pip install -e '.[test,webhook]'
+      - run: pytest -q

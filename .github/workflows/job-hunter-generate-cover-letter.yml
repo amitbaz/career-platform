@@ -1,0 +1,51 @@
+name: Generate Cover Letter On Demand
+on:
+  repository_dispatch:
+    types: [generate_cover_letter]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: job-hunter-state
+  cancel-in-progress: false
+defaults:
+  run:
+    working-directory: apps/job-hunter
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/job-hunter/pyproject.toml
+      - run: pip install -e .
+      - name: Restore prior state
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/restore_state.py --repo "$GH_REPO" --token "$GH_TOKEN" --dest var/job_hunter.sqlite3
+      - name: Generate cover letter
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_FREE_RPM: ${{ vars.GEMINI_FREE_RPM }}
+          GEMINI_FREE_TPM: ${{ vars.GEMINI_FREE_TPM }}
+          GEMINI_FREE_RPD: ${{ vars.GEMINI_FREE_RPD }}
+          GEMINI_RUN_ID: ${{ github.run_id }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CANDIDATE_PROFILE_B64: ${{ secrets.CANDIDATE_PROFILE_B64 }}
+          COVER_LETTER_TEMPLATE_B64: ${{ secrets.COVER_LETTER_TEMPLATE_B64 }}
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+        run: python -m job_hunter generate-cover-letter --job-id "$JOB_ID"
+      - name: Upload state artifact
+        if: always() && hashFiles('apps/job-hunter/var/job_hunter.sqlite3') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-hunter-state
+          path: apps/job-hunter/var/job_hunter.sqlite3
+          retention-days: 90

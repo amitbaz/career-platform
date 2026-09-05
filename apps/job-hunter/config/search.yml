@@ -1,0 +1,245 @@
+timezone: Europe/Berlin
+scheduled_hour: 9
+max_jobs_per_run: 100
+source_minimum_per_run: 0
+source_max_share: 0.5
+thresholds:
+  package: 75
+  possible: 65
+salary_floor_eur: 90000
+engineering_title_keywords:
+  - engineer
+  - developer
+engineering_title_phrases:
+  - technical lead
+  - frontend lead
+  - front-end lead
+  - software lead
+  - engineering lead
+  - software architect
+  - frontend architect
+  - front-end architect
+  - web architect
+blocked_profession_title_phrases:
+  - product manager
+  - platform product manager
+  - technical product manager
+  - product designer
+  - ux designer
+  - ui designer
+  - product marketing manager
+  - program manager
+  - project manager
+  - customer success manager
+  - solutions consultant
+  - sales engineer
+  - solutions engineer
+  - support engineer
+  - data engineer
+  - machine learning engineer
+  - ml engineer
+  - data scientist
+  - ml researcher
+  - machine learning researcher
+  - ios engineer
+  - android engineer
+  - mobile engineer
+  - embedded engineer
+target_titles:
+  - senior product engineer
+  - senior frontend engineer
+  - frontend technical lead
+  - staff frontend engineer
+  - product engineer
+  - full-stack product engineer
+  - ai product engineer
+positive_keywords:
+  - react
+  - next.js
+  - typescript
+  - design system
+  - graphql
+  - product ownership
+  - b2b
+  - saas
+  - agentic
+  - ai-assisted
+  - monorepo
+blocked_title_keywords:
+  - junior
+  - qa
+  - sre
+  - devops
+  - security engineer
+  - engineering manager
+  - backend engineer
+  - back-end engineer
+  - backend developer
+  - back-end developer
+max_search_queries_per_run: 30
+max_learned_ats_boards_per_run: 75
+role_families:
+  - senior frontend engineer
+  - staff frontend engineer
+  - frontend technical lead
+  - frontend lead
+  - senior product engineer
+  - product engineer
+  - frontend architect
+  - software architect
+  - senior full-stack engineer
+  - full-stack product engineer
+  - full-stack engineer
+  - ai product engineer
+markets:
+  - id: germany_eu
+    query_share: 0.35
+    locations: [Berlin, Germany, Europe]
+    allowed_languages: [English]
+    salary:
+      currency: EUR
+      gross_base_floor: 90000
+    remote_policy: preferred
+    relocation_policy: selective
+    sponsorship_policy: not_required
+    direct_sources: [wellfound]
+    discovery_domains:
+      - wellfound.com
+      - welcometothejungle.com
+      - app.welcometothejungle.com
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - boards.greenhouse.io
+      - ycombinator.com
+    query_templates:
+      - '"{role}" remote Germany'
+      - '"{role}" remote Europe'
+  - id: israel_remote
+    query_share: 0.25
+    locations: [Israel, Tel Aviv]
+    allowed_languages: [English, Hebrew]
+    salary:
+      currency: ILS
+      gross_base_floor: 420000
+    remote_policy: required
+    relocation_policy: none
+    sponsorship_policy: not_required
+    direct_sources: [devjobs]
+    discovery_domains:
+      - jobs.techaviv.com
+      - devjobs.co.il
+      - gotfriends.co.il
+      - startup.jobs
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - boards.greenhouse.io
+      - ycombinator.com
+    query_templates:
+      - '"{role}" remote Israel'
+      - '"{role}" remote Tel Aviv'
+  - id: london
+    query_share: 0.17
+    locations: [London, UK, United Kingdom]
+    allowed_languages: [English]
+    salary:
+      currency: GBP
+      gross_base_floor: 90000
+    remote_policy: allowed
+    relocation_policy: allowed
+    sponsorship_policy: required
+    direct_sources: [wellfound]
+    discovery_domains:
+      - workvisajobs.co.uk
+      - welcometothejungle.com
+      - builtin.com
+      - wellfound.com
+      - ycombinator.com
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - boards.greenhouse.io
+    query_templates:
+      - '"{role}" London sponsorship'
+      - '"{role}" London visa'
+  - id: singapore
+    query_share: 0.10
+    locations: [Singapore]
+    allowed_languages: [English]
+    salary:
+      currency: SGD
+      gross_base_floor: 120000
+    remote_policy: allowed
+    relocation_policy: allowed
+    sponsorship_policy: required
+    direct_sources: []
+    discovery_domains:
+      - nodeflair.com
+      - sg.jobstreet.com
+      - glints.com
+      - mycareersfuture.gov.sg
+      - builtin.com
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - boards.greenhouse.io
+    query_templates:
+      - '"{role}" Singapore sponsorship'
+      - '"{role}" Singapore visa'
+  - id: us_nyc_sf
+    query_share: 0.10
+    locations: [New York, NYC, San Francisco, Bay Area]
+    allowed_languages: [English]
+    salary:
+      currency: USD
+      gross_base_floor: 180000
+      location_floors:
+        San Francisco: 200000
+        Bay Area: 200000
+    remote_policy: allowed
+    relocation_policy: allowed
+    sponsorship_policy: required
+    direct_sources: [wellfound]
+    discovery_domains:
+      - builtin.com
+      - wellfound.com
+      - ycombinator.com
+      - startup.jobs
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - boards.greenhouse.io
+    query_templates:
+      - '"{role}" NYC sponsorship'
+      - '"{role}" San Francisco sponsorship'
+      - '"{role}" US remote sponsorship'
+  - id: secondary_eu_relocation
+    query_share: 0.03
+    locations: [Amsterdam, Paris, Barcelona]
+    allowed_languages: [English]
+    salary:
+      currency: EUR
+      gross_base_floor: 70000
+      location_floors:
+        Amsterdam: 90000
+        Paris: 80000
+        Barcelona: 70000
+    remote_policy: allowed
+    relocation_policy: selective
+    sponsorship_policy: not_required
+    direct_sources: []
+    discovery_domains:
+      - wellfound.com
+      - welcometothejungle.com
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - boards.greenhouse.io
+    query_templates:
+      - '"{role}" Amsterdam English'
+      - '"{role}" Paris English'
+      - '"{role}" Barcelona English'
+yc_job_pages:
+  - https://www.ycombinator.com/jobs/role
+  - https://www.ycombinator.com/jobs/location/berlin
+manual_company_watch: []
+search_queries: []
+ats:
+  ashby: []
+  lever: []
+  greenhouse: []
