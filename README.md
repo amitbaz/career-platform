@@ -50,8 +50,8 @@ python3 -m venv .venv
 .venv/bin/pytest -q
 ```
 
-From the repo root, `pnpm job-hunter:install` and `pnpm job-hunter:test` run the same steps
-against whatever `python3` is on `PATH`.
+From the repo root, `pnpm job-hunter:install` creates that `.venv` and installs into it, and
+`pnpm job-hunter:test` runs pytest from it.
 
 Copy `apps/job-hunter/.env.example` to `apps/job-hunter/.env` and fill it in.
 
