@@ -1,0 +1,37 @@
+name: Relay CI
+on:
+  push:
+    paths:
+      - 'apps/relay/**'
+      - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - '.github/workflows/relay-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/relay/**'
+      - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - '.github/workflows/relay-ci.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Relay's migration tests read supabase/ at the repository root, so the
+      # whole workspace is checked out rather than just apps/relay.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Vercel builds this project on Node 24. Pinned to 22 here because
+          # that is what the suite is verified against locally; bump both
+          # together if that changes.
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter relay lint
+      - run: pnpm --filter relay test
+      - run: pnpm --filter relay build
