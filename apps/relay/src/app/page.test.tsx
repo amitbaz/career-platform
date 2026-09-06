@@ -1941,24 +1941,33 @@ describe("App answer transcription", () => {
   /**
    * Stubs Web Audio with an analyser that always reports `level` as the sample
    * amplitude, so a test can present a silent or an audible microphone.
+   *
+   * `state` and `resumesTo` model the autoplay policy: a context built outside
+   * a user gesture starts suspended and only renders audio once `resume()`
+   * settles. Leaving `state` unset presents a context that is running from the
+   * start, which is what a browser gives a page that never hit the policy.
    */
-  function stubAudioContext(level: number) {
+  function stubAudioContext(level: number, options: { state?: string; resumesTo?: string } = {}) {
+    const resume = vi.fn();
     class FakeAudioContext {
+      state = options.state;
+      resume = resume.mockImplementation(async () => { this.state = options.resumesTo ?? "running"; });
       createAnalyser() {
         return { fftSize: 2048, getFloatTimeDomainData: (target: Float32Array) => target.fill(level) };
       }
       createMediaStreamSource() {
-        return { connect: vi.fn() };
+        return { connect: vi.fn(), disconnect: vi.fn() };
       }
       close() {
         return Promise.resolve();
       }
     }
     vi.stubGlobal("AudioContext", FakeAudioContext);
+    return { resume };
   }
 
-  function stubMicrophone() {
-    const track = { stop: vi.fn() };
+  function stubMicrophone(trackProperties: Record<string, unknown> = {}) {
+    const track = { stop: vi.fn(), ...trackProperties };
     const getUserMedia = vi.fn(async () => ({ getTracks: () => [track] }) as unknown as MediaStream);
     Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia }, configurable: true });
     vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
@@ -2040,6 +2049,60 @@ describe("App answer transcription", () => {
 
     await waitFor(() => expect(screen.getByPlaceholderText("Answer as if you were in the room…"))
       .toHaveValue("I would phase the migration by route."));
+  });
+
+  it("transcribes a spoken take when the browser starts the audio context suspended", async () => {
+    stubMicrophone();
+    const { resume } = stubAudioContext(0.4, { state: "suspended" });
+    const started = activeConversationSession();
+    await startInterviewFrom("conversation", started, {
+      "/api/profile": () => ({ body: { profile: profile(), demoMode: false } }),
+      "/api/career/dashboard": () => ({ body: dashboardPayload(profile(), [], emptyReadiness()) }),
+      "/api/transcribe": () => ({ body: { transcript: "I would phase the migration by route." } }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "● Record answer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "■ Stop & transcribe" }));
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Answer as if you were in the room…"))
+      .toHaveValue("I would phase the migration by route."));
+    expect(resume).toHaveBeenCalled();
+  });
+
+  it("transcribes rather than discarding a take when the audio context never runs", async () => {
+    stubMicrophone();
+    stubAudioContext(0, { state: "suspended", resumesTo: "suspended" });
+    const transcribe = vi.fn(() => ({ body: { transcript: "I would phase the migration by route." } }));
+    const started = activeConversationSession();
+    await startInterviewFrom("conversation", started, {
+      "/api/profile": () => ({ body: { profile: profile(), demoMode: false } }),
+      "/api/career/dashboard": () => ({ body: dashboardPayload(profile(), [], emptyReadiness()) }),
+      "/api/transcribe": transcribe,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "● Record answer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "■ Stop & transcribe" }));
+
+    await waitFor(() => expect(transcribe).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("names an input that delivered no audio instead of reporting no speech", async () => {
+    stubMicrophone({ muted: true, label: "Studio Interface" });
+    stubAudioContext(0);
+    const transcribe = vi.fn(() => ({ body: { transcript: "An answer nobody spoke." } }));
+    const started = activeConversationSession();
+    await startInterviewFrom("conversation", started, {
+      "/api/profile": () => ({ body: { profile: profile(), demoMode: false } }),
+      "/api/career/dashboard": () => ({ body: dashboardPayload(profile(), [], emptyReadiness()) }),
+      "/api/transcribe": transcribe,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "● Record answer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "■ Stop & transcribe" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Studio Interface");
+    expect(transcribe).not.toHaveBeenCalled();
   });
 
   it("explains that recording is unavailable when the browser has no MediaRecorder", async () => {
