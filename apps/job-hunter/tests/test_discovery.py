@@ -960,6 +960,47 @@ def test_collect_candidates_does_not_charge_budget_for_already_ats_urls(
     assert result.stats.canonical_budget_exhausted == 0
 
 
+def test_collect_candidates_does_not_charge_budget_for_job_boards_greenhouse_urls(
+    store, policy
+):
+    # A job-boards.greenhouse.io posting is already on an employer ATS URL, so
+    # it must resolve locally like any other supported ATS host instead of
+    # spending a shortlist slot and a network attempt rediscovering itself.
+    already_ats = Job(
+        source="greenhouse",
+        source_job_id="1",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://job-boards.greenhouse.io/acme/jobs/456",
+        description="React TypeScript",
+        remote=True,
+    )
+    needs_resolution = Job(
+        source="arbeitnow",
+        source_job_id="2",
+        title="Senior Product Engineer",
+        company="Beta",
+        url="https://aggregator.test/jobs/2",
+        description="React TypeScript",
+        remote=True,
+    )
+    policy.max_canonical_resolutions_per_run = 1
+    resolver = CanonicalResolver(NoOpHttp(), lambda job: [], lambda company: None)
+
+    result = collect_candidates(
+        [FakeSource([already_ats, needs_resolution])],
+        store,
+        NoOpHttp(),
+        policy,
+        resolver=resolver,
+    )
+
+    assert result.stats.canonical_resolved == 1
+    assert result.stats.canonical_unresolved == 1
+    assert result.stats.canonical_network_attempts == 1
+    assert result.stats.canonical_budget_exhausted == 0
+
+
 def test_collect_candidates_still_canonicalizes_eligible_jobs(store, policy):
     job = Job(
         source="aggregator",

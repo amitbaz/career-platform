@@ -114,6 +114,7 @@ markets:
       - jobs.ashbyhq.com
       - jobs.lever.co
       - boards.greenhouse.io
+      - job-boards.greenhouse.io
       - ycombinator.com
     query_templates:
       - '"{role}" remote Germany'
@@ -137,6 +138,7 @@ markets:
       - jobs.ashbyhq.com
       - jobs.lever.co
       - boards.greenhouse.io
+      - job-boards.greenhouse.io
       - ycombinator.com
     query_templates:
       - '"{role}" remote Israel'
@@ -161,6 +163,7 @@ markets:
       - jobs.ashbyhq.com
       - jobs.lever.co
       - boards.greenhouse.io
+      - job-boards.greenhouse.io
     query_templates:
       - '"{role}" London sponsorship'
       - '"{role}" London visa'
@@ -184,6 +187,7 @@ markets:
       - jobs.ashbyhq.com
       - jobs.lever.co
       - boards.greenhouse.io
+      - job-boards.greenhouse.io
     query_templates:
       - '"{role}" Singapore sponsorship'
       - '"{role}" Singapore visa'
@@ -209,6 +213,7 @@ markets:
       - jobs.ashbyhq.com
       - jobs.lever.co
       - boards.greenhouse.io
+      - job-boards.greenhouse.io
     query_templates:
       - '"{role}" NYC sponsorship'
       - '"{role}" San Francisco sponsorship'
@@ -234,6 +239,7 @@ markets:
       - jobs.ashbyhq.com
       - jobs.lever.co
       - boards.greenhouse.io
+      - job-boards.greenhouse.io
     query_templates:
       - '"{role}" Amsterdam English'
       - '"{role}" Paris English'

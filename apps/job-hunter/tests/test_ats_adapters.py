@@ -133,16 +133,16 @@ def test_greenhouse_populates_ats_identity():
 
 
 def test_greenhouse_falls_back_to_its_own_board_for_unparseable_urls():
-    # Modern Greenhouse boards serve postings from job-boards.greenhouse.io,
-    # which parse_supported_ats_url does not recognise; the adapter knows the
-    # board token and job id regardless.
+    # A board embedded on the employer's own domain reports an absolute_url
+    # with no recognisable ATS host or board/job-id path shape, so nothing can
+    # be parsed out of it; the adapter knows the board token and job id anyway.
     http = _FakeHttp(
         {
             "jobs": [
                 {
                     "id": 456,
                     "title": "Backend Engineer",
-                    "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/456",
+                    "absolute_url": "https://careers.acme.test/openings/456",
                     "content": "JD",
                 },
             ]
