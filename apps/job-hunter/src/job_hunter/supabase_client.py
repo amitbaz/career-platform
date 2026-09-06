@@ -122,7 +122,7 @@ class SupabaseClient:
             raise SupabaseRequestError(
                 f"Supabase request failed with {response.status_code}: {response.text}"
             )
-        if response.status_code == 204:
+        if response.status_code == 204 or not response.text:
             return []
         payload = response.json()
         return payload if isinstance(payload, list) else [payload]

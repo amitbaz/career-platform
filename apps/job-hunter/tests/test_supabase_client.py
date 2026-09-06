@@ -19,10 +19,19 @@ SETTINGS = SupabaseSettings(
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload=None, text: str = ""):
+    """Models ``requests.Response`` honestly enough for these tests.
+
+    ``text`` mirrors the body a real response would carry: when the caller
+    doesn't pass one explicitly, it's derived from ``payload`` via
+    ``json.dumps``, same as PostgREST would actually send. An explicit
+    ``text`` (used by the error-path tests, and by callers modeling a
+    genuinely empty body) always wins.
+    """
+
+    def __init__(self, status_code: int, payload=None, text: str | None = None):
         self.status_code = status_code
         self._payload = [] if payload is None else payload
-        self.text = text
+        self.text = json.dumps(self._payload) if text is None else text
 
     def json(self):
         return self._payload
@@ -124,6 +133,12 @@ def test_unfiltered_writes_are_refused(method):
             client.update("job_hunter_jobs", {"status": "seen"}, params={})
         else:
             client.delete("job_hunter_jobs", params={})
+
+
+def test_200_with_an_empty_body_returns_an_empty_list():
+    client, _ = _client(FakeResponse(200, text=""))
+
+    assert client.select("job_hunter_jobs") == []
 
 
 def test_401_raises_an_auth_error():
