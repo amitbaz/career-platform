@@ -69,14 +69,26 @@ class SupabaseClient:
         PostgREST caps a response at max-rows (1000 locally) and gives no
         signal that it truncated, so a caller reading a whole table would
         silently see a prefix. Page with Range headers until a short page
-        arrives.
+        arrives. To ensure stable results across page boundaries, paging
+        requests include an ``order=id.asc`` tie-breaker unless the caller
+        supplied an ``offset`` (which short-circuits to a single request).
 
-        A caller that passes its own ``limit`` means it, and gets one request.
+        A caller that passes its own ``limit`` or ``offset`` means it,
+        and gets one request.
         """
         query = dict(params or {})
-        if "limit" in query:
+        if "limit" in query or "offset" in query:
             response = self._http.get(self._url(table), headers=self._headers(), params=query)
             return self._parse(response)
+
+        # Build paging query with stable sort order. Don't mutate the caller's dict.
+        paging_query = dict(query)
+        if "order" in paging_query:
+            # Append id.asc as a tie-breaker to the caller-supplied order.
+            paging_query["order"] = f"{paging_query['order']},id.asc"
+        else:
+            # No caller order; use id.asc to guarantee stability across pages.
+            paging_query["order"] = "id.asc"
 
         collected: list[dict[str, Any]] = []
         offset = 0
@@ -85,7 +97,7 @@ class SupabaseClient:
             headers["Range-Unit"] = "items"
             headers["Range"] = f"{offset}-{offset + _PAGE_SIZE - 1}"
             page = self._parse(
-                self._http.get(self._url(table), headers=headers, params=query)
+                self._http.get(self._url(table), headers=headers, params=paging_query)
             )
             collected.extend(page)
             if len(page) < _PAGE_SIZE:

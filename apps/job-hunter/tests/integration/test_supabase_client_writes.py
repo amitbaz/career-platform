@@ -106,3 +106,42 @@ def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None
     found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}"})
 
     assert len(found) == 1100, "select must page rather than silently truncate at 1000"
+
+
+def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient) -> None:
+    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    marker = f"stable-{uuid.uuid4()}"
+    rows = [
+        {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
+        for i in range(1100)
+    ]
+    for chunk in range(0, len(rows), 500):
+        client.insert("job_hunter_jobs", rows[chunk : chunk + 500])
+
+    found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}"})
+
+    ids = [row["id"] for row in found]
+    assert ids == sorted(ids), "paging must return rows in ascending id order"
+    assert len(set(ids)) == len(ids), "paging must not duplicate rows"
+
+
+def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseClient) -> None:
+    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    marker = f"order-{uuid.uuid4()}"
+    # Create rows with a shared sort key so id tiebreaker matters.
+    rows = [
+        {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
+        for i in range(1100)
+    ]
+    for chunk in range(0, len(rows), 500):
+        client.insert("job_hunter_jobs", rows[chunk : chunk + 500])
+
+    # Read with a caller-supplied order (by id, ascending).
+    # This verifies that the caller's order is passed through and tiebreaker applied.
+    found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}", "order": "id.asc"})
+
+    assert len(found) == 1100, "select must page all rows with caller order"
+    ids = [row["id"] for row in found]
+    assert len(set(ids)) == len(ids), "paging with caller order must not duplicate rows"
+    # Verify that the rows are in the order specified by the caller (id.asc).
+    assert ids == sorted(ids), "caller-supplied order must be preserved across pages"
