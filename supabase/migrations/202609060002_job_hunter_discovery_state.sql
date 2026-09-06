@@ -294,3 +294,110 @@ create policy update_own on public.job_hunter_pending_ai_work
   for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy delete_own on public.job_hunter_pending_ai_work
   for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- ai_usage: append-only ledger of model calls. SQLite named this gemini_usage; ---------
+-- the provider column anticipates the provider-agnostic ledger in #73.
+
+create table public.job_hunter_ai_usage (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  provider text not null default 'gemini',
+  occurred_at timestamptz not null,
+  run_id text,
+  model text not null,
+  purpose text not null,
+  status text not null,
+  estimated_input_tokens integer not null default 0,
+  prompt_tokens integer,
+  output_tokens integer,
+  thinking_tokens integer,
+  cached_tokens integer,
+  total_tokens integer,
+  http_status integer,
+  error_code text,
+  created_at timestamptz not null default now()
+);
+
+create index job_hunter_ai_usage_window_idx
+  on public.job_hunter_ai_usage (user_id, provider, occurred_at desc);
+
+alter table public.job_hunter_ai_usage enable row level security;
+create policy select_own on public.job_hunter_ai_usage
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_ai_usage
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_ai_usage
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_ai_usage
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- ai_quota_state: per-model pause after a quota error -------------------------------------
+
+create table public.job_hunter_ai_quota_state (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  provider text not null default 'gemini',
+  model text not null,
+  paused_until timestamptz,
+  reason text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, provider, model)
+);
+
+alter table public.job_hunter_ai_quota_state enable row level security;
+create policy select_own on public.job_hunter_ai_quota_state
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_ai_quota_state
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_ai_quota_state
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_ai_quota_state
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- candidate_context_cache: structured candidate context keyed by profile hash + model --
+
+create table public.job_hunter_candidate_context_cache (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  cache_key text not null,
+  profile_hash text not null,
+  model text not null,
+  schema_version text not null,
+  context_json jsonb not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, cache_key)
+);
+
+alter table public.job_hunter_candidate_context_cache enable row level security;
+create policy select_own on public.job_hunter_candidate_context_cache
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_candidate_context_cache
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_candidate_context_cache
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_candidate_context_cache
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- search_api_usage: append-only ledger for search-provider daily budgets -----------------
+
+create table public.job_hunter_search_api_usage (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  provider text not null,
+  occurred_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create index job_hunter_search_api_usage_window_idx
+  on public.job_hunter_search_api_usage (user_id, provider, occurred_at desc);
+
+alter table public.job_hunter_search_api_usage enable row level security;
+create policy select_own on public.job_hunter_search_api_usage
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_search_api_usage
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_search_api_usage
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_search_api_usage
+  for delete to authenticated using ((select auth.uid()) = user_id);

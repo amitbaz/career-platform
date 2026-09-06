@@ -57,7 +57,11 @@ select unnest(array[
   'job_hunter_evaluations',
   'job_hunter_materials',
   'job_hunter_deliveries',
-  'job_hunter_pending_ai_work'
+  'job_hunter_pending_ai_work',
+  'job_hunter_ai_usage',
+  'job_hunter_ai_quota_state',
+  'job_hunter_candidate_context_cache',
+  'job_hunter_search_api_usage'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -99,6 +103,18 @@ begin
       v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
       insert into public.job_hunter_pending_ai_work (user_id, job_id, work_type)
       values (p_owner, v_job, 'evaluate') returning id into v_id;
+    when 'job_hunter_ai_usage' then
+      insert into public.job_hunter_ai_usage (user_id, occurred_at, model, purpose, status)
+      values (p_owner, now(), 'gemini-test', 'job_evaluation', 'success') returning id into v_id;
+    when 'job_hunter_ai_quota_state' then
+      insert into public.job_hunter_ai_quota_state (user_id, model)
+      values (p_owner, gen_random_uuid()::text) returning id into v_id;
+    when 'job_hunter_candidate_context_cache' then
+      insert into public.job_hunter_candidate_context_cache (user_id, cache_key, profile_hash, model, schema_version, context_json)
+      values (p_owner, gen_random_uuid()::text, 'hash', 'gemini-test', '1', '{}'::jsonb) returning id into v_id;
+    when 'job_hunter_search_api_usage' then
+      insert into public.job_hunter_search_api_usage (user_id, provider, occurred_at)
+      values (p_owner, 'serper', now()) returning id into v_id;
     else
       raise exception 'no seed row defined for table %', p_table;
   end case;
