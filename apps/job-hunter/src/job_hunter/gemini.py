@@ -36,6 +36,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _usage_tokens(usage: dict) -> dict[str, int | None]:
+    """Map Google's `usageMetadata` names onto the tracker's token arguments."""
+    return {
+        "prompt_tokens": usage.get("promptTokenCount"),
+        "output_tokens": usage.get("candidatesTokenCount"),
+        "thinking_tokens": usage.get("thoughtsTokenCount"),
+        "cached_tokens": usage.get("cachedContentTokenCount"),
+        "total_tokens": usage.get("totalTokenCount"),
+    }
+
+
 def _classify_429(response: requests.Response) -> tuple[GeminiPauseKind, str | None]:
     """Classify a Gemini 429 body into one of the design spec's three pause kinds."""
     try:
@@ -219,30 +230,37 @@ class GeminiClient:
 
             break
 
+        # Usage is recorded only once the response body has been judged, so a
+        # response the caller never gets to use is never logged as a success.
+        # It is still logged: the call reached Google and consumed real quota.
         try:
             data = response.json()
+        except ValueError as exc:
+            self._record_response_failure(purpose, prompt, now, None, "invalid_json")
+            raise GeminiError("Gemini response missing content") from exc
+
+        usage = data.get("usageMetadata") if isinstance(data, dict) else None
+
+        try:
             candidate = data["candidates"][0]
             parts = candidate["content"]["parts"]
             text = "".join(part.get("text", "") for part in parts)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
+            self._record_response_failure(purpose, prompt, now, usage, "missing_content")
             raise GeminiError("Gemini response missing content") from exc
 
         if not text:
+            self._record_response_failure(purpose, prompt, now, usage, "missing_content")
             raise GeminiError("Gemini response missing content")
 
+        finish_reason = candidate.get("finishReason") if isinstance(candidate, dict) else None
+        if finish_reason == "MAX_TOKENS":
+            self._record_response_failure(purpose, prompt, now, usage, finish_reason)
+            raise GeminiIncompleteResponse(finish_reason)
+
         if self._tracker is not None:
-            usage = data.get("usageMetadata") if isinstance(data, dict) else None
             if usage:
-                self._tracker.record_success(
-                    purpose,
-                    prompt,
-                    now,
-                    prompt_tokens=usage.get("promptTokenCount"),
-                    output_tokens=usage.get("candidatesTokenCount"),
-                    thinking_tokens=usage.get("thoughtsTokenCount"),
-                    cached_tokens=usage.get("cachedContentTokenCount"),
-                    total_tokens=usage.get("totalTokenCount"),
-                )
+                self._tracker.record_success(purpose, prompt, now, **_usage_tokens(usage))
             else:
                 logger.warning(
                     "Gemini response for purpose %r missing usageMetadata; "
@@ -251,8 +269,27 @@ class GeminiClient:
                 )
                 self._tracker.record_success(purpose, prompt, now)
 
-        finish_reason = candidate.get("finishReason") if isinstance(candidate, dict) else None
-        if finish_reason == "MAX_TOKENS":
-            raise GeminiIncompleteResponse(finish_reason)
-
         return text
+
+    def _record_response_failure(
+        self,
+        purpose: GeminiPurpose | None,
+        prompt: str,
+        now: datetime,
+        usage: dict | None,
+        error_code: str,
+    ) -> None:
+        """Log a 200 response the caller cannot use as a failed attempt.
+
+        The provider still billed the request, so any `usageMetadata` it did
+        report is carried onto the error row rather than dropped.
+        """
+        if self._tracker is None:
+            return
+        self._tracker.record_error(
+            purpose,
+            prompt,
+            now,
+            error_code=error_code,
+            **(_usage_tokens(usage) if usage else {}),
+        )
