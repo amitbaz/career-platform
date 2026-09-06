@@ -21,7 +21,13 @@ Target direction:
 - Shared concepts are expected to include candidate/profile data, jobs, evaluations, applications, application status, and related interview-preparation context where appropriate, but the exact shared schema is not defined yet.
 
 Migration rules:
-1. **The shared Supabase project lives at the repository root under `supabase/`.** Its migrations already define Job Hunter's Postgres tables (`public.job_hunter_*`, see `supabase/migrations/202609060002_job_hunter_discovery_state.sql`), but Job Hunter's runtime still reads and writes SQLite until #70 ports the store. Do not write Python against those tables outside that ticket.
+1. **The shared Supabase project lives at the repository root under `supabase/`.** Its migrations already define Job Hunter's Postgres tables (`public.job_hunter_*`, see
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`), but Job Hunter's runtime
+   still reads and writes SQLite until #70 ports the store. Application code must not target
+   those tables outside that ticket. The one exception is
+   `tests/integration/test_supabase_isolation.py`, which writes and deletes a throwaway row in
+   a local stack to prove the row-level security policies hold — that proof is #69's acceptance
+   criterion.
 2. **Do not replace SQLite opportunistically while implementing unrelated features.**
 3. Feature development must continue independently of the migration.
 4. Prefer boundaries that make future persistence replacement easier.
@@ -146,3 +152,9 @@ The daily workflow fires on two cron triggers (`5 7 * * *` and `5 8 * * *` UTC) 
 ## Required secrets/env
 
 `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64` — see README.md for setup. In dry-run mode, Telegram vars are optional.
+
+Not yet required by any runtime path, but needed once #70 ports the store to Postgres:
+`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`.
+The last is the private JWK of the project's ES256 signing key and can mint a token for any
+user — it is the most sensitive secret the platform has. See
+`docs/superpowers/specs/2026-09-06-job-hunter-per-user-jwt-design.md`.

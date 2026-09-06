@@ -51,5 +51,6 @@ jobs:
         with:
           version: latest
       - run: pnpm install --frozen-lockfile
+      - run: bash supabase/local-signing-key.sh
       - run: supabase start
       - run: pnpm db:test

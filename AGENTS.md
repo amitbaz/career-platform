@@ -33,7 +33,16 @@ pnpm relay:lint
 pnpm relay:build
 pnpm job-hunter:test    # Job Hunter tests
 pnpm test               # both suites
+
+pnpm db:key             # one-time: create the local stack's signing key
+supabase start          # local Supabase stack
+pnpm db:test            # pgTAP suite against that stack
 ```
+
+`supabase start` will not boot until `supabase/signing_keys.json` exists, because `config.toml`
+sets `signing_keys_path`. The file is generated per machine and git-ignored, so a fresh clone has
+to run `pnpm db:key` once. It is a throwaway key for localhost; never put the hosted project's
+signing key there.
 
 Job Hunter's Python environment is independent of pnpm. Install it with
 `pip install -e '.[test,webhook]'` from `apps/job-hunter`.

@@ -131,6 +131,10 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 | `GMAIL_CLIENT_ID` | OAuth client ID used only by the Gmail intelligence sync |
 | `GMAIL_CLIENT_SECRET` | OAuth client secret used only by the Gmail intelligence sync |
 | `GMAIL_REFRESH_TOKEN` | Refresh token printed by the local Gmail OAuth bootstrap |
+| `JOB_HUNTER_USER_ID` | UUID of the platform user a run acts for (issue #69). Not yet required by any runtime path — the store port in issue #70 is what starts using it. |
+| `SUPABASE_URL` | Base URL of the Supabase project (issue #69). Not yet required by any runtime path. |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase project's publishable API key, sent as the `apikey` header (issue #69). Public by design, not yet required by any runtime path. |
+| `SUPABASE_SIGNING_KEY_B64` | Base64-encoded private ES256 JWK used to mint per-user access tokens (issue #69). It can mint a token for any user — treat it as the platform's most sensitive secret. Not yet required by any runtime path — the store port in issue #70 is what starts using it. |
 
 ## Required GitHub Actions variables
 
