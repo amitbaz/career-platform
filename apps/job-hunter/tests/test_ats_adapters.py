@@ -83,6 +83,93 @@ class _FakeHttp:
         return self._data
 
 
+def test_lever_populates_ats_identity():
+    http = _FakeHttp(
+        [
+            {
+                "id": "abc-123",
+                "text": "Backend Engineer",
+                "hostedUrl": "https://jobs.lever.co/acme/abc-123",
+                "descriptionPlain": "JD",
+            },
+        ]
+    )
+    job = LeverSource("acme", http).discover()[0]
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("lever", "acme", "abc-123")
+
+
+def test_ashby_populates_ats_identity():
+    http = _FakeHttp(
+        {
+            "jobs": [
+                {
+                    "id": "xyz",
+                    "title": "Backend Engineer",
+                    "jobUrl": "https://jobs.ashbyhq.com/acme/xyz",
+                    "descriptionPlain": "JD",
+                },
+            ]
+        }
+    )
+    job = AshbySource("acme", http).discover()[0]
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("ashby", "acme", "xyz")
+
+
+def test_greenhouse_populates_ats_identity():
+    http = _FakeHttp(
+        {
+            "jobs": [
+                {
+                    "id": 456,
+                    "title": "Backend Engineer",
+                    "absolute_url": "https://boards.greenhouse.io/acme/jobs/456",
+                    "content": "JD",
+                },
+            ]
+        }
+    )
+    job = GreenhouseSource("acme", http).discover()[0]
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("greenhouse", "acme", "456")
+
+
+def test_greenhouse_falls_back_to_its_own_board_for_unparseable_urls():
+    # Modern Greenhouse boards serve postings from job-boards.greenhouse.io,
+    # which parse_supported_ats_url does not recognise; the adapter knows the
+    # board token and job id regardless.
+    http = _FakeHttp(
+        {
+            "jobs": [
+                {
+                    "id": 456,
+                    "title": "Backend Engineer",
+                    "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/456",
+                    "content": "JD",
+                },
+            ]
+        }
+    )
+    job = GreenhouseSource("acme", http).discover()[0]
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("greenhouse", "acme", "456")
+
+
+def test_adapter_identity_matches_the_url_when_the_two_disagree():
+    # The board slug the adapter was constructed with can differ in case from
+    # the one in the posting URL. The URL wins, so the identity agrees with
+    # what every other code path derives from that same URL.
+    http = _FakeHttp(
+        [
+            {
+                "id": "abc-123",
+                "text": "Backend Engineer",
+                "hostedUrl": "https://jobs.lever.co/acme/abc-123",
+                "descriptionPlain": "JD",
+            },
+        ]
+    )
+    job = LeverSource("ACME", http).discover()[0]
+    assert job.ats_board == "acme"
+
+
 def test_ashby_fetch_description_matches_by_url():
     http = _FakeHttp(
         {

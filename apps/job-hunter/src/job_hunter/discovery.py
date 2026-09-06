@@ -8,6 +8,7 @@ from job_hunter import content_confidence
 from job_hunter.ats_registry import harvest_ats_board
 from job_hunter.canonical import (
     CanonicalResolver,
+    apply_ats_identity,
     fetch_authoritative_description,
     parse_supported_ats_url,
 )
@@ -303,6 +304,11 @@ def collect_candidates(
             stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
             if job.url:
                 job.original_url = job.original_url or job.url
+            # Attribute before the first persist and before _dedupe, so a job
+            # from any source that happens to carry a supported ATS URL is
+            # stored with its identity and can be matched on the strongest
+            # dedup key this run rather than only on its URL.
+            apply_ats_identity(job)
             job.content_confidence = content_confidence.infer_content_confidence(
                 job.source, job.description
             )
@@ -433,9 +439,16 @@ def collect_candidates(
                     job.canonical_url = resolution.url
                     job.url = resolution.url
                     if resolution.ats is not None:
-                        job.ats_provider = resolution.ats.provider
-                        job.ats_board = resolution.ats.board
-                        job.ats_job_id = resolution.ats.job_id
+                        # Fill, never relabel. A job that reached the resolver
+                        # can already carry authoritative identity from its own
+                        # adapter (a modern Greenhouse posting, whose
+                        # job-boards.greenhouse.io URL does not parse), and the
+                        # resolver's weaker branches -- an embedded link is the
+                        # first ATS anchor on the page, with no company or title
+                        # check -- can point at a different posting entirely.
+                        # Overwriting here would merge this job into that
+                        # posting's stored row on the ATS dedup key.
+                        apply_ats_identity(job, resolution.ats)
                         if _harvest_ats_board_safely(store, job, denylist=denylist):
                             stats.ats_boards_discovered += 1
                         if job.content_confidence != content_confidence.OFFICIAL_ATS:

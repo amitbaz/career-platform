@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from job_hunter.models import Job
+from job_hunter.canonical import apply_ats_identity
+from job_hunter.models import AtsReference, Job
 from job_hunter.normalize import canonicalize_url
 
 from .base import is_stale_board_error, logger, strip_html
@@ -30,18 +31,29 @@ class GreenhouseSource:
             job_id = item.get("id")
             location = item.get("location", {}) or {}
             location_name = location.get("name", "") if isinstance(location, dict) else str(location)
-            jobs.append(
-                Job(
-                    source="greenhouse",
-                    source_job_id=str(job_id) if job_id is not None else None,
-                    title=item.get("title", ""),
-                    company=self._token,
-                    location=location_name,
-                    url=item.get("absolute_url", ""),
-                    description=strip_html(item.get("content", "")),
-                    remote="remote" in location_name.lower() if location_name else None,
-                )
+            job = Job(
+                source="greenhouse",
+                source_job_id=str(job_id) if job_id is not None else None,
+                title=item.get("title", ""),
+                company=self._token,
+                location=location_name,
+                url=item.get("absolute_url", ""),
+                description=strip_html(item.get("content", "")),
+                remote="remote" in location_name.lower() if location_name else None,
             )
+            # Modern Greenhouse boards serve postings from
+            # job-boards.greenhouse.io, which parse_supported_ats_url does not
+            # recognise; the adapter's own token and the payload's id attribute
+            # those postings regardless.
+            apply_ats_identity(
+                job,
+                AtsReference(
+                    provider="greenhouse",
+                    board=self._token,
+                    job_id=str(job_id) if job_id is not None else None,
+                ),
+            )
+            jobs.append(job)
         return jobs
 
 

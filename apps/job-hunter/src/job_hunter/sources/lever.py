@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from job_hunter.models import Job
+from job_hunter.canonical import apply_ats_identity
+from job_hunter.models import AtsReference, Job
 from job_hunter.normalize import canonicalize_url
 
 from .base import is_stale_board_error, logger, strip_html
@@ -40,18 +41,26 @@ class LeverSource:
                 remote = None
 
             description = item.get("descriptionPlain") or item.get("description", "")
-            jobs.append(
-                Job(
-                    source="lever",
-                    source_job_id=item.get("id"),
-                    title=item.get("text", ""),
-                    company=self._site,
-                    location=categories.get("location", ""),
-                    url=item.get("hostedUrl", ""),
-                    description=strip_html(description),
-                    remote=remote,
-                )
+            job_id = item.get("id")
+            job = Job(
+                source="lever",
+                source_job_id=job_id,
+                title=item.get("text", ""),
+                company=self._site,
+                location=categories.get("location", ""),
+                url=item.get("hostedUrl", ""),
+                description=strip_html(description),
+                remote=remote,
             )
+            apply_ats_identity(
+                job,
+                AtsReference(
+                    provider="lever",
+                    board=self._site,
+                    job_id=str(job_id) if job_id is not None else None,
+                ),
+            )
+            jobs.append(job)
         return jobs
 
 

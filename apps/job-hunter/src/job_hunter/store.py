@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from job_hunter import content_confidence
+from job_hunter.canonical import parse_supported_ats_url
 from job_hunter.gmail_models import (
     AUTO_CONFIDENCE_THRESHOLD,
     LEGACY_SEMANTIC_FAILURE_RATIONALE,
@@ -393,6 +394,66 @@ class JobStore:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
                 added.append(name)
         return added
+
+    def backfill_ats_identity(self) -> int:
+        """Attribute stored jobs that have a supported ATS URL but no identity.
+
+        Rows written before the discovery adapters populated ATS identity kept
+        their URL but not the provider/board/job id it encodes, which made the
+        strongest dedup key (`_find_job_ids_by_ats`) unusable for them. This
+        re-derives identity from the URL already on the row, using the same
+        parser the registry relies on, and never overwrites a field that is
+        already set.
+
+        Callers run it once per run rather than as a schema migration: the
+        production database travels as a GitHub Actions artifact, so a
+        migration keyed to a schema change could be missed entirely. The
+        candidate set is restricted to rows that both lack identity and carry a
+        recognisable ATS host, so after the first run it selects only the rows
+        whose URL contains an ATS host but does not parse as a posting -- a
+        redirect wrapper or a board index. Those are re-parsed every run and
+        updated by none of them, which is bounded and harmless rather than
+        strictly convergent. Returns how many rows were updated.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT id, url, canonical_url FROM jobs
+            WHERE (ats_provider IS NULL OR ats_provider = ''
+                   OR ats_board IS NULL OR ats_board = ''
+                   OR ats_job_id IS NULL OR ats_job_id = '')
+              AND (url LIKE '%jobs.lever.co/%'
+                   OR url LIKE '%jobs.ashbyhq.com/%'
+                   OR url LIKE '%boards.greenhouse.io/%'
+                   OR canonical_url LIKE '%jobs.lever.co/%'
+                   OR canonical_url LIKE '%jobs.ashbyhq.com/%'
+                   OR canonical_url LIKE '%boards.greenhouse.io/%')
+            """
+        ).fetchall()
+
+        updated = 0
+        with self._conn:
+            for row in rows:
+                reference = None
+                for url in (row["canonical_url"], row["url"]):
+                    if not url:
+                        continue
+                    reference = parse_supported_ats_url(url)
+                    if reference is not None:
+                        break
+                if reference is None:
+                    continue
+                cursor = self._conn.execute(
+                    """
+                    UPDATE jobs SET
+                        ats_provider = COALESCE(NULLIF(ats_provider, ''), ?),
+                        ats_board    = COALESCE(NULLIF(ats_board, ''), ?),
+                        ats_job_id   = COALESCE(NULLIF(ats_job_id, ''), ?)
+                    WHERE id = ?
+                    """,
+                    (reference.provider, reference.board, reference.job_id, row["id"]),
+                )
+                updated += cursor.rowcount
+        return updated
 
     # ------------------------------------------------------------------
     # Gemini persistence

@@ -151,6 +151,53 @@ def test_collect_candidates_collapses_same_canonical_url(store, policy):
     assert result.eligible[0][1].company == "Acme"
 
 
+def test_collect_candidates_derives_ats_identity_from_a_non_ats_source(store, policy):
+    job = Job(
+        source="search:brave",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://jobs.lever.co/acme/abc-123",
+        description="React TypeScript",
+        remote=True,
+    )
+    result = collect_candidates([FakeSource([job])], store, NoOpHttp(), policy)
+
+    assert len(result.eligible) == 1
+    eligible_job = result.eligible[0][1]
+    assert (eligible_job.ats_provider, eligible_job.ats_board, eligible_job.ats_job_id) == (
+        "lever",
+        "acme",
+        "abc-123",
+    )
+
+
+def test_collect_candidates_dedupes_on_derived_ats_identity(store, policy):
+    # Same posting, different URL spellings: only the ATS identity derived
+    # from each URL can join these two into one candidate.
+    jobs = [
+        Job(
+            source="search:brave",
+            title="Senior Product Engineer",
+            company="Acme",
+            url="https://jobs.lever.co/acme/abc-123/apply",
+            description="React TypeScript",
+            remote=True,
+        ),
+        Job(
+            source="lever",
+            source_job_id="abc-123",
+            title="Senior Product Engineer Remote",
+            company="Acme Inc",
+            url="https://jobs.lever.co/acme/abc-123",
+            description="React TypeScript",
+            remote=True,
+        ),
+    ]
+    result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+
+    assert result.stats.unique == 1
+
+
 def test_collect_candidates_enriches_url_only_job(store, policy):
     job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
     http = FakeHttp(_JOB_POSTING_HTML)
@@ -553,6 +600,80 @@ def test_collect_candidates_counts_unresolved_canonical_urls(store, policy):
     assert result.stats.canonical_resolved == 0
     assert result.stats.canonical_unresolved == 1
     assert result.eligible[0][1].url == "https://yc.test/unresolved"
+
+
+def test_canonical_resolution_does_not_overwrite_adapter_ats_identity(store, policy):
+    # A modern Greenhouse posting carries authoritative identity from its own
+    # adapter, but its job-boards.greenhouse.io URL does not parse, so it still
+    # reaches the resolver. The resolver's weaker embedded-link branch takes
+    # the first ATS anchor on the page with no company or title check, so it
+    # can point at an entirely different posting -- which must not be allowed
+    # to relabel this job and merge it into that posting's stored row.
+    job = Job(
+        source="greenhouse",
+        source_job_id="456",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://job-boards.greenhouse.io/acme/jobs/456",
+        description="React TypeScript",
+        remote=True,
+        ats_provider="greenhouse",
+        ats_board="acme",
+        ats_job_id="456",
+    )
+    resolution = CanonicalResolution(
+        url="https://jobs.lever.co/unrelated/other-posting",
+        ats=AtsReference(provider="lever", board="unrelated", job_id="other-posting"),
+        confidence=0.95,
+        method="embedded",
+    )
+
+    result = collect_candidates(
+        [FakeSource([job])],
+        store,
+        NoOpHttp(),
+        policy,
+        resolver=FakeResolver(resolution),
+    )
+
+    eligible_job = result.eligible[0][1]
+    assert (eligible_job.ats_provider, eligible_job.ats_board, eligible_job.ats_job_id) == (
+        "greenhouse",
+        "acme",
+        "456",
+    )
+
+
+def test_canonical_resolution_still_attributes_an_unattributed_job(store, policy):
+    job = Job(
+        source="hackernews",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://news.ycombinator.com/item?id=1",
+        description="React TypeScript",
+        remote=True,
+    )
+    resolution = CanonicalResolution(
+        url="https://jobs.ashbyhq.com/acme/abc",
+        ats=AtsReference(provider="ashby", board="acme", job_id="abc"),
+        confidence=1.0,
+        method="test",
+    )
+
+    result = collect_candidates(
+        [FakeSource([job])],
+        store,
+        NoOpHttp(),
+        policy,
+        resolver=FakeResolver(resolution),
+    )
+
+    eligible_job = result.eligible[0][1]
+    assert (eligible_job.ats_provider, eligible_job.ats_board, eligible_job.ats_job_id) == (
+        "ashby",
+        "acme",
+        "abc",
+    )
 
 
 def test_canonical_resolution_upgrades_description_when_ats_found(
