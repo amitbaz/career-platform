@@ -608,6 +608,32 @@ def test_ats_deactivated_board_reactivates_on_rediscovery():
     assert [e.board_identifier for e in due] == ["reborn-co"]
 
 
+def test_reject_ats_board_deactivates_and_records_reason():
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+
+    store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
+
+    assert store.list_due_ats_boards(now) == []
+
+
+def test_ats_rejected_board_is_not_resurrected_by_rediscovery():
+    # Unlike a health-based deactivation (see
+    # test_ats_deactivated_board_reactivates_on_rediscovery), a board
+    # rejected for cause must stay rejected even when a freshly discovered
+    # job points at it again -- upsert_ats_board must not flip active back
+    # to 1 once rejected_reason is set.
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+    store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
+
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+
+    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+
+
 def test_record_job_source_is_idempotent(tmp_path):
     store = JobStore(tmp_path / "state.sqlite3")
     job_id, _, _ = store.upsert_job(

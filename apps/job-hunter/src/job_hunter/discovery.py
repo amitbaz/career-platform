@@ -218,14 +218,17 @@ def _bump(counts: dict[str, int], key: str) -> None:
 
 
 def _harvest_ats_board_safely(
-    store: JobStore, job: Job, market_hint: str | None = None
+    store: JobStore,
+    job: Job,
+    market_hint: str | None = None,
+    denylist: frozenset[str] = frozenset(),
 ) -> bool:
     """Learn a job's ATS board without letting a registry write drop the job.
 
     Returns True only when the harvest created a new registry entry.
     """
     try:
-        return harvest_ats_board(store, job, market_hint=market_hint)
+        return harvest_ats_board(store, job, market_hint=market_hint, denylist=denylist)
     except Exception:
         logger.exception(
             "ATS board harvesting failed: source=%s", metric_source_label(job.source)
@@ -286,6 +289,7 @@ def collect_candidates(
     """
     stats = DiscoveryStats()
     raw_jobs: list[Job] = []
+    denylist = frozenset(policy.learned_ats_denylist)
 
     for source in sources:
         try:
@@ -319,7 +323,9 @@ def collect_candidates(
 
     for job in unique_jobs:
         observed_market_id = _cheap_market_attribution(job, policy)
-        if _harvest_ats_board_safely(store, job, market_hint=observed_market_id):
+        if _harvest_ats_board_safely(
+            store, job, market_hint=observed_market_id, denylist=denylist
+        ):
             stats.ats_boards_discovered += 1
         if job.url and not job.description:
             enrich_job(job, http)
@@ -430,7 +436,7 @@ def collect_candidates(
                         job.ats_provider = resolution.ats.provider
                         job.ats_board = resolution.ats.board
                         job.ats_job_id = resolution.ats.job_id
-                        if _harvest_ats_board_safely(store, job):
+                        if _harvest_ats_board_safely(store, job, denylist=denylist):
                             stats.ats_boards_discovered += 1
                         if job.content_confidence != content_confidence.OFFICIAL_ATS:
                             authoritative = fetch_authoritative_description(

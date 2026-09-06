@@ -94,6 +94,7 @@ def load_settings(config_path: Path) -> Settings:
             "max_canonical_resolutions_per_run", 80
         ),
         max_learned_ats_boards_per_run=_parse_max_learned_ats_boards_per_run(data),
+        learned_ats_denylist=list(data.get("learned_ats_denylist", [])),
         engineering_title_keywords=list(
             data.get("engineering_title_keywords", DEFAULT_ENGINEERING_TITLE_KEYWORDS)
         ),

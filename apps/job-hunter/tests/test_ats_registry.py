@@ -105,6 +105,36 @@ def test_harvest_ats_board_returns_false_for_unsupported_url():
     assert store.count_ats_boards() == 0
 
 
+def test_harvest_ats_board_refuses_denylisted_board():
+    store = JobStore(":memory:")
+    job = Job(
+        source="feed",
+        title="x",
+        company="Jobgether",
+        url="https://jobs.lever.co/jobgether/123",
+    )
+
+    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
+
+    assert created is False
+    assert store.count_ats_boards() == 0
+
+
+def test_harvest_ats_board_admits_board_not_on_denylist():
+    store = JobStore(":memory:")
+    job = Job(
+        source="feed",
+        title="x",
+        company="Omnea",
+        url="https://jobs.ashbyhq.com/omnea/123",
+    )
+
+    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
+
+    assert created is True
+    assert store.count_ats_boards() == 1
+
+
 def test_harvest_ats_board_uses_market_hint_precedence():
     store = JobStore(":memory:")
     job = Job(

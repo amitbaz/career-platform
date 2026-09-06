@@ -37,6 +37,26 @@ class RoutingHttp:
         raise RuntimeError(f"no fake response configured for {url}")
 
 
+_JOBGETHER_PHRASING = (
+    "This position is listed on behalf of a partner company, who manages "
+    "all applications and next steps."
+)
+
+
+def _lever_postings(count, board, phrasing="", start_id=1):
+    return [
+        {
+            "id": str(start_id + i),
+            "text": "Senior Product Engineer",
+            "categories": {"location": "Remote"},
+            "hostedUrl": f"https://jobs.lever.co/{board}/{start_id + i}",
+            "descriptionPlain": f"Great role. {phrasing} Apply now.",
+            "workplaceType": "remote",
+        }
+        for i in range(count)
+    ]
+
+
 def _seed_board(store, provider, board_identifier, market_hint="berlin"):
     store.upsert_ats_board(
         provider=provider,
@@ -246,3 +266,104 @@ def test_learned_ats_source_never_deactivates_board_after_repeated_transient_err
         e.board_identifier for e in store.list_due_ats_boards(final_check)
     }
     assert due_identifiers == {"flaky-co"}
+
+
+def test_learned_ats_source_rejects_jobgether_shaped_board_and_drops_its_jobs():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "jobgether")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    postings = _lever_postings(2, "jobgether") + _lever_postings(
+        6, "jobgether", _JOBGETHER_PHRASING, start_id=3
+    )
+    http = RoutingHttp(responses={"lever.co": postings})
+
+    source = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: now
+    )
+    jobs = source.discover()
+
+    assert jobs == []
+    assert source.stats.boards_rejected == 1
+    assert source.stats.boards_successful == 0
+    assert source.stats.jobs_raw == 0
+
+    later = now + timedelta(days=30)
+    assert store.list_due_ats_boards(later) == []
+
+
+def test_learned_ats_source_keeps_scanning_veeva_shaped_board_with_no_markers():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "veeva")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    postings = _lever_postings(21, "veeva")
+    http = RoutingHttp(responses={"lever.co": postings})
+
+    source = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: now
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 21
+    assert source.stats.boards_successful == 1
+    assert source.stats.boards_rejected == 0
+
+    due = {e.board_identifier for e in store.list_due_ats_boards(now)}
+    assert due == {"veeva"}
+
+
+def test_learned_ats_source_survives_one_stray_third_party_posting():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "mostly-clean")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    postings = _lever_postings(19, "mostly-clean") + _lever_postings(
+        1, "mostly-clean", _JOBGETHER_PHRASING, start_id=20
+    )
+    http = RoutingHttp(responses={"lever.co": postings})
+
+    source = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: now
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 20
+    assert source.stats.boards_rejected == 0
+    due = {e.board_identifier for e in store.list_due_ats_boards(now)}
+    assert due == {"mostly-clean"}
+
+
+def test_learned_ats_source_refuses_denylisted_board_without_scanning():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "jobgether")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"lever.co": _lever_postings(10, "jobgether")})
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        denylist=frozenset({"lever:jobgether"}),
+    )
+    jobs = source.discover()
+
+    assert jobs == []
+    assert http.calls == []
+    assert source.stats.boards_rejected == 1
+    assert source.stats.boards_scanned == 0
+
+    assert store.list_due_ats_boards(now) == []
+
+
+def test_learned_ats_source_does_not_resurrect_a_previously_rejected_board():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "jobgether")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    store.reject_ats_board("lever", "jobgether", "aggregator: prior run", now)
+
+    # A fresh job pointing at the same board rediscovers it, the way
+    # collect_candidates does on every run.
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+
+    later = now + timedelta(days=1)
+    assert store.list_due_ats_boards(later) == []

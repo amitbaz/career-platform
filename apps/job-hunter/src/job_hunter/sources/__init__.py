@@ -221,6 +221,7 @@ def build_sources(
                 http,
                 limit=settings.policy.max_learned_ats_boards_per_run,
                 market_order=market_order,
+                denylist=frozenset(settings.policy.learned_ats_denylist),
             )
         )
 

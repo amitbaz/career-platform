@@ -128,6 +128,7 @@ class AtsRegistryEntry:
     consecutive_failures: int
     active: bool
     paused_until: str | None
+    rejected_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -196,6 +197,11 @@ class SearchPolicy:
     max_search_queries_per_run: int = 30
     max_canonical_resolutions_per_run: int = 80
     max_learned_ats_boards_per_run: int = 75
+    #: "<provider>:<board>" keys, e.g. "lever:jobgether". Override/escape
+    #: hatch, not the primary detection mechanism -- see
+    #: aggregator_detection.py, which catches new aggregators with an empty
+    #: denylist.
+    learned_ats_denylist: list[str] = field(default_factory=list)
     engineering_title_keywords: list[str] = field(
         default_factory=lambda: list(DEFAULT_ENGINEERING_TITLE_KEYWORDS)
     )

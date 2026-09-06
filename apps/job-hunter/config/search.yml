@@ -78,6 +78,12 @@ blocked_title_keywords:
   - back-end developer
 max_search_queries_per_run: 30
 max_learned_ats_boards_per_run: 75
+# Override/escape hatch, not the primary defense -- aggregator_detection.py
+# rejects a board on self-declared provenance (a majority of its postings
+# say the role belongs to another company) even with an empty list here.
+# Use this for a board the detector misses, or to correct it if it's wrong.
+learned_ats_denylist:
+  - lever:jobgether
 role_families:
   - senior frontend engineer
   - staff frontend engineer

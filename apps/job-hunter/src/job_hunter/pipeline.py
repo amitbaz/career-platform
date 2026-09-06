@@ -309,13 +309,15 @@ def _log_source_metrics(
 def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: LearnedAtsStats) -> None:
     """Log one final ats_registry line summarizing registry health this run."""
     logger.info(
-        "ats_registry total=%s discovered=%s scanned=%s successful=%s failed=%s jobs_raw=%s",
+        "ats_registry total=%s discovered=%s scanned=%s successful=%s failed=%s "
+        "jobs_raw=%s rejected=%s",
         store.count_ats_boards(),
         discovery.stats.ats_boards_discovered,
         learned_stats.boards_scanned,
         learned_stats.boards_successful,
         learned_stats.boards_failed,
         learned_stats.jobs_raw,
+        learned_stats.boards_rejected,
     )
 
 

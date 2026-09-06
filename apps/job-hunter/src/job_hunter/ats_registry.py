@@ -31,11 +31,21 @@ def extract_ats_reference(job: Job) -> AtsReference | None:
 
 
 def harvest_ats_board(
-    store: JobStore, job: Job, market_hint: str | None = None
+    store: JobStore,
+    job: Job,
+    market_hint: str | None = None,
+    denylist: frozenset[str] = frozenset(),
 ) -> bool:
-    """Learn the ATS board a job references, if it points at a supported one."""
+    """Learn the ATS board a job references, if it points at a supported one.
+
+    `denylist` holds `"<provider>:<board>"` keys (the config override, not
+    the primary detection mechanism -- see `aggregator_detection.py`); a
+    denylisted board is never admitted, even for its first sighting.
+    """
     reference = extract_ats_reference(job)
     if reference is None:
+        return False
+    if f"{reference.provider}:{reference.board}" in denylist:
         return False
     return store.upsert_ats_board(
         provider=reference.provider,
