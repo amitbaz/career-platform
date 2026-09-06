@@ -73,6 +73,28 @@ class SupabaseClient:
         )
         return self._parse(response)
 
+    def upsert(
+        self, table: str, rows: list[dict[str, Any]], *, on_conflict: str
+    ) -> list[dict[str, Any]]:
+        """Insert rows, updating any that collide on ``on_conflict``.
+
+        ``on_conflict`` is a comma-separated column list naming a unique
+        constraint. Every write on the hot path goes through here rather than
+        ``insert``: HttpClient retries POST on 5xx, and an upsert makes that
+        retry converge instead of duplicating the row.
+        """
+        if not on_conflict:
+            raise ValueError("upsert requires on_conflict naming a unique constraint")
+        response = self._http.post(
+            self._url(table),
+            headers=self._headers(
+                write=True, prefer="resolution=merge-duplicates,return=representation"
+            ),
+            params={"on_conflict": on_conflict},
+            json=rows,
+        )
+        return self._parse(response)
+
     def update(
         self, table: str, values: dict[str, Any], *, params: dict[str, str]
     ) -> list[dict[str, Any]]:
@@ -95,7 +117,7 @@ class SupabaseClient:
     def _url(self, table: str) -> str:
         return f"{self._settings.url}/rest/v1/{table}"
 
-    def _headers(self, *, write: bool = False) -> dict[str, str]:
+    def _headers(self, *, write: bool = False, prefer: str | None = None) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self._minter.token()}",
             "apikey": self._settings.publishable_key,
@@ -103,7 +125,7 @@ class SupabaseClient:
         }
         if write:
             headers["Content-Type"] = "application/json"
-            headers["Prefer"] = "return=representation"
+            headers["Prefer"] = prefer or "return=representation"
         return headers
 
     @staticmethod
