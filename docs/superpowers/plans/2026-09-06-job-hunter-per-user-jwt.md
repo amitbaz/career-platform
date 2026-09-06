@@ -791,6 +791,21 @@ def test_errors_do_not_leak_the_token():
     assert "test-token" not in str(excinfo.value)
 ```
 
+> **Amended during implementation:** the shipped `FakeResponse.__init__` (commit
+> `99e99d8`) does not take a plain `text: str = ""` default as written above.
+> The client's `_parse` treats a response with no `text` as an empty body
+> (`response.status_code == 204 or not response.text`), so a `FakeResponse`
+> that always defaults `text` to `""` made every test that passes a `payload`
+> without also passing `text` look like an empty body: `select` returned `[]`
+> instead of the real rows. That broke three of this plan's own tests —
+> `test_select_builds_the_url_and_passes_filters`,
+> `test_insert_posts_rows_and_asks_for_them_back`, and
+> `test_update_patches_with_filters` — against the plan's own client code.
+> The shipped fake instead derives `text` from `payload` via `json.dumps` when
+> the caller doesn't pass `text` explicitly (an explicit `text`, used by the
+> error-path tests and the empty-body test, still wins), matching what a real
+> PostgREST response actually sends.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `apps/job-hunter/.venv/bin/pytest tests/test_supabase_client.py -q`
@@ -996,6 +1011,18 @@ Append to `supabase/.gitignore`:
 # Generated per machine by `supabase gen signing-key`; never commit key material
 signing_keys.json
 ```
+
+> **Amended during implementation:** this entry was actually added in Task 1
+> (commit `e115f1e`, "chore: point the local Supabase stack at a per-machine
+> signing key"), not here. Task 1 as written above also says its own
+> `.gitignore` entry would wait for Task 6 ("gets its `.gitignore` entry in
+> Task 6" — see Task 1, Step 6); that was overruled during implementation for
+> the same reason: Task 1 is the step that first generates
+> `supabase/signing_keys.json` on disk, and four more commit-making tasks
+> (2–5) run before this one, so deferring the ignore entry would have left the
+> generated key file unprotected against `git add -A` for the length of the
+> branch. By the time this step is reached, `supabase/.gitignore` already
+> contains this line.
 
 - [ ] **Step 3: Document the new environment variables**
 
