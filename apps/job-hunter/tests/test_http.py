@@ -155,3 +155,49 @@ def test_post_body_is_byte_identical_across_retry_attempts(monkeypatch):
     first_bytes = first["files"]["document"][1]
     second_bytes = second["files"]["document"][1]
     assert first_bytes == second_bytes == payload_bytes
+
+
+def test_patch_sends_patch_and_returns_response(monkeypatch):
+    client = HttpClient()
+    seen = {}
+
+    def fake_request(method, url, **kwargs):
+        seen["method"] = method
+        seen["url"] = url
+        return FakeResponse(200)
+
+    monkeypatch.setattr(client._session, "request", fake_request)
+
+    response = client.patch("https://example.test/rows", json={"a": 1})
+
+    assert seen["method"] == "PATCH"
+    assert seen["url"] == "https://example.test/rows"
+    assert response.status_code == 200
+
+
+def test_delete_sends_delete_and_returns_response(monkeypatch):
+    client = HttpClient()
+    seen = {}
+
+    def fake_request(method, url, **kwargs):
+        seen["method"] = method
+        return FakeResponse(200)
+
+    monkeypatch.setattr(client._session, "request", fake_request)
+
+    assert client.delete("https://example.test/rows").status_code == 200
+    assert seen["method"] == "DELETE"
+
+
+def test_patch_applies_the_default_timeout(monkeypatch):
+    client = HttpClient()
+    seen = {}
+
+    def fake_request(method, url, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return FakeResponse(200)
+
+    monkeypatch.setattr(client._session, "request", fake_request)
+    client.patch("https://example.test/rows")
+
+    assert seen["timeout"] == (5, 25)

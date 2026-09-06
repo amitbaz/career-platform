@@ -52,6 +52,40 @@ class HttpClient:
             **kwargs,
         )
 
+    def patch(
+        self,
+        url: str,
+        *,
+        retry_status_codes: set[int] | None = None,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
+        kwargs.setdefault("timeout", self._timeout)
+        return self._request(
+            "PATCH",
+            url,
+            retry_status_codes=retry_status_codes,
+            retry=retry,
+            **kwargs,
+        )
+
+    def delete(
+        self,
+        url: str,
+        *,
+        retry_status_codes: set[int] | None = None,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
+        kwargs.setdefault("timeout", self._timeout)
+        return self._request(
+            "DELETE",
+            url,
+            retry_status_codes=retry_status_codes,
+            retry=retry,
+            **kwargs,
+        )
+
     def get_json(self, url: str, **kwargs) -> dict:
         response = self.get(url, **kwargs)
         response.raise_for_status()
