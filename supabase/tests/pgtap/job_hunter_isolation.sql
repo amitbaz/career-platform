@@ -112,8 +112,8 @@ begin
       insert into public.job_hunter_pending_ai_work (user_id, job_id, work_type)
       values (p_owner, v_job, 'evaluate') returning id into v_id;
     when 'job_hunter_ai_usage' then
-      insert into public.job_hunter_ai_usage (user_id, occurred_at, model, purpose, status)
-      values (p_owner, now(), 'gemini-test', 'job_evaluation', 'success') returning id into v_id;
+      insert into public.job_hunter_ai_usage (user_id, run_id, occurred_at, model, purpose, status)
+      values (p_owner, 'test-run', now(), 'gemini-test', 'job_evaluation', 'success') returning id into v_id;
     when 'job_hunter_ai_quota_state' then
       insert into public.job_hunter_ai_quota_state (user_id, model)
       values (p_owner, gen_random_uuid()::text) returning id into v_id;
