@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
+from job_hunter.availability import CLOSED
 from job_hunter.ats_registry import harvest_ats_board
 from job_hunter.canonical import (
     CanonicalResolver,
@@ -56,6 +57,7 @@ class DiscoveryStats:
     canonical_shortlist_limit: int = 0
     prefilter_rejected: int = 0
     profession_rejected: int = 0
+    availability_rejected: int = 0
     eligible: int = 0
     ats_boards_discovered: int = 0
     per_source: dict[str, int] = field(default_factory=dict)
@@ -355,6 +357,12 @@ def collect_candidates(
             rediscovered_job_ids.append(job_id)
             continue
 
+        if job.availability == CLOSED:
+            stats.availability_rejected += 1
+            _bump(stats.rejected_by_market, market_key)
+            _bump(stats.rejected_by_source, source_label)
+            continue
+
         market = market_by_id(policy, job.market_id) if job.market_id else None
         prefilter_result = prefilter_job(job, policy, market)
         if not prefilter_result.should_evaluate:
@@ -436,6 +444,9 @@ def collect_candidates(
                         metric_source_label(job.source),
                     )
                     resolution = None
+                if job.availability == CLOSED:
+                    stats.availability_rejected += 1
+                    continue
                 if resolution is None:
                     stats.canonical_unresolved += 1
                 else:
@@ -504,7 +515,7 @@ def collect_candidates(
         "discovery source contribution: %s canonical_resolved=%s "
         "canonical_unresolved=%s canonical_budget_exhausted=%s "
         "canonical_network_attempts=%s canonical_shortlist_limit=%s "
-        "cross_source_duplicates=%s",
+        "cross_source_duplicates=%s availability_rejected=%s",
         _format_source_contribution(stats.per_source),
         stats.canonical_resolved,
         stats.canonical_unresolved,
@@ -512,6 +523,7 @@ def collect_candidates(
         stats.canonical_network_attempts,
         stats.canonical_shortlist_limit,
         stats.cross_source_duplicates,
+        stats.availability_rejected,
     )
 
     return DiscoveryResult(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
+from job_hunter.availability import UNCHECKED
+
 DEFAULT_ENGINEERING_TITLE_KEYWORDS = [
     "engineer",
     "developer",
@@ -95,6 +97,9 @@ class Job:
     market_id: str | None = None
     source_page_html: str = ""
     content_confidence: str = ""
+    #: Deterministic posting-availability status. Not persisted -- set fresh
+    #: each run from whatever page fetch already happened. See availability.py.
+    availability: str = UNCHECKED
 
 
 @dataclass(slots=True)
@@ -343,6 +348,7 @@ class DigestItem:
     location: str = ""
     market_id: str = ""
     market_note: str = ""
+    availability_note: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -355,6 +361,7 @@ class NavigationCard:
     url: str
     market_id: str = ""
     market_note: str = ""
+    availability_note: str = ""
 
 
 @dataclass(slots=True, frozen=True)

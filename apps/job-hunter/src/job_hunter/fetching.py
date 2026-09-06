@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 
 from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
+from job_hunter.availability import CLOSED, UNVERIFIED, VERIFIED, detect_closure
 from job_hunter.models import Job
 
 if TYPE_CHECKING:
@@ -186,7 +187,10 @@ def enrich_job(job: Job, http: HttpClient) -> Job:
         response.raise_for_status()
         data = extract_job_from_html(response.text)
     except Exception:
+        job.availability = UNVERIFIED
         return job
+
+    job.availability = CLOSED if detect_closure(response.text) else VERIFIED
 
     if not job.title and (title := data.get("title")):
         job.title = title

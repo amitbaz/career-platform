@@ -84,6 +84,17 @@ def test_navigation_card_surfaces_market_note():
     assert "4 hours overlap with EST" in text
 
 
+def test_navigation_card_surfaces_availability_warning():
+    card = _card(availability_note="⚠️ Availability not verified - check the posting before applying")
+    text, _ = build_navigation_card(card, "session", 0, 1)
+    assert "⚠️ Availability not verified - check the posting before applying" in text
+
+
+def test_navigation_card_shows_no_availability_warning_by_default():
+    text, _ = build_navigation_card(_card(), "session", 0, 1)
+    assert "⚠️" not in text
+
+
 def test_callback_round_trip_and_size_limit():
     payload = encode_callback("n", "abc123", 11)
     assert parse_callback(payload) == ("n", "abc123", 11)

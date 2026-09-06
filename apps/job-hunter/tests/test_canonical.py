@@ -1,6 +1,7 @@
 import pytest
 
 import job_hunter.canonical as canonical
+from job_hunter.availability import CLOSED, UNCHECKED, UNVERIFIED, VERIFIED
 from job_hunter.canonical import (
     CanonicalResolver,
     apply_ats_identity,
@@ -443,6 +444,85 @@ def test_resolution_failure_is_non_blocking():
         )
     )
     assert result is None
+
+
+def test_resolve_marks_availability_verified_on_fetched_page_with_no_signal():
+    http = _Http(_Response(url="https://board.test/job", text="<html><body>Apply now</body></html>"))
+    resolver = CanonicalResolver(
+        http, search_candidates=lambda job: [], watch_target=lambda company: None
+    )
+    job = Job(source="board", title="Frontend Engineer", company="Acme", url="https://board.test/job")
+
+    resolver.resolve(job)
+
+    assert job.availability == VERIFIED
+
+
+def test_resolve_marks_availability_closed_on_explicit_closure_signal():
+    http = _Http(
+        _Response(
+            url="https://board.test/job",
+            text="<html><body>This job posting has expired</body></html>",
+        )
+    )
+    resolver = CanonicalResolver(
+        http, search_candidates=lambda job: [], watch_target=lambda company: None
+    )
+    job = Job(source="board", title="Frontend Engineer", company="Acme", url="https://board.test/job")
+
+    resolver.resolve(job)
+
+    assert job.availability == CLOSED
+
+
+def test_resolve_marks_availability_unverified_on_fetch_failure():
+    class _FailingHttp:
+        def get(self, url, **kwargs):
+            raise RuntimeError("network down")
+
+    resolver = CanonicalResolver(
+        _FailingHttp(), search_candidates=lambda job: [], watch_target=lambda company: None
+    )
+    job = Job(source="board", title="Frontend Engineer", company="Acme", url="https://board.test/job")
+
+    resolver.resolve(job)
+
+    assert job.availability == UNVERIFIED
+
+
+def test_resolve_leaves_availability_unchecked_for_direct_ats_url():
+    http = _Http(_Response(url="https://unused.test"))
+    resolver = CanonicalResolver(
+        http, search_candidates=lambda job: [], watch_target=lambda company: None
+    )
+    job = Job(
+        source="yc",
+        title="Frontend Engineer",
+        company="Acme",
+        url="https://jobs.lever.co/acme/abc",
+    )
+
+    resolver.resolve(job)
+
+    assert job.availability == UNCHECKED
+
+
+def test_resolve_leaves_availability_unchecked_for_cached_page_html():
+    http = _Http(_Response(url="https://unused.test"))
+    resolver = CanonicalResolver(
+        http, search_candidates=lambda job: [], watch_target=lambda company: None
+    )
+    job = Job(
+        source="wellfound",
+        title="Frontend Engineer",
+        company="Acme",
+        url="https://wellfound.com/jobs/123-frontend-engineer",
+        source_page_html='<a href="https://jobs.ashbyhq.com/acme/abc">Apply</a>',
+    )
+
+    resolver.resolve(job)
+
+    assert job.availability == UNCHECKED
 
 
 def test_fetch_authoritative_description_dispatches_by_provider(monkeypatch):

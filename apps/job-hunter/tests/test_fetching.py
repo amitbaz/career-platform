@@ -1,3 +1,4 @@
+from job_hunter.availability import CLOSED, UNCHECKED, UNVERIFIED, VERIFIED
 from job_hunter.content_confidence import CANONICAL_EMPLOYER_PAGE, SOURCE_DETAIL_PAGE
 from job_hunter.fetching import enrich_job, extract_job_from_html, extract_job_page_links
 from job_hunter.models import Job
@@ -17,6 +18,11 @@ class FakeHttp:
 
     def get(self, url, **kwargs):
         return FakeResponse(self._html)
+
+
+class FailingHttp:
+    def get(self, url, **kwargs):
+        raise RuntimeError("timeout")
 
 
 _JOB_POSTING_HTML = """
@@ -130,3 +136,38 @@ def test_enrich_job_does_not_touch_confidence_when_description_already_present()
     enrich_job(job, http)
 
     assert job.content_confidence == "aggregator_text"
+
+
+def test_enrich_job_marks_verified_when_no_closure_signal_found():
+    job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
+    http = FakeHttp(_PLAIN_BODY_HTML)
+
+    enrich_job(job, http)
+
+    assert job.availability == VERIFIED
+
+
+def test_enrich_job_marks_closed_on_explicit_closure_signal():
+    html = "<html><body><h1>This job posting has expired</h1></body></html>"
+    job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
+    http = FakeHttp(html)
+
+    enrich_job(job, http)
+
+    assert job.availability == CLOSED
+
+
+def test_enrich_job_marks_unverified_on_fetch_failure():
+    job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
+
+    enrich_job(job, FailingHttp())
+
+    assert job.availability == UNVERIFIED
+
+
+def test_enrich_job_leaves_availability_unchecked_without_url():
+    job = Job(source="duckduckgo", title="")
+
+    enrich_job(job, FakeHttp(_PLAIN_BODY_HTML))
+
+    assert job.availability == UNCHECKED
