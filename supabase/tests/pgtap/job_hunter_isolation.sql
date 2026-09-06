@@ -61,7 +61,12 @@ select unnest(array[
   'job_hunter_ai_usage',
   'job_hunter_ai_quota_state',
   'job_hunter_candidate_context_cache',
-  'job_hunter_search_api_usage'
+  'job_hunter_search_api_usage',
+  'job_hunter_gmail_sync_state',
+  'job_hunter_gmail_messages',
+  'job_hunter_inbound_job_candidates',
+  'job_hunter_application_events',
+  'job_hunter_review_deliveries'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -72,6 +77,7 @@ language plpgsql as $$
 declare
   v_id uuid;
   v_job uuid;
+  v_event uuid;
 begin
   case p_table
     when 'job_hunter_jobs' then
@@ -115,6 +121,22 @@ begin
     when 'job_hunter_search_api_usage' then
       insert into public.job_hunter_search_api_usage (user_id, provider, occurred_at)
       values (p_owner, 'serper', now()) returning id into v_id;
+    when 'job_hunter_gmail_sync_state' then
+      insert into public.job_hunter_gmail_sync_state (user_id, account_id)
+      values (p_owner, gen_random_uuid()::text) returning id into v_id;
+    when 'job_hunter_gmail_messages' then
+      insert into public.job_hunter_gmail_messages (user_id, message_id, occurred_at, classification, confidence, processed_at)
+      values (p_owner, gen_random_uuid()::text, now(), 'JOB_ALERT', 0.9, now()) returning id into v_id;
+    when 'job_hunter_inbound_job_candidates' then
+      insert into public.job_hunter_inbound_job_candidates (user_id, source_message_id, source_candidate_key, last_seen_at)
+      values (p_owner, gen_random_uuid()::text, 'k', now()) returning id into v_id;
+    when 'job_hunter_application_events' then
+      insert into public.job_hunter_application_events (user_id, event_type, occurred_at, source_message_id, confidence)
+      values (p_owner, 'REVIEW_NEEDED', now(), gen_random_uuid()::text, 0.9) returning id into v_id;
+    when 'job_hunter_review_deliveries' then
+      v_event := pg_temp.job_hunter_seed_row('job_hunter_application_events', p_owner);
+      insert into public.job_hunter_review_deliveries (user_id, event_id, delivered_at)
+      values (p_owner, v_event, now()) returning id into v_id;
     else
       raise exception 'no seed row defined for table %', p_table;
   end case;

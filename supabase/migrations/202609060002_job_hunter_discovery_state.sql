@@ -401,3 +401,151 @@ create policy update_own on public.job_hunter_search_api_usage
   for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy delete_own on public.job_hunter_search_api_usage
   for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- gmail_sync_state: incremental sync cursor per connected mailbox ---------------------
+
+create table public.job_hunter_gmail_sync_state (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  account_id text not null,
+  history_id text,
+  last_successful_sync_at timestamptz,
+  last_processed_message_at timestamptz,
+  backfill_completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, account_id)
+);
+
+alter table public.job_hunter_gmail_sync_state enable row level security;
+create policy select_own on public.job_hunter_gmail_sync_state
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_gmail_sync_state
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_gmail_sync_state
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_gmail_sync_state
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- gmail_messages: every classified message, so it is never reprocessed ------------------
+
+create table public.job_hunter_gmail_messages (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  message_id text not null,
+  thread_id text,
+  sender text not null default '',
+  subject text not null default '',
+  occurred_at timestamptz not null,
+  classification text not null,
+  confidence double precision not null,
+  rationale text not null default '',
+  processed_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, message_id)
+);
+
+create index job_hunter_gmail_messages_user_occurred_idx
+  on public.job_hunter_gmail_messages (user_id, occurred_at desc);
+
+alter table public.job_hunter_gmail_messages enable row level security;
+create policy select_own on public.job_hunter_gmail_messages
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_gmail_messages
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_gmail_messages
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_gmail_messages
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- inbound_job_candidates: postings extracted from job-alert emails ----------------------
+
+create table public.job_hunter_inbound_job_candidates (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  origin text not null default 'gmail',
+  source_message_id text not null,
+  source_candidate_key text not null,
+  source_platform text not null default '',
+  source_job_id text,
+  url text not null default '',
+  company text not null default '',
+  title text not null default '',
+  location text not null default '',
+  remote boolean,
+  description text not null default '',
+  last_seen_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, origin, source_message_id, source_candidate_key)
+);
+
+create index job_hunter_inbound_job_candidates_user_seen_idx
+  on public.job_hunter_inbound_job_candidates (user_id, last_seen_at desc);
+
+alter table public.job_hunter_inbound_job_candidates enable row level security;
+create policy select_own on public.job_hunter_inbound_job_candidates
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_inbound_job_candidates
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_inbound_job_candidates
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_inbound_job_candidates
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- application_events: Gmail-derived "you applied / interview / review needed" signals. --
+-- Unrelated to Career Brain's opportunity_events (lifecycle transitions).
+
+create table public.job_hunter_application_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  job_id uuid,
+  event_type text not null,
+  occurred_at timestamptz not null,
+  source text not null default 'gmail',
+  source_message_id text not null,
+  source_thread_id text,
+  confidence double precision not null,
+  company text not null default '',
+  role_title text not null default '',
+  rationale text not null default '',
+  created_at timestamptz not null default now(),
+  unique (user_id, source_message_id),
+  unique (id, user_id),
+  foreign key (job_id, user_id) references public.job_hunter_jobs (id, user_id)
+);
+
+create index job_hunter_application_events_user_occurred_idx
+  on public.job_hunter_application_events (user_id, occurred_at desc);
+
+alter table public.job_hunter_application_events enable row level security;
+create policy select_own on public.job_hunter_application_events
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_application_events
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_application_events
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_application_events
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- review_deliveries: which application events were surfaced in Telegram ----------------
+
+create table public.job_hunter_review_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  event_id uuid not null,
+  delivered_at timestamptz not null,
+  telegram_message_id text,
+  created_at timestamptz not null default now(),
+  unique (user_id, event_id),
+  foreign key (event_id, user_id) references public.job_hunter_application_events (id, user_id)
+);
+
+alter table public.job_hunter_review_deliveries enable row level security;
+create policy select_own on public.job_hunter_review_deliveries
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_review_deliveries
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_review_deliveries
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_review_deliveries
+  for delete to authenticated using ((select auth.uid()) = user_id);
