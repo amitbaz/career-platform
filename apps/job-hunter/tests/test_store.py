@@ -2123,6 +2123,69 @@ def test_evaluations_with_identical_evaluated_at_converge_on_one_deterministic_r
     assert evaluation.total_score == 95
 
 
+def test_get_evaluation_returns_the_newer_evaluation_when_evaluated_at_differs(store):
+    """Pins the ordering itself, not just the merge case above.
+
+    The convergence test above (frozen clock, identical `evaluated_at`)
+    only proves two same-instant saves can't produce two rows to choose
+    between. It says nothing about which row `get_evaluation` picks when
+    two rows for the same job genuinely coexist -- the normal case, since
+    `save_evaluation` stamps a fresh `evaluated_at` on every real call.
+
+    This test uses the real clock deliberately: two back-to-back
+    `save_evaluation` calls land on distinct microsecond `evaluated_at`
+    values, so the unique `(user_id, job_id, evaluated_at)` constraint does
+    *not* merge them -- two distinct rows exist. Asserting on `decision`
+    (a field that differs between the two writes, not on row identity)
+    pins which row `_LATEST_EVALUATION_ORDER`'s `evaluated_at.desc` selects
+    and why: flipping that to `.asc`, or dropping the `order` param
+    entirely, makes `get_evaluation` return the first (`possible_match`)
+    write instead of the second, failing the `decision == "high_priority"`
+    assertion below.
+    """
+    job_id, _, _ = store.upsert_job(
+        Job(source="x", source_job_id="1", title="Senior Product Engineer")
+    )
+
+    store.save_evaluation(
+        job_id, _evaluation(job_id, decision="possible_match", total_score=61)
+    )
+    store.save_evaluation(
+        job_id, _evaluation(job_id, decision="high_priority", total_score=95)
+    )
+
+    evaluation = store.get_evaluation(job_id)
+    assert evaluation is not None
+    assert evaluation.decision == "high_priority"
+    assert evaluation.total_score == 95
+
+
+def test_get_material_returns_the_newer_material_when_generated_at_differs(store):
+    """Same ordering concern as the evaluation test above, for
+    `job_hunter_materials`'s `(user_id, job_id, generated_at)` constraint
+    and `_LATEST_MATERIAL_ORDER`.
+
+    Two real (unfrozen) `save_material` calls land on distinct
+    `generated_at` instants, so two rows exist rather than one merged row.
+    Asserting on `cover_letter_text` (which differs between the two
+    writes) pins which row `get_material` selects: flipping
+    `_LATEST_MATERIAL_ORDER`'s `generated_at.desc` to `.asc`, or dropping
+    the `order` param, makes `get_material` return the first ("v1") text
+    instead of the second, failing the `cover_letter_text == "... v2"`
+    assertion below.
+    """
+    job_id, _, _ = store.upsert_job(
+        Job(source="x", source_job_id="1", title="Senior Product Engineer")
+    )
+
+    store.save_material(job_id, Material(job_id=job_id, cover_letter_text="Dear Hiring Team, v1"))
+    store.save_material(job_id, Material(job_id=job_id, cover_letter_text="Dear Hiring Team, v2"))
+
+    material = store.get_material(job_id)
+    assert material is not None
+    assert material.cover_letter_text == "Dear Hiring Team, v2"
+
+
 def test_legacy_evaluation_rows_backfill_raw_model_score(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     store = JobStore(db_path)
