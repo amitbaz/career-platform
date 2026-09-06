@@ -334,7 +334,7 @@ def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: Learned
 
 def _due_watch_state(
     store: JobStore,
-) -> dict[int, tuple[str, str | None, int, str | None]]:
+) -> dict[str, tuple[str, str | None, int, str | None]]:
     """Snapshot due watch health so logs count persisted check outcomes only."""
     return {
         watch["id"]: (
@@ -349,7 +349,7 @@ def _due_watch_state(
 
 def _watch_check_outcomes(
     store: JobStore,
-    before: dict[int, tuple[str, str | None, int, str | None]],
+    before: dict[str, tuple[str, str | None, int, str | None]],
 ) -> tuple[int, int]:
     """Return persisted successful/failed checks and newly applied pauses."""
     checks = 0

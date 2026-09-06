@@ -43,12 +43,12 @@ def sync_manual_watch_seeds(
 def promote_company(
     store: JobStore,
     *,
-    job_id: int,
+    job_id: str,
     job: Job,
     evaluation: Evaluation,
     confidence: float = 1.0,
     package_threshold: int | None = None,
-) -> int | None:
+) -> str | None:
     """Promote a strongly evaluated job's company using final job metadata.
 
     When supplied, ``package_threshold`` rejects inconsistent evaluations whose

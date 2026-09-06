@@ -716,7 +716,9 @@ class PostgresJobStore:
                     identifier if replace_target else row["ats_identifier"]
                 ),
                 "discovered_from_job_id": (
-                    discovered_from_job_id or row["discovered_from_job_id"]
+                    discovered_from_job_id
+                    if discovered_from_job_id is not None
+                    else row["discovered_from_job_id"]
                 ),
                 "promotion_source": (
                     "manual"
@@ -968,7 +970,7 @@ class PostgresJobStore:
         neighbouring board's rejection, so the rejected rows are fetched and
         compared in Python instead. There are only ever a handful of them.
         """
-        wanted = (provider.strip().casefold(), board_identifier.strip().casefold())
+        wanted = (provider.strip().lower(), board_identifier.strip().lower())
         for row in self._client.select(
             "job_hunter_ats_registry",
             params={
@@ -977,8 +979,8 @@ class PostgresJobStore:
             },
         ):
             if (
-                row["provider"].casefold(),
-                row["board_identifier"].casefold(),
+                row["provider"].lower(),
+                row["board_identifier"].lower(),
             ) != wanted:
                 continue
             self._client.update(

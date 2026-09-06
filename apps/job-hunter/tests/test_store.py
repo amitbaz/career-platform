@@ -459,19 +459,32 @@ def test_list_due_company_watches_excludes_paused_and_inactive_targets(
     expired_id = _watch(store, company_name="Beta")
     paused_id = _watch(store, company_name="Gamma")
     inactive_id = _watch(store, company_name="Delta")
+    # Stamp explicit, well-separated created_at values instead of relying on
+    # four separate now() inserts landing in a particular order.
     supabase_client.update(
         "job_hunter_company_watch",
-        {"paused_until": "2026-08-31T11:59:59+00:00"},
+        {"created_at": "2026-08-30T10:00:00+00:00"},
+        params={"id": f"eq.{unpaused_id}"},
+    )
+    supabase_client.update(
+        "job_hunter_company_watch",
+        {
+            "created_at": "2026-08-30T11:00:00+00:00",
+            "paused_until": "2026-08-31T11:59:59+00:00",
+        },
         params={"id": f"eq.{expired_id}"},
     )
     supabase_client.update(
         "job_hunter_company_watch",
-        {"paused_until": "2026-08-31T12:00:01+00:00"},
+        {
+            "created_at": "2026-08-30T12:00:00+00:00",
+            "paused_until": "2026-08-31T12:00:01+00:00",
+        },
         params={"id": f"eq.{paused_id}"},
     )
     supabase_client.update(
         "job_hunter_company_watch",
-        {"active": False},
+        {"created_at": "2026-08-30T13:00:00+00:00", "active": False},
         params={"id": f"eq.{inactive_id}"},
     )
 
@@ -502,6 +515,21 @@ def test_due_watch_compares_equivalent_offset_instants(store, supabase_client):
     assert [row["id"] for row in store.list_due_company_watches(same_instant)] == [
         watch_id
     ]
+
+
+def test_record_watch_success_advances_updated_at(store, supabase_client):
+    watch_id = _watch(store)
+    before = supabase_client.select(
+        "job_hunter_company_watch",
+        params={"id": f"eq.{watch_id}", "select": "updated_at"},
+    )[0]["updated_at"]
+
+    store.record_watch_success(
+        watch_id, datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    )
+
+    after = store.get_company_watch("Acme")["updated_at"]
+    assert from_iso(after) > from_iso(before)
 
 
 def test_first_two_watch_failures_remain_due(store):
@@ -917,6 +945,24 @@ def test_list_due_ats_boards_orders_by_provider_then_board(store):
     due = store.list_due_ats_boards(now)
 
     assert [(e.provider, e.board_identifier) for e in due] == [
+        ("ashby", "alpha"),
+        ("ashby", "beta"),
+        ("lever", "zeta"),
+    ]
+
+
+def test_list_rejected_ats_boards_orders_by_provider_then_board(store):
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="zeta")
+    store.upsert_ats_board(provider="ashby", board_identifier="beta")
+    store.upsert_ats_board(provider="ashby", board_identifier="alpha")
+    store.reject_ats_board("lever", "zeta", "aggregator", now)
+    store.reject_ats_board("ashby", "beta", "aggregator", now)
+    store.reject_ats_board("ashby", "alpha", "aggregator", now)
+
+    rejected = store.list_rejected_ats_boards()
+
+    assert [(e.provider, e.board_identifier) for e in rejected] == [
         ("ashby", "alpha"),
         ("ashby", "beta"),
         ("lever", "zeta"),
