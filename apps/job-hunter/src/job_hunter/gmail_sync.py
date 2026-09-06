@@ -10,7 +10,7 @@ from job_hunter.gmail_classifier import (
     source_candidate_key,
 )
 from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
-from job_hunter.gmail_client import GmailHistoryExpired
+from job_hunter.gmail_client import GmailHistoryExpired, GmailMessageNotFound
 from job_hunter.gmail_linkedin_cleanup import release_legacy_blank_linkedin_jobs
 from job_hunter.gmail_matching import match_job
 from job_hunter.gmail_models import (
@@ -363,6 +363,15 @@ class GmailSyncService:
                 )
                 quota_paused = True
                 break
+            except GmailMessageNotFound:
+                # The message is gone from Gmail for good, so retrying it can
+                # never succeed. Treating it as a hard error would pin the sync
+                # cursor to an older history ID forever and re-fetch the same
+                # dead ID on every run.
+                _LOGGER.info(
+                    "gmail_message_stale_skipped message_id=%s", message_id
+                )
+                continue
             except SemanticClassificationError as exc:
                 _LOGGER.warning(
                     "gmail_semantic_classification_failed message_id=%s reason=%s detail=%s",
