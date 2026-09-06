@@ -27,6 +27,9 @@ webhook = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: needs a running Supabase stack; skipped when none is reachable",
+]
 
 [tool.vercel]
 entrypoint = "main:app"

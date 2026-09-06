@@ -1,0 +1,137 @@
+"""Proves per-user isolation against live row-level security policies.
+
+Skipped unless a Supabase stack is reachable and its details are exported.
+Get them with:
+
+    eval "$(supabase status -o env | sed 's/^/export /')"
+    export SUPABASE_TEST_URL="$API_URL"
+    export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+    export SUPABASE_TEST_SIGNING_KEY_B64="$(base64 < supabase/signing_keys_single.json)"
+
+where signing_keys_single.json holds the single JWK object (the stack's
+signing_keys.json wraps it in an array).
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+
+from job_hunter.config import SupabaseSettings
+from job_hunter.http import HttpClient
+from job_hunter.supabase_auth import AccessTokenMinter
+from job_hunter.supabase_client import SupabaseClient, SupabasePermissionError
+
+USER_A = "aaaaaaaa-0000-0000-0000-000000000001"
+USER_B = "bbbbbbbb-0000-0000-0000-000000000002"
+TABLE = "job_hunter_jobs"
+
+_URL = os.environ.get("SUPABASE_TEST_URL")
+_KEY = os.environ.get("SUPABASE_TEST_PUBLISHABLE_KEY")
+_JWK = os.environ.get("SUPABASE_TEST_SIGNING_KEY_B64")
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not (_URL and _KEY and _JWK),
+        reason="no Supabase stack configured; see this module's docstring",
+    ),
+]
+
+
+def _client_for(user_id: str) -> SupabaseClient:
+    jwk = json.loads(base64.b64decode(_JWK))
+    settings = SupabaseSettings(
+        user_id=user_id,
+        url=_URL.rstrip("/"),
+        publishable_key=_KEY,
+        signing_key_jwk=jwk,
+    )
+    return SupabaseClient(HttpClient(), settings, AccessTokenMinter(user_id, jwk))
+
+
+@pytest.fixture
+def as_a() -> SupabaseClient:
+    return _client_for(USER_A)
+
+
+@pytest.fixture
+def as_b() -> SupabaseClient:
+    return _client_for(USER_B)
+
+
+@pytest.fixture
+def a_row(as_a: SupabaseClient):
+    """A row owned by user A, removed when the test finishes."""
+    now = datetime.now(timezone.utc).isoformat()
+    fingerprint = f"isolation-test-{uuid.uuid4()}"
+    rows = as_a.insert(
+        TABLE,
+        [
+            {
+                "user_id": USER_A,
+                "fingerprint": fingerprint,
+                "title": "Original title",
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+        ],
+    )
+    assert len(rows) == 1
+    yield rows[0]
+    as_a.delete(TABLE, params={"id": f"eq.{rows[0]['id']}"})
+
+
+def test_a_reads_back_its_own_row(as_a, a_row):
+    found = as_a.select(TABLE, params={"id": f"eq.{a_row['id']}"})
+
+    assert len(found) == 1
+    assert found[0]["title"] == "Original title"
+
+
+def test_b_cannot_see_as_row(as_b, a_row):
+    assert as_b.select(TABLE, params={"id": f"eq.{a_row['id']}"}) == []
+
+
+def test_b_cannot_update_as_row(as_b, a_row):
+    changed = as_b.update(
+        TABLE, {"title": "Hijacked"}, params={"id": f"eq.{a_row['id']}"}
+    )
+
+    assert changed == []
+
+
+def test_b_cannot_delete_as_row(as_b, a_row):
+    assert as_b.delete(TABLE, params={"id": f"eq.{a_row['id']}"}) == []
+
+
+def test_b_cannot_insert_a_row_claiming_a_as_owner(as_b):
+    now = datetime.now(timezone.utc).isoformat()
+
+    with pytest.raises(SupabasePermissionError):
+        as_b.insert(
+            TABLE,
+            [
+                {
+                    "user_id": USER_A,
+                    "fingerprint": f"forged-{uuid.uuid4()}",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                }
+            ],
+        )
+
+
+def test_as_row_survives_every_attempt(as_a, as_b, a_row):
+    as_b.update(TABLE, {"title": "Hijacked"}, params={"id": f"eq.{a_row['id']}"})
+    as_b.delete(TABLE, params={"id": f"eq.{a_row['id']}"})
+
+    survivor = as_a.select(TABLE, params={"id": f"eq.{a_row['id']}"})
+
+    assert len(survivor) == 1
+    assert survivor[0]["title"] == "Original title"
