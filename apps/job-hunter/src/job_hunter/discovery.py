@@ -439,9 +439,16 @@ def collect_candidates(
                     job.canonical_url = resolution.url
                     job.url = resolution.url
                     if resolution.ats is not None:
-                        job.ats_provider = resolution.ats.provider
-                        job.ats_board = resolution.ats.board
-                        job.ats_job_id = resolution.ats.job_id
+                        # Fill, never relabel. A job that reached the resolver
+                        # can already carry authoritative identity from its own
+                        # adapter (a modern Greenhouse posting, whose
+                        # job-boards.greenhouse.io URL does not parse), and the
+                        # resolver's weaker branches -- an embedded link is the
+                        # first ATS anchor on the page, with no company or title
+                        # check -- can point at a different posting entirely.
+                        # Overwriting here would merge this job into that
+                        # posting's stored row on the ATS dedup key.
+                        apply_ats_identity(job, resolution.ats)
                         if _harvest_ats_board_safely(store, job, denylist=denylist):
                             stats.ats_boards_discovered += 1
                         if job.content_confidence != content_confidence.OFFICIAL_ATS:

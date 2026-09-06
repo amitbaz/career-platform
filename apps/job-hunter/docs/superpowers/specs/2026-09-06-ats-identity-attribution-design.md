@@ -40,9 +40,23 @@ always agrees with what every other code path derives from the same URL
 with board identifiers that differ only in case or slug spelling, because that
 would silently split the dedup key instead of joining it.
 
-Already-populated fields are never overwritten, which is the same
-strongest-wins rule the store applies on update (`_update_logical_job` uses
-`job.ats_provider or row["ats_provider"]`).
+Already-populated fields are never overwritten: the helper fills gaps, it does
+not relabel. This is deliberately the opposite of the store's update rule,
+where the incoming non-empty value wins (`_update_logical_job` uses
+`job.ats_provider or row["ats_provider"]`). The store arbitrates between two
+sightings of one posting; the helper arbitrates between evidence about one
+in-memory job, where whatever attributed it first saw it more directly than
+any later guess.
+
+Canonical resolution follows the same rule. It used to assign
+`resolution.ats` unconditionally, which is safe only while nothing else
+attributes a job before the resolver sees it — no longer true, since a modern
+Greenhouse posting now arrives attributed by its adapter and still reaches the
+resolver (its URL does not parse). The resolver's weaker branches can point
+elsewhere: an embedded link is simply the first ATS anchor on the page, with
+no company or title check. Relabelling on that evidence would merge the job
+into an unrelated posting's row on the ATS dedup key, so resolution now fills
+through `apply_ats_identity()` too.
 
 ### Adapters supply the fallback
 
@@ -74,9 +88,12 @@ recognisable ATS URL and no identity, using the same parser. `run_pipeline`
 calls it once per run, non-fatally: the DB it operates on lives inside a
 GitHub Actions artifact, so a migration that only runs on schema change would
 need an artifact round trip to be observed, while a self-healing per-run pass
-converges on the first run after deploy and is a no-op on every run after
-that. The query is bounded by a `LIKE` filter on the three known ATS hosts, so
-it does not scan rows that could never be attributed.
+attributes everything attributable on the first run after deploy. The query is
+bounded by a `LIKE` filter on the three known ATS hosts, so it does not scan
+rows that could never be attributed. After the first run it still selects the
+rows whose URL contains an ATS host but does not parse as a posting — a
+redirect wrapper or a board index — and re-parses them every run without
+updating any; that is bounded and harmless rather than strictly convergent.
 
 ## Non-goals
 
@@ -95,7 +112,8 @@ it does not scan rows that could never be attributed.
   parseable ATS URL.
 - URL-derived identity beats a conflicting fallback; populated fields survive
   (`test_canonical.py`).
-- A non-ATS source with an ATS URL gets identity through discovery
-  (`test_discovery.py`).
+- A non-ATS source with an ATS URL gets identity through discovery, and
+  canonical resolution attributes an unattributed job but does not relabel an
+  already-attributed one (`test_discovery.py`).
 - Backfill fills legacy rows and leaves non-ATS rows alone (`test_store.py`).
 - `pnpm job-hunter:test`.

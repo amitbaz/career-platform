@@ -48,9 +48,14 @@ def apply_ats_identity(job: Job, fallback: AtsReference | None = None) -> bool:
     board slug spelled differently by the adapter and by the posting URL would
     otherwise split the dedup key instead of joining it.
 
-    Already-populated fields are never overwritten, matching the
-    strongest-evidence-wins rule the store applies on update. Returns True when
-    any field was filled.
+    Already-populated fields are never overwritten: this fills gaps, it does
+    not relabel. That is deliberately the opposite of the store's own update
+    rule, where an incoming non-empty value wins (`upsert_job` coalesces onto
+    the incoming value, `_update_logical_job` uses `job.ats_provider or
+    row[...]`). The store is arbitrating between two sightings of one posting;
+    this helper is arbitrating between evidence about one in-memory job, where
+    whatever attributed it first saw it more directly than any later guess.
+    Returns True when any field was filled.
     """
     if job.ats_provider and job.ats_board and job.ats_job_id:
         return False

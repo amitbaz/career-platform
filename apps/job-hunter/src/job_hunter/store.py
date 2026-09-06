@@ -409,8 +409,11 @@ class JobStore:
         production database travels as a GitHub Actions artifact, so a
         migration keyed to a schema change could be missed entirely. The
         candidate set is restricted to rows that both lack identity and carry a
-        recognisable ATS host, so the pass converges to a no-op after the first
-        run. Returns how many rows were updated.
+        recognisable ATS host, so after the first run it selects only the rows
+        whose URL contains an ATS host but does not parse as a posting -- a
+        redirect wrapper or a board index. Those are re-parsed every run and
+        updated by none of them, which is bounded and harmless rather than
+        strictly convergent. Returns how many rows were updated.
         """
         rows = self._conn.execute(
             """
