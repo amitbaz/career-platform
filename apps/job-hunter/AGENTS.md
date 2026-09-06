@@ -152,3 +152,9 @@ The daily workflow fires on two cron triggers (`5 7 * * *` and `5 8 * * *` UTC) 
 ## Required secrets/env
 
 `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64` — see README.md for setup. In dry-run mode, Telegram vars are optional.
+
+Not yet required by any runtime path, but needed once #70 ports the store to Postgres:
+`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`.
+The last is the private JWK of the project's ES256 signing key and can mint a token for any
+user — it is the most sensitive secret the platform has. See
+`docs/superpowers/specs/2026-09-06-job-hunter-per-user-jwt-design.md`.
