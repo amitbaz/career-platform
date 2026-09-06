@@ -24,6 +24,8 @@ from .config import SupabaseSettings
 from .http import HttpClient
 from .supabase_auth import AccessTokenMinter
 
+_PAGE_SIZE = 1000
+
 
 class SupabaseError(RuntimeError):
     """Base class for every failed Supabase request."""
@@ -62,10 +64,33 @@ class SupabaseClient:
     def select(
         self, table: str, *, params: dict[str, str] | None = None
     ) -> list[dict[str, Any]]:
-        response = self._http.get(
-            self._url(table), headers=self._headers(), params=params or {}
-        )
-        return self._parse(response)
+        """Read rows, following PostgREST's row cap to completion.
+
+        PostgREST caps a response at max-rows (1000 locally) and gives no
+        signal that it truncated, so a caller reading a whole table would
+        silently see a prefix. Page with Range headers until a short page
+        arrives.
+
+        A caller that passes its own ``limit`` means it, and gets one request.
+        """
+        query = dict(params or {})
+        if "limit" in query:
+            response = self._http.get(self._url(table), headers=self._headers(), params=query)
+            return self._parse(response)
+
+        collected: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            headers = self._headers()
+            headers["Range-Unit"] = "items"
+            headers["Range"] = f"{offset}-{offset + _PAGE_SIZE - 1}"
+            page = self._parse(
+                self._http.get(self._url(table), headers=headers, params=query)
+            )
+            collected.extend(page)
+            if len(page) < _PAGE_SIZE:
+                return collected
+            offset += _PAGE_SIZE
 
     def insert(self, table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         response = self._http.post(

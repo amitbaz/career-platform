@@ -91,3 +91,18 @@ def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
     stored = client.select("job_hunter_evaluations", params={"job_id": f"eq.{job['id']}"})
     assert len(stored) == 1
     assert stored[0]["total_score"] == 91
+
+
+def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None:
+    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    marker = f"page-{uuid.uuid4()}"
+    rows = [
+        {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
+        for i in range(1100)
+    ]
+    for chunk in range(0, len(rows), 500):
+        client.insert("job_hunter_jobs", rows[chunk : chunk + 500])
+
+    found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}"})
+
+    assert len(found) == 1100, "select must page rather than silently truncate at 1000"
