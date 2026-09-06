@@ -171,13 +171,15 @@ class FallbackSearchBackend:
                 return self._primary.search(query)
             except SearchBudgetExhausted:
                 logger.info(
-                    "targeted search budget exhausted; falling back: backend=%s",
+                    "targeted search budget exhausted; falling back: from=%s to=%s",
                     self._primary.name,
+                    self._secondary.name,
                 )
             except Exception:
                 logger.warning(
-                    "targeted search backend failed; falling back: backend=%s",
+                    "targeted search backend failed; falling back: from=%s to=%s",
                     self._primary.name,
+                    self._secondary.name,
                     exc_info=True,
                 )
         return self._secondary.search(query)
