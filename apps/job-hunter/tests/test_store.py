@@ -1,14 +1,15 @@
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from threading import Barrier, BrokenBarrierError
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS
 from job_hunter.gmail_models import ExtractedJob
+from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import Evaluation, Job, Material
 from job_hunter.store import JobStore
+from job_hunter.store_mapping import from_iso
 
 
 def make_job(*, fingerprint: str = "default", **overrides) -> Job:
@@ -26,37 +27,6 @@ def make_job(*, fingerprint: str = "default", **overrides) -> Job:
     }
     fields.update(overrides)
     return Job(**fields)
-
-
-class _SynchronizedWatchSelectConnection:
-    """Coordinate two real SQLite connections at the legacy watch SELECT."""
-
-    def __init__(self, connection, barrier):
-        self._connection = connection
-        self._barrier = barrier
-        self._synchronized = False
-
-    def execute(self, sql, parameters=()):
-        if (
-            not self._synchronized
-            and "SELECT * FROM company_watch WHERE normalized_company_name" in sql
-        ):
-            self._synchronized = True
-            try:
-                self._barrier.wait(timeout=0.25)
-            except BrokenBarrierError:
-                pass
-        return self._connection.execute(sql, parameters)
-
-    def __enter__(self):
-        self._connection.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return self._connection.__exit__(exc_type, exc_value, traceback)
-
-    def __getattr__(self, name):
-        return getattr(self._connection, name)
 
 
 def _evaluation(job_id, **overrides):
@@ -304,61 +274,14 @@ def test_pending_ai_work_is_idempotent_and_updates_its_timestamp(monkeypatch):
     assert store.list_pending_ai_work("cover_letter") == []
 
 
-def test_company_watch_upsert_deduplicates_normalized_company_name(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-
-    first_id = store.upsert_company_watch(
-        company_name="Acme GmbH",
-        careers_url="",
-        ats_provider="greenhouse",
-        ats_identifier="acme",
-        discovered_from_job_id=None,
-        promotion_source="manual",
-        confidence=1.0,
-    )
-    second_id = store.upsert_company_watch(
-        company_name="ACME",
-        careers_url="",
-        ats_provider="greenhouse",
-        ats_identifier="acme",
-        discovered_from_job_id=None,
-        promotion_source="manual",
-        confidence=1.0,
-    )
-
-    assert second_id == first_id
-    assert store.get_company_watch("acme")["promotion_source"] == "manual"
-    assert store._conn.execute("SELECT COUNT(*) FROM company_watch").fetchone()[0] == 1
+# ------------------------------------------------------------------
+# Company watch
+# ------------------------------------------------------------------
 
 
-def test_company_watch_upsert_is_atomic_across_two_connections(tmp_path):
-    database = tmp_path / "state.sqlite3"
-    stores = [JobStore(database), JobStore(database)]
-    barrier = Barrier(2)
-    for store in stores:
-        store._conn = _SynchronizedWatchSelectConnection(store._conn, barrier)
-
-    def upsert(store):
-        return store.upsert_company_watch(
-            company_name="Acme GmbH",
-            careers_url="",
-            ats_provider="greenhouse",
-            ats_identifier="acme",
-            discovered_from_job_id=None,
-            promotion_source="manual",
-            confidence=1.0,
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        watch_ids = list(executor.map(upsert, stores))
-
-    assert watch_ids[0] == watch_ids[1]
-    assert stores[0]._conn.execute("SELECT COUNT(*) FROM company_watch").fetchone()[0] == 1
-
-
-def test_automatic_generic_url_cannot_replace_manual_greenhouse_target(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-    store.upsert_company_watch(
+def _watch(store, **overrides):
+    """Upsert one company watch target, defaulting every required argument."""
+    fields = dict(
         company_name="Acme",
         careers_url="",
         ats_provider="greenhouse",
@@ -367,13 +290,82 @@ def test_automatic_generic_url_cannot_replace_manual_greenhouse_target(tmp_path)
         promotion_source="manual",
         confidence=1.0,
     )
+    fields.update(overrides)
+    return store.upsert_company_watch(**fields)
 
-    store.upsert_company_watch(
+
+def _watch_rows(client):
+    return client.select("job_hunter_company_watch", params={"select": "id"})
+
+
+def test_company_watch_upsert_deduplicates_normalized_company_name(
+    store, supabase_client
+):
+    first_id = _watch(store, company_name="Acme GmbH")
+    second_id = _watch(store, company_name="ACME")
+
+    assert second_id == first_id
+    assert store.get_company_watch("acme")["promotion_source"] == "manual"
+    assert len(_watch_rows(supabase_client)) == 1
+
+
+def test_company_watch_upsert_converges_when_another_writer_inserts_first(
+    store, supabase_client, monkeypatch
+):
+    """A row inserted between our read and our write must not become a second row.
+
+    Replaces the SQLite original's two-connection barrier test, which
+    synchronized two `sqlite3` connections at the legacy SELECT. There is no
+    connection to synchronize against PostgREST, so the race is staged
+    directly: the competing row is written from inside the store's own read,
+    which is exactly the window the original test opened. Convergence is held
+    up by `unique (user_id, normalized_company_name)` and the
+    merge-duplicates upsert, not by application care.
+    """
+    normalized = normalize_company_name("Acme GmbH")
+    competitor: list[str] = []
+    original_select = supabase_client.select
+
+    def select_then_race(table, **kwargs):
+        rows = original_select(table, **kwargs)
+        if table == "job_hunter_company_watch" and not competitor:
+            written = supabase_client.upsert(
+                "job_hunter_company_watch",
+                [
+                    {
+                        "user_id": supabase_client.user_id,
+                        "company_name": "Acme GmbH",
+                        "normalized_company_name": normalized,
+                        "careers_url": "https://acme.test/careers",
+                        "promotion_source": "automatic",
+                        "confidence": 0.1,
+                        "first_seen_at": "2026-09-06T00:00:00+00:00",
+                        "updated_at": "2026-09-06T00:00:00+00:00",
+                    }
+                ],
+                on_conflict="user_id,normalized_company_name",
+            )
+            competitor.append(written[0]["id"])
+        return rows
+
+    monkeypatch.setattr(supabase_client, "select", select_then_race)
+
+    watch_id = _watch(store, company_name="Acme GmbH")
+
+    assert competitor, "the staged competing write never ran"
+    assert watch_id == competitor[0]
+    assert len(_watch_rows(supabase_client)) == 1
+
+
+def test_automatic_generic_url_cannot_replace_manual_greenhouse_target(store):
+    _watch(store, company_name="Acme", promotion_source="manual", confidence=1.0)
+
+    _watch(
+        store,
         company_name="Acme GmbH",
         careers_url="https://acme.test/careers",
         ats_provider=None,
         ats_identifier=None,
-        discovered_from_job_id=None,
         promotion_source="automatic",
         confidence=1.0,
     )
@@ -385,24 +377,20 @@ def test_automatic_generic_url_cannot_replace_manual_greenhouse_target(tmp_path)
     assert row["promotion_source"] == "manual"
 
 
-def test_supported_ats_target_upgrades_automatic_generic_entry(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-    store.upsert_company_watch(
+def test_supported_ats_target_upgrades_automatic_generic_entry(store):
+    _watch(
+        store,
         company_name="Acme",
         careers_url="https://acme.test/careers",
         ats_provider=None,
         ats_identifier=None,
-        discovered_from_job_id=None,
         promotion_source="automatic",
         confidence=0.4,
     )
 
-    store.upsert_company_watch(
+    _watch(
+        store,
         company_name="Acme GmbH",
-        careers_url="",
-        ats_provider="greenhouse",
-        ats_identifier="acme",
-        discovered_from_job_id=None,
         promotion_source="automatic",
         confidence=0.9,
     )
@@ -414,35 +402,34 @@ def test_supported_ats_target_upgrades_automatic_generic_entry(tmp_path):
     assert row["confidence"] == 0.9
 
 
-def test_equal_strength_target_replaces_only_at_higher_confidence(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-    store.upsert_company_watch(
+def test_equal_strength_target_replaces_only_at_higher_confidence(store):
+    _watch(
+        store,
         company_name="Beta",
         careers_url="https://beta.test/careers",
         ats_provider=None,
         ats_identifier=None,
-        discovered_from_job_id=None,
         promotion_source="manual",
         confidence=0.8,
     )
 
-    store.upsert_company_watch(
+    _watch(
+        store,
         company_name="Beta",
         careers_url="https://beta.test/jobs",
         ats_provider=None,
         ats_identifier=None,
-        discovered_from_job_id=None,
         promotion_source="automatic",
         confidence=0.8,
     )
     assert store.get_company_watch("Beta")["careers_url"] == "https://beta.test/careers"
 
-    store.upsert_company_watch(
+    _watch(
+        store,
         company_name="Beta",
         careers_url="https://beta.test/jobs",
         ats_provider=None,
         ats_identifier=None,
-        discovered_from_job_id=None,
         promotion_source="automatic",
         confidence=0.9,
     )
@@ -453,9 +440,187 @@ def test_equal_strength_target_replaces_only_at_higher_confidence(tmp_path):
     assert row["promotion_source"] == "manual"
 
 
-def test_ats_registry_upsert_is_provider_board_unique():
-    store = JobStore(":memory:")
+def test_get_company_watch_is_none_for_unknown_and_unnormalizable_names(store):
+    _watch(store, company_name="Acme")
 
+    assert store.get_company_watch("Nobody") is None
+    assert store.get_company_watch("   ") is None
+
+
+def test_upsert_company_watch_rejects_a_name_that_normalizes_to_nothing(store):
+    with pytest.raises(ValueError, match="must normalize to a non-empty value"):
+        _watch(store, company_name="   ")
+
+
+def test_list_due_company_watches_excludes_paused_and_inactive_targets(
+    store, supabase_client
+):
+    unpaused_id = _watch(store, company_name="Acme")
+    expired_id = _watch(store, company_name="Beta")
+    paused_id = _watch(store, company_name="Gamma")
+    inactive_id = _watch(store, company_name="Delta")
+    supabase_client.update(
+        "job_hunter_company_watch",
+        {"paused_until": "2026-08-31T11:59:59+00:00"},
+        params={"id": f"eq.{expired_id}"},
+    )
+    supabase_client.update(
+        "job_hunter_company_watch",
+        {"paused_until": "2026-08-31T12:00:01+00:00"},
+        params={"id": f"eq.{paused_id}"},
+    )
+    supabase_client.update(
+        "job_hunter_company_watch",
+        {"active": False},
+        params={"id": f"eq.{inactive_id}"},
+    )
+
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+
+    assert [row["id"] for row in store.list_due_company_watches(now)] == [
+        unpaused_id,
+        expired_id,
+    ]
+
+
+def test_due_watch_compares_equivalent_offset_instants(store, supabase_client):
+    """The due filter compares instants, not the strings they were written as.
+
+    SQLite compared `julianday(paused_until) <= julianday(now)`; the port
+    hands PostgREST `paused_until.lte.<iso>` against a `timestamptz` column.
+    A pause written at `+02:00` and a `now` given at `-04:00` name the same
+    instant, so the watch is due -- a string comparison would say otherwise.
+    """
+    watch_id = _watch(store)
+    supabase_client.update(
+        "job_hunter_company_watch",
+        {"paused_until": "2026-08-31T14:00:00+02:00"},
+        params={"id": f"eq.{watch_id}"},
+    )
+    same_instant = datetime(2026, 8, 31, 8, 0, tzinfo=timezone(timedelta(hours=-4)))
+
+    assert [row["id"] for row in store.list_due_company_watches(same_instant)] == [
+        watch_id
+    ]
+
+
+def test_first_two_watch_failures_remain_due(store):
+    watch_id = _watch(store)
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+
+    store.record_watch_failure(watch_id, now)
+    store.record_watch_failure(watch_id, now)
+
+    row = store.get_company_watch("Acme")
+    assert row["consecutive_failures"] == 2
+    assert row["paused_until"] is None
+    assert [due["id"] for due in store.list_due_company_watches(now)] == [watch_id]
+
+
+def test_third_watch_failure_pauses_for_24_hours(store):
+    watch_id = _watch(store)
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+
+    for _ in range(3):
+        store.record_watch_failure(watch_id, now)
+
+    row = store.get_company_watch("Acme")
+    assert row["consecutive_failures"] == 3
+    assert from_iso(row["paused_until"]) == datetime(
+        2026, 9, 1, 12, 0, tzinfo=timezone.utc
+    )
+    assert store.list_due_company_watches(now) == []
+
+
+def test_watch_failure_pause_is_24_elapsed_hours_across_dst(store):
+    watch_id = _watch(store)
+    before_spring_forward = datetime(
+        2026, 3, 28, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")
+    )
+
+    for _ in range(3):
+        store.record_watch_failure(watch_id, before_spring_forward)
+
+    row = store.get_company_watch("Acme")
+    assert from_iso(row["paused_until"]) == datetime(
+        2026, 3, 29, 11, 0, tzinfo=timezone.utc
+    )
+
+
+def test_watch_success_clears_failures_and_pause_and_stamps_health(store):
+    watch_id = _watch(store)
+    failed_at = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    succeeded_at = datetime(2026, 9, 1, 13, 30, tzinfo=timezone.utc)
+    for _ in range(3):
+        store.record_watch_failure(watch_id, failed_at)
+
+    store.record_watch_success(watch_id, succeeded_at)
+
+    row = store.get_company_watch("Acme")
+    assert row["consecutive_failures"] == 0
+    assert row["paused_until"] is None
+    assert from_iso(row["last_successful_check_at"]) == succeeded_at
+    assert from_iso(row["last_verified_at"]) == succeeded_at
+    assert row["promotion_source"] == "manual"
+
+
+def test_watch_success_normalizes_a_non_utc_offset(store):
+    watch_id = _watch(store)
+    now = datetime(2026, 8, 31, 14, 0, tzinfo=timezone(timedelta(hours=2)))
+
+    store.record_watch_success(watch_id, now)
+
+    row = store.get_company_watch("Acme")
+    assert from_iso(row["last_successful_check_at"]) == datetime(
+        2026, 8, 31, 12, 0, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "list_due_company_watches",
+        "record_watch_success",
+        "record_watch_failure",
+        "list_due_ats_boards",
+        "reject_ats_board",
+        "record_ats_scan_success",
+        "record_ats_scan_failure",
+        "record_ats_eligible_job",
+    ],
+)
+def test_discovery_state_time_methods_reject_naive_datetimes(store, method_name):
+    """A naive datetime is ambiguous, so it is refused rather than guessed.
+
+    `store_mapping.to_iso` deliberately treats a naive datetime as already
+    being UTC, which is right for a value the store itself stamped but wrong
+    for one a caller passed in: a caller's naive local time would be silently
+    recorded as UTC. These eight methods take the instant from their caller,
+    so each one rejects it first (as the SQLite original's `_normalize_utc`
+    did).
+    """
+    naive = datetime(2026, 8, 31, 12, 0)
+    arguments = {
+        "list_due_company_watches": (naive,),
+        "record_watch_success": ("00000000-0000-0000-0000-000000000000", naive),
+        "record_watch_failure": ("00000000-0000-0000-0000-000000000000", naive),
+        "list_due_ats_boards": (naive,),
+        "reject_ats_board": ("lever", "acme", "reason", naive),
+        "record_ats_scan_success": ("lever", "acme", naive, 0),
+        "record_ats_scan_failure": ("lever", "acme", naive),
+        "record_ats_eligible_job": ("lever", "acme", naive),
+    }[method_name]
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        getattr(store, method_name)(*arguments)
+
+
+# ------------------------------------------------------------------
+# ATS registry
+# ------------------------------------------------------------------
+
+
+def test_ats_registry_upsert_is_provider_board_unique(store):
     created = store.upsert_ats_board(
         provider="ashby",
         board_identifier="omnea",
@@ -474,9 +639,7 @@ def test_ats_registry_upsert_is_provider_board_unique():
     assert store.count_ats_boards() == 1
 
 
-def test_ats_registry_upsert_does_not_wipe_metadata_with_blank_values():
-    store = JobStore(":memory:")
-
+def test_ats_registry_upsert_does_not_wipe_metadata_with_blank_values(store):
     store.upsert_ats_board(
         provider="ashby",
         board_identifier="omnea",
@@ -496,14 +659,12 @@ def test_ats_registry_upsert_does_not_wipe_metadata_with_blank_values():
     assert entry.market_hint == "london"
 
 
-def test_ats_registry_rejects_unsupported_provider():
-    store = JobStore(":memory:")
+def test_ats_registry_rejects_unsupported_provider(store):
     with pytest.raises(ValueError, match="unsupported ATS provider"):
         store.upsert_ats_board(provider="workday", board_identifier="x")
 
 
-def test_ats_failure_pauses_board_without_rediscovery_bypassing_pause():
-    store = JobStore(":memory:")
+def test_ats_failure_pauses_board_without_rediscovery_bypassing_pause(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="acme")
 
@@ -517,8 +678,7 @@ def test_ats_failure_pauses_board_without_rediscovery_bypassing_pause():
     ]
 
 
-def test_ats_scan_success_records_job_count_and_resets_failures():
-    store = JobStore(":memory:")
+def test_ats_scan_success_records_job_count_and_resets_failures(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="greenhouse", board_identifier="acme")
 
@@ -530,13 +690,12 @@ def test_ats_scan_success_records_job_count_and_resets_failures():
     assert len(due) == 1
     entry = due[0]
     assert entry.last_job_count == 7
-    assert entry.last_success_at == later.isoformat()
+    assert from_iso(entry.last_success_at) == later
     assert entry.consecutive_failures == 0
     assert entry.paused_until is None
 
 
-def test_ats_permanent_failure_deactivates_board_after_three_in_a_row():
-    store = JobStore(":memory:")
+def test_ats_permanent_failure_deactivates_board_after_three_in_a_row(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="dead-co")
 
@@ -551,8 +710,7 @@ def test_ats_permanent_failure_deactivates_board_after_three_in_a_row():
     assert store.list_due_ats_boards(much_later) == []
 
 
-def test_ats_permanent_failure_stays_active_below_threshold():
-    store = JobStore(":memory:")
+def test_ats_permanent_failure_stays_active_below_threshold(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="maybe-dead")
 
@@ -566,8 +724,7 @@ def test_ats_permanent_failure_stays_active_below_threshold():
     assert due[0].consecutive_failures == 2
 
 
-def test_ats_transient_failure_never_deactivates_board():
-    store = JobStore(":memory:")
+def test_ats_transient_failure_never_deactivates_board(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="greenhouse", board_identifier="flaky")
 
@@ -582,13 +739,12 @@ def test_ats_transient_failure_never_deactivates_board():
     assert due[0].active is True
 
 
-def test_ats_mixed_transient_then_permanent_failure_deactivates_board():
+def test_ats_mixed_transient_then_permanent_failure_deactivates_board(store):
     # consecutive_failures is one shared counter incremented by both
     # transient and permanent failures, so two transient failures followed
     # by a single permanent one reaches the threshold on that 404 alone —
     # not after three permanent failures in a row. This pins the documented
     # (if slightly surprising) real behavior of record_ats_scan_failure.
-    store = JobStore(":memory:")
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="mixed-co")
 
@@ -603,8 +759,7 @@ def test_ats_mixed_transient_then_permanent_failure_deactivates_board():
     assert store.list_due_ats_boards(now + timedelta(days=30)) == []
 
 
-def test_ats_deactivated_board_reactivates_on_rediscovery():
-    store = JobStore(":memory:")
+def test_ats_deactivated_board_reactivates_on_rediscovery(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="reborn-co")
     for i in range(3):
@@ -625,8 +780,7 @@ def test_ats_deactivated_board_reactivates_on_rediscovery():
     assert [e.board_identifier for e in due] == ["reborn-co"]
 
 
-def test_reject_ats_board_deactivates_and_records_reason():
-    store = JobStore(":memory:")
+def test_reject_ats_board_deactivates_and_records_reason(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="jobgether")
 
@@ -639,10 +793,9 @@ def test_reject_ats_board_deactivates_and_records_reason():
     assert rejected[0].active is False
 
 
-def test_list_rejected_ats_boards_excludes_healthy_and_health_paused_boards():
+def test_list_rejected_ats_boards_excludes_healthy_and_health_paused_boards(store):
     # Only a board rejected for cause carries a reason -- a board merely
     # deactivated by repeated 404s must not show up as rejected.
-    store = JobStore(":memory:")
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
     store.upsert_ats_board(provider="lever", board_identifier="dead-co")
@@ -654,13 +807,12 @@ def test_list_rejected_ats_boards_excludes_healthy_and_health_paused_boards():
     assert store.list_rejected_ats_boards() == []
 
 
-def test_ats_rejected_board_is_not_resurrected_by_rediscovery():
+def test_ats_rejected_board_is_not_resurrected_by_rediscovery(store):
     # Unlike a health-based deactivation (see
     # test_ats_deactivated_board_reactivates_on_rediscovery), a board
     # rejected for cause must stay rejected even when a freshly discovered
     # job points at it again -- upsert_ats_board must not flip active back
-    # to 1 once rejected_reason is set.
-    store = JobStore(":memory:")
+    # to true once rejected_reason is set.
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="jobgether")
     store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
@@ -670,8 +822,7 @@ def test_ats_rejected_board_is_not_resurrected_by_rediscovery():
     assert store.list_due_ats_boards(now + timedelta(days=30)) == []
 
 
-def test_clear_ats_board_rejection_makes_a_rejected_board_due_again():
-    store = JobStore(":memory:")
+def test_clear_ats_board_rejection_makes_a_rejected_board_due_again(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="clientco")
     store.reject_ats_board("lever", "clientco", "aggregator: 98% third-party", now)
@@ -685,10 +836,9 @@ def test_clear_ats_board_rejection_makes_a_rejected_board_due_again():
     assert due[0].active is True
 
 
-def test_clear_ats_board_rejection_matches_the_stored_provider_case_insensitively():
+def test_clear_ats_board_rejection_matches_the_stored_provider_case_insensitively(store):
     # Callers hold normalized ats_board_key values ("lever:jobgether"), while
     # the row was written from whatever case discovery saw.
-    store = JobStore(":memory:")
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="ClientCo")
     store.reject_ats_board("lever", "ClientCo", "aggregator: 98% third-party", now)
@@ -699,8 +849,28 @@ def test_clear_ats_board_rejection_matches_the_stored_provider_case_insensitivel
     assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["ClientCo"]
 
 
-def test_clear_ats_board_rejection_is_a_no_op_for_a_board_that_was_never_rejected():
-    store = JobStore(":memory:")
+def test_clear_ats_board_rejection_treats_underscores_as_literal_text(store):
+    """`_` is a single-character wildcard to `ilike`, so matching can't use it.
+
+    Two boards whose identifiers differ only where one has an underscore
+    would both match an `ilike` filter built from either name. Clearing one
+    rejection must leave the other rejected.
+    """
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="client_co")
+    store.upsert_ats_board(provider="lever", board_identifier="clientxco")
+    store.reject_ats_board("lever", "client_co", "aggregator", now)
+    store.reject_ats_board("lever", "clientxco", "aggregator", now)
+
+    store.clear_ats_board_rejection("lever", "client_co")
+
+    assert [e.board_identifier for e in store.list_rejected_ats_boards()] == [
+        "clientxco"
+    ]
+    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["client_co"]
+
+
+def test_clear_ats_board_rejection_is_a_no_op_for_a_board_that_was_never_rejected(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
 
@@ -710,10 +880,9 @@ def test_clear_ats_board_rejection_is_a_no_op_for_a_board_that_was_never_rejecte
     assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["healthy-co"]
 
 
-def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board():
+def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board(store):
     # A board deactivated by repeated 404s is broken, not misjudged. Clearing
     # a rejection it never had must not put it back in the rotation.
-    store = JobStore(":memory:")
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="dead-co")
     for i in range(3):
@@ -724,6 +893,34 @@ def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board():
     store.clear_ats_board_rejection("lever", "dead-co")
 
     assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+
+
+def test_record_ats_eligible_job_counts_every_sighting(store):
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="acme")
+
+    store.record_ats_eligible_job("lever", "acme", now)
+    later = now + timedelta(hours=2)
+    store.record_ats_eligible_job("lever", "acme", later)
+
+    entry = store.list_due_ats_boards(later)[0]
+    assert entry.eligible_jobs_seen == 2
+    assert from_iso(entry.last_eligible_at) == later
+
+
+def test_list_due_ats_boards_orders_by_provider_then_board(store):
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="zeta")
+    store.upsert_ats_board(provider="ashby", board_identifier="beta")
+    store.upsert_ats_board(provider="ashby", board_identifier="alpha")
+
+    due = store.list_due_ats_boards(now)
+
+    assert [(e.provider, e.board_identifier) for e in due] == [
+        ("ashby", "alpha"),
+        ("ashby", "beta"),
+        ("lever", "zeta"),
+    ]
 
 
 def test_record_job_source_is_idempotent(store):
