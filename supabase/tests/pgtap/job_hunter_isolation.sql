@@ -66,7 +66,8 @@ select unnest(array[
   'job_hunter_gmail_messages',
   'job_hunter_inbound_job_candidates',
   'job_hunter_application_events',
-  'job_hunter_review_deliveries'
+  'job_hunter_review_deliveries',
+  'job_hunter_telegram_navigation_sessions'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -137,6 +138,9 @@ begin
       v_event := pg_temp.job_hunter_seed_row('job_hunter_application_events', p_owner);
       insert into public.job_hunter_review_deliveries (user_id, event_id, delivered_at)
       values (p_owner, v_event, now()) returning id into v_id;
+    when 'job_hunter_telegram_navigation_sessions' then
+      insert into public.job_hunter_telegram_navigation_sessions (user_id, session_id, cards_json, expires_at)
+      values (p_owner, gen_random_uuid()::text, '[]'::jsonb, now() + interval '1 hour') returning id into v_id;
     else
       raise exception 'no seed row defined for table %', p_table;
   end case;
@@ -200,11 +204,49 @@ end $$;
 
 -- Run ------------------------------------------------------------------------
 
+-- Guard: every job_hunter_ table in the schema is in the list under test,
+-- so a table added to the migration without a test fails here.
+select is(
+  (select array_agg(tablename::text order by tablename)
+     from pg_tables where schemaname = 'public' and tablename like 'job\_hunter\_%'),
+  (select array_agg(table_name order by table_name) from pg_temp.job_hunter_tables),
+  'every public.job_hunter_* table is covered by the isolation check');
+
+select is(
+  (select count(*)::int from pg_temp.job_hunter_tables), 18,
+  'eighteen Job Hunter tables are under test');
+
 select pg_temp.check_isolation(
   t.table_name,
   'aaaaaaaa-0000-0000-0000-000000000001',
   'bbbbbbbb-0000-0000-0000-000000000002')
 from pg_temp.job_hunter_tables t;
+
+-- Composite same-user foreign key: B cannot attach a child to A's parent
+-- even with B's own user_id, independently of RLS. The chain
+-- (job_id, user_id) -> job_hunter_jobs (id, user_id) has no matching row.
+-- A's job is inserted as postgres (RLS does not apply to the table owner)
+-- so no role switch is needed before the temp table exists. The temp table
+-- is owned by postgres, so `authenticated` needs an explicit select grant
+-- on it; without one the insert below fails with 42501 on the read side
+-- and never reaches the foreign key this test is about.
+select pg_temp.become_postgres();
+create temporary table _a_job (id uuid);
+with ins as (
+  insert into public.job_hunter_jobs (user_id, fingerprint, first_seen_at, last_seen_at)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'fk-test', now(), now())
+  returning id
+)
+insert into _a_job select id from ins;
+grant select on _a_job to authenticated;
+
+select pg_temp.authenticate_as('bbbbbbbb-0000-0000-0000-000000000002');
+select throws_ok(
+  $$ insert into public.job_hunter_job_sources (user_id, job_id, source, identity_key, first_seen_at, last_seen_at)
+     select 'bbbbbbbb-0000-0000-0000-000000000002', id, 'test', 'k', now(), now() from _a_job $$,
+  '23503', null,
+  'composite foreign key rejects a child pointing at another user''s job');
+select pg_temp.become_postgres();
 
 select * from finish();
 rollback;

@@ -549,3 +549,29 @@ create policy update_own on public.job_hunter_review_deliveries
   for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy delete_own on public.job_hunter_review_deliveries
   for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- telegram_navigation_sessions: expiring card lists behind a Telegram message -------------
+
+create table public.job_hunter_telegram_navigation_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  session_id text not null,
+  cards_json jsonb not null,
+  telegram_message_id text,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, session_id)
+);
+
+create index job_hunter_telegram_navigation_sessions_expires_idx
+  on public.job_hunter_telegram_navigation_sessions (expires_at);
+
+alter table public.job_hunter_telegram_navigation_sessions enable row level security;
+create policy select_own on public.job_hunter_telegram_navigation_sessions
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_telegram_navigation_sessions
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_telegram_navigation_sessions
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_telegram_navigation_sessions
+  for delete to authenticated using ((select auth.uid()) = user_id);
