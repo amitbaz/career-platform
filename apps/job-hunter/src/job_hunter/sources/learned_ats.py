@@ -221,8 +221,8 @@ class LearnedAtsSource:
         """Clear the rejection on every allowlisted board that carries one.
 
         The stored reason is the only record of what the operator overrode
-        and the healing write destroys it, so each recovery is logged with
-        the reason it cleared before clearing it.
+        and the healing write destroys it, so each recovery's reason is
+        logged from the pre-clear registry snapshot.
         """
         if not self._allowlist:
             return
