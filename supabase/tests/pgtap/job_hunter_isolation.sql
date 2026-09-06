@@ -18,7 +18,8 @@ select no_plan();
 insert into auth.users (id, email, instance_id, aud, role, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
 values
   ('aaaaaaaa-0000-0000-0000-000000000001', 'a@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', '{}', '{}', now(), now()),
-  ('bbbbbbbb-0000-0000-0000-000000000002', 'b@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', '{}', '{}', now(), now());
+  ('bbbbbbbb-0000-0000-0000-000000000002', 'b@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', '{}', '{}', now(), now())
+on conflict (id) do nothing;
 
 -- Role switching --------------------------------------------------------------
 
