@@ -80,7 +80,7 @@ Prefer completing straightforward work in the main agent context. Avoid duplicat
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e '.[test]'
+pip install -e '.[test,webhook]'   # webhook extra too: the full suite imports flask
 
 pytest -q                          # run full test suite
 pytest tests/test_pipeline.py -q   # single file
