@@ -279,6 +279,7 @@ def test_collect_candidates_rejects_closed_posting_found_during_canonical_resolu
 
     assert result.eligible == []
     assert result.stats.availability_rejected == 1
+    assert result.stats.rejected_by_source.get("duckduckgo") == 1
 
 
 def test_collect_candidates_counts_prefilter_rejections(store, policy):

@@ -446,6 +446,8 @@ def collect_candidates(
                     resolution = None
                 if job.availability == CLOSED:
                     stats.availability_rejected += 1
+                    _bump(stats.rejected_by_market, job.market_id or _UNATTRIBUTED)
+                    _bump(stats.rejected_by_source, metric_source_label(job.source))
                     continue
                 if resolution is None:
                     stats.canonical_unresolved += 1

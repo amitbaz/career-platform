@@ -26,5 +26,18 @@ def test_unrelated_no_longer_available_phrase_is_not_a_false_positive():
     assert detect_closure(html) is False
 
 
+def test_recruiter_agency_disclaimer_is_not_a_false_positive():
+    html = (
+        "<p>We are not accepting applications from recruiters or agencies "
+        "for this role.</p>"
+    )
+    assert detect_closure(html) is False
+
+
+def test_cohort_scoped_closure_disclaimer_is_not_a_false_positive():
+    html = "<p>Applications for this cohort are closed; the next cohort opens in March.</p>"
+    assert detect_closure(html) is False
+
+
 def test_constants_are_distinct():
     assert len({CLOSED, VERIFIED, UNCHECKED}) == 3
