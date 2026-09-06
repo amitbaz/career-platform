@@ -41,10 +41,10 @@ class GreenhouseSource:
                 description=strip_html(item.get("content", "")),
                 remote="remote" in location_name.lower() if location_name else None,
             )
-            # Modern Greenhouse boards serve postings from
-            # job-boards.greenhouse.io, which parse_supported_ats_url does not
-            # recognise; the adapter's own token and the payload's id attribute
-            # those postings regardless.
+            # A board's absolute_url is not always a posting URL the parser can
+            # read: boards embedded on an employer's own domain, and redirect
+            # wrappers, both lose the board/job-id path shape. The adapter's own
+            # token and the payload's id attribute those postings regardless.
             apply_ats_identity(
                 job,
                 AtsReference(

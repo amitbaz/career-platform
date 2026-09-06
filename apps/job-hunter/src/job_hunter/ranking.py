@@ -3,10 +3,14 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 
+from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.models import CandidatePreferences, Job, SearchPolicy
 from job_hunter.normalize import normalize_text
 
-_ATS_HOSTS = ("jobs.ashbyhq.com", "jobs.lever.co", "boards.greenhouse.io")
+# Matched as a substring of the URL rather than against the parsed hostname, so
+# that an aggregator's redirect wrapper around an ATS posting still scores as
+# the employer posting it points at. See ats_hosts.
+_ATS_HOSTS = tuple(SUPPORTED_ATS_HOSTS)
 
 # Approved market-specialist boards (config/search.yml markets[*].source_domains):
 # hand-picked per market, but not the canonical direct-employer link an ATS

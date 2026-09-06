@@ -91,6 +91,14 @@ def test_extract_job_page_links_uses_nested_jobposting_url():
     ]
 
 
+def test_extract_job_page_links_follows_job_boards_greenhouse():
+    html = '<a href="https://job-boards.greenhouse.io/acme/jobs/789">Apply</a>'
+
+    assert extract_job_page_links(html, "https://example.test/careers") == [
+        "https://job-boards.greenhouse.io/acme/jobs/789",
+    ]
+
+
 def test_enrich_job_sets_canonical_employer_page_tier_from_json_ld():
     job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
     http = FakeHttp(_JOB_POSTING_HTML)

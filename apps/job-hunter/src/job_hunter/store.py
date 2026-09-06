@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from job_hunter import content_confidence
+from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
 from job_hunter.gmail_models import (
     AUTO_CONFIDENCE_THRESHOLD,
@@ -415,19 +416,19 @@ class JobStore:
         updated by none of them, which is bounded and harmless rather than
         strictly convergent. Returns how many rows were updated.
         """
+        patterns = [f"%{host}/%" for host in SUPPORTED_ATS_HOSTS]
+        host_filter = " OR ".join(
+            f"{column} LIKE ?" for column in ("url", "canonical_url") for _ in patterns
+        )
         rows = self._conn.execute(
-            """
+            f"""
             SELECT id, url, canonical_url FROM jobs
             WHERE (ats_provider IS NULL OR ats_provider = ''
                    OR ats_board IS NULL OR ats_board = ''
                    OR ats_job_id IS NULL OR ats_job_id = '')
-              AND (url LIKE '%jobs.lever.co/%'
-                   OR url LIKE '%jobs.ashbyhq.com/%'
-                   OR url LIKE '%boards.greenhouse.io/%'
-                   OR canonical_url LIKE '%jobs.lever.co/%'
-                   OR canonical_url LIKE '%jobs.ashbyhq.com/%'
-                   OR canonical_url LIKE '%boards.greenhouse.io/%')
-            """
+              AND ({host_filter})
+            """,
+            patterns * 2,
         ).fetchall()
 
         updated = 0

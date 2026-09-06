@@ -244,7 +244,7 @@ ats:
 
 - `ashby`: the board slug from `https://jobs.ashbyhq.com/<slug>`.
 - `lever`: the company slug from `https://jobs.lever.co/<slug>`.
-- `greenhouse`: the board token from `https://boards.greenhouse.io/<token>`.
+- `greenhouse`: the board token from `https://boards.greenhouse.io/<token>` or, on modern boards, `https://job-boards.greenhouse.io/<token>`.
 
 Each configured slug adds one additional source adapter queried on every run, alongside the built-in Remotive, Arbeitnow, and DuckDuckGo-search sources.
 

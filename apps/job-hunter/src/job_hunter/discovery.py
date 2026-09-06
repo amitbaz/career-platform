@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from job_hunter import content_confidence
+from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.ats_registry import harvest_ats_board
 from job_hunter.canonical import (
     CanonicalResolver,
@@ -24,7 +25,10 @@ from job_hunter.store import JobStore
 
 logger = logging.getLogger(__name__)
 
-_ATS_HOSTS = ("jobs.ashbyhq.com", "jobs.lever.co", "boards.greenhouse.io")
+# Matched as a substring of the URL rather than against the parsed hostname, so
+# that an aggregator's redirect wrapper around an ATS posting still counts as
+# the richer record when a dedup cluster picks its winner. See ats_hosts.
+_ATS_HOSTS = tuple(SUPPORTED_ATS_HOSTS)
 
 # How many candidates beyond max_jobs_per_run to keep in the canonical
 # resolution shortlist, to absorb resolution failures and any reordering
@@ -441,8 +445,8 @@ def collect_candidates(
                     if resolution.ats is not None:
                         # Fill, never relabel. A job that reached the resolver
                         # can already carry authoritative identity from its own
-                        # adapter (a modern Greenhouse posting, whose
-                        # job-boards.greenhouse.io URL does not parse), and the
+                        # adapter (an ATS posting whose URL does not parse, such
+                        # as a board embedded on the employer's domain), and the
                         # resolver's weaker branches -- an embedded link is the
                         # first ATS anchor on the page, with no company or title
                         # check -- can point at a different posting entirely.

@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
 
+from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.candidate_context import get_candidate_context
 from job_hunter.canonical import CanonicalResolver, parse_supported_ats_url
 from job_hunter.circuit_breaker import CircuitBreaker
@@ -74,8 +75,7 @@ _NAVIGATION_SESSION_TTL = timedelta(days=30)
 _SUPPORTED_WATCH_ATS_PROVIDERS = frozenset({"ashby", "greenhouse", "lever"})
 _SEARCH_FAILURE_THRESHOLD = 5
 _CANONICAL_SEARCH_SITES = (
-    "site:jobs.ashbyhq.com OR site:jobs.lever.co OR "
-    "site:boards.greenhouse.io OR careers"
+    " OR ".join(f"site:{host}" for host in SUPPORTED_ATS_HOSTS) + " OR careers"
 )
 
 

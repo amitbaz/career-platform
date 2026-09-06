@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.fetching import extract_job_page_links
 from job_hunter.job_identity import (
     locations_compatible,
@@ -24,12 +25,11 @@ def parse_supported_ats_url(url: str) -> AtsReference | None:
     host = parsed.hostname.lower() if parsed.hostname else ""
     parts = [part for part in parsed.path.split("/") if part]
 
-    if host == "jobs.lever.co" and len(parts) >= 2:
-        return AtsReference(provider="lever", board=parts[0], job_id=parts[1])
-    if host == "jobs.ashbyhq.com" and len(parts) >= 2:
-        return AtsReference(provider="ashby", board=parts[0], job_id=parts[1])
-    if host == "boards.greenhouse.io" and len(parts) >= 3 and parts[1] == "jobs":
-        return AtsReference(provider="greenhouse", board=parts[0], job_id=parts[2])
+    provider = SUPPORTED_ATS_HOSTS.get(host)
+    if provider in ("lever", "ashby") and len(parts) >= 2:
+        return AtsReference(provider=provider, board=parts[0], job_id=parts[1])
+    if provider == "greenhouse" and len(parts) >= 3 and parts[1] == "jobs":
+        return AtsReference(provider=provider, board=parts[0], job_id=parts[2])
     return None
 
 

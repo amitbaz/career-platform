@@ -1,3 +1,5 @@
+import pytest
+
 import job_hunter.canonical as canonical
 from job_hunter.canonical import (
     CanonicalResolver,
@@ -47,6 +49,32 @@ def test_parse_greenhouse_reference():
     assert (ref.provider, ref.board, ref.job_id) == ("greenhouse", "acme", "456")
 
 
+def test_parse_greenhouse_reference_on_job_boards_host():
+    # Modern Greenhouse boards serve their postings from job-boards.greenhouse.io
+    # rather than boards.greenhouse.io; both hosts are live and a board's
+    # absolute_url returns one or the other. Same board and job id either way.
+    ref = parse_supported_ats_url("https://job-boards.greenhouse.io/acme/jobs/456")
+    assert ref is not None
+    assert (ref.provider, ref.board, ref.job_id) == ("greenhouse", "acme", "456")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://boards.eu.greenhouse.io/acme/jobs/456",
+        "https://job-boards.eu.greenhouse.io/acme/jobs/456",
+    ],
+)
+def test_parse_greenhouse_reference_on_eu_data_region_hosts(url):
+    # Organizations on Greenhouse's EU data region get the same legacy/modern
+    # host pair under `.eu.`, with the same path shape. These are not covered
+    # by the substring consumers either, since "boards.greenhouse.io" is not a
+    # substring of "job-boards.eu.greenhouse.io".
+    ref = parse_supported_ats_url(url)
+    assert ref is not None
+    assert (ref.provider, ref.board, ref.job_id) == ("greenhouse", "acme", "456")
+
+
 def test_apply_ats_identity_derives_from_url():
     job = Job(source="search:brave", title="Backend Engineer", url="https://jobs.lever.co/acme/abc-123")
     apply_ats_identity(job)
@@ -60,10 +88,12 @@ def test_apply_ats_identity_prefers_url_over_fallback():
 
 
 def test_apply_ats_identity_uses_fallback_when_url_is_not_parseable():
+    # A Greenhouse board embedded on the employer's own domain: no recognisable
+    # ATS host, so only the adapter's fallback can attribute the posting.
     job = Job(
         source="greenhouse",
         title="Backend Engineer",
-        url="https://job-boards.greenhouse.io/acme/jobs/456",
+        url="https://careers.acme.test/openings/456",
     )
     apply_ats_identity(job, AtsReference(provider="greenhouse", board="acme", job_id="456"))
     assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("greenhouse", "acme", "456")

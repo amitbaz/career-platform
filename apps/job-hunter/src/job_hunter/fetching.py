@@ -7,17 +7,12 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from job_hunter import content_confidence
+from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.models import Job
 
 if TYPE_CHECKING:
     from job_hunter.http import HttpClient
 
-
-_SUPPORTED_ATS_HOSTS = {
-    "jobs.lever.co",
-    "jobs.ashbyhq.com",
-    "boards.greenhouse.io",
-}
 
 
 def _find_job_posting(data: dict | list) -> dict | None:
@@ -83,7 +78,7 @@ def extract_job_page_links(html: str, base_url: str) -> list[str]:
 
     for anchor in soup.find_all("a", href=True):
         url = urljoin(base_url, anchor["href"])
-        if urlparse(url).hostname in _SUPPORTED_ATS_HOSTS:
+        if urlparse(url).hostname in SUPPORTED_ATS_HOSTS:
             links.append(url)
 
     return list(dict.fromkeys(links))
