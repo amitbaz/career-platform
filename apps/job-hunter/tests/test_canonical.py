@@ -1,6 +1,7 @@
 import job_hunter.canonical as canonical
 from job_hunter.canonical import (
     CanonicalResolver,
+    apply_ats_identity,
     fetch_authoritative_description,
     parse_supported_ats_url,
 )
@@ -44,6 +45,58 @@ def test_parse_greenhouse_reference():
     ref = parse_supported_ats_url("https://boards.greenhouse.io/acme/jobs/456")
     assert ref is not None
     assert (ref.provider, ref.board, ref.job_id) == ("greenhouse", "acme", "456")
+
+
+def test_apply_ats_identity_derives_from_url():
+    job = Job(source="search:brave", title="Backend Engineer", url="https://jobs.lever.co/acme/abc-123")
+    apply_ats_identity(job)
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("lever", "acme", "abc-123")
+
+
+def test_apply_ats_identity_prefers_url_over_fallback():
+    job = Job(source="lever", title="Backend Engineer", url="https://jobs.lever.co/acme/abc-123")
+    apply_ats_identity(job, AtsReference(provider="lever", board="ACME", job_id="abc-123"))
+    assert job.ats_board == "acme"
+
+
+def test_apply_ats_identity_uses_fallback_when_url_is_not_parseable():
+    job = Job(
+        source="greenhouse",
+        title="Backend Engineer",
+        url="https://job-boards.greenhouse.io/acme/jobs/456",
+    )
+    apply_ats_identity(job, AtsReference(provider="greenhouse", board="acme", job_id="456"))
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("greenhouse", "acme", "456")
+
+
+def test_apply_ats_identity_keeps_existing_identity():
+    job = Job(
+        source="lever",
+        title="Backend Engineer",
+        url="https://jobs.lever.co/other/xyz",
+        ats_provider="lever",
+        ats_board="acme",
+        ats_job_id="abc-123",
+    )
+    apply_ats_identity(job, AtsReference(provider="lever", board="fallback", job_id="999"))
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("lever", "acme", "abc-123")
+
+
+def test_apply_ats_identity_is_a_noop_without_evidence():
+    job = Job(source="hackernews", title="Backend Engineer", url="https://acme.test/careers/1")
+    apply_ats_identity(job)
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == (None, None, None)
+
+
+def test_apply_ats_identity_reads_canonical_url_first():
+    job = Job(
+        source="search:brave",
+        title="Backend Engineer",
+        url="https://acme.test/careers/1",
+        canonical_url="https://jobs.ashbyhq.com/acme/xyz",
+    )
+    apply_ats_identity(job)
+    assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("ashby", "acme", "xyz")
 
 
 def test_direct_ats_url_wins_without_search():

@@ -632,6 +632,13 @@ def run_pipeline(
     http = http or HttpClient()
     store = store or JobStore(settings.db_path)
     try:
+        backfilled = store.backfill_ats_identity()
+        if backfilled:
+            logger.info("backfilled ATS identity on %s stored jobs", backfilled)
+    except Exception:
+        logger.exception("ATS identity backfill failed")
+
+    try:
         sync_manual_watch_seeds(store, settings.policy.manual_company_watch)
     except Exception:
         logger.exception("manual company watch sync failed")

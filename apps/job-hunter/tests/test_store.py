@@ -2013,3 +2013,67 @@ def test_legacy_evaluation_row_with_genuinely_zero_score_stays_zero(tmp_path):
     evaluation = reopened.get_evaluation(job_id)
     assert evaluation.total_score == 0
     assert evaluation.raw_model_score == 0
+
+
+def test_backfill_ats_identity_fills_rows_from_their_urls(tmp_path):
+    store = JobStore(tmp_path / "state.sqlite3")
+    job_id, _, _ = store.upsert_job(
+        Job(
+            source="lever",
+            source_job_id="abc-123",
+            title="Backend Engineer",
+            company="Acme",
+            url="https://jobs.lever.co/acme/abc-123",
+        )
+    )
+
+    assert store.backfill_ats_identity() == 1
+
+    row = store._conn.execute(
+        "SELECT ats_provider, ats_board, ats_job_id FROM jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    assert (row["ats_provider"], row["ats_board"], row["ats_job_id"]) == (
+        "lever",
+        "acme",
+        "abc-123",
+    )
+
+
+def test_backfill_ats_identity_leaves_non_ats_and_already_attributed_rows_alone(tmp_path):
+    store = JobStore(tmp_path / "state.sqlite3")
+    store.upsert_job(
+        Job(source="hackernews", source_job_id="1", title="Backend Engineer", url="https://acme.test/jobs/1")
+    )
+    attributed_id, _, _ = store.upsert_job(
+        Job(
+            source="ashby",
+            source_job_id="2",
+            title="Backend Engineer",
+            url="https://jobs.ashbyhq.com/other/xyz",
+            ats_provider="ashby",
+            ats_board="acme",
+            ats_job_id="xyz",
+        )
+    )
+
+    assert store.backfill_ats_identity() == 0
+
+    row = store._conn.execute(
+        "SELECT ats_board FROM jobs WHERE id = ?", (attributed_id,)
+    ).fetchone()
+    assert row["ats_board"] == "acme"
+
+
+def test_backfill_ats_identity_is_idempotent(tmp_path):
+    store = JobStore(tmp_path / "state.sqlite3")
+    store.upsert_job(
+        Job(
+            source="greenhouse",
+            source_job_id="456",
+            title="Backend Engineer",
+            url="https://boards.greenhouse.io/acme/jobs/456",
+        )
+    )
+
+    assert store.backfill_ats_identity() == 1
+    assert store.backfill_ats_identity() == 0

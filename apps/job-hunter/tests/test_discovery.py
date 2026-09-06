@@ -151,6 +151,53 @@ def test_collect_candidates_collapses_same_canonical_url(store, policy):
     assert result.eligible[0][1].company == "Acme"
 
 
+def test_collect_candidates_derives_ats_identity_from_a_non_ats_source(store, policy):
+    job = Job(
+        source="search:brave",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://jobs.lever.co/acme/abc-123",
+        description="React TypeScript",
+        remote=True,
+    )
+    result = collect_candidates([FakeSource([job])], store, NoOpHttp(), policy)
+
+    assert len(result.eligible) == 1
+    eligible_job = result.eligible[0][1]
+    assert (eligible_job.ats_provider, eligible_job.ats_board, eligible_job.ats_job_id) == (
+        "lever",
+        "acme",
+        "abc-123",
+    )
+
+
+def test_collect_candidates_dedupes_on_derived_ats_identity(store, policy):
+    # Same posting, different URL spellings: only the ATS identity derived
+    # from each URL can join these two into one candidate.
+    jobs = [
+        Job(
+            source="search:brave",
+            title="Senior Product Engineer",
+            company="Acme",
+            url="https://jobs.lever.co/acme/abc-123/apply",
+            description="React TypeScript",
+            remote=True,
+        ),
+        Job(
+            source="lever",
+            source_job_id="abc-123",
+            title="Senior Product Engineer Remote",
+            company="Acme Inc",
+            url="https://jobs.lever.co/acme/abc-123",
+            description="React TypeScript",
+            remote=True,
+        ),
+    ]
+    result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+
+    assert result.stats.unique == 1
+
+
 def test_collect_candidates_enriches_url_only_job(store, policy):
     job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
     http = FakeHttp(_JOB_POSTING_HTML)

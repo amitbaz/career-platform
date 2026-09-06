@@ -8,6 +8,7 @@ from job_hunter import content_confidence
 from job_hunter.ats_registry import harvest_ats_board
 from job_hunter.canonical import (
     CanonicalResolver,
+    apply_ats_identity,
     fetch_authoritative_description,
     parse_supported_ats_url,
 )
@@ -303,6 +304,11 @@ def collect_candidates(
             stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
             if job.url:
                 job.original_url = job.original_url or job.url
+            # Attribute before the first persist and before _dedupe, so a job
+            # from any source that happens to carry a supported ATS URL is
+            # stored with its identity and can be matched on the strongest
+            # dedup key this run rather than only on its URL.
+            apply_ats_identity(job)
             job.content_confidence = content_confidence.infer_content_confidence(
                 job.source, job.description
             )

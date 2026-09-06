@@ -33,6 +33,53 @@ def parse_supported_ats_url(url: str) -> AtsReference | None:
     return None
 
 
+def apply_ats_identity(job: Job, fallback: AtsReference | None = None) -> bool:
+    """Populate a job's empty ATS identity fields in place.
+
+    Evidence is taken from the job's own URLs first (``canonical_url``, then
+    ``url``, then ``original_url``), and only then from ``fallback`` — the
+    reference a caller knows independently of the URL, such as an ATS adapter
+    that was constructed with a board identifier and read the job id out of
+    the listing payload.
+
+    URLs win over ``fallback`` so that identity always agrees with what every
+    other code path derives from the same URL (``extract_ats_reference``,
+    ``discovery.candidate_ats_key``, ``JobStore._find_job_ids_by_ats``). A
+    board slug spelled differently by the adapter and by the posting URL would
+    otherwise split the dedup key instead of joining it.
+
+    Already-populated fields are never overwritten, matching the
+    strongest-evidence-wins rule the store applies on update. Returns True when
+    any field was filled.
+    """
+    if job.ats_provider and job.ats_board and job.ats_job_id:
+        return False
+
+    reference: AtsReference | None = None
+    for url in (job.canonical_url, job.url, job.original_url):
+        if not url:
+            continue
+        reference = parse_supported_ats_url(url)
+        if reference is not None:
+            break
+    if reference is None:
+        reference = fallback
+    if reference is None:
+        return False
+
+    filled = False
+    if not job.ats_provider and reference.provider:
+        job.ats_provider = reference.provider
+        filled = True
+    if not job.ats_board and reference.board:
+        job.ats_board = reference.board
+        filled = True
+    if not job.ats_job_id and reference.job_id:
+        job.ats_job_id = reference.job_id
+        filled = True
+    return filled
+
+
 class CanonicalResolver:
     """Resolve a job to a public canonical URL without blocking the pipeline on errors."""
 

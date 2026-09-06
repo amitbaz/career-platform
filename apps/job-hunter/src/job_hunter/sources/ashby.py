@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from job_hunter.models import Job
+from job_hunter.canonical import apply_ats_identity
+from job_hunter.models import AtsReference, Job
 from job_hunter.normalize import canonicalize_url
 
 from .base import is_stale_board_error, logger, strip_html
@@ -29,18 +30,25 @@ class AshbySource:
         for item in data.get("jobs", []):
             job_id = item.get("id")
             description = item.get("descriptionPlain") or item.get("descriptionHtml", "")
-            jobs.append(
-                Job(
-                    source="ashby",
-                    source_job_id=str(job_id) if job_id is not None else None,
-                    title=item.get("title", ""),
-                    company=self._board,
-                    location=item.get("location", ""),
-                    url=item.get("jobUrl", ""),
-                    description=strip_html(description),
-                    remote=item.get("isRemote"),
-                )
+            job = Job(
+                source="ashby",
+                source_job_id=str(job_id) if job_id is not None else None,
+                title=item.get("title", ""),
+                company=self._board,
+                location=item.get("location", ""),
+                url=item.get("jobUrl", ""),
+                description=strip_html(description),
+                remote=item.get("isRemote"),
             )
+            apply_ats_identity(
+                job,
+                AtsReference(
+                    provider="ashby",
+                    board=self._board,
+                    job_id=str(job_id) if job_id is not None else None,
+                ),
+            )
+            jobs.append(job)
         return jobs
 
 
