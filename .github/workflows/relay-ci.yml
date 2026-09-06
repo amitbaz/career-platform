@@ -35,3 +35,21 @@ jobs:
       - run: pnpm --filter relay lint
       - run: pnpm --filter relay test
       - run: pnpm --filter relay build
+
+  db:
+    # pgTAP isolation tests for platform migrations. Runs against a
+    # throwaway local Supabase stack; nothing touches the hosted project.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: pnpm install --frozen-lockfile
+      - run: supabase start
+      - run: pnpm db:test
