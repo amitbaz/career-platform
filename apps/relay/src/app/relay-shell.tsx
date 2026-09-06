@@ -195,32 +195,85 @@ function evidenceSummary(item: EvidenceItem): string {
  */
 const speechFloor = 0.02;
 
+/** A running speech monitor over one microphone stream. */
+type SpeechMonitor = {
+  /** Loudest sample seen while the audio graph was actually rendering. */
+  peak: () => number;
+  /**
+   * Whether the graph ever rendered. False means `peak` is an artefact of a
+   * context that never ran, not a measurement of the room.
+   */
+  measured: () => boolean;
+  /** Tears down the timer, the graph, and the context. */
+  stop: () => void;
+};
+
 /**
  * Watches a microphone stream and reports the loudest sample seen so far.
  *
  * Returns null when the browser has no Web Audio support, in which case the
  * caller transcribes unguarded rather than losing the feature outright.
+ *
+ * The context is built after `getUserMedia` resolves, which is outside the
+ * click that started the recording, so the autoplay policy hands us a
+ * suspended context. A suspended context renders nothing and its analyser
+ * returns a buffer of zeros, which reads exactly like a silent room -- the
+ * cause of desktop takes being rejected while the candidate was speaking. So
+ * resume it, and refuse to draw any conclusion from samples taken while it was
+ * not running.
  */
-function monitorSpeech(stream: MediaStream): { peak: () => number; stop: () => void } | null {
+function monitorSpeech(stream: MediaStream): SpeechMonitor | null {
   const AudioContextConstructor = window.AudioContext
     ?? (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextConstructor) return null;
   const context = new AudioContextConstructor();
   const analyser = context.createAnalyser();
   analyser.fftSize = 2048;
-  context.createMediaStreamSource(stream).connect(analyser);
+  const source = context.createMediaStreamSource(stream);
+  source.connect(analyser);
   const samples = new Float32Array(analyser.fftSize);
   let peak = 0;
+  let measured = false;
   const sample = () => {
+    // `state` is absent only in environments that do not model it; there, the
+    // graph is the caller's problem and the samples are taken at face value.
+    if (context.state && context.state !== "running") return;
+    measured = true;
     analyser.getFloatTimeDomainData(samples);
     for (const value of samples) peak = Math.max(peak, Math.abs(value));
   };
+  // Sampling on resume rather than waiting for the next tick keeps short takes
+  // measurable. iOS Safari reports "interrupted" instead of "suspended", and
+  // resume() answers both.
+  if (context.state && context.state !== "running") void context.resume?.().then(sample, () => {});
   sample();
   const timer = window.setInterval(sample, 100);
   return {
     peak: () => peak,
-    stop: () => { window.clearInterval(timer); void context.close(); },
+    measured: () => measured,
+    stop: () => { window.clearInterval(timer); source.disconnect(); void context.close(); },
   };
+}
+
+/**
+ * Explains why a captured input cannot have carried speech, or null when it
+ * looks capable of it.
+ *
+ * A muted or ended track emits pure silence into both `MediaRecorder` and the
+ * speech monitor, so the generic "no speech" message blames the candidate for
+ * a machine problem. Naming the device the browser actually chose is the part
+ * a user can act on when the default input is the wrong one.
+ */
+function describeDeadInput(track: MediaStreamTrack | undefined): string | null {
+  if (!track) return null;
+  const device = track.label ? `"${track.label}"` : "The selected microphone";
+  if (track.readyState === "ended") {
+    return `${device} disconnected before the recording finished. Reconnect it, or type your answer instead.`;
+  }
+  if (track.muted) {
+    return `${device} delivered no audio — it may be muted or held by another app. Choose a different microphone for this site in your browser settings, or type your answer instead.`;
+  }
+  return null;
 }
 
 export function RelayShell() {
@@ -639,13 +692,18 @@ export function RelayShell() {
       recordingChunks.current = [];
       nextRecorder.ondataavailable = (event) => { if (event.data.size) recordingChunks.current.push(event.data); };
       nextRecorder.onstop = async () => {
+        const deadInput = describeDeadInput(stream.getTracks()[0]);
         stream.getTracks().forEach((track) => track.stop());
-        const peak = monitor?.peak() ?? null;
+        // A monitor that never rendered proves nothing about the take, so the
+        // guard stands down and `/api/transcribe` catches silence with its
+        // NO_SPEECH_DETECTED sentinel instead. Losing a real answer to a
+        // context the browser refused to run is the worse failure.
+        const soundedSilent = monitor !== null && monitor.measured() && monitor.peak() < speechFloor;
         monitor?.stop();
         const audio = new Blob(recordingChunks.current, { type: nextRecorder.mimeType || "audio/webm" });
-        const heardSpeech = peak === null || peak >= speechFloor;
-        if (!audio.size || !heardSpeech) {
-          if (audio.size && !heardSpeech) setError("No speech was picked up. Check your microphone, or type your answer instead.");
+        if (!audio.size || deadInput || soundedSilent) {
+          if (audio.size && deadInput) setError(deadInput);
+          else if (audio.size) setError("No speech was picked up. Check your microphone, or type your answer instead.");
           recorder.current = null; setIsRecording(false);
           return;
         }
