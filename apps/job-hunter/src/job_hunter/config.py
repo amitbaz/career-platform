@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -46,12 +46,16 @@ class SupabaseSettings:
 
     ``signing_key_jwk`` is the private half of the project's ES256 signing key.
     It is held in memory only and must never be logged or written to disk.
+    That promise is enforced by the type itself: the field is excluded from
+    ``repr()`` (via ``field(repr=False)``), so a stray ``logger.info(settings)``,
+    ``print(settings)``, or a future ``pytest --showlocals`` failure cannot
+    print the key.
     """
 
     user_id: str
     url: str
     publishable_key: str
-    signing_key_jwk: dict
+    signing_key_jwk: dict = field(repr=False)
 
 
 def load_gmail_settings() -> GmailSettings:

@@ -84,3 +84,12 @@ def test_signing_key_without_kid_raises(monkeypatch):
 
     with pytest.raises(ValueError, match="kid"):
         load_supabase_settings()
+
+
+def test_repr_never_prints_the_private_key(monkeypatch):
+    _set_all(monkeypatch)
+
+    settings = load_supabase_settings()
+
+    assert VALID_JWK["d"] not in repr(settings)
+    assert "signing_key_jwk" not in repr(settings)
