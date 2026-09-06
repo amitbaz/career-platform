@@ -35,16 +35,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def client() -> SupabaseClient:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"  # seed.sql user A
-    jwk = json.loads(base64.b64decode(_JWK))
-    settings = SupabaseSettings(
-        url=_URL.rstrip("/"),
-        publishable_key=_KEY,
-        user_id=user_id,
-        signing_key_jwk=jwk,
-    )
-    return SupabaseClient(HttpClient(), settings, AccessTokenMinter(user_id, jwk))
+def client(supabase_client: SupabaseClient) -> SupabaseClient:
+    """User A's client, with conftest.py's shared truncation around it."""
+    return supabase_client
 
 
 def _client_for(user_id: str) -> SupabaseClient:
@@ -59,49 +52,9 @@ def _client_for(user_id: str) -> SupabaseClient:
     return SupabaseClient(HttpClient(), settings, AccessTokenMinter(user_id, jwk))
 
 
-# Tables in foreign-key-safe order (children before parents)
-_CLEANUP_TABLES = (
-    "job_hunter_deliveries",
-    "job_hunter_review_deliveries",
-    "job_hunter_application_events",
-    "job_hunter_evaluations",
-    "job_hunter_materials",
-    "job_hunter_inbound_job_candidates",
-    "job_hunter_company_watch",
-    "job_hunter_job_sources",
-    "job_hunter_jobs",
-    "job_hunter_gmail_messages",
-)
-
-# User IDs that tests may use
-_TEST_USER_IDS = (
-    "aaaaaaaa-0000-0000-0000-000000000001",  # User A
-    "bbbbbbbb-0000-0000-0000-000000000002",  # User B
-)
-
-
-@pytest.fixture(autouse=True)
-def cleanup_test_data() -> None:
-    """Autouse fixture to clean up test data after each test.
-
-    Runs after every test in this file, even on failure or error.
-    Deletes all rows created by tests in foreign-key-safe order
-    using each user's own token (no service_role).
-    """
-    yield  # Let the test run first
-
-    # Clean up after the test, regardless of pass/fail/error
-    for user_id in _TEST_USER_IDS:
-        client = _client_for(user_id)
-        # Delete in child-first order to respect FK constraints
-        for table in _CLEANUP_TABLES:
-            try:
-                # Delete all rows for this user from this table.
-                # Use created_at >= 2000-01-01 to match all rows (RLS ensures only user's rows are visible)
-                client.delete(table, params={"created_at": "gte.2000-01-01"})
-            except Exception:
-                # Table might not exist, might be empty, or user might not have created rows there
-                pass
+# Cleanup between tests is handled by conftest.py's `_cleanup_seed_users`
+# fixture, transitively pulled in by the `client` fixture above (it depends
+# on `supabase_client`). See that file for the table order and rationale.
 
 
 def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None:
