@@ -771,6 +771,10 @@ def test_provenance_without_source_id_uses_canonical_url(store):
     rows = store.list_job_sources(job_id)
     assert len(rows) == 1
     assert rows[0]["identity_key"] == "url:https://yc.test/job/123"
+    # The second call resolved to the same identity via a differently-decorated
+    # raw URL; the original source_url (and every other non-last_seen_at column)
+    # must survive, matching the SQLite original's DO UPDATE SET last_seen_at only.
+    assert rows[0]["source_url"] == "https://yc.test/job/123?utm_source=digest"
 
 
 def test_strong_lookups_find_the_single_matching_job(store):
@@ -794,6 +798,26 @@ def test_strong_lookups_find_the_single_matching_job(store):
     ) == job_id
     assert store.find_job_by_ats("greenhouse", "acme", "posting-1") == job_id
     assert store.find_job_by_identity("ACME", "senior frontend engineer", "Berlin") == job_id
+
+
+def test_find_job_by_canonical_url_matches_percent_encoded_query_values(store):
+    # job_hunter_canonicalize_url (the SQL authority) and normalize.canonicalize_url
+    # (Python) disagree on percent-encoding: Python's parse_qsl/urlencode round trip
+    # turns "%20" into "+", SQL leaves the raw text alone. upsert_job stores
+    # canonical_url via the SQL function (no explicit canonical_url is given here,
+    # so it's derived from url), so the lookup must canonicalize the same way or a
+    # URL that differs only in encoding won't resolve to the job that owns it.
+    job_id, _, _ = store.upsert_job(
+        Job(
+            source="ashby",
+            title="Frontend Engineer",
+            url="https://jobs.ashbyhq.com/acme/xyz?q=a%20b",
+        )
+    )
+
+    assert store.find_job_by_canonical_url(
+        "https://jobs.ashbyhq.com/acme/xyz?q=a%20b"
+    ) == job_id
 
 
 def test_unresolved_rediscovery_retains_existing_canonical_and_ats_metadata(store):
@@ -1824,12 +1848,20 @@ def test_merge_survivor_prefers_application_events_over_other_history(tmp_path):
 
 
 def test_merge_survivor_prefers_older_first_seen_over_lower_id(store, supabase_client):
-    lower_id, _, _ = store.upsert_job(
-        Job(source="lower", source_job_id="1", title="Frontend Engineer")
+    # Ids are random uuids now, so "the older job" and "the lower-sorting id"
+    # coincide about half the time by chance. Sort the two actual ids first
+    # and deliberately give the age advantage to the HIGHER-sorting one, so
+    # the assertion below can only hold if age genuinely beats the id
+    # tie-break -- a survivor rule that wrongly checked id before age would
+    # fail this, whereas it would pass a version of this test that left age
+    # and id pointing the same way by luck.
+    first_id, _, _ = store.upsert_job(
+        Job(source="a", source_job_id="1", title="Frontend Engineer")
     )
-    older_id, _, _ = store.upsert_job(
-        Job(source="older", source_job_id="2", title="Frontend Engineer")
+    second_id, _, _ = store.upsert_job(
+        Job(source="b", source_job_id="2", title="Frontend Engineer")
     )
+    lower_id, higher_id = sorted((first_id, second_id))
     supabase_client.update(
         "job_hunter_jobs",
         {"first_seen_at": "2026-08-31T10:00:00+00:00"},
@@ -1838,12 +1870,12 @@ def test_merge_survivor_prefers_older_first_seen_over_lower_id(store, supabase_c
     supabase_client.update(
         "job_hunter_jobs",
         {"first_seen_at": "2026-08-30T10:00:00+00:00"},
-        params={"id": f"eq.{older_id}"},
+        params={"id": f"eq.{higher_id}"},
     )
 
-    assert store.merge_jobs(lower_id, older_id) == older_id
+    assert store.merge_jobs(lower_id, higher_id) == higher_id
     assert store.get_job(lower_id) is None
-    assert store.get_job(older_id) is not None
+    assert store.get_job(higher_id) is not None
 
 
 def test_merge_survivor_uses_lower_id_when_history_and_age_are_equal(store, supabase_client):

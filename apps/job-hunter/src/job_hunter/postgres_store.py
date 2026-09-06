@@ -21,7 +21,7 @@ from typing import Any
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
 from job_hunter.models import Job
-from job_hunter.normalize import canonicalize_url, job_fingerprint
+from job_hunter.normalize import job_fingerprint
 from job_hunter.store_mapping import job_from_row, to_iso
 from job_hunter.supabase_client import SupabaseClient
 
@@ -51,6 +51,25 @@ class PostgresJobStore:
     # ------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------
+
+    def _canonicalize_url(self, url: str) -> str:
+        """Canonicalize a URL through the SQL authority, not Python's own.
+
+        `job_hunter_canonicalize_url` is the sole authority for canonical
+        URLs and identity keys (migration 202609060004): it disagrees with
+        `normalize.canonicalize_url` both on percent-encoding (Python's
+        `parse_qsl`/`urlencode` round trip turns `%20` into `+`; SQL leaves
+        the raw text alone) and on tracking-param ordering (SQL sorts
+        `"k=v"` strings under `collate "C"`; Python sorts `(k, v)` tuples).
+        Every RPC-backed write (`job_hunter_upsert_job`) computes
+        `canonical_url` and `job_sources.identity_key` with the SQL
+        function, so a Python-side computation here would silently diverge
+        from what's already stored -- a URL differing only in encoding
+        would miss a job that exists, or `record_job_source` would write a
+        second provenance row for an identity `job_hunter_upsert_job`
+        already recorded under a differently-encoded key.
+        """
+        return self._client.rpc("job_hunter_canonicalize_url", {"p_url": url})[0]
 
     @staticmethod
     def _job_payload(job: Job) -> dict[str, Any]:
@@ -133,20 +152,20 @@ class PostgresJobStore:
     ) -> None:
         """Record a discovery source once while refreshing its last-seen time.
 
-        Translates store.py:1090-1140. `first_seen_at` must not move on a
-        repeat call for the same identity key -- the SQLite original's
+        Translates store.py:1090-1140. On a repeat call for the same
+        identity key, `source`, `source_job_id`, `source_url`, and
+        `first_seen_at` must not move -- the SQLite original's
         `ON CONFLICT ... DO UPDATE SET last_seen_at = excluded.last_seen_at`
-        leaves it untouched, but `SupabaseClient.upsert` issues a
-        merge-duplicates PATCH-via-POST that would overwrite every column
-        including `first_seen_at`. Reading back any existing row's
-        `first_seen_at` first and carrying it forward reproduces the
-        original's selective-column behaviour.
+        leaves all four untouched, but `SupabaseClient.upsert` issues a
+        merge-duplicates PATCH-via-POST that would overwrite every column.
+        Reading back any existing row's four columns first and carrying
+        them forward reproduces the original's selective-column behaviour;
+        only a genuinely new identity uses this call's arguments and `now`.
         """
-        canonical_source_url = canonicalize_url(source_url)
         identity_key = (
             f"id:{source}:{source_job_id}"
             if source_job_id
-            else f"url:{canonical_source_url}"
+            else f"url:{self._canonicalize_url(source_url)}"
         )
         now = to_iso(datetime.now(timezone.utc))
         existing = self._client.select(
@@ -155,10 +174,17 @@ class PostgresJobStore:
                 "job_id": f"eq.{job_id}",
                 "identity_key": f"eq.{identity_key}",
                 "limit": "1",
-                "select": "first_seen_at",
+                "select": "source,source_job_id,source_url,first_seen_at",
             },
         )
-        first_seen_at = existing[0]["first_seen_at"] if existing else now
+        if existing:
+            row = existing[0]
+            source = row["source"]
+            source_job_id = row["source_job_id"]
+            source_url = row["source_url"]
+            first_seen_at = row["first_seen_at"]
+        else:
+            first_seen_at = now
         self._client.upsert(
             "job_hunter_job_sources",
             [
@@ -196,7 +222,7 @@ class PostgresJobStore:
         rows = self._client.select(
             "job_hunter_jobs",
             params={
-                "canonical_url": f"eq.{canonicalize_url(url)}",
+                "canonical_url": f"eq.{self._canonicalize_url(url)}",
                 "select": "id",
             },
         )
