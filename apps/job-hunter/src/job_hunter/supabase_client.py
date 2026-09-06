@@ -205,7 +205,7 @@ class SupabaseClient:
             raise ValueError("update and delete require a filter in params")
 
     @staticmethod
-    def _parse(response) -> list[dict[str, Any]]:
+    def _parse(response) -> list[Any]:
         if response.status_code == 401:
             raise SupabaseAuthError("Supabase rejected the access token (401)")
         if response.status_code == 403:

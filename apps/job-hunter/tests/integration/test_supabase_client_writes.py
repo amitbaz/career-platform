@@ -168,11 +168,12 @@ def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> 
     """
     user_a_id = "aaaaaaaa-0000-0000-0000-000000000001"
     user_b_id = "bbbbbbbb-0000-0000-0000-000000000002"
+    marker = f"rls-test-{uuid.uuid4()}"
 
     # Create a high-scoring job for user A
     job_a = client.insert(
         "job_hunter_jobs",
-        [{"user_id": user_a_id, "fingerprint": f"fp-a-{uuid.uuid4()}", "source": "test", "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
+        [{"user_id": user_a_id, "fingerprint": f"fp-a-{uuid.uuid4()}", "source": marker, "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
     )[0]
     client.upsert(
         "job_hunter_evaluations",
@@ -190,7 +191,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> 
     client_b = _client_for(user_b_id)
     job_b = client_b.insert(
         "job_hunter_jobs",
-        [{"user_id": user_b_id, "fingerprint": f"fp-b-{uuid.uuid4()}", "source": "test", "url": "https://y", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
+        [{"user_id": user_b_id, "fingerprint": f"fp-b-{uuid.uuid4()}", "source": marker, "url": "https://y", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
     )[0]
     client_b.upsert(
         "job_hunter_evaluations",
@@ -212,19 +213,24 @@ def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> 
     assert str(job_a["id"]) in job_ids, "User A's job should appear in results"
     assert str(job_b["id"]) not in job_ids, "User B's job should NOT appear in user A's results (RLS violation)"
 
+    # Clean up: delete evaluations first (they reference jobs), then jobs
+    client.delete("job_hunter_evaluations", params={"job_id": f"eq.{job_a['id']}"})
+    client_b.delete("job_hunter_evaluations", params={"job_id": f"eq.{job_b['id']}"})
+    client.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
+    client_b.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
+
 
 def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
     """Verify that retry=False suppresses retries on transient failures.
 
     Monkeypatches the HTTP layer to return 502 errors and verifies:
     - With retry=False: exactly 1 request is made
-    - With retry=True: more than 1 request is made
+    - With retry=True: exactly 3 requests are made (_MAX_RETRIES=2 means 1 initial + 2 retries)
     """
     from requests import Response
 
-    # Test with retry=False: should make exactly 1 request
-    call_count = 0
-    original_request = client._http._session.request
+    # HttpClient has _MAX_RETRIES = 2, so 1 initial + 2 retries = 3 total attempts
+    max_retries_plus_one = 3
 
     def mock_502_once(method, url, **kwargs):
         nonlocal call_count
@@ -234,23 +240,23 @@ def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
         response._content = b'{"error": "bad gateway"}'
         return response
 
+    # Test with retry=False: should make exactly 1 request
+    call_count = 0
     with patch.object(client._http._session, 'request', side_effect=mock_502_once):
-        call_count = 0
         try:
             client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 0}, retry=False)
         except Exception:
             pass  # Expected to fail; we just care about call count
         assert call_count == 1, f"With retry=False, exactly 1 request should be made, but got {call_count}"
 
-    # Test with retry=True: should make multiple requests (with backoff)
+    # Test with retry=True: should make exact number of retries (1 initial + 2 retries)
     call_count = 0
     with patch.object(client._http._session, 'request', side_effect=mock_502_once):
-        call_count = 0
         try:
             client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 0}, retry=True)
         except Exception:
             pass  # Expected to fail after retries; we just care about call count
-        assert call_count > 1, f"With retry=True, multiple requests should be made, but got {call_count}"
+        assert call_count == max_retries_plus_one, f"With retry=True, {max_retries_plus_one} requests should be made, but got {call_count}"
 
 
 def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
@@ -260,6 +266,7 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
     serializes as a JSON array of strings (UUIDs). Verifies the shape is correct.
     """
     user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    marker = f"setof-test-{uuid.uuid4()}"
 
     # Create a job with distinct company and title so we can find it by identity
     job = client.insert(
@@ -267,7 +274,7 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
         [{
             "user_id": user_id,
             "fingerprint": f"fp-identity-{uuid.uuid4()}",
-            "source": "test",
+            "source": marker,
             "url": "https://example.com",
             "company": "Acme Corp",
             "title": "Senior Engineer",
@@ -288,3 +295,64 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
     # Should return at least our created job's UUID as a string
     assert any(isinstance(item, str) for item in result), "Result should contain string UUIDs"
     assert str(job["id"]) in result, "Created job should be in the identity search results"
+
+    # Clean up: delete job seeded by this test
+    client.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
+
+
+def test_rpc_returns_bare_scalar_values(client: SupabaseClient) -> None:
+    """Verify that bare scalar functions return a one-element list with the scalar value.
+
+    job_hunter_merge_jobs returns a bare scalar uuid, which PostgREST
+    serializes as a JSON string. _parse wraps it into a one-element list: ['uuid'].
+    """
+    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    marker = f"merge-test-{uuid.uuid4()}"
+
+    # Create two jobs with the same logical identity (company/title/location)
+    # so they will merge. Use distinct URLs to avoid duplicate canonical_url conflicts.
+    # Give job1 an earlier first_seen_at so it's guaranteed to be the survivor.
+    job1 = client.insert(
+        "job_hunter_jobs",
+        [{
+            "user_id": user_id,
+            "fingerprint": f"fp-merge-1-{uuid.uuid4()}",
+            "source": marker,
+            "url": f"https://example.com/job1-{uuid.uuid4()}",
+            "company": "Merge Test Corp",
+            "title": "Backend Engineer",
+            "location": "New York",
+            "first_seen_at": "2026-09-01T10:00:00+00:00",
+            "last_seen_at": "2026-09-06T10:00:00+00:00"
+        }],
+    )[0]
+
+    job2 = client.insert(
+        "job_hunter_jobs",
+        [{
+            "user_id": user_id,
+            "fingerprint": f"fp-merge-2-{uuid.uuid4()}",
+            "source": marker,
+            "url": f"https://example.com/job2-{uuid.uuid4()}",
+            "company": "Merge Test Corp",
+            "title": "Backend Engineer",
+            "location": "New York",
+            "first_seen_at": "2026-09-06T10:00:00+00:00",
+            "last_seen_at": "2026-09-06T10:00:00+00:00"
+        }],
+    )[0]
+
+    # Call merge_jobs through rpc with retry=False (required for non-idempotent operations)
+    result = client.rpc("job_hunter_merge_jobs", {
+        "p_survivor": job1["id"],
+        "p_duplicate": job2["id"]
+    }, retry=False)
+
+    assert isinstance(result, list), "Result should be a list"
+    assert len(result) == 1, f"Bare scalar result should be a one-element list, got {len(result)} elements"
+    survivor_id = result[0]
+    assert isinstance(survivor_id, str), f"Bare scalar result should contain a string, got {type(survivor_id)}"
+    assert survivor_id == str(job1["id"]), f"Survivor should be job1 (id={job1['id']}), but got {survivor_id}"
+
+    # Clean up: delete the remaining job (job2 was deleted by the merge)
+    client.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
