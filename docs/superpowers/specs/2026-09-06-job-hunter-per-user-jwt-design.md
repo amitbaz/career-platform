@@ -203,24 +203,57 @@ ES256` written to a gitignored `supabase/signing_keys.json`, with `signing_keys_
 
 ## Risks and open verifications
 
-- **The local stack may not honour `signing_keys_path` for PostgREST verification.** The option
-  exists in the config template and `supabase gen bearer-jwt` reads it, but nothing confirms
-  PostgREST accepts ES256 tokens locally. This must be verified as the first implementation step,
-  before any code is written against it. If it does not hold, the fallback is to run the local
-  integration test against the local HS256 secret while production uses ES256 — which weakens the
-  test, and would be a reason to revisit the signing-key decision rather than paper over it.
-- **The migration may not have been pushed to the cloud project.** Nothing in the history
-  confirms `supabase db push` ran after `55db425` merged. Irrelevant to the local test, relevant
-  before anything runs against the real project.
+Both open verifications below were settled during implementation. Their original wording is kept
+so the record shows what was assumed and what was actually found.
+
+- ~~**The local stack may not honour `signing_keys_path` for PostgREST verification.**~~ The
+  option exists in the config template and `supabase gen bearer-jwt` reads it, but nothing
+  confirmed PostgREST accepts ES256 tokens locally. The fallback, had it failed, was to run the
+  local integration test against the local HS256 secret while production used ES256 — which
+  weakens the test, and would have been a reason to revisit the signing-key decision rather than
+  paper over it.
+
+  **Resolved.** The local stack honours it. A token signed from the imported JWK, carrying
+  exactly `sub`/`role`/`exp` and no `iat`, returned `[]` and HTTP 200 from the local PostgREST.
+  Verified twice — once with `supabase gen bearer-jwt`, once with `PyJWT` through
+  `ECAlgorithm.from_jwk` — before any code was written against it.
+
+- ~~**The migration may not have been pushed to the cloud project.**~~ Nothing in the history
+  confirmed `supabase db push` ran after `55db425` merged.
+
+  **Resolved.** `supabase migration list --linked` shows `202609060002` present remotely. No
+  action was needed.
+
 - **Losing the private signing key means generating and rotating a new one.** Supabase cannot
-  export it back.
+  export it back. This remains true and is the standing risk to manage.
 
 ## Applying this outside git
 
-The following are not code changes and must be done by hand before a real run works:
+These are not code changes. All four were completed by hand and verified against the hosted
+project; they are recorded here so the same steps can be repeated for another environment.
 
-1. Generate an ES256 signing key with the Supabase CLI and store the private JWK safely.
-2. Import it into the Supabase project as a standby key, then rotate it to active.
+1. Generate an ES256 signing key with the Supabase CLI and store the private JWK safely. Use a
+   key distinct from the local stack's, so a laptop compromise does not reach the real project.
+2. Import it into the Supabase project as a **standby** key, then rotate it to **in use**.
+   Supabase throttles signing-key state changes to roughly five minutes apart, so the import and
+   the rotation cannot happen back to back. A standby key's public half is published to the JWKS
+   endpoint, but tokens signed with it are rejected until the rotation — publication alone is not
+   proof the key is usable.
 3. Set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64` and
-   `JOB_HUNTER_USER_ID` as GitHub Actions secrets.
+   `JOB_HUNTER_USER_ID` as GitHub Actions secrets. The signing key is the base64 of the single
+   JWK **object** — not the JSON array the local stack's `signing_keys.json` uses.
 4. Confirm the #66 migration has been pushed to the cloud project.
+
+The only proof that the chain works is a request: mint a token from the stored key and call the
+hosted PostgREST. HTTP 200 with an empty list is success — the user owns no rows yet. HTTP 401
+means the key is still standby, or the stored secret holds a different key than the one imported.
+A wrong `JOB_HUNTER_USER_ID` fails silently instead: every query returns `[]` forever, which is
+indistinguishable from row-level security working.
+
+### Follow-up, not part of this change
+
+The legacy HS256 JWT secret remains in *previously used* after the rotation. Revoking it requires
+first disabling the `anon` and `service_role` API keys, because those keys are themselves JWTs
+signed by that secret. Relay uses the publishable key and nothing in this repository references
+the hosted `anon` key, so the change is tractable — but it has its own blast radius and belongs
+in its own ticket.
