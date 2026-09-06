@@ -42,13 +42,7 @@ jobs:
           version: latest
       - name: Generate a throwaway signing key
         working-directory: .
-        run: |
-          # config.toml sets signing_keys_path, and the CLI reads that file before
-          # generating — so it must exist first. An empty array is a valid keys file.
-          # --append writes the key straight into it, in the array shape the stack
-          # wants, and prints only a status line: the key never reaches the log.
-          echo '[]' > supabase/signing_keys.json
-          supabase gen signing-key --algorithm ES256 --append
+        run: bash supabase/local-signing-key.sh
       - name: Start Supabase
         working-directory: .
         run: supabase start
