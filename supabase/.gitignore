@@ -6,3 +6,6 @@
 .env.keys
 .env.local
 .env.*.local
+
+# Generated per machine by `supabase gen signing-key`; never commit key material
+signing_keys.json
