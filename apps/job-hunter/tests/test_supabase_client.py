@@ -1,0 +1,156 @@
+import json
+
+import pytest
+
+from job_hunter.config import SupabaseSettings
+from job_hunter.supabase_client import (
+    SupabaseAuthError,
+    SupabaseClient,
+    SupabasePermissionError,
+    SupabaseRequestError,
+)
+
+SETTINGS = SupabaseSettings(
+    user_id="aaaaaaaa-0000-0000-0000-000000000001",
+    url="https://example.supabase.co",
+    publishable_key="sb_publishable_example",
+    signing_key_jwk={"kid": "k", "kty": "EC"},
+)
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload=None, text: str = ""):
+        self.status_code = status_code
+        self._payload = [] if payload is None else payload
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+class FakeMinter:
+    def token(self) -> str:
+        return "test-token"
+
+
+class FakeHttp:
+    """Records every call and returns queued responses in order."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses) or [FakeResponse(200)]
+        self.calls = []
+
+    def _record(self, method, url, **kwargs):
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return self.responses.pop(0) if self.responses else FakeResponse(200)
+
+    def get(self, url, **kwargs):
+        return self._record("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._record("POST", url, **kwargs)
+
+    def patch(self, url, **kwargs):
+        return self._record("PATCH", url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self._record("DELETE", url, **kwargs)
+
+
+def _client(*responses):
+    http = FakeHttp(*responses)
+    return SupabaseClient(http, SETTINGS, FakeMinter()), http
+
+
+def test_select_builds_the_url_and_passes_filters():
+    client, http = _client(FakeResponse(200, [{"id": "1"}]))
+
+    rows = client.select("job_hunter_jobs", params={"select": "id", "status": "eq.new"})
+
+    assert rows == [{"id": "1"}]
+    call = http.calls[0]
+    assert call["method"] == "GET"
+    assert call["url"] == "https://example.supabase.co/rest/v1/job_hunter_jobs"
+    assert call["params"] == {"select": "id", "status": "eq.new"}
+
+
+def test_every_request_carries_both_auth_headers():
+    client, http = _client()
+
+    client.select("job_hunter_jobs")
+
+    headers = http.calls[0]["headers"]
+    assert headers["Authorization"] == "Bearer test-token"
+    assert headers["apikey"] == "sb_publishable_example"
+
+
+def test_insert_posts_rows_and_asks_for_them_back():
+    client, http = _client(FakeResponse(201, [{"id": "1"}]))
+
+    rows = client.insert("job_hunter_jobs", [{"fingerprint": "f"}])
+
+    assert rows == [{"id": "1"}]
+    call = http.calls[0]
+    assert call["method"] == "POST"
+    assert call["json"] == [{"fingerprint": "f"}]
+    assert call["headers"]["Prefer"] == "return=representation"
+
+
+def test_update_patches_with_filters():
+    client, http = _client(FakeResponse(200, [{"id": "1"}]))
+
+    rows = client.update("job_hunter_jobs", {"status": "seen"}, params={"id": "eq.1"})
+
+    assert rows == [{"id": "1"}]
+    call = http.calls[0]
+    assert call["method"] == "PATCH"
+    assert call["json"] == {"status": "seen"}
+    assert call["params"] == {"id": "eq.1"}
+
+
+def test_delete_sends_filters():
+    client, http = _client(FakeResponse(200, []))
+
+    assert client.delete("job_hunter_jobs", params={"id": "eq.1"}) == []
+    assert http.calls[0]["method"] == "DELETE"
+
+
+@pytest.mark.parametrize("method", ["update", "delete"])
+def test_unfiltered_writes_are_refused(method):
+    client, _ = _client()
+
+    with pytest.raises(ValueError, match="filter"):
+        if method == "update":
+            client.update("job_hunter_jobs", {"status": "seen"}, params={})
+        else:
+            client.delete("job_hunter_jobs", params={})
+
+
+def test_401_raises_an_auth_error():
+    client, _ = _client(FakeResponse(401, text="JWT expired"))
+
+    with pytest.raises(SupabaseAuthError):
+        client.select("job_hunter_jobs")
+
+
+def test_403_raises_a_permission_error():
+    client, _ = _client(FakeResponse(403, text="row-level security"))
+
+    with pytest.raises(SupabasePermissionError):
+        client.insert("job_hunter_jobs", [{"fingerprint": "f"}])
+
+
+def test_other_failures_raise_a_request_error_naming_the_status():
+    client, _ = _client(FakeResponse(409, text="duplicate key"))
+
+    with pytest.raises(SupabaseRequestError, match="409"):
+        client.insert("job_hunter_jobs", [{"fingerprint": "f"}])
+
+
+def test_errors_do_not_leak_the_token():
+    client, _ = _client(FakeResponse(500, text="boom"))
+
+    with pytest.raises(SupabaseRequestError) as excinfo:
+        client.select("job_hunter_jobs")
+
+    assert "test-token" not in str(excinfo.value)
