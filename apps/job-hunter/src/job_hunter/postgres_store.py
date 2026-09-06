@@ -20,10 +20,26 @@ from typing import Any
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
-from job_hunter.models import Job
+from job_hunter.models import Evaluation, Job, Material
 from job_hunter.normalize import job_fingerprint
-from job_hunter.store_mapping import job_from_row, to_iso
+from job_hunter.store_mapping import (
+    evaluation_from_row,
+    job_from_row,
+    material_from_row,
+    to_iso,
+)
 from job_hunter.supabase_client import SupabaseClient
+
+# Translates store.py's `_DELIVERABLE_SCORE_FLOOR`. A job must score strictly
+# above this to ever be a delivery candidate.
+_DELIVERABLE_SCORE_FLOOR = 60
+
+# The tie-break `pending_delivery_job_ids`'s SQL function and the two
+# "latest row" reads below share: newest `evaluated_at`/`generated_at` wins,
+# with `created_at` then `id` as a deterministic (if practically unreachable
+# -- see the two methods' docstrings) fallback.
+_LATEST_EVALUATION_ORDER = "evaluated_at.desc,created_at.desc,id.desc"
+_LATEST_MATERIAL_ORDER = "generated_at.desc,created_at.desc,id.desc"
 
 
 class PostgresJobStore:
@@ -369,3 +385,222 @@ class PostgresJobStore:
             )
             updated += 1
         return updated
+
+    # ------------------------------------------------------------------
+    # Evaluations
+    # ------------------------------------------------------------------
+
+    def needs_evaluation(self, job_id: str) -> bool:
+        """Translates store.py:1999-2034.
+
+        The SQLite original joined `evaluations` to `jobs` in one query and
+        ordered by `e.id DESC` to find the most recent evaluation. Ids are
+        random uuids now, so `id DESC` is meaningless; this orders by
+        `evaluated_at` (with the usual `created_at`/`id` fallback -- see
+        `get_evaluation`) instead, in two requests rather than one PostgREST
+        embed, matching this module's existing two-step pattern (e.g.
+        `record_job_source`).
+        """
+        evaluations = self._client.select(
+            "job_hunter_evaluations",
+            params={
+                "job_id": f"eq.{job_id}",
+                "select": "status,description_hash_at_eval,content_confidence_at_eval",
+                "order": _LATEST_EVALUATION_ORDER,
+                "limit": "1",
+            },
+        )
+        if not evaluations:
+            return True
+        evaluation = evaluations[0]
+        if evaluation["status"] == "failed":
+            return True
+
+        jobs = self._client.select(
+            "job_hunter_jobs",
+            params={"id": f"eq.{job_id}", "select": "description_hash,content_confidence"},
+        )
+        job_row = jobs[0] if jobs else {}
+        if evaluation["description_hash_at_eval"] != (job_row.get("description_hash") or ""):
+            return True
+        if evaluation["content_confidence_at_eval"] != (job_row.get("content_confidence") or ""):
+            return True
+        return False
+
+    def save_evaluation(self, job_id: str, evaluation: Evaluation) -> None:
+        """Translates store.py:2036-2075.
+
+        Upserts against `job_hunter_evaluations`'s
+        `(user_id, job_id, evaluated_at)` constraint rather than inserting --
+        `HttpClient` retries POST on 5xx, so a plain insert here would
+        double-write on a transient error. `evaluated_at` is stamped now,
+        same as the original's `_now_iso()`; nothing about the evaluation
+        itself carries a caller-supplied timestamp to preserve.
+        """
+        jobs = self._client.select(
+            "job_hunter_jobs",
+            params={"id": f"eq.{job_id}", "select": "description_hash,content_confidence"},
+        )
+        job_row = jobs[0] if jobs else {}
+        description_hash = job_row.get("description_hash") or ""
+        content_confidence_value = (
+            evaluation.content_confidence or job_row.get("content_confidence") or ""
+        )
+        self._client.upsert(
+            "job_hunter_evaluations",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "job_id": job_id,
+                    "total_score": evaluation.total_score,
+                    "scores_json": evaluation.scores,
+                    "decision": evaluation.decision,
+                    "hard_blockers_json": evaluation.hard_blockers,
+                    "strengths_json": evaluation.strengths,
+                    "gaps_json": evaluation.gaps,
+                    "salary_note": evaluation.salary_note,
+                    "location_note": evaluation.location_note,
+                    "rationale": evaluation.rationale,
+                    "model": evaluation.model,
+                    "status": evaluation.status,
+                    "market_id": evaluation.market_id,
+                    "description_hash_at_eval": description_hash,
+                    "content_confidence_at_eval": content_confidence_value,
+                    "requirements_json": evaluation.requirements,
+                    "raw_model_score": evaluation.raw_model_score,
+                    "evaluated_at": to_iso(datetime.now(timezone.utc)),
+                }
+            ],
+            on_conflict="user_id,job_id,evaluated_at",
+        )
+
+    def get_evaluation(self, job_id: str) -> Evaluation | None:
+        """Translates store.py:2171-2204.
+
+        "Latest evaluation" means newest `evaluated_at` now, not highest
+        `id` -- ids are random uuids, so max-id is meaningless. Ties are
+        broken by `created_at` then `id`, matching
+        `job_hunter_pending_delivery_jobs`'s per-job ordering. In practice a
+        tie on `evaluated_at` for one job can't arise: `save_evaluation`
+        always upserts against `(user_id, job_id, evaluated_at)`, so two
+        saves that land on the same instant converge into one row instead
+        of leaving two to choose between (see the dedicated test for this).
+        The tie-break stays here anyway, matching the SQL function's
+        pattern, as a defensive-in-depth safeguard.
+        """
+        rows = self._client.select(
+            "job_hunter_evaluations",
+            params={
+                "job_id": f"eq.{job_id}",
+                "select": (
+                    "job_id,total_score,scores_json,decision,hard_blockers_json,"
+                    "strengths_json,gaps_json,salary_note,location_note,rationale,"
+                    "model,status,market_id,content_confidence_at_eval,"
+                    "requirements_json,raw_model_score"
+                ),
+                "order": _LATEST_EVALUATION_ORDER,
+                "limit": "1",
+            },
+        )
+        if not rows:
+            return None
+        return evaluation_from_row(rows[0])
+
+    # ------------------------------------------------------------------
+    # Materials
+    # ------------------------------------------------------------------
+
+    def save_material(self, job_id: str, material: Material) -> None:
+        """Translates store.py:2081-2090.
+
+        Upserts against `job_hunter_materials`'s `(user_id, job_id,
+        generated_at)` constraint, never inserts -- same retry-safety
+        reasoning as `save_evaluation`.
+        """
+        self._client.upsert(
+            "job_hunter_materials",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "job_id": job_id,
+                    "cover_letter_text": material.cover_letter_text,
+                    "generated_at": to_iso(datetime.now(timezone.utc)),
+                }
+            ],
+            on_conflict="user_id,job_id,generated_at",
+        )
+
+    def get_material(self, job_id: str) -> Material | None:
+        """Translates store.py:2206-2218.
+
+        Same "latest" reasoning as `get_evaluation`: newest `generated_at`
+        replaces highest `id`, with the same `created_at`/`id` fallback.
+        """
+        rows = self._client.select(
+            "job_hunter_materials",
+            params={
+                "job_id": f"eq.{job_id}",
+                "select": "job_id,cover_letter_text",
+                "order": _LATEST_MATERIAL_ORDER,
+                "limit": "1",
+            },
+        )
+        if not rows:
+            return None
+        return material_from_row(rows[0])
+
+    # ------------------------------------------------------------------
+    # Deliveries
+    # ------------------------------------------------------------------
+
+    def mark_delivered(
+        self,
+        job_id: str,
+        delivery_type: str,
+        telegram_id: str | None = None,
+    ) -> None:
+        """Translates store.py:2096-2111.
+
+        Upserts against `job_hunter_deliveries`'s `(user_id, job_id,
+        delivery_type, delivered_at)` constraint, never inserts -- same
+        retry-safety reasoning as `save_evaluation`.
+        """
+        self._client.upsert(
+            "job_hunter_deliveries",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "job_id": job_id,
+                    "delivery_type": delivery_type,
+                    "status": "sent",
+                    "delivered_at": to_iso(datetime.now(timezone.utc)),
+                    "telegram_message_id": telegram_id,
+                }
+            ],
+            on_conflict="user_id,job_id,delivery_type,delivered_at",
+        )
+
+    def has_delivery(self, job_id: str, delivery_type: str | None = None) -> bool:
+        """Translates store.py:2113-2124."""
+        params: dict[str, str] = {"job_id": f"eq.{job_id}", "select": "id", "limit": "1"}
+        if delivery_type is not None:
+            params["delivery_type"] = f"eq.{delivery_type}"
+        rows = self._client.select("job_hunter_deliveries", params=params)
+        return len(rows) > 0
+
+    def pending_delivery_job_ids(self) -> list[str]:
+        """Translates store.py:2126-2141.
+
+        `job_hunter_pending_delivery_jobs` (migration
+        202609060004) reimplements the whole query -- the per-job "latest
+        evaluation" join, the score floor, the decision filter, and the
+        anti-join against a sent `telegram_message` delivery -- as one SQL
+        function, rather than fetching every job/evaluation pair into
+        Python and filtering there. It `returns table (job_id uuid)`, so
+        `rpc` hands back `[{'job_id': '...'}, ...]`; unwrap the single key.
+        """
+        rows = self._client.rpc(
+            "job_hunter_pending_delivery_jobs",
+            {"p_score_floor": _DELIVERABLE_SCORE_FLOOR},
+        )
+        return [row["job_id"] for row in rows]

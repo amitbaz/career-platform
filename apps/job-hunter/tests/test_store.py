@@ -894,15 +894,13 @@ def test_upsert_job_reports_description_change(store):
     assert changed is True
 
 
-def test_needs_evaluation_new_job(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_needs_evaluation_new_job(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     assert store.needs_evaluation(job_id) is True
 
 
-def test_needs_evaluation_false_after_rediscovering_unchanged_job(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_needs_evaluation_false_after_rediscovering_unchanged_job(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer", description="React")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
@@ -914,8 +912,7 @@ def test_needs_evaluation_false_after_rediscovering_unchanged_job(tmp_path):
     assert store.needs_evaluation(same_id) is False
 
 
-def test_needs_evaluation_true_after_description_changes_post_evaluation(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_needs_evaluation_true_after_description_changes_post_evaluation(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer", description="React")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
@@ -926,8 +923,7 @@ def test_needs_evaluation_true_after_description_changes_post_evaluation(tmp_pat
     assert store.needs_evaluation(job_id) is True
 
 
-def test_needs_evaluation_true_after_content_confidence_changes_post_evaluation(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_needs_evaluation_true_after_content_confidence_changes_post_evaluation(store):
     job = Job(
         source="x", source_job_id="1", title="Senior Product Engineer",
         description="React", content_confidence=AGGREGATOR_TEXT,
@@ -944,8 +940,7 @@ def test_needs_evaluation_true_after_content_confidence_changes_post_evaluation(
     assert store.needs_evaluation(same_id) is True
 
 
-def test_count_and_delivery(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_count_and_delivery(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     assert store.count_jobs() == 1
@@ -954,8 +949,7 @@ def test_count_and_delivery(tmp_path):
     assert store.has_delivery(job_id) is True
 
 
-def test_has_delivery_filters_by_type(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_has_delivery_filters_by_type(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
 
@@ -969,8 +963,7 @@ def test_has_delivery_filters_by_type(tmp_path):
     assert store.has_delivery(job_id) is True
 
 
-def test_pending_delivery_job_ids_excludes_score_sixty_possible_match(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_delivery_job_ids_excludes_score_sixty_possible_match(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=60, decision="possible_match"))
@@ -978,8 +971,7 @@ def test_pending_delivery_job_ids_excludes_score_sixty_possible_match(tmp_path):
     assert store.pending_delivery_job_ids() == []
 
 
-def test_pending_delivery_job_ids_excludes_score_sixty_ready_match(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_delivery_job_ids_excludes_score_sixty_ready_match(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=60, decision="high_priority"))
@@ -987,8 +979,7 @@ def test_pending_delivery_job_ids_excludes_score_sixty_ready_match(tmp_path):
     assert store.pending_delivery_job_ids() == []
 
 
-def test_pending_delivery_job_ids_keeps_score_sixty_one_possible_match_until_message_sent(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_delivery_job_ids_keeps_score_sixty_one_possible_match_until_message_sent(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="possible_match"))
@@ -999,8 +990,7 @@ def test_pending_delivery_job_ids_keeps_score_sixty_one_possible_match_until_mes
     assert store.pending_delivery_job_ids() == []
 
 
-def test_pending_delivery_job_ids_keeps_score_sixty_one_ready_match_until_message_sent(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_delivery_job_ids_keeps_score_sixty_one_ready_match_until_message_sent(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="package_match"))
@@ -1011,8 +1001,7 @@ def test_pending_delivery_job_ids_keeps_score_sixty_one_ready_match_until_messag
     assert store.pending_delivery_job_ids() == []
 
 
-def test_pending_delivery_job_ids_excludes_ready_match_with_message_but_no_document(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_delivery_job_ids_excludes_ready_match_with_message_but_no_document(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="high_priority"))
@@ -1021,8 +1010,7 @@ def test_pending_delivery_job_ids_excludes_ready_match_with_message_but_no_docum
     assert store.pending_delivery_job_ids() == []
 
 
-def test_get_evaluation_and_material_roundtrip(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_get_evaluation_and_material_roundtrip(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer", company="Acme", description="React")
     job_id, _, _ = store.upsert_job(job)
 
@@ -1069,8 +1057,7 @@ def test_set_job_market_treats_none_as_unset(store):
     assert store.get_job(job_id).market_id is None
 
 
-def test_evaluation_market_id_round_trip(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_evaluation_market_id_round_trip(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer", company="Acme")
     job_id, _, _ = store.upsert_job(job)
 
@@ -2040,8 +2027,7 @@ def test_upsert_logical_job_keeps_stronger_description_against_weaker_update(sto
     assert stored.content_confidence == OFFICIAL_ATS
 
 
-def test_save_evaluation_persists_content_confidence_and_requirements(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_save_evaluation_persists_content_confidence_and_requirements(store):
     job_id, _, _ = store.upsert_job(Job(source="ashby", title="Eng", description="JD", content_confidence=OFFICIAL_ATS))
     evaluation = Evaluation(
         job_id=job_id, total_score=80, scores={}, decision="package_match",
@@ -2055,12 +2041,11 @@ def test_save_evaluation_persists_content_confidence_and_requirements(tmp_path):
     assert saved.requirements == {"must_have": [], "preferred": []}
 
 
-def test_save_evaluation_persists_evaluation_confidence_not_jobs_row(tmp_path):
+def test_save_evaluation_persists_evaluation_confidence_not_jobs_row(store):
     # The jobs row can legitimately hold a different (e.g. stronger) tier than
     # the in-memory job that evaluate_job's gating logic actually acted on.
     # The persisted snapshot must reflect what drove the gating decision, not
     # whatever happens to be in the jobs table at save time.
-    store = JobStore(tmp_path / "state.sqlite3")
     job_id, _, _ = store.upsert_job(
         Job(source="ashby", title="Eng", description="JD", content_confidence=OFFICIAL_ATS)
     )
@@ -2075,13 +2060,67 @@ def test_save_evaluation_persists_evaluation_confidence_not_jobs_row(tmp_path):
     assert saved.content_confidence == AGGREGATOR_TEXT
 
 
-def test_evaluation_raw_model_score_round_trip(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_evaluation_raw_model_score_round_trip(store):
     job_id, _, _ = store.upsert_job(Job(source="x", source_job_id="1", title="Analyst", company="Acme"))
     store.save_evaluation(job_id, _evaluation(job_id, total_score=64, raw_model_score=89))
     loaded = store.get_evaluation(job_id)
     assert loaded.total_score == 64
     assert loaded.raw_model_score == 89
+
+
+def test_evaluations_with_identical_evaluated_at_converge_on_one_deterministic_row(
+    store, supabase_client, monkeypatch
+):
+    """"Latest evaluation" now means newest `evaluated_at`, not highest id
+    (ids are random uuids, so max-id is meaningless). The naive worry is that
+    two evaluations sharing the same `evaluated_at` would leave `get_evaluation`
+    picking an arbitrary one of two rows.
+
+    That scenario cannot actually arise: Task 1 put a
+    `unique (user_id, job_id, evaluated_at)` constraint on this table
+    specifically so a retried write converges instead of duplicating, and
+    `save_evaluation` always writes through `upsert` against that constraint.
+    So two saves for the same job that land on the same `evaluated_at` --
+    forced here by freezing the clock, since `save_evaluation` always stamps
+    "now" itself -- never produce two competing rows to choose between; the
+    second save's `merge-duplicates` upsert overwrites the first row in
+    place. This test proves that convergence: exactly one row exists
+    afterwards, and `get_evaluation` deterministically reflects the second
+    (last-written) call, not an arbitrary pick between two rows.
+    """
+    import job_hunter.postgres_store as postgres_store_module
+
+    job_id, _, _ = store.upsert_job(
+        Job(source="x", source_job_id="1", title="Senior Product Engineer")
+    )
+
+    frozen_instant = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_instant if tz is None else frozen_instant.astimezone(tz)
+
+    monkeypatch.setattr(postgres_store_module, "datetime", _FrozenDatetime)
+
+    store.save_evaluation(
+        job_id, _evaluation(job_id, decision="possible_match", total_score=61)
+    )
+    store.save_evaluation(
+        job_id, _evaluation(job_id, decision="high_priority", total_score=95)
+    )
+
+    rows = supabase_client.select(
+        "job_hunter_evaluations",
+        params={"job_id": f"eq.{job_id}", "select": "id,decision,total_score,evaluated_at"},
+    )
+    assert len(rows) == 1
+    assert rows[0]["evaluated_at"] == frozen_instant.isoformat()
+
+    evaluation = store.get_evaluation(job_id)
+    assert evaluation is not None
+    assert evaluation.decision == "high_priority"
+    assert evaluation.total_score == 95
 
 
 def test_legacy_evaluation_rows_backfill_raw_model_score(tmp_path):
