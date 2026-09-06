@@ -179,6 +179,11 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(st
         "http_status": None,
         "error_code": None,
     }
+    # This only proves gemini_usage_rows' own select projects no prompt/response
+    # column -- it is not a claim about the job_hunter_ai_usage table itself.
+    # The table-level privacy invariant (no prompt/response column can be
+    # added without a conscious decision) lives in
+    # supabase/tests/pgtap/job_hunter_gmail_privacy.sql.
     assert "prompt" not in rows[0].keys()
     assert "response" not in rows[0].keys()
 
@@ -277,6 +282,12 @@ def test_gemini_pause_upsert_converges_on_repeated_writes(store):
     assert pause["paused_until"] == "2026-09-01T09:00:00+00:00"
     assert pause["reason"] == "daily_quota"
 
+    rows = store._client.select(
+        "job_hunter_ai_quota_state",
+        params={"model": "eq.gemini-3.6-flash", "select": "id"},
+    )
+    assert len(rows) == 1
+
 
 def test_candidate_context_cache_round_trip_serializes_json_inside_store(store):
     context = {"summary": "Frontend engineer", "technical_skills": ["Python"]}
@@ -314,7 +325,8 @@ def test_pending_ai_work_is_idempotent_and_updates_its_timestamp(store):
     assert len(second) == 1
     assert second[0]["job_id"] == job_id
     assert second[0]["created_at"] == first[0]["created_at"]
-    assert from_iso(second[0]["updated_at"]) >= from_iso(first[0]["updated_at"])
+    assert from_iso(second[0]["updated_at"]) > from_iso(first[0]["updated_at"])
+    assert second[0]["updated_at"] != second[0]["created_at"]
 
     store.complete_ai_work("cover_letter", job_id)
 
@@ -1403,7 +1415,7 @@ def test_gmail_sync_state_upsert_advances_history_and_updated_at(store):
 
     assert second["history_id"] == "h2"
     assert second["backfill_completed_at"] == "2026-08-31T11:05:00+00:00"
-    assert from_iso(second["updated_at"]) >= from_iso(first["updated_at"])
+    assert from_iso(second["updated_at"]) > from_iso(first["updated_at"])
 
 
 def test_record_gmail_message_does_not_overwrite_an_already_processed_message(store):
@@ -1448,6 +1460,12 @@ def test_inbound_candidate_source_message_and_key_are_idempotent(store):
     )
 
     first = store.stage_inbound_job("m1", "linkedin:job-1", job)
+    first_rows = store._client.select(
+        "job_hunter_inbound_job_candidates",
+        params={"select": "id,created_at,last_seen_at"},
+    )
+    first_last_seen_at = first_rows[0]["last_seen_at"]
+
     second = store.stage_inbound_job("m1", "linkedin:job-1", job)
 
     rows = store._client.select(
@@ -1456,7 +1474,7 @@ def test_inbound_candidate_source_message_and_key_are_idempotent(store):
     )
     assert len(rows) == 1
     assert second == first == rows[0]["id"]
-    assert from_iso(rows[0]["last_seen_at"]) >= from_iso(rows[0]["created_at"])
+    assert from_iso(rows[0]["last_seen_at"]) > from_iso(first_last_seen_at)
 
 
 def test_application_event_source_message_is_idempotent(store):
@@ -1646,6 +1664,68 @@ def test_release_legacy_gmail_semantic_failures_clears_only_the_legacy_rationale
 
 def test_release_legacy_gmail_semantic_failures_is_a_no_op_when_none_exist(store):
     assert store.release_legacy_gmail_semantic_failures() == 0
+
+
+def test_release_legacy_gmail_semantic_failures_chunks_large_id_lists(store, monkeypatch):
+    """A backlog bigger than one chunk must still be fully released.
+
+    Lowers the real `_RELEASE_LEGACY_CHUNK_SIZE` module constant used by
+    `release_legacy_gmail_semantic_failures` (not a test-only stand-in) so a
+    handful of rows are enough to force more than one `in.(...)` batch on
+    both the read and the deletes.
+    """
+    from job_hunter import postgres_store
+    from job_hunter.gmail_models import LEGACY_SEMANTIC_FAILURE_RATIONALE
+
+    monkeypatch.setattr(postgres_store, "_RELEASE_LEGACY_CHUNK_SIZE", 2)
+
+    legacy_count = 5
+    event_ids = []
+    for i in range(legacy_count):
+        message_id = f"legacy-{i}"
+        store.record_gmail_message(
+            message_id=message_id,
+            thread_id=f"t{i}",
+            sender="alerts@example.com",
+            subject="Unclear",
+            occurred_at="2026-08-31T10:00:00+00:00",
+            classification="REVIEW_NEEDED",
+            confidence=0.0,
+            rationale=LEGACY_SEMANTIC_FAILURE_RATIONALE,
+        )
+        event_id = store.save_application_event(
+            job_id=None,
+            event_type="REVIEW_NEEDED",
+            occurred_at="2026-08-31T10:00:00+00:00",
+            source_message_id=message_id,
+            source_thread_id=f"t{i}",
+            confidence=0.0,
+            company="",
+            role_title="",
+            rationale=LEGACY_SEMANTIC_FAILURE_RATIONALE,
+        )
+        store.mark_review_delivered([event_id], "telegram-1")
+        event_ids.append(event_id)
+
+    removed = store.release_legacy_gmail_semantic_failures()
+
+    assert removed == legacy_count
+    for i in range(legacy_count):
+        assert store.has_processed_gmail_message(f"legacy-{i}") is False
+    remaining_ids = {
+        row["id"]
+        for row in store._client.select(
+            "job_hunter_application_events", params={"select": "id"}
+        )
+    }
+    assert remaining_ids.isdisjoint(event_ids)
+    for event_id in event_ids:
+        assert (
+            store._client.select(
+                "job_hunter_review_deliveries", params={"event_id": f"eq.{event_id}"}
+            )
+            == []
+        )
 
 
 def test_candidate_not_emitted_when_any_job_has_same_canonical_url(store):

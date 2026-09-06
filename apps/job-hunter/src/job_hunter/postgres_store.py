@@ -51,6 +51,19 @@ _DELIVERABLE_SCORE_FLOOR = 60
 _LATEST_EVALUATION_ORDER = "evaluated_at.desc,created_at.desc,id.desc"
 _LATEST_MATERIAL_ORDER = "generated_at.desc,created_at.desc,id.desc"
 
+# release_legacy_gmail_semantic_failures batches its `in.(...)` id lists at
+# this many ids per request. A Gmail message id/uuid is short, but a legacy
+# backlog of a few hundred ids strung into one query string can approach the
+# ~8 KB URL limit typical of proxies/load balancers in front of PostgREST,
+# which fails as a 414 rather than on any condition the code checks. 200 ids
+# keeps every request's URL comfortably under that regardless of id length.
+_RELEASE_LEGACY_CHUNK_SIZE = 200
+
+
+def _chunked(items: list[str], size: int) -> list[list[str]]:
+    """Split ``items`` into consecutive chunks of at most ``size`` elements."""
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
 
 # Translates store.py's `_SUPPORTED_ATS_PROVIDERS` and
 # `_STALE_BOARD_DEACTIVATION_THRESHOLD`. Redefined here rather than imported
@@ -1365,7 +1378,11 @@ class PostgresJobStore:
 
         Translates store.py:626-635. Ids are random uuids now, so `created_at`
         (with `select`'s `id.asc` tie-breaker) replaces `ORDER BY ..., job_id`
-        as the retry-order proxy.
+        as the retry-order proxy. This changes what a tie means: the original
+        broke ties by `job_id`, a stable value, so two same-instant rows sorted
+        the same way every run. Breaking ties by `id` instead orders same-instant
+        rows deterministically within a single run, but that order is a random
+        uuid comparison -- it is not stable across a reseed of the table.
         """
         return self._client.select(
             "job_hunter_pending_ai_work",
@@ -1500,6 +1517,16 @@ class PostgresJobStore:
         that: the table default fills it on first insert, and a repeat call's
         merge-duplicates upsert leaves it alone. Returns the row's id directly
         from the upsert response rather than a follow-up `SELECT`.
+
+        This is a deliberate divergence from the SQLite original beyond
+        `created_at`: this `resolution=merge-duplicates` upsert overwrites
+        every other column too -- `source_platform`, `source_job_id`, `url`,
+        `company`, `title`, `location`, `remote`, and `description` -- on
+        conflict, where the original's `DO UPDATE SET` only ever wrote
+        `last_seen_at`. This is accepted because a restage of the same
+        message and candidate key always carries the same extraction, so
+        overwriting those columns with identical values is a no-op in
+        practice.
         """
         written = self._client.upsert(
             "job_hunter_inbound_job_candidates",
@@ -1662,9 +1689,22 @@ class PostgresJobStore:
         single transaction (no cross-statement transaction exists over
         PostgREST): review deliveries and application events for the affected
         message ids are removed first (children before the parent), then the
-        gmail messages themselves. `LEGACY_SEMANTIC_FAILURE_RATIONALE` message
-        ids are threaded through a PostgREST `in.(...)` filter; there being no
-        matching messages short-circuits before any delete runs.
+        gmail messages themselves. Because these are three separate requests
+        rather than one transaction, an intermediate state is observable --
+        if the second delete fails after the first succeeded, legacy
+        application events survive with their review-delivery records
+        already gone, and a concurrent run of the review-delivery CLI could
+        re-send a Telegram review card for an event that is about to be
+        deleted here. Every step is individually idempotent (re-running this
+        method again converges), so a subsequent run repairs the gap; there
+        is no data-loss window, only a re-notify window.
+
+        `LEGACY_SEMANTIC_FAILURE_RATIONALE` message ids are threaded through
+        a PostgREST `in.(...)` filter; there being no matching messages
+        short-circuits before any delete runs. The id lists are chunked at
+        `_RELEASE_LEGACY_CHUNK_SIZE` ids per request -- see that constant's
+        comment for why an unchunked `in.(...)` list is unsafe for a legacy
+        backlog.
         """
         from job_hunter.gmail_models import LEGACY_SEMANTIC_FAILURE_RATIONALE
 
@@ -1681,31 +1721,33 @@ class PostgresJobStore:
         if not message_ids:
             return 0
 
-        message_id_list = ",".join(message_ids)
-        events = self._client.select(
-            "job_hunter_application_events",
-            params={
-                "source": "eq.gmail",
-                "event_type": "eq.REVIEW_NEEDED",
-                "rationale": f"eq.{rationale}",
-                "source_message_id": f"in.({message_id_list})",
-                "select": "id",
-            },
-        )
-        event_ids = [row["id"] for row in events]
-        if event_ids:
-            event_id_list = ",".join(event_ids)
+        event_ids: list[str] = []
+        for chunk in _chunked(message_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+            events = self._client.select(
+                "job_hunter_application_events",
+                params={
+                    "source": "eq.gmail",
+                    "event_type": "eq.REVIEW_NEEDED",
+                    "rationale": f"eq.{rationale}",
+                    "source_message_id": f"in.({','.join(chunk)})",
+                    "select": "id",
+                },
+            )
+            event_ids.extend(row["id"] for row in events)
+
+        for chunk in _chunked(event_ids, _RELEASE_LEGACY_CHUNK_SIZE):
             self._client.delete(
                 "job_hunter_review_deliveries",
-                params={"event_id": f"in.({event_id_list})"},
+                params={"event_id": f"in.({','.join(chunk)})"},
             )
             self._client.delete(
                 "job_hunter_application_events",
-                params={"id": f"in.({event_id_list})"},
+                params={"id": f"in.({','.join(chunk)})"},
             )
 
-        self._client.delete(
-            "job_hunter_gmail_messages",
-            params={"message_id": f"in.({message_id_list})"},
-        )
+        for chunk in _chunked(message_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+            self._client.delete(
+                "job_hunter_gmail_messages",
+                params={"message_id": f"in.({','.join(chunk)})"},
+            )
         return len(message_ids)
