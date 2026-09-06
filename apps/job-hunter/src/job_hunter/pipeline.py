@@ -39,11 +39,6 @@ from job_hunter.models import (
     RunSummary,
     Settings,
 )
-from job_hunter.navigation_store import (
-    attach_navigation_message_id,
-    create_navigation_session,
-    prune_navigation_sessions,
-)
 from job_hunter.pdf import render_cover_letter_pdf
 from job_hunter.ranking import rank_jobs, select_diverse_candidates
 from job_hunter.search_backend import build_search_backend
@@ -648,7 +643,11 @@ def run_pipeline(
         logger.exception("manual company watch sync failed")
 
     search_breaker = CircuitBreaker(_SEARCH_FAILURE_THRESHOLD)
-    brave_budget = build_brave_budget(settings)
+    # `supabase_client` isn't threaded through `run_pipeline` yet (issue #70
+    # task 14 wires real Postgres construction here), so Brave search is
+    # deliberately disabled -- see `build_brave_budget`'s docstring -- rather
+    # than passed a stale `settings.db_path`.
+    brave_budget = build_brave_budget(settings, None)
     query_date = datetime.now(ZoneInfo(settings.timezone)).date()
     base_sources = (
         sources
@@ -861,9 +860,9 @@ def run_pipeline(
 
         if deliverable_items and supports_navigation:
             now = datetime.now(timezone.utc)
-            prune_navigation_sessions(store, now.isoformat())
+            store.prune_navigation_sessions(now.isoformat())
             session = _build_navigation_session(deliverable_items, now)
-            create_navigation_session(store, session)
+            store.create_navigation_session(session)
             text, keyboard = build_navigation_card(
                 session.cards[0],
                 session.session_id,
@@ -872,7 +871,7 @@ def run_pipeline(
             )
             message_id = interactive_sender(text, keyboard)
             if message_id is not None:
-                attach_navigation_message_id(store, session.session_id, str(message_id))
+                store.attach_navigation_message_id(session.session_id, str(message_id))
                 for card in session.cards:
                     store.mark_delivered(card.job_id, "telegram_message", str(message_id))
                     _bump_market_count(delivered_by_market, card.market_id)

@@ -402,13 +402,17 @@ def test_build_sources_includes_always_on_and_configured_ats(fake_http, policy):
 
 
 def test_build_sources_uses_only_brave_for_metered_market_discovery(
-    fake_http, monkeypatch, tmp_path
+    fake_http, monkeypatch, tmp_path, supabase_client
 ):
+    # `SearchUsageLedger` is Postgres-backed now (issue #70 task 12), so
+    # exercising a real Brave budget needs the local Supabase stack via
+    # `supabase_client`, same as every other store-backed test. (The
+    # `brave_queries_available_today` monkeypatch this test used to carry was
+    # already dead: `build_sources` only ever calls it through
+    # `budget.available_today()`, which resolves the name from inside
+    # `search_budget.py`'s own module scope, not this module's imported
+    # alias -- removed rather than kept as misleading no-op cover.)
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
-    monkeypatch.setattr(
-        "job_hunter.sources.brave_queries_available_today",
-        lambda *args, **kwargs: 2,
-    )
     settings = Settings(
         gemini_api_key="g",
         candidate_profile="profile",
@@ -420,7 +424,7 @@ def test_build_sources_uses_only_brave_for_metered_market_discovery(
         db_path=str(tmp_path / "state.sqlite3"),
     )
 
-    sources = build_sources(settings, fake_http)
+    sources = build_sources(settings, fake_http, supabase_client=supabase_client)
 
     kinds = [type(s).__name__ for s in sources]
     assert kinds.count("TargetedSearchSource") == 1

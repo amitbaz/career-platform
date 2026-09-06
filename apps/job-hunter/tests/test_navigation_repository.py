@@ -4,7 +4,6 @@ import pytest
 
 from job_hunter.github_state import ArtifactStateSnapshot
 from job_hunter.models import NavigationCard, NavigationSession
-from job_hunter.navigation_store import create_navigation_session
 from job_hunter.store import JobStore
 
 
@@ -24,8 +23,7 @@ class FakeStateLoader:
 def _snapshot_with_session(tmp_path: Path):
     db = tmp_path / "job_hunter.sqlite3"
     with JobStore(db) as store:
-        create_navigation_session(
-            store,
+        store.create_navigation_session(
             NavigationSession(
                 session_id="session-1",
                 cards=[
@@ -94,8 +92,10 @@ def test_repository_opens_snapshot_read_only(monkeypatch, tmp_path):
         def __exit__(self, *args):
             return None
 
+        def get_navigation_session(self, session_id):
+            return None
+
     monkeypatch.setattr(module, "JobStore", FakeStore)
-    monkeypatch.setattr(module, "get_navigation_session", lambda store, session_id: None)
     snapshot = ArtifactStateSnapshot(9, tmp_path / "state.sqlite3", "2026-09-01T10:00:00Z")
     repository = module.GitHubArtifactNavigationRepository(FakeStateLoader(snapshot))
 

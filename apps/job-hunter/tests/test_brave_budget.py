@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import itertools
+from datetime import datetime, timedelta, timezone
 
 import job_hunter.search_budget as search_budget
 from job_hunter.circuit_breaker import CircuitBreaker
@@ -14,8 +15,27 @@ from job_hunter.search_budget import (
 UTC = timezone.utc
 
 
-def test_brave_budget_spreads_250_monthly_queries_and_blocks_same_day_reruns(tmp_path):
-    ledger = SearchUsageLedger(tmp_path / "state.sqlite3")
+def _distinct_instants(base: datetime):
+    """A `now` callable that advances by a microsecond on every call.
+
+    `job_hunter_search_api_usage` carries a `(user_id, provider, occurred_at)`
+    unique constraint (migration 202609060003) so a retried write converges
+    instead of duplicating -- necessary for idempotency, but it also means
+    two distinct reservations that land on the exact same `occurred_at`
+    collapse into one row. In production that never happens: the default
+    `now` is a fresh `datetime.now(timezone.utc)` at each call, which is
+    practically always microsecond-distinct. A test that freezes `now` to one
+    fixed instant across several `reserve()` calls (as the SQLite-era ledger,
+    with no such constraint, tolerated) needs this instead, to model
+    several real, slightly-separated calls without coupling assertions to
+    wall-clock timing.
+    """
+    counter = itertools.count()
+    return lambda: base + timedelta(microseconds=next(counter))
+
+
+def test_brave_budget_spreads_250_monthly_queries_and_blocks_same_day_reruns(supabase_client):
+    ledger = SearchUsageLedger(supabase_client)
     now = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
     # 250 remaining across Sep 2-30 => ceil(250 / 29) = 9 for today.
@@ -35,8 +55,8 @@ def test_brave_budget_spreads_250_monthly_queries_and_blocks_same_day_reruns(tmp
     assert brave_queries_available_today(ledger, monthly_limit=250, now=tomorrow) == 9
 
 
-def test_brave_budget_daily_target_does_not_shrink_as_today_is_consumed(tmp_path):
-    ledger = SearchUsageLedger(tmp_path / "state.sqlite3")
+def test_brave_budget_daily_target_does_not_shrink_as_today_is_consumed(supabase_client):
+    ledger = SearchUsageLedger(supabase_client)
     now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
     assert brave_queries_available_today(ledger, monthly_limit=1000, now=now) == 34
@@ -49,27 +69,26 @@ def test_brave_budget_daily_target_does_not_shrink_as_today_is_consumed(tmp_path
     assert brave_queries_available_today(ledger, monthly_limit=1000, now=now) == 24
 
 
-def test_brave_budget_never_exceeds_monthly_limit(tmp_path):
-    ledger = SearchUsageLedger(tmp_path / "state.sqlite3")
+def test_brave_budget_never_exceeds_monthly_limit(supabase_client):
+    ledger = SearchUsageLedger(supabase_client)
     now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
     for index in range(250):
         ledger.record(
             provider="brave",
-            occurred_at=datetime(2026, 9, 1, index % 24, index % 60, tzinfo=UTC),
+            occurred_at=datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=index),
         )
 
     assert brave_queries_available_today(ledger, monthly_limit=250, now=now) == 0
 
 
-def test_brave_request_budget_hard_cap_is_shared_across_consumers(tmp_path):
-    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
-    db_path = tmp_path / "state.sqlite3"
+def test_brave_request_budget_hard_cap_is_shared_across_consumers(supabase_client):
+    now = _distinct_instants(datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
     discovery_budget = search_budget.BraveRequestBudget(
-        SearchUsageLedger(db_path), monthly_limit=3, now=lambda: now
+        SearchUsageLedger(supabase_client), monthly_limit=3, now=now
     )
     canonical_budget = search_budget.BraveRequestBudget(
-        SearchUsageLedger(db_path), monthly_limit=3, now=lambda: now
+        SearchUsageLedger(supabase_client), monthly_limit=3, now=now
     )
 
     assert discovery_budget.reserve() is True
@@ -77,19 +96,19 @@ def test_brave_request_budget_hard_cap_is_shared_across_consumers(tmp_path):
     assert canonical_budget.reserve() is True
     assert canonical_budget.reserve() is False
 
-    ledger = SearchUsageLedger(db_path)
+    ledger = SearchUsageLedger(supabase_client)
     month_start = datetime(2026, 9, 1, tzinfo=UTC)
     next_month = datetime(2026, 10, 1, tzinfo=UTC)
     assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 3
 
 
-def test_brave_discovery_priority_is_soft_within_shared_daily_allowance(tmp_path):
-    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+def test_brave_discovery_priority_is_soft_within_shared_daily_allowance(supabase_client):
+    now = _distinct_instants(datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
     budget = search_budget.BraveRequestBudget(
-        SearchUsageLedger(tmp_path / "state.sqlite3"),
+        SearchUsageLedger(supabase_client),
         monthly_limit=10,
         discovery_share=0.8,
-        now=lambda: now,
+        now=now,
     )
 
     assert budget.discovery_allowance() == 8
@@ -171,11 +190,11 @@ class _Http:
 
 
 def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
-    monkeypatch, tmp_path
+    monkeypatch, supabase_client
 ):
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "configured-and-budgeted")
     now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
-    ledger = SearchUsageLedger(tmp_path / "state.sqlite3")
+    ledger = SearchUsageLedger(supabase_client)
     budget = search_budget.BraveRequestBudget(
         ledger, monthly_limit=1, now=lambda: now
     )

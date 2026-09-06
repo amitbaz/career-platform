@@ -15,6 +15,7 @@ from job_hunter.search_budget import (
     split_queries_for_brave,
 )
 from job_hunter.store import JobStore
+from job_hunter.supabase_client import SupabaseClient
 
 from .arbeitnow import ArbeitnowSource
 from .ashby import AshbySource
@@ -88,12 +89,25 @@ def _brave_monthly_query_limit() -> int:
     return value
 
 
-def build_brave_budget(settings: Settings) -> BraveRequestBudget | None:
-    """Build the run's shared persisted Brave budget when Brave is configured."""
+def build_brave_budget(
+    settings: Settings, client: SupabaseClient | None
+) -> BraveRequestBudget | None:
+    """Build the run's shared persisted Brave budget when Brave is configured.
+
+    `SearchUsageLedger` is Postgres-backed now (issue #70 task 12), so
+    building a budget needs a `SupabaseClient`. `run_pipeline` doesn't wire
+    one through yet -- that lands in issue #70 task 14, which replaces
+    `JobStore` construction wholesale -- so `client` is `None` at every
+    current call site and Brave search is deliberately disabled (as if
+    unconfigured) until then, rather than crashing on a stale
+    `SearchUsageLedger(settings.db_path)` call.
+    """
+    if client is None:
+        return None
     if not os.environ.get("BRAVE_SEARCH_API_KEY"):
         return None
     return BraveRequestBudget(
-        SearchUsageLedger(settings.db_path),
+        SearchUsageLedger(client),
         monthly_limit=_brave_monthly_query_limit(),
     )
 
@@ -131,6 +145,7 @@ def build_sources(
     search_breaker: CircuitBreaker | None = None,
     query_date: date | None = None,
     brave_budget: BraveRequestBudget | None = None,
+    supabase_client: SupabaseClient | None = None,
 ) -> list[JobSource]:
     _validate_direct_sources(settings.policy.markets)
     queries = generate_search_queries(settings.policy, query_date)
@@ -138,7 +153,7 @@ def build_sources(
     targeted_sources: list[JobSource] = []
 
     if brave_api_key:
-        budget = brave_budget or build_brave_budget(settings)
+        budget = brave_budget or build_brave_budget(settings, supabase_client)
         if budget is not None:
             available_today = budget.available_today()
             discovery_allowance = budget.discovery_allowance()

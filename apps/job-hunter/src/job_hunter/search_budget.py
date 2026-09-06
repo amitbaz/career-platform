@@ -1,59 +1,74 @@
+"""Metered external search API budget, backed by `job_hunter_search_api_usage`.
+
+**The one weakening this port accepts:** the SQLite original serialized its
+read-check-insert reservation inside `BEGIN IMMEDIATE`, so two overlapping
+callers could never both observe the same under-the-cap slot and both insert.
+PostgREST has no equivalent -- there is no session-scoped transaction to hold
+open across a `select` and a later `upsert`. `try_record` below is a plain
+read-then-write: two concurrent callers can each read "under the cap" and
+both write, overshooting the daily/monthly limit by the number of racing
+callers. What protects this in practice is not application logic but
+deployment shape: every workflow that can call `try_record` shares
+`concurrency: group: job-hunter-state` in its GitHub Actions definition, so
+at most one writer is ever running against a given user's rows at a time.
+A caller outside that guarantee (e.g. a second manually-triggered run
+overlapping the scheduled one) reintroduces the race this docstring
+describes.
+"""
+
 from __future__ import annotations
 
 import math
-import sqlite3
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Callable
 
 from job_hunter.models import SearchQuery
+from job_hunter.store_mapping import to_iso
+from job_hunter.supabase_client import SupabaseClient
 
-
-_CREATE_SEARCH_API_USAGE = """
-CREATE TABLE IF NOT EXISTS search_api_usage (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider TEXT NOT NULL,
-    occurred_at TEXT NOT NULL
-)
-"""
-
-_CREATE_SEARCH_API_USAGE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_search_api_usage_provider_time
-ON search_api_usage(provider, occurred_at)
-"""
+_TABLE = "job_hunter_search_api_usage"
 
 
 class SearchUsageLedger:
-    """Tiny SQLite ledger for metered external search API requests."""
+    """Metered ledger for external search API requests, one row per request.
 
-    def __init__(self, db_path: Path | str) -> None:
-        self._path = str(db_path)
-        with sqlite3.connect(self._path) as conn:
-            conn.execute(_CREATE_SEARCH_API_USAGE)
-            conn.execute(_CREATE_SEARCH_API_USAGE_INDEX)
+    Translates `search_budget.py`'s original SQLite-backed ledger (deleted)
+    onto `job_hunter_search_api_usage` (migration 202609060002). The table's
+    `(user_id, provider, occurred_at)` unique constraint (migration
+    202609060003) is what makes `record`'s upsert converge instead of
+    duplicating a retried write.
+    """
+
+    def __init__(self, client: SupabaseClient) -> None:
+        self._client = client
 
     def record(self, *, provider: str, occurred_at: datetime) -> None:
         occurred_at = _normalize_utc(occurred_at)
-        with sqlite3.connect(self._path) as conn:
-            conn.execute(
-                "INSERT INTO search_api_usage (provider, occurred_at) VALUES (?, ?)",
-                (provider, occurred_at.isoformat()),
-            )
+        self._client.upsert(
+            _TABLE,
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "provider": provider,
+                    "occurred_at": to_iso(occurred_at),
+                }
+            ],
+            on_conflict="user_id,provider,occurred_at",
+        )
 
     def count(self, *, provider: str, start_at: datetime, end_at: datetime) -> int:
         start_at = _normalize_utc(start_at)
         end_at = _normalize_utc(end_at)
-        with sqlite3.connect(self._path) as conn:
-            row = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM search_api_usage
-                WHERE provider = ? AND occurred_at >= ? AND occurred_at < ?
-                """,
-                (provider, start_at.isoformat(), end_at.isoformat()),
-            ).fetchone()
-        return int(row[0]) if row is not None else 0
+        rows = self._client.select(
+            _TABLE,
+            params={
+                "provider": f"eq.{provider}",
+                "and": f"(occurred_at.gte.{to_iso(start_at)},occurred_at.lt.{to_iso(end_at)})",
+                "select": "id",
+            },
+        )
+        return len(rows)
 
     def try_record(
         self,
@@ -63,7 +78,13 @@ class SearchUsageLedger:
         monthly_limit: int,
         daily_limit: int,
     ) -> bool:
-        """Atomically reserve one request without exceeding persisted limits."""
+        """Reserve one request without exceeding persisted limits.
+
+        Not atomic against a concurrent caller -- see the module docstring
+        for what protects this in production. `count` reads the current
+        usage, and if both caps still allow one more request, `record`
+        writes it; a race between two callers can let both through.
+        """
         if monthly_limit <= 0 or daily_limit <= 0:
             return False
 
@@ -75,38 +96,13 @@ class SearchUsageLedger:
         day_start = occurred_at.replace(hour=0, minute=0, second=0, microsecond=0)
         next_day = day_start + timedelta(days=1)
 
-        with sqlite3.connect(self._path, timeout=30) as conn:
-            # Serialize the read-check-insert sequence so overlapping manual runs
-            # cannot both observe the same final slot and exceed the hard cap.
-            conn.execute("BEGIN IMMEDIATE")
-            used_month_row = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM search_api_usage
-                WHERE provider = ? AND occurred_at >= ? AND occurred_at < ?
-                """,
-                (provider, month_start.isoformat(), next_month.isoformat()),
-            ).fetchone()
-            used_day_row = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM search_api_usage
-                WHERE provider = ? AND occurred_at >= ? AND occurred_at < ?
-                """,
-                (provider, day_start.isoformat(), next_day.isoformat()),
-            ).fetchone()
-            used_month = int(used_month_row[0]) if used_month_row is not None else 0
-            used_day = int(used_day_row[0]) if used_day_row is not None else 0
-            if used_month >= monthly_limit or used_day >= daily_limit:
-                conn.rollback()
-                return False
+        used_month = self.count(provider=provider, start_at=month_start, end_at=next_month)
+        used_day = self.count(provider=provider, start_at=day_start, end_at=next_day)
+        if used_month >= monthly_limit or used_day >= daily_limit:
+            return False
 
-            conn.execute(
-                "INSERT INTO search_api_usage (provider, occurred_at) VALUES (?, ?)",
-                (provider, occurred_at.isoformat()),
-            )
-            conn.commit()
-            return True
+        self.record(provider=provider, occurred_at=occurred_at)
+        return True
 
 
 def _normalize_utc(value: datetime) -> datetime:

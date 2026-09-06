@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Protocol
 
 from job_hunter.models import NavigationSession
-from job_hunter.navigation_store import get_navigation_session
 from job_hunter.store import JobStore
 
 
@@ -20,4 +19,4 @@ class GitHubArtifactNavigationRepository:
         if snapshot is None:
             return None
         with JobStore(snapshot.path, read_only=True) as store:
-            return get_navigation_session(store, session_id)
+            return store.get_navigation_session(session_id)

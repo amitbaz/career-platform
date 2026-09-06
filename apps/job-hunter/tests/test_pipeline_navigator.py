@@ -1,7 +1,6 @@
 import json
 
 from job_hunter.models import GeminiQuotaSettings, Job, SearchPolicy, Settings
-from job_hunter.navigation_store import get_navigation_session
 from job_hunter.pipeline import run_pipeline
 from job_hunter.store import JobStore
 from job_hunter.telegram_navigation import parse_callback
@@ -199,7 +198,7 @@ def test_pipeline_sends_one_sorted_navigator_and_persists_location(tmp_path):
     assert "Match: 80%" in text
     assert "1 / 2" == keyboard[1][1]["text"]
 
-    session = get_navigation_session(store, _session_id_from_keyboard(keyboard))
+    session = store.get_navigation_session(_session_id_from_keyboard(keyboard))
     assert session is not None
     assert session.telegram_message_id == "nav-msg-1"
     assert [card.company for card in session.cards] == ["Acme", "Beta"]

@@ -15,6 +15,8 @@ migrations own the schema now (see `supabase/migrations/`).
 
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,6 +30,7 @@ from job_hunter.models import (
     Evaluation,
     Job,
     Material,
+    NavigationSession,
 )
 from job_hunter.normalize import job_fingerprint
 from job_hunter.store_mapping import (
@@ -35,6 +38,7 @@ from job_hunter.store_mapping import (
     evaluation_from_row,
     job_from_row,
     material_from_row,
+    navigation_session_from_row,
     to_iso,
     touch,
 )
@@ -63,6 +67,19 @@ _RELEASE_LEGACY_CHUNK_SIZE = 200
 def _chunked(items: list[str], size: int) -> list[list[str]]:
     """Split ``items`` into consecutive chunks of at most ``size`` elements."""
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _is_legacy_poisoned_linkedin_job(company: str, title: str) -> bool:
+    """Translates `gmail_linkedin_cleanup.py`'s (deleted) same-named helper.
+
+    A job is safe to release only if it is entirely blank or carries the
+    known ``Sign in`` poison title left by historical LinkedIn login-page
+    scraping.
+    """
+    if company.strip():
+        return False
+    normalized_title = title.strip().casefold()
+    return normalized_title in {"", "sign in"}
 
 
 # Translates store.py's `_SUPPORTED_ATS_PROVIDERS` and
@@ -1751,3 +1768,211 @@ class PostgresJobStore:
                 params={"message_id": f"in.({','.join(chunk)})"},
             )
         return len(message_ids)
+
+    def _job_has_dependencies(self, job_id: str) -> bool:
+        """Translates `gmail_linkedin_cleanup.py`'s (deleted) `_job_has_dependencies`.
+
+        One `select ... limit 1` per dependent table replaces the original's
+        single-connection loop over the same four tables.
+        """
+        for table in (
+            "job_hunter_evaluations",
+            "job_hunter_materials",
+            "job_hunter_deliveries",
+            "job_hunter_application_events",
+        ):
+            rows = self._client.select(
+                table, params={"job_id": f"eq.{job_id}", "select": "id", "limit": "1"}
+            )
+            if rows:
+                return True
+        return False
+
+    def release_legacy_blank_linkedin_jobs(self) -> int:
+        """Release only safe blank/poisoned LinkedIn Gmail artifacts for reprocessing.
+
+        Translates `gmail_linkedin_cleanup.py`'s (deleted)
+        `release_legacy_blank_linkedin_jobs`. The original ran one SQL query
+        with a correlated `NOT EXISTS` anti-join to find messages whose
+        LinkedIn candidates are *all* blank; PostgREST cannot express a
+        correlated anti-join in one request, so this fetches every gmail/
+        LinkedIn candidate row once and does the blank/populated split in
+        Python instead (`trim(...) = ''` becomes `.strip()`, `lower(...) =
+        'linkedin'` becomes an `ilike` exact-match filter, which is
+        case-insensitive without wildcards).
+
+        A message is still only released when every step confirms safety:
+        its gmail message exists and is classified `JOB_ALERT`, every
+        matching `job_hunter_jobs` row is blank or carries the known
+        ``Sign in`` poison title, and none of those jobs has a dependent
+        evaluation, material, delivery, or application event. As with
+        `release_legacy_gmail_semantic_failures`, there is no cross-request
+        transaction: each message's deletes (candidates, then jobs, then the
+        gmail message) run as separate idempotent requests, so a failure
+        partway through is repaired by a subsequent run rather than left
+        half-applied indefinitely.
+        """
+        candidates = self._client.select(
+            "job_hunter_inbound_job_candidates",
+            params={
+                "origin": "eq.gmail",
+                "source_platform": "ilike.linkedin",
+                "select": "id,source_message_id,source_candidate_key,company,title",
+            },
+        )
+
+        blank_by_message: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        populated_messages: set[str] = set()
+        for row in candidates:
+            message_id = row["source_message_id"]
+            if (row.get("company") or "").strip() or (row.get("title") or "").strip():
+                populated_messages.add(message_id)
+            else:
+                blank_by_message[message_id].append(row)
+
+        candidate_message_ids = [
+            message_id
+            for message_id in blank_by_message
+            if message_id not in populated_messages
+        ]
+        if not candidate_message_ids:
+            return 0
+
+        job_alert_messages: set[str] = set()
+        for chunk in _chunked(candidate_message_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+            rows = self._client.select(
+                "job_hunter_gmail_messages",
+                params={
+                    "classification": "eq.JOB_ALERT",
+                    "message_id": f"in.({','.join(chunk)})",
+                    "select": "message_id",
+                },
+            )
+            job_alert_messages.update(row["message_id"] for row in rows)
+
+        released = 0
+        for message_id in candidate_message_ids:
+            if message_id not in job_alert_messages:
+                continue
+
+            message_candidates = blank_by_message[message_id]
+            job_ids: list[str] = []
+            safe = True
+            for candidate in message_candidates:
+                jobs = self._client.select(
+                    "job_hunter_jobs",
+                    params={
+                        "source": "eq.gmail:linkedin",
+                        "source_job_id": f"eq.{candidate['source_candidate_key']}",
+                        "select": "id,company,title",
+                    },
+                )
+                for job in jobs:
+                    if not _is_legacy_poisoned_linkedin_job(
+                        job.get("company") or "", job.get("title") or ""
+                    ):
+                        safe = False
+                        break
+                    if self._job_has_dependencies(job["id"]):
+                        safe = False
+                        break
+                    job_ids.append(job["id"])
+                if not safe:
+                    break
+
+            if not safe:
+                continue
+
+            self._client.delete(
+                "job_hunter_inbound_job_candidates",
+                params={
+                    "id": f"in.({','.join(candidate['id'] for candidate in message_candidates)})"
+                },
+            )
+            for chunk in _chunked(job_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+                self._client.delete("job_hunter_jobs", params={"id": f"in.({','.join(chunk)})"})
+            self._client.delete(
+                "job_hunter_gmail_messages",
+                params={"message_id": f"eq.{message_id}", "classification": "eq.JOB_ALERT"},
+            )
+            released += 1
+
+        return released
+
+    # ------------------------------------------------------------------
+    # Navigation sessions
+    # ------------------------------------------------------------------
+
+    def create_navigation_session(self, session: NavigationSession) -> None:
+        """Persist a Telegram navigation session's card list.
+
+        Translates `navigation_store.py`'s (deleted) `create_navigation_session`.
+        Upserts on `(user_id, session_id)` -- the table's unique constraint
+        (migration 202609060002) -- so a retried POST converges instead of
+        duplicating, and re-creating an existing session_id overwrites its
+        cards cleanly. `cards_json` is a jsonb column; a plain list of
+        `asdict(card)` dicts serializes correctly without a manual
+        `json.dumps` -- PostgREST/`requests` encode it as a JSON array.
+        `ensure_navigation_schema` (the SQLite original's lazy `CREATE TABLE
+        IF NOT EXISTS`) has no equivalent here: migrations own the schema.
+        """
+        self._client.upsert(
+            "job_hunter_telegram_navigation_sessions",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "session_id": session.session_id,
+                    "cards_json": [asdict(card) for card in session.cards],
+                    "telegram_message_id": session.telegram_message_id,
+                    "created_at": session.created_at,
+                    "expires_at": session.expires_at,
+                }
+            ],
+            on_conflict="user_id,session_id",
+        )
+
+    def attach_navigation_message_id(self, session_id: str, message_id: str) -> bool:
+        """Record the Telegram message id a navigation session was sent under.
+
+        Translates `navigation_store.py`'s (deleted)
+        `attach_navigation_message_id`. The SQLite original reported success
+        via `cursor.rowcount`; PostgREST's `update` (default
+        `return=representation`) hands back the updated rows instead, so
+        "did a session with this id exist" becomes "is the list non-empty".
+        """
+        rows = self._client.update(
+            "job_hunter_telegram_navigation_sessions",
+            {"telegram_message_id": message_id},
+            params={"session_id": f"eq.{session_id}"},
+        )
+        return len(rows) > 0
+
+    def get_navigation_session(self, session_id: str) -> NavigationSession | None:
+        """Translates `navigation_store.py`'s (deleted) `get_navigation_session`.
+
+        The SQLite original caught "no such table" as "no session yet"
+        because its schema was created lazily on first write. There is no
+        such case here -- migrations always create the table -- so a
+        missing session is simply an empty result set.
+        """
+        rows = self._client.select(
+            "job_hunter_telegram_navigation_sessions",
+            params={"session_id": f"eq.{session_id}", "limit": "1"},
+        )
+        if not rows:
+            return None
+        return navigation_session_from_row(rows[0])
+
+    def prune_navigation_sessions(self, now_iso: str) -> int:
+        """Delete expired navigation sessions and report how many were removed.
+
+        Translates `navigation_store.py`'s (deleted)
+        `prune_navigation_sessions`. `delete`'s default
+        `return=representation` hands back the deleted rows, so the count is
+        their length rather than a driver-level `rowcount`.
+        """
+        rows = self._client.delete(
+            "job_hunter_telegram_navigation_sessions",
+            params={"expires_at": f"lt.{now_iso}"},
+        )
+        return len(rows)

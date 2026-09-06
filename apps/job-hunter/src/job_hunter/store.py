@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from job_hunter.models import (
     Evaluation,
     Job,
     Material,
+    NavigationCard,
+    NavigationSession,
 )
 from job_hunter.normalize import (
     canonicalize_url,
@@ -293,6 +296,20 @@ CREATE TABLE IF NOT EXISTS ats_registry (
 # added; a fresh database already has it from _CREATE_ATS_REGISTRY above.
 _ATS_REGISTRY_REJECTION_COLUMNS = {"rejected_reason": "TEXT"}
 
+# Formerly `navigation_store._CREATE_TELEGRAM_NAVIGATION_SESSIONS`. Created
+# lazily by `JobStore.create_navigation_session`/`prune_navigation_sessions`
+# on first use, same as the original -- unlike the Postgres backend, where
+# migrations create this table up front.
+_CREATE_TELEGRAM_NAVIGATION_SESSIONS = """
+CREATE TABLE IF NOT EXISTS telegram_navigation_sessions (
+    session_id          TEXT PRIMARY KEY,
+    cards_json          TEXT NOT NULL,
+    telegram_message_id TEXT,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL
+)
+"""
+
 _DELIVERABLE_SCORE_FLOOR = 60
 _STALE_BOARD_DEACTIVATION_THRESHOLD = 3
 _SUPPORTED_ATS_PROVIDERS = frozenset({"ashby", "greenhouse", "lever"})
@@ -307,6 +324,25 @@ def _normalize_utc(now: datetime) -> datetime:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     return now.astimezone(timezone.utc)
+
+
+def _is_legacy_poisoned_linkedin_job(company: str, title: str) -> bool:
+    """Formerly `gmail_linkedin_cleanup._is_legacy_poisoned_linkedin_job`."""
+    if company.strip():
+        return False
+    normalized_title = title.strip().casefold()
+    return normalized_title in {"", "sign in"}
+
+
+def _job_has_dependencies(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Formerly `gmail_linkedin_cleanup._job_has_dependencies`."""
+    for table in ("evaluations", "materials", "deliveries", "application_events"):
+        if conn.execute(
+            f"SELECT 1 FROM {table} WHERE job_id = ? LIMIT 1",
+            (job_id,),
+        ).fetchone():
+            return True
+    return False
 
 
 class JobStore:
@@ -1991,6 +2027,204 @@ class JobStore:
                 message_ids,
             )
         return len(message_ids)
+
+    def release_legacy_blank_linkedin_jobs(self) -> int:
+        """Release only safe blank/poisoned LinkedIn Gmail artifacts for reprocessing.
+
+        Formerly the free function `gmail_linkedin_cleanup.release_legacy_blank_linkedin_jobs`,
+        which reached around this class via `store._conn`. Moved onto `JobStore`
+        itself (issue #70 task 12) so callers go through one store method
+        regardless of which backend is in play during the migration; the
+        Postgres backend exposes the same method name
+        (`PostgresJobStore.release_legacy_blank_linkedin_jobs`) with a
+        PostgREST-shaped translation of this exact query. Body unchanged from
+        the original free function beyond `store` -> `self`.
+
+        Older deterministic LinkedIn JOB_ALERT handling staged URL-only
+        candidates and materialized blank jobs. Historical LinkedIn
+        login-page scraping could also materialize the title ``Sign in``. A
+        message is released only when all of its LinkedIn candidates are
+        blank and every matching gmail:linkedin job is blank or carries that
+        known poison title, with no dependent evaluation, material,
+        delivery, or application event.
+        """
+        conn = self._conn
+        candidate_messages = conn.execute(
+            """
+            SELECT DISTINCT m.message_id
+            FROM gmail_messages m
+            JOIN inbound_job_candidates c
+              ON c.source_message_id = m.message_id
+            WHERE m.classification = 'JOB_ALERT'
+              AND c.origin = 'gmail'
+              AND lower(c.source_platform) = 'linkedin'
+              AND trim(c.company) = ''
+              AND trim(c.title) = ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM inbound_job_candidates populated
+                  WHERE populated.source_message_id = m.message_id
+                    AND populated.origin = 'gmail'
+                    AND lower(populated.source_platform) = 'linkedin'
+                    AND (
+                        trim(populated.company) <> ''
+                        OR trim(populated.title) <> ''
+                    )
+              )
+            """
+        ).fetchall()
+
+        released = 0
+        with conn:
+            for message_row in candidate_messages:
+                message_id = message_row["message_id"]
+                candidates = conn.execute(
+                    """
+                    SELECT id, source_candidate_key
+                    FROM inbound_job_candidates
+                    WHERE source_message_id = ?
+                      AND origin = 'gmail'
+                      AND lower(source_platform) = 'linkedin'
+                      AND trim(company) = ''
+                      AND trim(title) = ''
+                    """,
+                    (message_id,),
+                ).fetchall()
+
+                job_ids: list[int] = []
+                safe = True
+                for candidate in candidates:
+                    jobs = conn.execute(
+                        """
+                        SELECT id, company, title
+                        FROM jobs
+                        WHERE source = 'gmail:linkedin'
+                          AND source_job_id = ?
+                        """,
+                        (candidate["source_candidate_key"],),
+                    ).fetchall()
+                    for job in jobs:
+                        if not _is_legacy_poisoned_linkedin_job(
+                            job["company"], job["title"]
+                        ):
+                            safe = False
+                            break
+                        if _job_has_dependencies(conn, job["id"]):
+                            safe = False
+                            break
+                        job_ids.append(job["id"])
+                    if not safe:
+                        break
+
+                if not safe:
+                    continue
+
+                conn.execute(
+                    """
+                    DELETE FROM inbound_job_candidates
+                    WHERE source_message_id = ?
+                      AND origin = 'gmail'
+                      AND lower(source_platform) = 'linkedin'
+                      AND trim(company) = ''
+                      AND trim(title) = ''
+                    """,
+                    (message_id,),
+                )
+                if job_ids:
+                    placeholders = ",".join("?" for _ in job_ids)
+                    conn.execute(
+                        f"DELETE FROM jobs WHERE id IN ({placeholders})",
+                        job_ids,
+                    )
+                conn.execute(
+                    """
+                    DELETE FROM gmail_messages
+                    WHERE message_id = ?
+                      AND classification = 'JOB_ALERT'
+                    """,
+                    (message_id,),
+                )
+                released += 1
+
+        return released
+
+    # ------------------------------------------------------------------
+    # Navigation sessions
+    # ------------------------------------------------------------------
+
+    def create_navigation_session(self, session: NavigationSession) -> None:
+        """Formerly `navigation_store.create_navigation_session(store, session)`.
+
+        Moved onto `JobStore` (issue #70 task 12) so both backends expose the
+        same navigation methods during the migration. Still lazily creates
+        the table on first write, exactly like the original free function.
+        """
+        self._ensure_navigation_schema()
+        cards_json = json.dumps([asdict(card) for card in session.cards])
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO telegram_navigation_sessions
+                    (session_id, cards_json, telegram_message_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    session.session_id,
+                    cards_json,
+                    session.telegram_message_id,
+                    session.created_at,
+                    session.expires_at,
+                ),
+            )
+
+    def attach_navigation_message_id(self, session_id: str, message_id: str) -> bool:
+        """Formerly `navigation_store.attach_navigation_message_id(store, ...)`."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE telegram_navigation_sessions SET telegram_message_id=? WHERE session_id=?",
+                (message_id, session_id),
+            )
+        return cursor.rowcount > 0
+
+    def get_navigation_session(self, session_id: str) -> NavigationSession | None:
+        """Formerly `navigation_store.get_navigation_session(store, session_id)`."""
+        try:
+            row = self._conn.execute(
+                """
+                SELECT session_id, cards_json, telegram_message_id, created_at, expires_at
+                FROM telegram_navigation_sessions WHERE session_id=?
+                """,
+                (session_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return None
+            raise
+
+        if row is None:
+            return None
+        cards = [NavigationCard(**card) for card in json.loads(row["cards_json"])]
+        return NavigationSession(
+            session_id=row["session_id"],
+            cards=cards,
+            telegram_message_id=row["telegram_message_id"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+        )
+
+    def prune_navigation_sessions(self, now_iso: str) -> int:
+        """Formerly `navigation_store.prune_navigation_sessions(store, now_iso)`."""
+        self._ensure_navigation_schema()
+        with self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM telegram_navigation_sessions WHERE expires_at < ?",
+                (now_iso,),
+            )
+        return cursor.rowcount
+
+    def _ensure_navigation_schema(self) -> None:
+        with self._conn:
+            self._conn.execute(_CREATE_TELEGRAM_NAVIGATION_SESSIONS)
 
     # ------------------------------------------------------------------
     # Evaluation operations
