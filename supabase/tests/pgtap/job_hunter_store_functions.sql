@@ -79,6 +79,31 @@ select is(
   null,
   'every public.job_hunter_* function pins search_path');
 
+-- The two assertions above compare an aggregate to null, so with zero
+-- job_hunter_* functions they would both pass vacuously. Pin the population
+-- they are asserting over: six functions the port exposes plus six ports of
+-- the pure Python normalizers. A new function must be added here
+-- deliberately, which forces someone to look at the two checks above.
+select is(
+  (select array_agg(p.proname::text order by p.proname)
+     from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname like 'job\_hunter\_%'),
+  array[
+    'job_hunter_canonicalize_url',
+    'job_hunter_confidence_rank',
+    'job_hunter_find_job_by_identity',
+    'job_hunter_locations_compatible',
+    'job_hunter_merge_jobs',
+    'job_hunter_normalize_company',
+    'job_hunter_normalize_text',
+    'job_hunter_normalize_tokens',
+    'job_hunter_pending_delivery_jobs',
+    'job_hunter_pending_review_events',
+    'job_hunter_unmaterialized_inbound_jobs',
+    'job_hunter_upsert_job'],
+  'exactly the twelve expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+
 -- Fixtures for user A ------------------------------------------------------------
 
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
@@ -363,7 +388,10 @@ select is(
 
 select is(
   (select description_hash from public.job_hunter_jobs where fingerprint = 'fp-upsert-1'),
-  encode(extensions.digest('a materially longer description than the first one', 'sha256'), 'hex'),
+  -- The literal is what Python's normalize.py:description_hash returns for
+  -- that exact string. Hard-coded on purpose: recomputing it in SQL here
+  -- would only prove the function agrees with itself.
+  'ecfa7abb00d22b6fb180f6d924b84c5a51bc6236bff4374cb505e57920b16998',
   'upsert_job: description_hash is the sha256 hex digest the Python store computes');
 
 -- The identity path must find the same row even when the fingerprint changes.
@@ -375,6 +403,65 @@ select results_eq(
          "description":"x","content_confidence":"aggregator_text"}'::jsonb) $$,
   $$ values (false) $$,
   'upsert_job: a changed fingerprint still resolves to the existing job by canonical URL and identity');
+
+-- match_mode: 'fingerprint' (store.py:649-743) and 'logical'
+-- (store.py:744-905) are NOT interchangeable. The same payload, differing
+-- only in match_mode, must resolve differently: a job reachable by canonical
+-- URL and identity but carrying a DIFFERENT fingerprint is found by the
+-- logical mode and missed by the fingerprint mode.
+
+select results_eq(
+  $$ select is_new from public.job_hunter_upsert_job(
+       '{"fingerprint":"fp-mode-base","source":"greenhouse","source_job_id":"mb",
+         "url":"https://mode.example/1","canonical_url":"https://mode.example/1",
+         "company":"Mode Test Co","title":"Mode Engineer","location":"Vienna",
+         "description":"base","content_confidence":"official_ats"}'::jsonb) $$,
+  $$ values (true) $$,
+  'match_mode: the baseline job is inserted');
+
+select results_eq(
+  $$ select is_new from public.job_hunter_upsert_job(
+       '{"match_mode":"fingerprint","fingerprint":"fp-mode-other","source":"greenhouse",
+         "source_job_id":"mo","url":"https://mode.example/1",
+         "canonical_url":"https://mode.example/1",
+         "company":"Mode Test Co","title":"Mode Engineer","location":"Vienna",
+         "description":"other","content_confidence":"official_ats"}'::jsonb) $$,
+  $$ values (true) $$,
+  'match_mode fingerprint: a different fingerprint inserts a second job even though the canonical URL and identity already match one');
+
+select is(
+  (select count(*)::int from public.job_hunter_jobs
+    where canonical_url = 'https://mode.example/1'),
+  2,
+  'match_mode fingerprint: it really did create a second row, it did not merge');
+
+select is(
+  (select count(*)::int from public.job_hunter_job_sources s
+     join public.job_hunter_jobs j on j.id = s.job_id
+    where j.fingerprint = 'fp-mode-other'),
+  0,
+  'match_mode fingerprint: no discovery source is recorded, matching upsert_job which never called _record_job_source');
+
+select results_eq(
+  $$ select is_new from public.job_hunter_upsert_job(
+       '{"fingerprint":"fp-mode-third","source":"greenhouse","source_job_id":"mt",
+         "url":"https://mode.example/1","canonical_url":"https://mode.example/1",
+         "company":"Mode Test Co","title":"Mode Engineer","location":"Vienna",
+         "description":"third","content_confidence":"official_ats"}'::jsonb) $$,
+  $$ values (false) $$,
+  'match_mode logical: the same third fingerprint resolves onto the existing job instead of inserting');
+
+select is(
+  (select count(*)::int from public.job_hunter_jobs
+    where canonical_url = 'https://mode.example/1'),
+  1,
+  'match_mode logical: the duplicate the fingerprint mode created is merged away');
+
+select throws_ok(
+  $$ select * from public.job_hunter_upsert_job(
+       '{"match_mode":"nonsense","fingerprint":"fp-mode-bad"}'::jsonb) $$,
+  null, null,
+  'match_mode: an unrecognized mode raises rather than silently defaulting');
 
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 select results_eq(

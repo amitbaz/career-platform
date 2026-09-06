@@ -118,14 +118,26 @@ $$;
 
 -- normalize.py:canonicalize_url -- drop the fragment, drop tracking params,
 -- drop blank-valued params (parse_qsl's keep_blank_values=False default),
--- and sort what is left.
+-- and sort what is left. Sorting uses the C collation so it matches Python's
+-- bytewise tuple sort rather than the database locale.
 --
--- Fidelity note: Python's parse_qsl/urlencode round trip also percent-
--- decodes and re-encodes each pair; this does not. Both sides of every
--- comparison in this file run through THIS function, so the two stay
--- self-consistent -- a divergence would only show for two raw URLs that
--- differ solely in percent-encoding. Sorting uses the C collation so it
--- matches Python's bytewise tuple sort rather than the database locale.
+-- THIS FUNCTION IS THE SOLE AUTHORITY FOR CANONICAL URLS AND IDENTITY KEYS.
+--
+-- It is deliberately NOT a byte-exact port. Python's parse_qsl/urlencode
+-- round trip also percent-decodes and re-encodes each parameter, so Python
+-- writes `?q=a+b` where this writes `?q=a%20b`. Reproducing that in SQL
+-- would leave two canonicalizers that must agree forever; one authority is
+-- better than two.
+--
+-- The consequence, and it is not optional: a value canonicalized by the old
+-- Python code is NOT comparable to a value canonicalized here. Any data
+-- loaded from the legacy SQLite database must have
+-- `job_hunter_jobs.canonical_url` and `job_hunter_job_sources.identity_key`
+-- RECOMPUTED with this function, not carried across verbatim. Carrying them
+-- over means a URL differing only in encoding misses identity resolution in
+-- job_hunter_upsert_job -- silently creating a duplicate job (the
+-- canonical_url lookup) or a duplicate provenance row (the 'url:' identity
+-- key). #70's data-load migration is bound by this.
 create or replace function public.job_hunter_canonicalize_url(p_url text)
 returns text
 language plpgsql
@@ -486,7 +498,7 @@ begin
     location           = coalesce(nullif(v_survivor.location, ''), v_duplicate.location),
     remote             = coalesce(v_survivor.remote, v_duplicate.remote),
     description        = v_description,
-    description_hash   = encode(extensions.digest(v_description, 'sha256'), 'hex'),
+    description_hash   = encode(sha256(convert_to(v_description, 'UTF8')), 'hex'),
     canonical_url      = v_canonical_url,
     ats_provider       = case when v_prefer_duplicate then v_duplicate.ats_provider
                               else coalesce(nullif(v_survivor.ats_provider, ''), v_duplicate.ats_provider) end,
@@ -580,8 +592,18 @@ end $$;
 --   remote (boolean), description, content_confidence,
 --   ats_provider, ats_board, ats_job_id,
 --   original_url     preferred over `url` when recording the discovery source.
--- description_hash IS computed here, via extensions.digest, which produces
--- exactly hashlib.sha256(text.encode("utf-8")).hexdigest().
+--   match_mode       'logical' (the default, also when the key is absent or
+--                    null) resolves identity by canonical URL, then the ATS
+--                    triple, then company/title/location, then fingerprint,
+--                    and MERGES every duplicate it finds -- store.py:744-905.
+--                    'fingerprint' resolves by fingerprint alone and never
+--                    merges -- store.py:649-743. The two are not
+--                    interchangeable; see the branch comments below.
+-- description_hash IS computed here, as encode(sha256(convert_to(t,'UTF8')),
+-- 'hex'), which is byte-identical to Python's
+-- hashlib.sha256(t.encode("utf-8")).hexdigest(). sha256() is built into
+-- Postgres 11+, so this adds no extension dependency -- pgcrypto's digest()
+-- would have been one, and no migration in this repo installs it.
 create or replace function public.job_hunter_upsert_job(p_job jsonb)
 returns table (id uuid, is_new boolean, description_changed boolean)
 language plpgsql
@@ -610,6 +632,8 @@ declare
   v_source_job_id text := p_job->>'source_job_id';
   v_source_url text;
   v_identity_key text;
+  v_match_mode text := coalesce(p_job->>'match_mode', 'logical');
+  v_desc_hash text := encode(sha256(convert_to(coalesce(p_job->>'description', ''), 'UTF8')), 'hex');
 begin
   if v_uid is null then
     raise exception 'job_hunter_upsert_job requires an authenticated user';
@@ -617,10 +641,84 @@ begin
   if v_fingerprint = '' then
     raise exception 'p_job must carry a non-empty fingerprint';
   end if;
+  if v_match_mode not in ('logical', 'fingerprint') then
+    raise exception 'p_job.match_mode must be ''logical'' or ''fingerprint'', got %', v_match_mode;
+  end if;
 
   v_lookup_canonical := case when v_raw_canonical <> ''
                              then public.job_hunter_canonicalize_url(v_raw_canonical)
                              else '' end;
+
+  -- ------------------------------------------------------------------
+  -- match_mode = 'fingerprint' -- store.py:649-743 (upsert_job)
+  --
+  -- The narrow upsert: identity is the fingerprint and nothing else, so
+  -- there are no candidates to gather and nothing is ever merged. It also
+  -- overwrites the stored fields unconditionally rather than keeping the
+  -- richer one, and it does NOT record a discovery source -- upsert_job
+  -- never called _record_job_source. Collapsing this into the logical mode
+  -- would hand a caller duplicate-merging it did not ask for.
+  -- ------------------------------------------------------------------
+  if v_match_mode = 'fingerprint' then
+    -- INSERT OR IGNORE + read-back, as one race-free statement.
+    insert into public.job_hunter_jobs as ins
+      (user_id, fingerprint, source, source_job_id, url, company, title,
+       location, remote, description, description_hash, canonical_url,
+       ats_provider, ats_board, ats_job_id, content_confidence,
+       first_seen_at, last_seen_at, status)
+    values (
+      v_uid, v_fingerprint, v_source, v_source_job_id,
+      coalesce(p_job->>'url', ''),
+      coalesce(p_job->>'company', ''),
+      coalesce(p_job->>'title', ''),
+      coalesce(p_job->>'location', ''),
+      (p_job->>'remote')::boolean,
+      coalesce(p_job->>'description', ''),
+      v_desc_hash,
+      coalesce(nullif(v_raw_canonical, ''),
+               public.job_hunter_canonicalize_url(coalesce(p_job->>'url', ''))),
+      p_job->>'ats_provider', p_job->>'ats_board', p_job->>'ats_job_id',
+      coalesce(p_job->>'content_confidence', ''),
+      v_now, v_now, 'new')
+    on conflict (user_id, fingerprint) do nothing
+    returning ins.id into v_job_id;
+
+    if v_job_id is not null then
+      return query select v_job_id, true, false;
+      return;
+    end if;
+
+    select * into v_row from public.job_hunter_jobs j
+     where j.user_id = v_uid and j.fingerprint = v_fingerprint;
+
+    update public.job_hunter_jobs j set
+      url                = coalesce(p_job->>'url', ''),
+      company            = coalesce(p_job->>'company', ''),
+      title              = coalesce(p_job->>'title', ''),
+      location           = coalesce(p_job->>'location', ''),
+      remote             = (p_job->>'remote')::boolean,
+      description        = coalesce(p_job->>'description', ''),
+      description_hash   = v_desc_hash,
+      -- COALESCE(NULLIF(?, ''), canonical_url) in the original
+      canonical_url      = coalesce(nullif(coalesce(nullif(v_raw_canonical, ''),
+                                     public.job_hunter_canonicalize_url(coalesce(p_job->>'url', ''))), ''),
+                                    v_row.canonical_url),
+      -- COALESCE(?, ats_*): an absent key keeps the stored value, an
+      -- explicit empty string overwrites it. Not NULLIF.
+      ats_provider       = coalesce(p_job->>'ats_provider', v_row.ats_provider),
+      ats_board          = coalesce(p_job->>'ats_board', v_row.ats_board),
+      ats_job_id         = coalesce(p_job->>'ats_job_id', v_row.ats_job_id),
+      content_confidence = coalesce(p_job->>'content_confidence', ''),
+      last_seen_at       = v_now
+    where j.id = v_row.id and j.user_id = v_uid;
+
+    return query select v_row.id, false, (v_row.description_hash is distinct from v_desc_hash);
+    return;
+  end if;
+
+  -- ------------------------------------------------------------------
+  -- match_mode = 'logical' (default) -- store.py:744-905
+  -- ------------------------------------------------------------------
 
   -- Identity resolution, strongest evidence first, preserving order and
   -- dropping repeats exactly as _append_unique_id does.
@@ -745,7 +843,7 @@ begin
       location           = coalesce(nullif(v_row.location, ''), nullif(coalesce(p_job->>'location', ''), ''), ''),
       remote             = coalesce(v_row.remote, (p_job->>'remote')::boolean),
       description        = v_description,
-      description_hash   = encode(extensions.digest(v_description, 'sha256'), 'hex'),
+      description_hash   = encode(sha256(convert_to(v_description, 'UTF8')), 'hex'),
       canonical_url      = coalesce(nullif(v_lookup_canonical, ''), v_row.canonical_url),
       ats_provider       = coalesce(nullif(coalesce(p_job->>'ats_provider', ''), ''), v_row.ats_provider),
       ats_board          = coalesce(nullif(coalesce(p_job->>'ats_board', ''), ''), v_row.ats_board),
@@ -776,7 +874,7 @@ begin
       coalesce(p_job->>'location', ''),
       (p_job->>'remote')::boolean,
       coalesce(p_job->>'description', ''),
-      encode(extensions.digest(coalesce(p_job->>'description', ''), 'sha256'), 'hex'),
+      v_desc_hash,
       public.job_hunter_canonicalize_url(
         coalesce(nullif(v_raw_canonical, ''), coalesce(p_job->>'url', ''), '')),
       p_job->>'ats_provider',
