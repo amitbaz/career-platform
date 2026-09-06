@@ -92,6 +92,12 @@ def test_nothing_secret_reaches_the_logs(caplog):
     assert PRIVATE_JWK["d"] not in caplog.text
 
 
+def test_user_id_property_exposes_the_subject():
+    minter = AccessTokenMinter(USER_A, PRIVATE_JWK)
+
+    assert minter.user_id == USER_A
+
+
 def test_a_key_without_a_private_half_is_rejected():
     public_only = {k: v for k, v in PRIVATE_JWK.items() if k != "d"}
 

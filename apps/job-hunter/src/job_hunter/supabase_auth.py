@@ -39,6 +39,15 @@ class AccessTokenMinter:
         self._token: str | None = None
         self._expires_at = 0.0
 
+    @property
+    def user_id(self) -> str:
+        """The ``sub`` claim every token minted by this instance carries.
+
+        Read-only so a caller can verify which user a minter acts for
+        without being able to repoint it after construction.
+        """
+        return self._user_id
+
     def token(self) -> str:
         """Return a currently-valid access token, minting one if needed."""
         now = time.time()

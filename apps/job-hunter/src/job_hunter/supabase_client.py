@@ -48,6 +48,13 @@ class SupabaseClient:
         settings: SupabaseSettings,
         minter: AccessTokenMinter,
     ) -> None:
+        if minter.user_id != settings.user_id:
+            raise ValueError(
+                "SupabaseClient settings.user_id and minter.user_id disagree "
+                f"({settings.user_id!r} vs {minter.user_id!r}); a mismatch here "
+                "would make reads silently return the minter's user's rows "
+                "while writes fail closed on the RLS policy's WITH CHECK"
+            )
         self._http = http
         self._settings = settings
         self._minter = minter

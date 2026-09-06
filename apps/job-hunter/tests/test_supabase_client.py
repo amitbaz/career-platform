@@ -38,6 +38,9 @@ class FakeResponse:
 
 
 class FakeMinter:
+    def __init__(self, user_id: str = SETTINGS.user_id) -> None:
+        self.user_id = user_id
+
     def token(self) -> str:
         return "test-token"
 
@@ -69,6 +72,14 @@ class FakeHttp:
 def _client(*responses):
     http = FakeHttp(*responses)
     return SupabaseClient(http, SETTINGS, FakeMinter()), http
+
+
+def test_settings_and_minter_user_id_mismatch_is_refused():
+    http = FakeHttp()
+    mismatched_minter = FakeMinter(user_id="bbbbbbbb-0000-0000-0000-000000000002")
+
+    with pytest.raises(ValueError, match="disagree"):
+        SupabaseClient(http, SETTINGS, mismatched_minter)
 
 
 def test_select_builds_the_url_and_passes_filters():
