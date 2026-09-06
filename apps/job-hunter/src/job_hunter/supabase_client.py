@@ -157,11 +157,16 @@ class SupabaseClient:
         payload: dict[str, Any] | None = None,
         *,
         retry: bool = True,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Any]:
         """Call a Postgres function through PostgREST.
 
         The functions are ``security invoker``, so row-level security still
         applies and the minted token still decides which rows are visible.
+
+        Return type depends on the SQL function:
+        - Table-returning functions yield a list of dicts: ``[{'col': value}, ...]``
+        - Functions returning ``setof <scalar>`` yield a list of plain values: ``['val1', 'val2']``
+        - Functions returning a bare scalar yield a one-element list: ``['value']``
 
         ``retry=False`` is for functions that mutate without being idempotent
         — ``job_hunter_merge_jobs`` is the one such caller.
