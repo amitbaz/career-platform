@@ -11,6 +11,23 @@ from job_hunter.models import Evaluation, Job, Material
 from job_hunter.store import JobStore
 
 
+def make_job(*, fingerprint: str = "default", **overrides) -> Job:
+    """Build a `Job` whose computed fingerprint is deterministic on `fingerprint`.
+
+    `Job` carries no literal fingerprint field -- `job_fingerprint()` derives
+    one from `source_job_id` or `url`. Embedding the requested value in the
+    URL makes two `make_job()` calls with the same `fingerprint` collide on
+    the same job, exactly as passing a literal fingerprint would.
+    """
+    fields = {
+        "source": "test",
+        "title": "Engineer",
+        "url": f"https://example.test/jobs/{fingerprint}",
+    }
+    fields.update(overrides)
+    return Job(**fields)
+
+
 class _SynchronizedWatchSelectConnection:
     """Coordinate two real SQLite connections at the legacy watch SELECT."""
 
@@ -709,8 +726,7 @@ def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board():
     assert store.list_due_ats_boards(now + timedelta(days=30)) == []
 
 
-def test_record_job_source_is_idempotent(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_record_job_source_is_idempotent(store):
     job_id, _, _ = store.upsert_job(
         Job(source="yc", title="Frontend Engineer", company="Acme", url="https://yc.test/job/123")
     )
@@ -734,8 +750,7 @@ def test_record_job_source_is_idempotent(tmp_path):
     assert rows[0]["source_job_id"] == "123"
 
 
-def test_provenance_without_source_id_uses_canonical_url(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_provenance_without_source_id_uses_canonical_url(store):
     job_id, _, _ = store.upsert_job(
         Job(source="yc", title="Frontend Engineer", company="Acme")
     )
@@ -758,8 +773,7 @@ def test_provenance_without_source_id_uses_canonical_url(tmp_path):
     assert rows[0]["identity_key"] == "url:https://yc.test/job/123"
 
 
-def test_strong_lookups_find_the_single_matching_job(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_strong_lookups_find_the_single_matching_job(store):
     job_id, _, _ = store.upsert_job(
         Job(
             source="greenhouse",
@@ -782,8 +796,7 @@ def test_strong_lookups_find_the_single_matching_job(tmp_path):
     assert store.find_job_by_identity("ACME", "senior frontend engineer", "Berlin") == job_id
 
 
-def test_unresolved_rediscovery_retains_existing_canonical_and_ats_metadata(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_unresolved_rediscovery_retains_existing_canonical_and_ats_metadata(store):
     job_id, _, _ = store.upsert_job(
         Job(
             source="greenhouse",
@@ -815,8 +828,7 @@ def test_unresolved_rediscovery_retains_existing_canonical_and_ats_metadata(tmp_
     assert store.find_job_by_ats("greenhouse", "acme", "posting-1") == job_id
 
 
-def test_identity_lookup_rejects_ambiguous_matches(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_identity_lookup_rejects_ambiguous_matches(store):
     for source_job_id in ("1", "2"):
         store.upsert_job(
             Job(
@@ -831,8 +843,7 @@ def test_identity_lookup_rejects_ambiguous_matches(tmp_path):
     assert store.find_job_by_identity("Acme", "Frontend Engineer", "Berlin") is None
 
 
-def test_upsert_dedupes_and_detects_description_change(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_upsert_dedupes_and_detects_description_change(store):
     job = Job(source="lever", source_job_id="1", title="Senior Product Engineer", description="React")
     job_id, is_new, changed = store.upsert_job(job)
     assert (is_new, changed) == (True, False)
@@ -844,6 +855,19 @@ def test_upsert_dedupes_and_detects_description_change(tmp_path):
     job.description = "React TypeScript"
     same_id, is_new, changed = store.upsert_job(job)
     assert (is_new, changed) == (False, True)
+
+
+def test_upsert_job_reports_description_change(store):
+    job = make_job(fingerprint="fp-1", description="first")
+    job_id, is_new, changed = store.upsert_job(job)
+    assert is_new is True and changed is False
+
+    same_id, is_new, changed = store.upsert_job(
+        make_job(fingerprint="fp-1", description="second")
+    )
+    assert same_id == job_id
+    assert is_new is False
+    assert changed is True
 
 
 def test_needs_evaluation_new_job(tmp_path):
@@ -1000,8 +1024,7 @@ def test_get_evaluation_and_material_roundtrip(tmp_path):
     assert fetched_job.company == "Acme"
 
 
-def test_job_market_round_trip(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_job_market_round_trip(store):
     job_id, _, _ = store.upsert_logical_job(
         Job(source="x", title="Senior Frontend Engineer", location="London")
     )
@@ -1012,8 +1035,7 @@ def test_job_market_round_trip(tmp_path):
     assert store.get_job(job_id).market_id == "london"
 
 
-def test_set_job_market_treats_none_as_unset(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_set_job_market_treats_none_as_unset(store):
     job_id, _, _ = store.upsert_logical_job(
         Job(source="x", title="Senior Frontend Engineer", location="London")
     )
@@ -1304,8 +1326,7 @@ def test_candidate_emitted_when_no_existing_job_matches(tmp_path):
     ]
 
 
-def test_same_canonical_job_from_two_sources_uses_one_job_id(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_same_canonical_job_from_two_sources_uses_one_job_id(store):
     first = Job(
         source="gmail:linkedin",
         title="Senior Frontend Engineer",
@@ -1339,8 +1360,7 @@ def test_same_canonical_job_from_two_sources_uses_one_job_id(tmp_path):
     }
 
 
-def test_different_titles_at_same_company_do_not_merge(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_different_titles_at_same_company_do_not_merge(store):
     first_id, _, _ = store.upsert_logical_job(
         Job(source="a", title="Senior Frontend Engineer", company="Acme", location="Berlin")
     )
@@ -1350,8 +1370,7 @@ def test_different_titles_at_same_company_do_not_merge(tmp_path):
     assert first_id != second_id
 
 
-def test_same_title_at_different_companies_does_not_merge(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_same_title_at_different_companies_does_not_merge(store):
     first_id, _, _ = store.upsert_logical_job(
         Job(source="a", title="Senior Frontend Engineer", company="Acme", location="Berlin")
     )
@@ -1533,8 +1552,7 @@ def test_late_canonical_merge_keeps_application_history_job_and_all_associations
     }
 
 
-def test_late_canonical_upsert_enriches_single_existing_job_in_place(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_late_canonical_upsert_enriches_single_existing_job_in_place(store):
     legacy_url = "https://aggregator.test/jobs/acme-frontend"
     canonical_url = "https://jobs.lever.co/acme/abc"
     existing_id, _, _ = store.upsert_job(
@@ -1690,8 +1708,7 @@ def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
         assert associated_ids == {survivor_id}
 
 
-def test_missing_location_does_not_merge_incompatible_role_locations(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_missing_location_does_not_merge_incompatible_role_locations(store):
     berlin_id, _, _ = store.upsert_job(
         Job(
             source="aggregator",
@@ -1806,51 +1823,55 @@ def test_merge_survivor_prefers_application_events_over_other_history(tmp_path):
     assert store.has_delivery(application_id, "telegram_message")
 
 
-def test_merge_survivor_prefers_older_first_seen_over_lower_id(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_merge_survivor_prefers_older_first_seen_over_lower_id(store, supabase_client):
     lower_id, _, _ = store.upsert_job(
         Job(source="lower", source_job_id="1", title="Frontend Engineer")
     )
     older_id, _, _ = store.upsert_job(
         Job(source="older", source_job_id="2", title="Frontend Engineer")
     )
-    store._conn.execute(
-        "UPDATE jobs SET first_seen_at = ? WHERE id = ?",
-        ("2026-08-31T10:00:00+00:00", lower_id),
+    supabase_client.update(
+        "job_hunter_jobs",
+        {"first_seen_at": "2026-08-31T10:00:00+00:00"},
+        params={"id": f"eq.{lower_id}"},
     )
-    store._conn.execute(
-        "UPDATE jobs SET first_seen_at = ? WHERE id = ?",
-        ("2026-08-30T10:00:00+00:00", older_id),
+    supabase_client.update(
+        "job_hunter_jobs",
+        {"first_seen_at": "2026-08-30T10:00:00+00:00"},
+        params={"id": f"eq.{older_id}"},
     )
-    store._conn.commit()
 
     assert store.merge_jobs(lower_id, older_id) == older_id
     assert store.get_job(lower_id) is None
     assert store.get_job(older_id) is not None
 
 
-def test_merge_survivor_uses_lower_id_when_history_and_age_are_equal(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-    lower_id, _, _ = store.upsert_job(
-        Job(source="lower", source_job_id="1", title="Frontend Engineer")
+def test_merge_survivor_uses_lower_id_when_history_and_age_are_equal(store, supabase_client):
+    # Ids are random uuids now, not sequential autoincrement integers, so
+    # which of the two literally sorts lower can't be fixed by construction
+    # order -- it's computed from the ids actually assigned, below.
+    first_id, _, _ = store.upsert_job(
+        Job(source="first", source_job_id="1", title="Frontend Engineer")
     )
-    higher_id, _, _ = store.upsert_job(
-        Job(source="higher", source_job_id="2", title="Frontend Engineer")
+    second_id, _, _ = store.upsert_job(
+        Job(source="second", source_job_id="2", title="Frontend Engineer")
     )
     first_seen_at = "2026-08-31T10:00:00+00:00"
-    store._conn.execute(
-        "UPDATE jobs SET first_seen_at = ? WHERE id IN (?, ?)",
-        (first_seen_at, lower_id, higher_id),
+    supabase_client.update(
+        "job_hunter_jobs",
+        {"first_seen_at": first_seen_at},
+        params={"id": f"in.({first_id},{second_id})"},
     )
-    store._conn.commit()
+    lower_id, higher_id = sorted((first_id, second_id))
 
+    # Passing the higher id as the nominal survivor proves the tie-break
+    # (lower id wins) overrides the caller's argument order.
     assert store.merge_jobs(higher_id, lower_id) == lower_id
     assert store.get_job(lower_id) is not None
     assert store.get_job(higher_id) is None
 
 
-def test_merge_job_sources_preserves_seen_bounds_on_identity_conflict(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_merge_job_sources_preserves_seen_bounds_on_identity_conflict(store, supabase_client):
     survivor_id, _, _ = store.upsert_job(
         Job(source="first", source_job_id="1", title="Frontend Engineer")
     )
@@ -1864,21 +1885,22 @@ def test_merge_job_sources_preserves_seen_bounds_on_identity_conflict(tmp_path):
             source_job_id="same-id",
             source_url="https://source.test/jobs/same-id",
         )
-    store._conn.execute(
-        """
-        UPDATE job_sources SET first_seen_at = ?, last_seen_at = ?
-        WHERE job_id = ?
-        """,
-        ("2026-08-10T00:00:00+00:00", "2026-08-20T00:00:00+00:00", survivor_id),
+    supabase_client.update(
+        "job_hunter_job_sources",
+        {
+            "first_seen_at": "2026-08-10T00:00:00+00:00",
+            "last_seen_at": "2026-08-20T00:00:00+00:00",
+        },
+        params={"job_id": f"eq.{survivor_id}"},
     )
-    store._conn.execute(
-        """
-        UPDATE job_sources SET first_seen_at = ?, last_seen_at = ?
-        WHERE job_id = ?
-        """,
-        ("2026-08-01T00:00:00+00:00", "2026-08-31T00:00:00+00:00", duplicate_id),
+    supabase_client.update(
+        "job_hunter_job_sources",
+        {
+            "first_seen_at": "2026-08-01T00:00:00+00:00",
+            "last_seen_at": "2026-08-31T00:00:00+00:00",
+        },
+        params={"job_id": f"eq.{duplicate_id}"},
     )
-    store._conn.commit()
 
     merged_id = store.merge_jobs(survivor_id, duplicate_id)
 
@@ -1888,8 +1910,7 @@ def test_merge_job_sources_preserves_seen_bounds_on_identity_conflict(tmp_path):
     assert sources[0]["last_seen_at"] == "2026-08-31T00:00:00+00:00"
 
 
-def test_logical_upsert_reports_description_change_caused_by_merge(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_logical_upsert_reports_description_change_caused_by_merge(store):
     canonical_url = "https://jobs.lever.co/acme/abc"
     survivor_id, _, _ = store.upsert_job(
         Job(
@@ -1932,14 +1953,11 @@ def test_logical_upsert_reports_description_change_caused_by_merge(tmp_path):
     assert is_new is False
     assert description_changed is True
     assert store.count_jobs() == 1
-    merged = store._conn.execute(
-        "SELECT description FROM jobs WHERE id = ?", (survivor_id,)
-    ).fetchone()
-    assert merged["description"] == duplicate_description
+    merged = store.get_job(survivor_id)
+    assert merged.description == duplicate_description
 
 
-def test_upsert_logical_job_persists_content_confidence(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_upsert_logical_job_persists_content_confidence(store):
     job = Job(source="ashby", title="Eng", description="full JD", content_confidence=OFFICIAL_ATS)
 
     job_id, _, _ = store.upsert_logical_job(job)
@@ -1948,8 +1966,7 @@ def test_upsert_logical_job_persists_content_confidence(tmp_path):
     assert stored.content_confidence == OFFICIAL_ATS
 
 
-def test_upsert_logical_job_upgrades_description_by_confidence_not_length(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_upsert_logical_job_upgrades_description_by_confidence_not_length(store):
     weak = Job(
         source="hackernews", title="Eng", company="Acme", location="Remote",
         canonical_url="https://jobs.example.com/acme/1",
@@ -1971,8 +1988,7 @@ def test_upsert_logical_job_upgrades_description_by_confidence_not_length(tmp_pa
     assert stored.content_confidence == OFFICIAL_ATS
 
 
-def test_upsert_logical_job_keeps_stronger_description_against_weaker_update(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_upsert_logical_job_keeps_stronger_description_against_weaker_update(store):
     strong = Job(
         source="ashby", title="Eng", company="Acme", location="Remote",
         canonical_url="https://jobs.example.com/acme/2",
@@ -2071,8 +2087,7 @@ def test_legacy_evaluation_row_with_genuinely_zero_score_stays_zero(tmp_path):
     assert evaluation.raw_model_score == 0
 
 
-def test_backfill_ats_identity_fills_rows_from_their_urls(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_backfill_ats_identity_fills_rows_from_their_urls(store, supabase_client):
     job_id, _, _ = store.upsert_job(
         Job(
             source="lever",
@@ -2085,9 +2100,13 @@ def test_backfill_ats_identity_fills_rows_from_their_urls(tmp_path):
 
     assert store.backfill_ats_identity() == 1
 
-    row = store._conn.execute(
-        "SELECT ats_provider, ats_board, ats_job_id FROM jobs WHERE id = ?", (job_id,)
-    ).fetchone()
+    row = supabase_client.select(
+        "job_hunter_jobs",
+        params={
+            "id": f"eq.{job_id}",
+            "select": "ats_provider,ats_board,ats_job_id",
+        },
+    )[0]
     assert (row["ats_provider"], row["ats_board"], row["ats_job_id"]) == (
         "lever",
         "acme",
@@ -2095,8 +2114,7 @@ def test_backfill_ats_identity_fills_rows_from_their_urls(tmp_path):
     )
 
 
-def test_backfill_ats_identity_leaves_non_ats_and_already_attributed_rows_alone(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_backfill_ats_identity_leaves_non_ats_and_already_attributed_rows_alone(store, supabase_client):
     store.upsert_job(
         Job(source="hackernews", source_job_id="1", title="Backend Engineer", url="https://acme.test/jobs/1")
     )
@@ -2114,17 +2132,17 @@ def test_backfill_ats_identity_leaves_non_ats_and_already_attributed_rows_alone(
 
     assert store.backfill_ats_identity() == 0
 
-    row = store._conn.execute(
-        "SELECT ats_board FROM jobs WHERE id = ?", (attributed_id,)
-    ).fetchone()
+    row = supabase_client.select(
+        "job_hunter_jobs",
+        params={"id": f"eq.{attributed_id}", "select": "ats_board"},
+    )[0]
     assert row["ats_board"] == "acme"
 
 
-def test_backfill_ats_identity_attributes_job_boards_greenhouse_rows(tmp_path):
+def test_backfill_ats_identity_attributes_job_boards_greenhouse_rows(store, supabase_client):
     # Rows discovered before the Greenhouse adapter attributed its own postings
     # kept a job-boards.greenhouse.io URL and no identity, which left them off
     # the strongest dedup key. The URL alone is enough to attribute them.
-    store = JobStore(tmp_path / "state.sqlite3")
     job_id, _, _ = store.upsert_job(
         Job(
             source="greenhouse",
@@ -2137,9 +2155,13 @@ def test_backfill_ats_identity_attributes_job_boards_greenhouse_rows(tmp_path):
 
     assert store.backfill_ats_identity() == 1
 
-    row = store._conn.execute(
-        "SELECT ats_provider, ats_board, ats_job_id FROM jobs WHERE id = ?", (job_id,)
-    ).fetchone()
+    row = supabase_client.select(
+        "job_hunter_jobs",
+        params={
+            "id": f"eq.{job_id}",
+            "select": "ats_provider,ats_board,ats_job_id",
+        },
+    )[0]
     assert (row["ats_provider"], row["ats_board"], row["ats_job_id"]) == (
         "greenhouse",
         "acme",
@@ -2147,8 +2169,7 @@ def test_backfill_ats_identity_attributes_job_boards_greenhouse_rows(tmp_path):
     )
 
 
-def test_backfill_ats_identity_is_idempotent(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_backfill_ats_identity_is_idempotent(store):
     store.upsert_job(
         Job(
             source="greenhouse",

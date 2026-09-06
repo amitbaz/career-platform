@@ -61,6 +61,19 @@ class SupabaseClient:
         self._settings = settings
         self._minter = minter
 
+    @property
+    def user_id(self) -> str:
+        """The user this client acts as.
+
+        Row-level security's `insert_own` policies require a new row's own
+        `user_id` column to already equal `auth.uid()` -- there is no
+        default or trigger that fills it in. A caller building a row for
+        `insert`/`upsert` on a table this client hasn't wrapped in an RPC
+        function (e.g. `PostgresJobStore.record_job_source`) needs this to
+        set that column itself.
+        """
+        return self._settings.user_id
+
     def select(
         self, table: str, *, params: dict[str, str] | None = None
     ) -> list[dict[str, Any]]:
