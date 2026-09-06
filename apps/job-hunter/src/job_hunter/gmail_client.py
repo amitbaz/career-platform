@@ -45,6 +45,19 @@ class GmailHistoryExpired(Exception):
     """Raised when Gmail no longer retains the requested history ID."""
 
 
+class GmailMessageNotFound(Exception):
+    """Raised when a message referenced by Gmail no longer exists.
+
+    Gmail history can hand out IDs for messages deleted or purged before we got
+    around to fetching them. Such a message is gone for good, so callers should
+    skip it instead of retrying it on every sync.
+    """
+
+    def __init__(self, message_id: str) -> None:
+        super().__init__(f"Gmail message {message_id} no longer exists")
+        self.message_id = message_id
+
+
 class GmailClient:
     def __init__(self, http: _HttpClient, token_provider: AccessTokenProvider) -> None:
         self._http = http
@@ -93,9 +106,13 @@ class GmailClient:
         )
 
     def get_message(self, message_id: str) -> GmailMessage:
-        payload = self._get_json(
+        response = self._get(
             f"{_GMAIL_API_BASE}/messages/{message_id}", params={"format": "full"}
         )
+        if response.status_code == 404:
+            raise GmailMessageNotFound(message_id)
+        response.raise_for_status()
+        payload = response.json()
         message_payload = payload["payload"]
         headers = {
             header["name"].lower(): header["value"]

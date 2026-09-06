@@ -5,7 +5,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from job_hunter.gemini_usage import GeminiQuotaPaused
-from job_hunter.gmail_client import GmailHistoryExpired, GmailHistoryPage, GmailPage
+from job_hunter.gmail_client import (
+    GmailHistoryExpired,
+    GmailHistoryPage,
+    GmailMessageNotFound,
+    GmailPage,
+)
 from job_hunter.gmail_matching import JobMatch
 from job_hunter.gmail_models import ExtractedJob, GmailClassification, GmailMessage
 from job_hunter.models import Job
@@ -760,6 +765,55 @@ def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(tmp
     assert state["history_id"] == "old-cursor"
     assert store.has_processed_gmail_message("m1") is True
     assert store.has_processed_gmail_message("m2") is False
+
+
+def test_stale_message_does_not_block_incremental_cursor_advance(tmp_path):
+    gmail = FakeGmail(
+        messages={
+            "m1": _semantic_job_alert("m1"),
+            "stale": GmailMessageNotFound("stale"),
+        }
+    )
+    gmail.history_pages = {None: GmailHistoryPage(["m1", "stale"], "new-cursor", None)}
+    gemini = SequencedGemini(
+        [
+            {
+                "kind": "JOB_ALERT",
+                "confidence": 0.9,
+                "company": "",
+                "role_title": "",
+                "source_job_id": None,
+                "job_urls": [],
+                "jobs": [],
+                "rationale": "generic alert",
+            },
+        ]
+    )
+    store = JobStore(tmp_path / "state.sqlite3")
+    _save_completed_state(store, history_id="old-cursor")
+    service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
+
+    summary = service.sync(NOW)
+
+    state = store.get_gmail_sync_state("candidate@example.com")
+    assert gmail.message_calls == ["m1", "stale"]
+    assert summary.processed == 1
+    assert summary.errors == 0
+    assert state["history_id"] == "new-cursor"
+    assert state["last_successful_sync_at"] == NOW.isoformat()
+
+
+def test_non_404_message_failure_still_blocks_cursor_advance(tmp_path):
+    gmail = FakeGmail(messages={"m1": RuntimeError("HTTP 500")})
+    gmail.history_pages = {None: GmailHistoryPage(["m1"], "new-cursor", None)}
+    store = JobStore(tmp_path / "state.sqlite3")
+    _save_completed_state(store, history_id="old-cursor")
+    service = GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
+
+    summary = service.sync(NOW)
+
+    assert summary.errors == 1
+    assert store.get_gmail_sync_state("candidate@example.com")["history_id"] == "old-cursor"
 
 
 def test_semantic_gmail_job_description_is_not_persisted(tmp_path, monkeypatch):

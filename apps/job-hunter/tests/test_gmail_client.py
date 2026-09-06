@@ -3,7 +3,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from job_hunter.gmail_client import GmailClient, GmailHistoryExpired
+from job_hunter.gmail_client import (
+    GmailClient,
+    GmailHistoryExpired,
+    GmailMessageNotFound,
+)
 
 
 class FakeTokenProvider:
@@ -133,6 +137,26 @@ def test_history_404_raises_history_expired():
 
     with pytest.raises(GmailHistoryExpired):
         client.list_history("123")
+
+
+def test_get_message_404_raises_message_not_found():
+    client = GmailClient(http=Fake404Http(), token_provider=FakeTokenProvider("token"))
+
+    with pytest.raises(GmailMessageNotFound) as excinfo:
+        client.get_message("1a0685b439212bac")
+
+    assert excinfo.value.message_id == "1a0685b439212bac"
+
+
+def test_get_message_non_404_error_still_raises():
+    class Fake500Http:
+        def get(self, url: str, **kwargs) -> FakeResponse:
+            return FakeResponse({}, status_code=500)
+
+    client = GmailClient(http=Fake500Http(), token_provider=FakeTokenProvider("token"))
+
+    with pytest.raises(RuntimeError):
+        client.get_message("m1")
 
 
 def test_decode_prefers_plain_text_over_html():
