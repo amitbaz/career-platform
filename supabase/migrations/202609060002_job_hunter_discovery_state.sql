@@ -177,3 +177,120 @@ create policy update_own on public.job_hunter_ats_registry
   for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy delete_own on public.job_hunter_ats_registry
   for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- evaluations: append-only model verdicts per job; newest evaluated_at wins ----------
+
+create table public.job_hunter_evaluations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  job_id uuid not null,
+  total_score integer not null default 0,
+  raw_model_score integer not null default 0,
+  scores_json jsonb not null default '{}'::jsonb,
+  decision text not null default '',
+  hard_blockers_json jsonb not null default '[]'::jsonb,
+  strengths_json jsonb not null default '[]'::jsonb,
+  gaps_json jsonb not null default '[]'::jsonb,
+  requirements_json jsonb not null default '{}'::jsonb,
+  salary_note text not null default '',
+  location_note text not null default '',
+  rationale text not null default '',
+  model text not null default '',
+  status text not null default 'ok',
+  market_id text not null default '',
+  description_hash_at_eval text not null default '',
+  content_confidence_at_eval text not null default '',
+  evaluated_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  foreign key (job_id, user_id) references public.job_hunter_jobs (id, user_id)
+);
+
+create index job_hunter_evaluations_job_latest_idx
+  on public.job_hunter_evaluations (job_id, evaluated_at desc);
+create index job_hunter_evaluations_user_latest_idx
+  on public.job_hunter_evaluations (user_id, evaluated_at desc);
+
+alter table public.job_hunter_evaluations enable row level security;
+create policy select_own on public.job_hunter_evaluations
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_evaluations
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_evaluations
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_evaluations
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- materials: generated cover letters --------------------------------------------------
+
+create table public.job_hunter_materials (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  job_id uuid not null,
+  cover_letter_text text not null default '',
+  generated_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  foreign key (job_id, user_id) references public.job_hunter_jobs (id, user_id)
+);
+
+create index job_hunter_materials_job_latest_idx
+  on public.job_hunter_materials (job_id, generated_at desc);
+
+alter table public.job_hunter_materials enable row level security;
+create policy select_own on public.job_hunter_materials
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_materials
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_materials
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_materials
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- deliveries: what was sent to Telegram, and when ------------------------------------------
+
+create table public.job_hunter_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  job_id uuid not null,
+  delivery_type text not null check (delivery_type in ('telegram_message', 'telegram_document')),
+  status text not null default 'sent',
+  delivered_at timestamptz not null,
+  telegram_message_id text,
+  created_at timestamptz not null default now(),
+  foreign key (job_id, user_id) references public.job_hunter_jobs (id, user_id)
+);
+
+create index job_hunter_deliveries_job_type_idx
+  on public.job_hunter_deliveries (job_id, delivery_type);
+
+alter table public.job_hunter_deliveries enable row level security;
+create policy select_own on public.job_hunter_deliveries
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_deliveries
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_deliveries
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_deliveries
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- pending_ai_work: retry queue for evaluations/letters that hit a quota wall ---------------
+
+create table public.job_hunter_pending_ai_work (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  work_type text not null,
+  job_id uuid not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, work_type, job_id),
+  foreign key (job_id, user_id) references public.job_hunter_jobs (id, user_id) on delete cascade
+);
+
+alter table public.job_hunter_pending_ai_work enable row level security;
+create policy select_own on public.job_hunter_pending_ai_work
+  for select to authenticated using ((select auth.uid()) = user_id);
+create policy insert_own on public.job_hunter_pending_ai_work
+  for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy update_own on public.job_hunter_pending_ai_work
+  for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy delete_own on public.job_hunter_pending_ai_work
+  for delete to authenticated using ((select auth.uid()) = user_id);

@@ -53,7 +53,11 @@ select unnest(array[
   'job_hunter_jobs',
   'job_hunter_job_sources',
   'job_hunter_company_watch',
-  'job_hunter_ats_registry'
+  'job_hunter_ats_registry',
+  'job_hunter_evaluations',
+  'job_hunter_materials',
+  'job_hunter_deliveries',
+  'job_hunter_pending_ai_work'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -79,6 +83,22 @@ begin
     when 'job_hunter_ats_registry' then
       insert into public.job_hunter_ats_registry (user_id, provider, board_identifier, first_seen_at, last_seen_at)
       values (p_owner, 'greenhouse', gen_random_uuid()::text, now(), now()) returning id into v_id;
+    when 'job_hunter_evaluations' then
+      v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
+      insert into public.job_hunter_evaluations (user_id, job_id, evaluated_at)
+      values (p_owner, v_job, now()) returning id into v_id;
+    when 'job_hunter_materials' then
+      v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
+      insert into public.job_hunter_materials (user_id, job_id, generated_at)
+      values (p_owner, v_job, now()) returning id into v_id;
+    when 'job_hunter_deliveries' then
+      v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
+      insert into public.job_hunter_deliveries (user_id, job_id, delivery_type, delivered_at)
+      values (p_owner, v_job, 'telegram_message', now()) returning id into v_id;
+    when 'job_hunter_pending_ai_work' then
+      v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
+      insert into public.job_hunter_pending_ai_work (user_id, job_id, work_type)
+      values (p_owner, v_job, 'evaluate') returning id into v_id;
     else
       raise exception 'no seed row defined for table %', p_table;
   end case;
