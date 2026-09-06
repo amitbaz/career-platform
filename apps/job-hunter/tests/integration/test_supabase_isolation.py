@@ -6,10 +6,11 @@ Get them with:
     eval "$(supabase status -o env | sed 's/^/export /')"
     export SUPABASE_TEST_URL="$API_URL"
     export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
-    export SUPABASE_TEST_SIGNING_KEY_B64="$(base64 < supabase/signing_keys_single.json)"
+    export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
 
-where signing_keys_single.json holds the single JWK object (the stack's
-signing_keys.json wraps it in an array).
+The last line's json/base64 roundtrip is needed because the stack's
+signing_keys.json wraps the JWK in an array, and the minter wants the
+single object.
 """
 
 from __future__ import annotations
