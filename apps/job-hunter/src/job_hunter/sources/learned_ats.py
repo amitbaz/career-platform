@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from job_hunter.aggregator_detection import evaluate_board
 from job_hunter.ats_registry import select_ats_boards
 from job_hunter.models import Job
+from job_hunter.normalize import ats_board_key
 from job_hunter.store import JobStore
 
 from .ashby import AshbySource
@@ -77,25 +78,28 @@ class LearnedAtsSource:
     def discover(self) -> list[Job]:
         """Return jobs from due learned ATS boards, isolating per-board failures."""
         checked_at = self._now()
+        due = self._store.list_due_ats_boards(checked_at)
+
+        # Reject denylisted boards before the limit is applied, so a board
+        # that is never going to be scanned cannot consume one of the
+        # `limit` slots and displace a real board.
+        remaining = []
+        for entry in due:
+            board_key = ats_board_key(entry.provider, entry.board_identifier)
+            if board_key in self._denylist:
+                self._reject_board(
+                    entry, checked_at, f"configured in learned_ats_denylist ({board_key})"
+                )
+            else:
+                remaining.append(entry)
+
         entries = select_ats_boards(
-            self._store.list_due_ats_boards(checked_at),
-            self._market_order,
-            self._limit,
-            checked_at,
+            remaining, self._market_order, self._limit, checked_at
         )
         discovered: list[Job] = []
         for entry in entries:
             source_type = _ATS_SOURCE_TYPES.get(entry.provider)
             if source_type is None:
-                continue
-
-            board_key = f"{entry.provider}:{entry.board_identifier}"
-            if board_key in self._denylist:
-                # The config override/escape hatch: an instant kill for an
-                # already-registered board, applied before any network call.
-                self._reject_board(
-                    entry, checked_at, f"configured in learned_ats_denylist ({board_key})"
-                )
                 continue
 
             self.stats.boards_scanned += 1
@@ -133,15 +137,15 @@ class LearnedAtsSource:
                     )
                 continue
 
-            verdict = evaluate_board([job.description for job in jobs])
-            if verdict.rejected:
+            rejection = self._aggregator_rejection(entry, jobs)
+            if rejection is not None:
                 logger.info(
                     "learned ATS board rejected as an aggregator: %s:%s (%s)",
                     entry.provider,
                     entry.board_identifier,
-                    verdict.reason,
+                    rejection,
                 )
-                self._reject_board(entry, checked_at, verdict.reason)
+                self._reject_board(entry, checked_at, rejection)
                 continue
 
             self.stats.boards_successful += 1
@@ -166,6 +170,33 @@ class LearnedAtsSource:
         if tracked_http.error is not None:
             raise tracked_http.error
         return jobs
+
+    def _aggregator_rejection(self, entry, jobs: list[Job]) -> str | None:
+        """Return why this board should be rejected, or None to keep it.
+
+        Fails open: a posting's description can be None (an ATS returning an
+        explicit null body), and a detection bug must never cost the whole
+        run's discovery, so anything unexpected here keeps the board.
+        """
+        try:
+            verdict = evaluate_board([job.description or "" for job in jobs])
+        except Exception:
+            logger.warning(
+                "learned ATS aggregator detection failed for %s:%s; keeping the board",
+                entry.provider,
+                entry.board_identifier,
+                exc_info=True,
+            )
+            return None
+        if verdict.rejected:
+            return verdict.reason
+        logger.debug(
+            "learned ATS board kept: %s:%s (%s)",
+            entry.provider,
+            entry.board_identifier,
+            "; ".join(f"{e.name}: {e.reason}" for e in verdict.evidence),
+        )
+        return None
 
     def _reject_board(self, entry, checked_at: datetime, reason: str) -> None:
         self.stats.boards_rejected += 1

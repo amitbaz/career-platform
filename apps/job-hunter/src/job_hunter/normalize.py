@@ -23,6 +23,18 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
 
 
+def ats_board_key(provider: str, board_identifier: str) -> str:
+    """Return the canonical `"<provider>:<board>"` ATS denylist key.
+
+    Case- and whitespace-insensitive on both halves, so a key built from a
+    parsed job URL, a registry row, or an operator's config entry always
+    compares equal. Matching only -- the registry still stores the board
+    identifier in its original case, since ATS slugs are case-sensitive in
+    URLs.
+    """
+    return f"{provider.strip().lower()}:{board_identifier.strip().lower()}"
+
+
 def description_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

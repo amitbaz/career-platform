@@ -197,10 +197,8 @@ class SearchPolicy:
     max_search_queries_per_run: int = 30
     max_canonical_resolutions_per_run: int = 80
     max_learned_ats_boards_per_run: int = 75
-    #: "<provider>:<board>" keys, e.g. "lever:jobgether". Override/escape
-    #: hatch, not the primary detection mechanism -- see
-    #: aggregator_detection.py, which catches new aggregators with an empty
-    #: denylist.
+    #: Normalized `ats_board_key` values, e.g. "lever:jobgether". See
+    #: aggregator_detection.py for how this relates to detection.
     learned_ats_denylist: list[str] = field(default_factory=list)
     engineering_title_keywords: list[str] = field(
         default_factory=lambda: list(DEFAULT_ENGINEERING_TITLE_KEYWORDS)

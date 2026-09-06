@@ -5,6 +5,13 @@ posts: it says the role belongs to someone else. That self-declared
 provenance is scale-free -- it identifies a 40-posting aggregator the same
 way it identifies a 4,000-posting one -- so no signal here may reject a board
 for its size alone.
+
+This detection is the mechanism, and it needs no operator configuration.
+The `learned_ats_denylist` in `config/search.yml` is only an override: an
+instant kill for a board these signals miss, and a correction when they are
+wrong. It is enforced in `ats_registry.harvest_ats_board` (refusing
+admission) and `sources/learned_ats.LearnedAtsSource` (rejecting an
+already-registered board before scanning it).
 """
 
 from __future__ import annotations
@@ -57,8 +64,8 @@ def third_party_listing(descriptions: list[str]) -> SignalEvidence:
     scanned = len(descriptions)
     matched = sum(
         1
-        for description in descriptions
-        if any(phrase in description.lower() for phrase in _THIRD_PARTY_LISTING_PHRASES)
+        for lowered in (description.lower() for description in descriptions)
+        if any(phrase in lowered for phrase in _THIRD_PARTY_LISTING_PHRASES)
     )
     if scanned < _MIN_POSTINGS_SCANNED:
         return SignalEvidence(
@@ -88,8 +95,10 @@ _SIGNALS = (third_party_listing,)
 def evaluate_board(descriptions: list[str]) -> AggregatorVerdict:
     """Run every detection signal against a board's scanned postings.
 
-    Additional signals can be added to `_SIGNALS` without touching the
-    registry or the learned-ATS source that calls this.
+    A board is rejected when any signal fires. Another signal that also
+    judges a board by its posting text can be added to `_SIGNALS` alone;
+    one needing other evidence (titles, company fields, posting counts)
+    needs this module's signal input widened first.
     """
     evidence = tuple(signal(descriptions) for signal in _SIGNALS)
     fired = [e for e in evidence if e.fired]

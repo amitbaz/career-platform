@@ -616,6 +616,25 @@ def test_reject_ats_board_deactivates_and_records_reason():
     store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
 
     assert store.list_due_ats_boards(now) == []
+    rejected = store.list_rejected_ats_boards()
+    assert [e.board_identifier for e in rejected] == ["jobgether"]
+    assert rejected[0].rejected_reason == "aggregator: 98% third-party"
+    assert rejected[0].active is False
+
+
+def test_list_rejected_ats_boards_excludes_healthy_and_health_paused_boards():
+    # Only a board rejected for cause carries a reason -- a board merely
+    # deactivated by repeated 404s must not show up as rejected.
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
+    store.upsert_ats_board(provider="lever", board_identifier="dead-co")
+    for i in range(3):
+        store.record_ats_scan_failure(
+            "lever", "dead-co", now + timedelta(hours=25 * i), permanent=True
+        )
+
+    assert store.list_rejected_ats_boards() == []
 
 
 def test_ats_rejected_board_is_not_resurrected_by_rediscovery():

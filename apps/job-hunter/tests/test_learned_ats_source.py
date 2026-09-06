@@ -355,15 +355,108 @@ def test_learned_ats_source_refuses_denylisted_board_without_scanning():
     assert store.list_due_ats_boards(now) == []
 
 
-def test_learned_ats_source_does_not_resurrect_a_previously_rejected_board():
+def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run():
     store = JobStore(":memory:")
     _seed_board(store, "lever", "jobgether")
-    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
-    store.reject_ats_board("lever", "jobgether", "aggregator: prior run", now)
+    base = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    postings = _lever_postings(8, "jobgether", _JOBGETHER_PHRASING)
+    http = RoutingHttp(responses={"lever.co": postings})
 
-    # A fresh job pointing at the same board rediscovers it, the way
+    first = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: base
+    )
+    first.discover()
+    assert first.stats.boards_rejected == 1
+    calls_after_first_run = len(http.calls)
+
+    # Rediscovery through an unrelated job re-upserts the board, the way
     # collect_candidates does on every run.
     store.upsert_ats_board(provider="lever", board_identifier="jobgether")
 
-    later = now + timedelta(days=1)
-    assert store.list_due_ats_boards(later) == []
+    later = base + timedelta(days=30)
+    second = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: later
+    )
+    jobs = second.discover()
+
+    assert jobs == []
+    assert second.stats.boards_scanned == 0
+    assert http.calls[calls_after_first_run:] == []
+
+
+def test_learned_ats_source_survives_a_posting_with_no_description():
+    # An ATS returning an explicit null body yields Job.description None;
+    # detection must not turn that into a source-wide crash.
+    store = JobStore(":memory:")
+    _seed_board(store, "greenhouse", "null-body-co")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={
+            "greenhouse.io": {
+                "jobs": [
+                    {
+                        "id": i,
+                        "title": "Senior Product Engineer",
+                        "location": {"name": "Remote"},
+                        "absolute_url": f"https://boards.greenhouse.io/null-body-co/{i}",
+                        "content": None,
+                    }
+                    for i in range(6)
+                ]
+            }
+        }
+    )
+
+    source = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: now
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 6
+    assert source.stats.boards_rejected == 0
+    assert source.stats.boards_successful == 1
+
+
+def test_learned_ats_source_matches_denylist_entry_case_insensitively():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "JobGether")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"lever.co": _lever_postings(10, "JobGether")})
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        denylist=frozenset({"lever:jobgether"}),
+    )
+    jobs = source.discover()
+
+    assert jobs == []
+    assert http.calls == []
+    assert source.stats.boards_rejected == 1
+
+
+def test_learned_ats_source_denylisted_board_does_not_consume_a_scan_slot():
+    # With limit=1, a denylisted board must not be the one board the run
+    # spends its single slot on -- the legitimate board still gets scanned.
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "aaa-denylisted")
+    _seed_board(store, "lever", "zzz-legit")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"zzz-legit": _lever_postings(3, "zzz-legit")})
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=1,
+        market_order=["berlin"],
+        now=lambda: now,
+        denylist=frozenset({"lever:aaa-denylisted"}),
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 3
+    assert source.stats.boards_scanned == 1
+    assert source.stats.boards_rejected == 1

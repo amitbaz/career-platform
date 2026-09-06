@@ -308,9 +308,10 @@ def _log_source_metrics(
 
 def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: LearnedAtsStats) -> None:
     """Log one final ats_registry line summarizing registry health this run."""
+    rejected_boards = store.list_rejected_ats_boards()
     logger.info(
         "ats_registry total=%s discovered=%s scanned=%s successful=%s failed=%s "
-        "jobs_raw=%s rejected=%s",
+        "jobs_raw=%s rejected=%s rejected_total=%s",
         store.count_ats_boards(),
         discovery.stats.ats_boards_discovered,
         learned_stats.boards_scanned,
@@ -318,7 +319,15 @@ def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: Learned
         learned_stats.boards_failed,
         learned_stats.jobs_raw,
         learned_stats.boards_rejected,
+        len(rejected_boards),
     )
+    for entry in rejected_boards:
+        logger.info(
+            "ats_registry rejected board: %s:%s (%s)",
+            entry.provider,
+            entry.board_identifier,
+            entry.rejected_reason,
+        )
 
 
 def _due_watch_state(

@@ -313,6 +313,66 @@ def test_load_settings_reads_learned_ats_denylist(monkeypatch, tmp_path: Path):
     assert settings.policy.learned_ats_denylist == ["lever:jobgether"]
 
 
+def test_load_settings_treats_empty_learned_ats_denylist_key_as_no_entries(
+    monkeypatch, tmp_path: Path
+):
+    # Commenting out the single shipped entry leaves a bare key, which YAML
+    # parses as None -- that must read as "no denylist", not abort the run.
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(
+        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
+        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
+        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
+        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
+        "learned_ats_denylist:\n"
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
+    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+    settings = load_settings(cfg)
+
+    assert settings.policy.learned_ats_denylist == []
+
+
+def test_load_settings_normalizes_learned_ats_denylist_entries(monkeypatch, tmp_path: Path):
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(
+        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
+        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
+        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
+        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
+        "learned_ats_denylist:\n  - ' Lever:JobGether '\n"
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
+    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+    settings = load_settings(cfg)
+
+    assert settings.policy.learned_ats_denylist == ["lever:jobgether"]
+
+
+def test_load_settings_rejects_malformed_learned_ats_denylist_entry(
+    monkeypatch, tmp_path: Path
+):
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(
+        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
+        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
+        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
+        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
+        "learned_ats_denylist:\n  - jobgether\n"
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
+    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+
+    with pytest.raises(ValueError, match="learned_ats_denylist"):
+        load_settings(cfg)
+
+
 def test_load_settings_supports_legacy_manual_company_names(monkeypatch, tmp_path: Path):
     cfg = tmp_path / "search.yml"
     cfg.write_text(
