@@ -105,6 +105,56 @@ def test_harvest_ats_board_returns_false_for_unsupported_url():
     assert store.count_ats_boards() == 0
 
 
+def test_harvest_ats_board_refuses_denylisted_board():
+    store = JobStore(":memory:")
+    job = Job(
+        source="feed",
+        title="x",
+        company="Jobgether",
+        url="https://jobs.lever.co/jobgether/123",
+    )
+
+    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
+
+    assert created is False
+    assert store.count_ats_boards() == 0
+
+
+def test_harvest_ats_board_denylist_match_is_case_insensitive():
+    # A manual_company_watch seed can carry an unnormalized provider, and
+    # upsert_ats_board would store it lowercased -- creating the very row
+    # the denylist exists to prevent.
+    store = JobStore(":memory:")
+    job = Job(
+        source="feed",
+        title="x",
+        company="Jobgether",
+        ats_provider="Lever",
+        ats_board="JobGether",
+        ats_job_id="1",
+    )
+
+    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
+
+    assert created is False
+    assert store.count_ats_boards() == 0
+
+
+def test_harvest_ats_board_admits_board_not_on_denylist():
+    store = JobStore(":memory:")
+    job = Job(
+        source="feed",
+        title="x",
+        company="Omnea",
+        url="https://jobs.ashbyhq.com/omnea/123",
+    )
+
+    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
+
+    assert created is True
+    assert store.count_ats_boards() == 1
+
+
 def test_harvest_ats_board_uses_market_hint_precedence():
     store = JobStore(":memory:")
     job = Job(

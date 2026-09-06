@@ -78,6 +78,10 @@ blocked_title_keywords:
   - back-end developer
 max_search_queries_per_run: 30
 max_learned_ats_boards_per_run: 75
+# "<provider>:<board>" boards to keep out of the learned ATS registry.
+# Optional override only -- aggregator detection works with this list empty.
+learned_ats_denylist:
+  - lever:jobgether
 role_families:
   - senior frontend engineer
   - staff frontend engineer

@@ -282,9 +282,14 @@ CREATE TABLE IF NOT EXISTS ats_registry (
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     paused_until TEXT,
+    rejected_reason TEXT,
     PRIMARY KEY(provider, board_identifier)
 )
 """
+
+# Databases created before rejection tracking existed still need the column
+# added; a fresh database already has it from _CREATE_ATS_REGISTRY above.
+_ATS_REGISTRY_REJECTION_COLUMNS = {"rejected_reason": "TEXT"}
 
 _DELIVERABLE_SCORE_FLOOR = 60
 _STALE_BOARD_DEACTIVATION_THRESHOLD = 3
@@ -354,6 +359,7 @@ class JobStore:
             self._conn.execute(_CREATE_APPLICATION_EVENTS)
             self._conn.execute(_CREATE_REVIEW_DELIVERIES)
             self._conn.execute(_CREATE_ATS_REGISTRY)
+            self._add_missing_columns("ats_registry", _ATS_REGISTRY_REJECTION_COLUMNS)
 
     def _migrate_jobs_to_r2_schema(self) -> None:
         self._add_missing_columns("jobs", _R2_JOB_COLUMNS)
@@ -1349,7 +1355,9 @@ class JobStore:
         reactivates the board, but leaves `paused_until` and
         `consecutive_failures` untouched — ordinary rediscovery must not
         bypass an unexpired pause; the board becomes due naturally once
-        `paused_until` elapses.
+        `paused_until` elapses. A board with a `rejected_reason` is never
+        reactivated by rediscovery, so a board rejected once stays rejected
+        (see `reject_ats_board`).
         """
         provider = provider.strip().lower()
         if provider not in _SUPPORTED_ATS_PROVIDERS:
@@ -1377,12 +1385,33 @@ class JobStore:
                     company_name = COALESCE(NULLIF(?, ''), company_name),
                     market_hint = COALESCE(NULLIF(?, ''), market_hint),
                     last_seen_at = ?,
-                    active = 1
+                    active = CASE WHEN rejected_reason IS NULL THEN 1 ELSE active END
                 WHERE provider = ? AND board_identifier = ?
                 """,
                 (company_name, market_hint, now, provider, board_identifier),
             )
             return False
+
+    def reject_ats_board(
+        self, provider: str, board_identifier: str, reason: str, now: datetime
+    ) -> None:
+        """Deactivate a board and persist why, so rediscovery can't resurrect it.
+
+        Used for both aggregator-detection rejections and the config
+        denylist's "instant kill" of an already-registered board.
+        """
+        timestamp = _normalize_utc(now).isoformat()
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE ats_registry SET
+                    active = 0,
+                    rejected_reason = ?,
+                    last_checked_at = ?
+                WHERE provider = ? AND board_identifier = ?
+                """,
+                (reason, timestamp, provider, board_identifier),
+            )
 
     def list_due_ats_boards(self, now: datetime) -> list[AtsRegistryEntry]:
         """Return active ATS boards whose health pause has expired."""
@@ -1398,6 +1427,22 @@ class JobStore:
             ORDER BY provider, board_identifier
             """,
             (timestamp,),
+        ).fetchall()
+        return [self._ats_entry_from_row(row) for row in rows]
+
+    def list_rejected_ats_boards(self) -> list[AtsRegistryEntry]:
+        """Return boards rejected as aggregators or by the config denylist.
+
+        `list_due_ats_boards` only returns active boards, so this is the
+        only way to read a rejection (and its reason) back after the run
+        that made it.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT * FROM ats_registry
+            WHERE rejected_reason IS NOT NULL
+            ORDER BY provider, board_identifier
+            """
         ).fetchall()
         return [self._ats_entry_from_row(row) for row in rows]
 
@@ -1524,6 +1569,7 @@ class JobStore:
             consecutive_failures=row["consecutive_failures"],
             active=bool(row["active"]),
             paused_until=row["paused_until"],
+            rejected_reason=row["rejected_reason"],
         )
 
     def count_jobs(self) -> int:

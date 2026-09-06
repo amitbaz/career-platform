@@ -608,6 +608,51 @@ def test_ats_deactivated_board_reactivates_on_rediscovery():
     assert [e.board_identifier for e in due] == ["reborn-co"]
 
 
+def test_reject_ats_board_deactivates_and_records_reason():
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+
+    store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
+
+    assert store.list_due_ats_boards(now) == []
+    rejected = store.list_rejected_ats_boards()
+    assert [e.board_identifier for e in rejected] == ["jobgether"]
+    assert rejected[0].rejected_reason == "aggregator: 98% third-party"
+    assert rejected[0].active is False
+
+
+def test_list_rejected_ats_boards_excludes_healthy_and_health_paused_boards():
+    # Only a board rejected for cause carries a reason -- a board merely
+    # deactivated by repeated 404s must not show up as rejected.
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
+    store.upsert_ats_board(provider="lever", board_identifier="dead-co")
+    for i in range(3):
+        store.record_ats_scan_failure(
+            "lever", "dead-co", now + timedelta(hours=25 * i), permanent=True
+        )
+
+    assert store.list_rejected_ats_boards() == []
+
+
+def test_ats_rejected_board_is_not_resurrected_by_rediscovery():
+    # Unlike a health-based deactivation (see
+    # test_ats_deactivated_board_reactivates_on_rediscovery), a board
+    # rejected for cause must stay rejected even when a freshly discovered
+    # job points at it again -- upsert_ats_board must not flip active back
+    # to 1 once rejected_reason is set.
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+    store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
+
+    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+
+    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+
+
 def test_record_job_source_is_idempotent(tmp_path):
     store = JobStore(tmp_path / "state.sqlite3")
     job_id, _, _ = store.upsert_job(

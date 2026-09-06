@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from .gmail_models import GmailSettings
+from .normalize import ats_board_key
 from .models import (
     DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
     DEFAULT_ENGINEERING_TITLE_KEYWORDS,
@@ -94,6 +95,7 @@ def load_settings(config_path: Path) -> Settings:
             "max_canonical_resolutions_per_run", 80
         ),
         max_learned_ats_boards_per_run=_parse_max_learned_ats_boards_per_run(data),
+        learned_ats_denylist=_parse_learned_ats_denylist(data),
         engineering_title_keywords=list(
             data.get("engineering_title_keywords", DEFAULT_ENGINEERING_TITLE_KEYWORDS)
         ),
@@ -168,6 +170,32 @@ def _parse_max_learned_ats_boards_per_run(data: dict) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError("max_learned_ats_boards_per_run must be a positive integer")
     return value
+
+
+def _parse_learned_ats_denylist(data: dict) -> list[str]:
+    """Normalize denylist entries once, so every consumer compares like for like.
+
+    A bare `learned_ats_denylist:` key (the state left behind by commenting
+    out its only entry) parses as None, which must read as an empty list
+    rather than aborting the run.
+    """
+    entries = data.get("learned_ats_denylist") or []
+    if not isinstance(entries, list):
+        raise ValueError("learned_ats_denylist must be a list")
+
+    denylist: list[str] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, str) or entry.count(":") != 1:
+            raise ValueError(
+                f"learned_ats_denylist[{index}] must be a \"<provider>:<board>\" string"
+            )
+        provider, board_identifier = entry.split(":")
+        if not provider.strip() or not board_identifier.strip():
+            raise ValueError(
+                f"learned_ats_denylist[{index}] must be a \"<provider>:<board>\" string"
+            )
+        denylist.append(ats_board_key(provider, board_identifier))
+    return denylist
 
 
 def _parse_markets(entries: object) -> list[MarketPolicy]:

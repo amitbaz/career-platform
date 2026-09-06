@@ -6,8 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from job_hunter.aggregator_detection import evaluate_board
 from job_hunter.ats_registry import select_ats_boards
 from job_hunter.models import Job
+from job_hunter.normalize import ats_board_key
 from job_hunter.store import JobStore
 
 from .ashby import AshbySource
@@ -49,6 +51,7 @@ class LearnedAtsStats:
     boards_successful: int = 0
     boards_failed: int = 0
     jobs_raw: int = 0
+    boards_rejected: int = 0
 
 
 class LearnedAtsSource:
@@ -62,28 +65,43 @@ class LearnedAtsSource:
         limit: int,
         market_order: list[str],
         now: Callable[[], datetime] = utc_now,
+        denylist: frozenset[str] = frozenset(),
     ) -> None:
         self._store = store
         self._http = http
         self._limit = limit
         self._market_order = market_order
         self._now = now
+        self._denylist = denylist
         self.stats = LearnedAtsStats()
 
     def discover(self) -> list[Job]:
         """Return jobs from due learned ATS boards, isolating per-board failures."""
         checked_at = self._now()
+        due = self._store.list_due_ats_boards(checked_at)
+
+        # Reject denylisted boards before the limit is applied, so a board
+        # that is never going to be scanned cannot consume one of the
+        # `limit` slots and displace a real board.
+        remaining = []
+        for entry in due:
+            board_key = ats_board_key(entry.provider, entry.board_identifier)
+            if board_key in self._denylist:
+                self._reject_board(
+                    entry, checked_at, f"configured in learned_ats_denylist ({board_key})"
+                )
+            else:
+                remaining.append(entry)
+
         entries = select_ats_boards(
-            self._store.list_due_ats_boards(checked_at),
-            self._market_order,
-            self._limit,
-            checked_at,
+            remaining, self._market_order, self._limit, checked_at
         )
         discovered: list[Job] = []
         for entry in entries:
             source_type = _ATS_SOURCE_TYPES.get(entry.provider)
             if source_type is None:
                 continue
+
             self.stats.boards_scanned += 1
             try:
                 jobs = self._scan_board(source_type, entry.board_identifier)
@@ -119,6 +137,17 @@ class LearnedAtsSource:
                     )
                 continue
 
+            rejection = self._aggregator_rejection(entry, jobs)
+            if rejection is not None:
+                logger.info(
+                    "learned ATS board rejected as an aggregator: %s:%s (%s)",
+                    entry.provider,
+                    entry.board_identifier,
+                    rejection,
+                )
+                self._reject_board(entry, checked_at, rejection)
+                continue
+
             self.stats.boards_successful += 1
             self.stats.jobs_raw += len(jobs)
             discovered.extend(jobs)
@@ -141,3 +170,44 @@ class LearnedAtsSource:
         if tracked_http.error is not None:
             raise tracked_http.error
         return jobs
+
+    def _aggregator_rejection(self, entry, jobs: list[Job]) -> str | None:
+        """Return why this board should be rejected, or None to keep it.
+
+        Fails open: a posting's description can be None (an ATS returning an
+        explicit null body), and a detection bug must never cost the whole
+        run's discovery, so anything unexpected here keeps the board.
+        """
+        try:
+            verdict = evaluate_board([job.description or "" for job in jobs])
+        except Exception:
+            logger.warning(
+                "learned ATS aggregator detection failed for %s:%s; keeping the board",
+                entry.provider,
+                entry.board_identifier,
+                exc_info=True,
+            )
+            return None
+        if verdict.rejected:
+            return verdict.reason
+        logger.debug(
+            "learned ATS board kept: %s:%s (%s)",
+            entry.provider,
+            entry.board_identifier,
+            "; ".join(f"{e.name}: {e.reason}" for e in verdict.evidence),
+        )
+        return None
+
+    def _reject_board(self, entry, checked_at: datetime, reason: str) -> None:
+        self.stats.boards_rejected += 1
+        try:
+            self._store.reject_ats_board(
+                entry.provider, entry.board_identifier, reason, checked_at
+            )
+        except Exception:
+            logger.warning(
+                "learned ATS rejection write failed for %s:%s",
+                entry.provider,
+                entry.board_identifier,
+                exc_info=True,
+            )

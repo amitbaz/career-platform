@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from job_hunter.canonical import parse_supported_ats_url
 from job_hunter.models import AtsReference, AtsRegistryEntry, Job
+from job_hunter.normalize import ats_board_key
 from job_hunter.store import JobStore
 
 _RECENTLY_ELIGIBLE_WINDOW = timedelta(days=30)
@@ -31,11 +32,20 @@ def extract_ats_reference(job: Job) -> AtsReference | None:
 
 
 def harvest_ats_board(
-    store: JobStore, job: Job, market_hint: str | None = None
+    store: JobStore,
+    job: Job,
+    market_hint: str | None = None,
+    denylist: frozenset[str] = frozenset(),
 ) -> bool:
-    """Learn the ATS board a job references, if it points at a supported one."""
+    """Learn the ATS board a job references, if it points at a supported one.
+
+    A board whose `ats_board_key` is in `denylist` is never admitted, even
+    on its first sighting.
+    """
     reference = extract_ats_reference(job)
     if reference is None:
+        return False
+    if ats_board_key(reference.provider, reference.board) in denylist:
         return False
     return store.upsert_ats_board(
         provider=reference.provider,
