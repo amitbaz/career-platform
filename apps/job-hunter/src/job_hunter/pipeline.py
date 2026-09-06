@@ -10,6 +10,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
+from job_hunter.availability import UNVERIFIED
 from job_hunter.candidate_context import get_candidate_context
 from job_hunter.canonical import CanonicalResolver, parse_supported_ats_url
 from job_hunter.circuit_breaker import CircuitBreaker
@@ -69,6 +70,7 @@ from job_hunter.watchlist import promote_company, sync_manual_watch_seeds
 
 logger = logging.getLogger(__name__)
 
+_AVAILABILITY_WARNING = "⚠️ Availability not verified - check the posting before applying"
 _READY_DECISIONS = {"high_priority", "package_match"}
 _MIN_DELIVERABLE_SCORE = 61
 _NAVIGATION_SESSION_TTL = timedelta(days=30)
@@ -566,6 +568,7 @@ def _evaluate_and_deliver_job(
         location=job.location,
         market_id=evaluation.market_id or job.market_id or "",
         market_note=evaluation.location_note or "",
+        availability_note=_AVAILABILITY_WARNING if job.availability == UNVERIFIED else "",
     )
     digest_items.append(item)
 
@@ -611,6 +614,7 @@ def _build_navigation_session(items: list[DigestItem], now: datetime) -> Navigat
                 url=item.url,
                 market_id=item.market_id,
                 market_note=item.market_note,
+                availability_note=item.availability_note,
             )
             for item in ordered
         ],

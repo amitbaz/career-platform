@@ -1583,6 +1583,43 @@ def test_pipeline_retries_pending_evaluation_before_new_candidates(settings):
     assert gemini.eval_calls == 1
 
 
+def test_pipeline_delivered_card_warns_when_availability_check_fails(settings):
+    class TimingOutHttp:
+        def get(self, url, **kwargs):
+            raise RuntimeError("timeout")
+
+    job = _job(description="", url="https://example.test/jobs/1")
+    store = JobStore(settings.db_path)
+    gemini = FakeGemini()
+    telegram = OrderedNavigatorTelegram()
+
+    run_pipeline(
+        settings,
+        sources=[FakeSource([job])],
+        store=store,
+        gemini=gemini,
+        telegram=telegram,
+        http=TimingOutHttp(),
+    )
+
+    cards = [text for kind, text in telegram.events if kind == "card"]
+    assert len(cards) == 1
+    assert "⚠️ Availability not verified - check the posting before applying" in cards[0]
+
+
+def test_pipeline_delivered_card_has_no_warning_for_a_normal_posting(settings):
+    job = _job()
+    store = JobStore(settings.db_path)
+    gemini = FakeGemini()
+    telegram = OrderedNavigatorTelegram()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+
+    cards = [text for kind, text in telegram.events if kind == "card"]
+    assert len(cards) == 1
+    assert "⚠️" not in cards[0]
+
+
 def test_pipeline_retries_pending_evaluation_and_delivers_it(settings):
     store = JobStore(settings.db_path)
     job = _job()

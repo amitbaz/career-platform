@@ -229,6 +229,59 @@ def test_collect_candidates_does_not_reenrich_job_with_description(store, policy
     assert len(result.eligible) == 1
 
 
+def test_collect_candidates_rejects_explicitly_closed_posting_before_eligible(store, policy):
+    job = Job(source="duckduckgo", title="", url="https://example.com/jobs/1")
+    html = "<html><body><h1>This job posting has expired</h1></body></html>"
+    http = FakeHttp(html)
+
+    result = collect_candidates([FakeSource([job])], store, http, policy)
+
+    assert result.eligible == []
+    assert result.stats.availability_rejected == 1
+
+
+def test_collect_candidates_keeps_unverified_posting_eligible(store, policy):
+    class TimingOutHttp:
+        def get(self, url, **kwargs):
+            raise RuntimeError("timeout")
+
+    job = Job(
+        source="duckduckgo",
+        title="Senior Product Engineer",
+        url="https://example.com/jobs/1",
+    )
+
+    result = collect_candidates([FakeSource([job])], store, TimingOutHttp(), policy)
+
+    assert len(result.eligible) == 1
+    assert result.eligible[0][1].availability == "unverified"
+    assert result.stats.availability_rejected == 0
+
+
+def test_collect_candidates_rejects_closed_posting_found_during_canonical_resolution(
+    store, policy
+):
+    job = Job(
+        source="duckduckgo",
+        title="Senior Product Engineer",
+        description="Loves React",
+        url="https://board.test/job",
+    )
+
+    class ClosureResolver:
+        def resolve(self, job):
+            job.availability = "closed"
+            return None
+
+    result = collect_candidates(
+        [FakeSource([job])], store, NoOpHttp(), policy, resolver=ClosureResolver()
+    )
+
+    assert result.eligible == []
+    assert result.stats.availability_rejected == 1
+    assert result.stats.rejected_by_source.get("duckduckgo") == 1
+
+
 def test_collect_candidates_counts_prefilter_rejections(store, policy):
     irrelevant_job = Job(
         source="x",

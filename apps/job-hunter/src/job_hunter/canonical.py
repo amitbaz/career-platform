@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
+from job_hunter.availability import CLOSED, UNVERIFIED, VERIFIED, detect_closure
 from job_hunter.fetching import extract_job_page_links
 from job_hunter.job_identity import (
     locations_compatible,
@@ -133,7 +134,9 @@ class CanonicalResolver:
                 response_url = response.url
                 response_text = response.text
             except Exception:
-                pass
+                job.availability = UNVERIFIED
+            else:
+                job.availability = CLOSED if detect_closure(response_text) else VERIFIED
 
         redirected_ats = parse_supported_ats_url(response_url)
         if redirected_ats is not None:
