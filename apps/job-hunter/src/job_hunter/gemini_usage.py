@@ -287,8 +287,20 @@ class GeminiUsageTracker:
         *,
         http_status: int | None = None,
         error_code: str | None = None,
+        prompt_tokens: int | None = None,
+        output_tokens: int | None = None,
+        thinking_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> None:
-        """Log an attempt that reached Google but failed for a non-429 reason."""
+        """Log an attempt that reached Google but failed for a non-429 reason.
+
+        The token arguments exist for the failures where Google still reported
+        `usageMetadata` — a `MAX_TOKENS` truncation burns real output and
+        thinking tokens even though the caller gets no usable answer. Passing
+        them keeps `snapshot` token totals honest; a transport error or an
+        HTTP failure has no such metadata and leaves them `None`.
+        """
         now = _normalize_utc(now)
         self._store.record_gemini_usage(
             occurred_at=now.isoformat(),
@@ -297,6 +309,11 @@ class GeminiUsageTracker:
             purpose=purpose,
             status="error",
             estimated_input_tokens=estimate_input_tokens(prompt),
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            thinking_tokens=thinking_tokens,
+            cached_tokens=cached_tokens,
+            total_tokens=total_tokens,
             http_status=http_status,
             error_code=error_code,
         )
