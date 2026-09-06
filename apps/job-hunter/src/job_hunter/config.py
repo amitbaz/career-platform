@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,20 @@ class WebhookSettings:
     github_dispatch_token: str
     github_state_artifact_name: str = "job-hunter-state"
     github_state_cache_dir: str = "/tmp/job-hunter-state"
+
+
+@dataclass(slots=True, frozen=True)
+class SupabaseSettings:
+    """Credentials for acting as one user against the shared Supabase project.
+
+    ``signing_key_jwk`` is the private half of the project's ES256 signing key.
+    It is held in memory only and must never be logged or written to disk.
+    """
+
+    user_id: str
+    url: str
+    publishable_key: str
+    signing_key_jwk: dict
 
 
 def load_gmail_settings() -> GmailSettings:
@@ -146,6 +162,39 @@ def load_webhook_settings() -> WebhookSettings:
             "GITHUB_STATE_CACHE_DIR", "/tmp/job-hunter-state"
         ),
     )
+
+
+def load_supabase_settings() -> SupabaseSettings:
+    raw_user_id = _require_env("JOB_HUNTER_USER_ID")
+    try:
+        uuid.UUID(raw_user_id)
+    except ValueError as exc:
+        raise ValueError("JOB_HUNTER_USER_ID must be a UUID") from exc
+
+    return SupabaseSettings(
+        user_id=raw_user_id,
+        url=_require_env("SUPABASE_URL").rstrip("/"),
+        publishable_key=_require_env("SUPABASE_PUBLISHABLE_KEY"),
+        signing_key_jwk=_decode_signing_key(_require_env("SUPABASE_SIGNING_KEY_B64")),
+    )
+
+
+def _decode_signing_key(encoded: str) -> dict:
+    """Decode the base64-encoded private JWK.
+
+    Error messages deliberately omit the offending value: it is key material.
+    """
+    try:
+        jwk = json.loads(base64.b64decode(encoded))
+    except Exception:  # never surface the key material in the message
+        raise ValueError(
+            "SUPABASE_SIGNING_KEY_B64 must be base64-encoded JSON"
+        ) from None
+    if not isinstance(jwk, dict) or not jwk.get("kid") or not jwk.get("kty"):
+        raise ValueError(
+            "SUPABASE_SIGNING_KEY_B64 must decode to a JWK object with 'kid' and 'kty'"
+        )
+    return jwk
 
 
 def _require_env(name: str) -> str:
