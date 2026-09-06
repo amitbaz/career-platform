@@ -3,10 +3,12 @@ on:
   push:
     paths:
       - 'apps/job-hunter/**'
+      - 'supabase/**'
       - '.github/workflows/job-hunter-ci.yml'
   pull_request:
     paths:
       - 'apps/job-hunter/**'
+      - 'supabase/**'
       - '.github/workflows/job-hunter-ci.yml'
 defaults:
   run:
@@ -23,3 +25,49 @@ jobs:
           cache-dependency-path: apps/job-hunter/pyproject.toml
       - run: pip install -e '.[test,webhook]'
       - run: pytest -q
+
+  isolation:
+    # Proves a per-user token cannot cross users, against real policies on a
+    # throwaway local Supabase stack. Nothing touches the hosted project.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/job-hunter/pyproject.toml
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Generate a throwaway signing key
+        working-directory: .
+        run: |
+          supabase gen signing-key --algorithm ES256 > /tmp/jwk-single.json
+          python3 -c "import json; json.dump([json.load(open('/tmp/jwk-single.json'))], open('supabase/signing_keys.json','w'))"
+      - name: Start Supabase
+        working-directory: .
+        run: supabase start
+      - run: pip install -e '.[test,webhook]'
+      - name: Run the isolation test
+        working-directory: .
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          export SUPABASE_TEST_URL="$API_URL"
+          export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+          export SUPABASE_TEST_SIGNING_KEY_B64="$(base64 -w0 < /tmp/jwk-single.json)"
+          cd apps/job-hunter
+          pytest tests/integration -v --junit-xml=/tmp/isolation-results.xml
+          python3 -c "
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse('/tmp/isolation-results.xml').getroot()
+          suite = root if root.tag == 'testsuite' else root.find('testsuite')
+          tests = int(suite.get('tests', 0))
+          skipped = int(suite.get('skipped', 0))
+          failures = int(suite.get('failures', 0))
+          errors = int(suite.get('errors', 0))
+          print(f'isolation suite results: tests={tests} skipped={skipped} failures={failures} errors={errors}')
+          ok = tests == 6 and skipped == 0 and failures == 0 and errors == 0
+          if not ok: print('::error::Isolation tests did not complete as 6 passing tests (some were skipped, failed, or missing). This usually means the Supabase env vars never reached pytest and the tests silently skipped -- that would be a false pass, not proof of isolation.')
+          sys.exit(0 if ok else 1)
+          "
