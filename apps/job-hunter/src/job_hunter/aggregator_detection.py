@@ -7,11 +7,15 @@ way it identifies a 4,000-posting one -- so no signal here may reject a board
 for its size alone.
 
 This detection is the mechanism, and it needs no operator configuration.
-The `learned_ats_denylist` in `config/search.yml` is only an override: an
-instant kill for a board these signals miss, and a correction when they are
-wrong. It is enforced in `ats_registry.harvest_ats_board` (refusing
-admission) and `sources/learned_ats.LearnedAtsSource` (rejecting an
-already-registered board before scanning it).
+Two lists in `config/search.yml` are overrides only, never the mechanism:
+`learned_ats_denylist` is an instant kill for a board these signals miss,
+enforced in `ats_registry.harvest_ats_board` (refusing admission) and
+`sources/learned_ats.LearnedAtsSource` (rejecting an already-registered
+board before scanning it); `learned_ats_allowlist` is its inverse, naming
+boards that may never be rejected, and is the operator's only way to
+reverse a verdict. An allowlisted board is still evaluated and its
+overridden verdict still logged, so an entry that has become unnecessary
+stays visible. A board may not appear in both lists.
 """
 
 from __future__ import annotations

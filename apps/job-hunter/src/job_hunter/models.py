@@ -205,6 +205,10 @@ class SearchPolicy:
     #: Normalized `ats_board_key` values, e.g. "lever:jobgether". See
     #: aggregator_detection.py for how this relates to detection.
     learned_ats_denylist: list[str] = field(default_factory=list)
+    #: Normalized `ats_board_key` values that aggregator detection may never
+    #: reject -- the inverse of `learned_ats_denylist`, and the operator's
+    #: only way to reverse a rejection. See aggregator_detection.py.
+    learned_ats_allowlist: list[str] = field(default_factory=list)
     engineering_title_keywords: list[str] = field(
         default_factory=lambda: list(DEFAULT_ENGINEERING_TITLE_KEYWORDS)
     )

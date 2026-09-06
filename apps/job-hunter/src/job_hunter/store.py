@@ -1475,6 +1475,31 @@ class JobStore:
                 (reason, timestamp, provider, board_identifier),
             )
 
+    def clear_ats_board_rejection(self, provider: str, board_identifier: str) -> None:
+        """Reverse a rejection, putting the board back in the due rotation.
+
+        The inverse of `reject_ats_board`, and the only code path that clears
+        `rejected_reason`. Used when an operator names a board in
+        `learned_ats_allowlist`, having judged its rejection wrong.
+
+        Scoped to rejected rows on purpose: a board deactivated by repeated
+        404s carries no `rejected_reason`, and reviving it here would confuse
+        "wrongly judged" with "broken", which health backoff owns. Clearing a
+        board that was never rejected is a no-op.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE ats_registry SET
+                    active = 1,
+                    rejected_reason = NULL
+                WHERE lower(provider) = lower(?)
+                  AND lower(board_identifier) = lower(?)
+                  AND rejected_reason IS NOT NULL
+                """,
+                (provider.strip(), board_identifier.strip()),
+            )
+
     def list_due_ats_boards(self, now: datetime) -> list[AtsRegistryEntry]:
         """Return active ATS boards whose health pause has expired."""
         timestamp = _normalize_utc(now).isoformat()

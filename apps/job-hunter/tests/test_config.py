@@ -373,6 +373,91 @@ def test_load_settings_rejects_malformed_learned_ats_denylist_entry(
         load_settings(cfg)
 
 
+def _minimal_config_body(extra: str = "") -> str:
+    return (
+        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
+        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
+        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
+        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
+        + extra
+    )
+
+
+def _set_required_env(monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
+    monkeypatch.setenv(
+        "COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode()
+    )
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+
+
+def test_load_settings_defaults_learned_ats_allowlist_to_no_entries(
+    monkeypatch, tmp_path: Path
+):
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(_minimal_config_body())
+    _set_required_env(monkeypatch)
+
+    settings = load_settings(cfg)
+
+    assert settings.policy.learned_ats_allowlist == []
+
+
+def test_load_settings_reads_and_normalizes_learned_ats_allowlist(
+    monkeypatch, tmp_path: Path
+):
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(
+        _minimal_config_body("learned_ats_allowlist:\n  - ' Lever:ClientCo '\n")
+    )
+    _set_required_env(monkeypatch)
+
+    settings = load_settings(cfg)
+
+    assert settings.policy.learned_ats_allowlist == ["lever:clientco"]
+
+
+def test_load_settings_treats_empty_learned_ats_allowlist_key_as_no_entries(
+    monkeypatch, tmp_path: Path
+):
+    # The state left behind by commenting out the list's only entry.
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(_minimal_config_body("learned_ats_allowlist:\n"))
+    _set_required_env(monkeypatch)
+
+    settings = load_settings(cfg)
+
+    assert settings.policy.learned_ats_allowlist == []
+
+
+def test_load_settings_rejects_malformed_learned_ats_allowlist_entry(
+    monkeypatch, tmp_path: Path
+):
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(_minimal_config_body("learned_ats_allowlist:\n  - clientco\n"))
+    _set_required_env(monkeypatch)
+
+    with pytest.raises(ValueError, match="learned_ats_allowlist"):
+        load_settings(cfg)
+
+
+def test_load_settings_rejects_a_board_in_both_ats_lists(monkeypatch, tmp_path: Path):
+    # The two lists express opposite operator intent; honouring either one
+    # silently would hide an editing mistake in the only operator surface.
+    cfg = tmp_path / "search.yml"
+    cfg.write_text(
+        _minimal_config_body(
+            "learned_ats_denylist:\n  - lever:clientco\n"
+            "learned_ats_allowlist:\n  - Lever:ClientCo\n"
+        )
+    )
+    _set_required_env(monkeypatch)
+
+    with pytest.raises(ValueError, match="lever:clientco"):
+        load_settings(cfg)
+
+
 def test_load_settings_supports_legacy_manual_company_names(monkeypatch, tmp_path: Path):
     cfg = tmp_path / "search.yml"
     cfg.write_text(

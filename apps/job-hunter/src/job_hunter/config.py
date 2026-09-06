@@ -96,6 +96,7 @@ def load_settings(config_path: Path) -> Settings:
         ),
         max_learned_ats_boards_per_run=_parse_max_learned_ats_boards_per_run(data),
         learned_ats_denylist=_parse_learned_ats_denylist(data),
+        learned_ats_allowlist=_parse_learned_ats_allowlist(data),
         engineering_title_keywords=list(
             data.get("engineering_title_keywords", DEFAULT_ENGINEERING_TITLE_KEYWORDS)
         ),
@@ -172,30 +173,50 @@ def _parse_max_learned_ats_boards_per_run(data: dict) -> int:
     return value
 
 
-def _parse_learned_ats_denylist(data: dict) -> list[str]:
-    """Normalize denylist entries once, so every consumer compares like for like.
+def _parse_ats_board_key_list(data: dict, key: str) -> list[str]:
+    """Normalize one `<provider>:<board>` policy list once, for every consumer.
 
-    A bare `learned_ats_denylist:` key (the state left behind by commenting
-    out its only entry) parses as None, which must read as an empty list
-    rather than aborting the run.
+    A bare `<key>:` (the state left behind by commenting out its only entry)
+    parses as None, which must read as an empty list rather than aborting
+    the run.
     """
-    entries = data.get("learned_ats_denylist") or []
+    entries = data.get(key) or []
     if not isinstance(entries, list):
-        raise ValueError("learned_ats_denylist must be a list")
+        raise ValueError(f"{key} must be a list")
 
-    denylist: list[str] = []
+    board_keys: list[str] = []
     for index, entry in enumerate(entries):
         if not isinstance(entry, str) or entry.count(":") != 1:
-            raise ValueError(
-                f"learned_ats_denylist[{index}] must be a \"<provider>:<board>\" string"
-            )
+            raise ValueError(f"{key}[{index}] must be a \"<provider>:<board>\" string")
         provider, board_identifier = entry.split(":")
         if not provider.strip() or not board_identifier.strip():
+            raise ValueError(f"{key}[{index}] must be a \"<provider>:<board>\" string")
+        board_keys.append(ats_board_key(provider, board_identifier))
+    return board_keys
+
+
+def _parse_learned_ats_denylist(data: dict) -> list[str]:
+    """Boards that must be kept out of the learned ATS registry."""
+    return _parse_ats_board_key_list(data, "learned_ats_denylist")
+
+
+def _parse_learned_ats_allowlist(data: dict) -> list[str]:
+    """Boards that aggregator detection may never reject.
+
+    Both lists normalize to the same key form, so a board named by both is a
+    contradiction the operator has to resolve: there is no correct way to
+    honour "always reject" and "never reject" for one board, and preferring
+    either silently would hide the edit that caused it.
+    """
+    allowlist = _parse_ats_board_key_list(data, "learned_ats_allowlist")
+    denylist = set(_parse_learned_ats_denylist(data))
+    for board_key in allowlist:
+        if board_key in denylist:
             raise ValueError(
-                f"learned_ats_denylist[{index}] must be a \"<provider>:<board>\" string"
+                f"{board_key} is in both learned_ats_denylist and "
+                "learned_ats_allowlist; remove it from one"
             )
-        denylist.append(ats_board_key(provider, board_identifier))
-    return denylist
+    return allowlist
 
 
 def _parse_markets(entries: object) -> list[MarketPolicy]:

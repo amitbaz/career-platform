@@ -460,3 +460,235 @@ def test_learned_ats_source_denylisted_board_does_not_consume_a_scan_slot():
     assert len(jobs) == 3
     assert source.stats.boards_scanned == 1
     assert source.stats.boards_rejected == 1
+
+
+def test_learned_ats_source_keeps_an_allowlisted_board_detection_would_reject():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "clientco")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={"lever.co": _lever_postings(10, "clientco", _JOBGETHER_PHRASING)}
+    )
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 10
+    assert source.stats.boards_rejected == 0
+    assert source.stats.boards_successful == 1
+    assert store.list_rejected_ats_boards() == []
+
+
+def test_learned_ats_source_logs_the_verdict_it_overrode(caplog):
+    # The operator overrode a verdict, so the verdict must stay visible --
+    # otherwise the allowlist entry can never be shown to be unnecessary.
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "clientco")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={"lever.co": _lever_postings(10, "clientco", _JOBGETHER_PHRASING)}
+    )
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    with caplog.at_level(logging.INFO):
+        source.discover()
+
+    kept = [r.getMessage() for r in caplog.records if "learned_ats_allowlist" in r.getMessage()]
+    assert len(kept) == 1
+    assert "lever:clientco" in kept[0]
+    assert "third_party_listing" in kept[0]
+
+
+def test_learned_ats_source_heals_an_already_rejected_allowlisted_board():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "clientco")
+    rejected_at = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store.reject_ats_board(
+        "lever", "clientco", "third_party_listing: 9/10 postings (90%)", rejected_at
+    )
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={"lever.co": _lever_postings(10, "clientco", _JOBGETHER_PHRASING)}
+    )
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    jobs = source.discover()
+
+    # Recovered and rescanned within the same run -- editing the config is
+    # the whole recovery procedure.
+    assert len(jobs) == 10
+    assert source.stats.boards_recovered == 1
+    assert source.stats.boards_successful == 1
+    assert store.list_rejected_ats_boards() == []
+    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["clientco"]
+
+
+def test_learned_ats_source_logs_the_reason_it_cleared_when_healing(caplog):
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "clientco")
+    rejected_at = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store.reject_ats_board(
+        "lever", "clientco", "third_party_listing: 9/10 postings (90%)", rejected_at
+    )
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={"lever.co": _lever_postings(10, "clientco", _JOBGETHER_PHRASING)}
+    )
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    with caplog.at_level(logging.INFO):
+        source.discover()
+
+    recovered = [r.getMessage() for r in caplog.records if "recovered" in r.getMessage()]
+    assert len(recovered) == 1
+    assert "lever:clientco" in recovered[0]
+    assert "9/10 postings (90%)" in recovered[0]
+
+
+def test_learned_ats_source_healing_ignores_a_board_that_is_not_allowlisted():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "jobgether")
+    rejected_at = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store.reject_ats_board(
+        "lever", "jobgether", "third_party_listing: 9/10 postings (90%)", rejected_at
+    )
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"lever.co": _lever_postings(10, "jobgether")})
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:someone-else"}),
+    )
+    jobs = source.discover()
+
+    assert jobs == []
+    assert http.calls == []
+    assert source.stats.boards_recovered == 0
+    assert [e.board_identifier for e in store.list_rejected_ats_boards()] == ["jobgether"]
+
+
+def test_learned_ats_source_allowlist_matches_the_board_key_case_insensitively():
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "ClientCo")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={"lever.co": _lever_postings(10, "ClientCo", _JOBGETHER_PHRASING)}
+    )
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 10
+    assert source.stats.boards_rejected == 0
+
+
+def test_learned_ats_source_allowlist_wins_over_the_denylist_branch():
+    # The config load refuses a board named by both lists, so this can only
+    # be reached by constructing the source directly -- the guard keeps the
+    # invariant local to the code that depends on it.
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "clientco")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"lever.co": _lever_postings(10, "clientco")})
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        denylist=frozenset({"lever:clientco"}),
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    jobs = source.discover()
+
+    assert len(jobs) == 10
+    assert source.stats.boards_rejected == 0
+
+
+def test_learned_ats_source_still_rejects_an_aggregator_that_is_not_allowlisted():
+    # Regression on #17: an empty or unrelated allowlist changes nothing.
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "jobgether")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(
+        responses={"lever.co": _lever_postings(10, "jobgether", _JOBGETHER_PHRASING)}
+    )
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:someone-else"}),
+    )
+    jobs = source.discover()
+
+    assert jobs == []
+    assert source.stats.boards_rejected == 1
+    assert [e.board_identifier for e in store.list_rejected_ats_boards()] == ["jobgether"]
+
+
+def test_learned_ats_source_allowlist_does_not_override_health_backoff():
+    # An allowlisted board that 404s is paused by health backoff, not
+    # rejected as an aggregator: a single permanent failure below the
+    # strike threshold pauses the board for 24h rather than deactivating
+    # it, and health backoff is not a verdict the allowlist may reverse.
+    store = JobStore(":memory:")
+    _seed_board(store, "lever", "clientco")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(not_found_urls={"lever.co"})
+
+    source = LearnedAtsSource(
+        store,
+        http,
+        limit=10,
+        market_order=["berlin"],
+        now=lambda: now,
+        allowlist=frozenset({"lever:clientco"}),
+    )
+    jobs = source.discover()
+
+    assert jobs == []
+    assert source.stats.boards_failed == 1
+    assert store.list_due_ats_boards(now) == []

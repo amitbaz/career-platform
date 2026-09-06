@@ -477,6 +477,28 @@ def test_build_sources_appends_learned_ats_source_when_store_is_given(
     assert "GreenhouseSource" in kinds
 
 
+def test_build_sources_passes_learned_ats_allowlist_to_source(fake_http, policy):
+    allowlisted_policy = dataclasses.replace(
+        policy, learned_ats_allowlist=["ashby:acme"]
+    )
+    settings = Settings(
+        gemini_api_key="g",
+        candidate_profile="profile",
+        cover_letter_template="template",
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        policy=allowlisted_policy,
+        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+    )
+    store = JobStore(":memory:")
+
+    sources = build_sources(settings, fake_http, store=store)
+
+    learned_ats_sources = [s for s in sources if type(s).__name__ == "LearnedAtsSource"]
+    assert len(learned_ats_sources) == 1
+    assert learned_ats_sources[0]._allowlist == frozenset({"ashby:acme"})
+
+
 def test_build_sources_skips_learned_ats_source_when_limit_is_zero(
     fake_http, policy
 ):

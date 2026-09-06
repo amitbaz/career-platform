@@ -82,6 +82,10 @@ max_learned_ats_boards_per_run: 75
 # Optional override only -- aggregator detection works with this list empty.
 learned_ats_denylist:
   - lever:jobgether
+# "<provider>:<board>" boards aggregator detection may never reject -- the way
+# to reverse a rejection you judge to be wrong. A board listed here is
+# un-rejected and rescanned on the next run. A board may not be in both lists.
+learned_ats_allowlist: []
 role_families:
   - senior frontend engineer
   - staff frontend engineer

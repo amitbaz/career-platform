@@ -52,6 +52,7 @@ class LearnedAtsStats:
     boards_failed: int = 0
     jobs_raw: int = 0
     boards_rejected: int = 0
+    boards_recovered: int = 0
 
 
 class LearnedAtsSource:
@@ -66,6 +67,7 @@ class LearnedAtsSource:
         market_order: list[str],
         now: Callable[[], datetime] = utc_now,
         denylist: frozenset[str] = frozenset(),
+        allowlist: frozenset[str] = frozenset(),
     ) -> None:
         self._store = store
         self._http = http
@@ -73,11 +75,16 @@ class LearnedAtsSource:
         self._market_order = market_order
         self._now = now
         self._denylist = denylist
+        self._allowlist = allowlist
         self.stats = LearnedAtsStats()
 
     def discover(self) -> list[Job]:
         """Return jobs from due learned ATS boards, isolating per-board failures."""
         checked_at = self._now()
+        # Recover before reading the due list, so a board the operator
+        # un-rejected is scanned in the same run that recovered it --
+        # editing config/search.yml is the whole recovery procedure.
+        self._recover_allowlisted_boards()
         due = self._store.list_due_ats_boards(checked_at)
 
         # Reject denylisted boards before the limit is applied, so a board
@@ -86,7 +93,7 @@ class LearnedAtsSource:
         remaining = []
         for entry in due:
             board_key = ats_board_key(entry.provider, entry.board_identifier)
-            if board_key in self._denylist:
+            if board_key in self._denylist and board_key not in self._allowlist:
                 self._reject_board(
                     entry, checked_at, f"configured in learned_ats_denylist ({board_key})"
                 )
@@ -189,6 +196,18 @@ class LearnedAtsSource:
             )
             return None
         if verdict.rejected:
+            board_key = ats_board_key(entry.provider, entry.board_identifier)
+            if board_key in self._allowlist:
+                # Detection still runs, and the overridden verdict is logged:
+                # an override nobody can see is an override nobody can ever
+                # show to be unnecessary.
+                logger.info(
+                    "learned ATS board kept by learned_ats_allowlist: %s "
+                    "(despite %s)",
+                    board_key,
+                    verdict.reason,
+                )
+                return None
             return verdict.reason
         logger.debug(
             "learned ATS board kept: %s:%s (%s)",
@@ -197,6 +216,38 @@ class LearnedAtsSource:
             "; ".join(f"{e.name}: {e.reason}" for e in verdict.evidence),
         )
         return None
+
+    def _recover_allowlisted_boards(self) -> None:
+        """Clear the rejection on every allowlisted board that carries one.
+
+        The stored reason is the only record of what the operator overrode
+        and the healing write destroys it, so each recovery's reason is
+        logged from the pre-clear registry snapshot.
+        """
+        if not self._allowlist:
+            return
+        for entry in self._store.list_rejected_ats_boards():
+            board_key = ats_board_key(entry.provider, entry.board_identifier)
+            if board_key not in self._allowlist:
+                continue
+            try:
+                self._store.clear_ats_board_rejection(
+                    entry.provider, entry.board_identifier
+                )
+            except Exception:
+                logger.warning(
+                    "learned ATS rejection recovery failed for %s",
+                    board_key,
+                    exc_info=True,
+                )
+                continue
+            self.stats.boards_recovered += 1
+            logger.info(
+                "learned ATS board recovered by learned_ats_allowlist: %s "
+                "(cleared rejection: %s)",
+                board_key,
+                entry.rejected_reason,
+            )
 
     def _reject_board(self, entry, checked_at: datetime, reason: str) -> None:
         self.stats.boards_rejected += 1
