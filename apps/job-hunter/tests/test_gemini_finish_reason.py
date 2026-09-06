@@ -133,7 +133,7 @@ def test_structurally_incomplete_response_is_recorded_as_an_error(frozen_now):
     tracker = FakeTracker()
     response = FakeResponse(
         {
-            "candidates": [{"content": {"parts": []}, "finishReason": "MAX_TOKENS"}],
+            "candidates": [{"content": {"parts": []}}],
             "usageMetadata": dict(_USAGE_METADATA),
         }
     )
@@ -147,6 +147,48 @@ def test_structurally_incomplete_response_is_recorded_as_an_error(frozen_now):
     _, _, _, usage = tracker.error_calls[0]
     assert usage["error_code"] == "missing_content"
     assert usage["total_tokens"] == 1920
+
+
+def test_truncation_that_left_no_text_is_attributed_to_max_tokens(frozen_now):
+    """Thinking can consume the whole output budget, leaving a MAX_TOKENS
+    candidate with no text at all. The ledger must name the truncation rather
+    than blame a malformed body, or the telemetry hides the same root cause
+    this fix exists to surface."""
+    tracker = FakeTracker()
+    response = FakeResponse(
+        {
+            "candidates": [{"content": {"parts": []}, "finishReason": "MAX_TOKENS"}],
+            "usageMetadata": dict(_USAGE_METADATA),
+        }
+    )
+    client = GeminiClient("key", "gemini-test", FakeHttp(response), tracker)
+
+    with pytest.raises(GeminiError):
+        client.generate_text("profile prompt", purpose="candidate_context")
+
+    assert tracker.success_calls == []
+    assert len(tracker.error_calls) == 1
+    _, _, _, usage = tracker.error_calls[0]
+    assert usage["error_code"] == "MAX_TOKENS"
+    assert usage["total_tokens"] == 1920
+
+
+def test_truncated_candidate_without_content_is_attributed_to_max_tokens(frozen_now):
+    """Same truncation, one step earlier: Google omitted `content` entirely."""
+    tracker = FakeTracker()
+    response = FakeResponse(
+        {
+            "candidates": [{"finishReason": "MAX_TOKENS"}],
+            "usageMetadata": dict(_USAGE_METADATA),
+        }
+    )
+    client = GeminiClient("key", "gemini-test", FakeHttp(response), tracker)
+
+    with pytest.raises(GeminiError):
+        client.generate_text("profile prompt", purpose="candidate_context")
+
+    assert len(tracker.error_calls) == 1
+    assert tracker.error_calls[0][3]["error_code"] == "MAX_TOKENS"
 
 
 def test_max_tokens_ledger_row_has_error_status(frozen_now):

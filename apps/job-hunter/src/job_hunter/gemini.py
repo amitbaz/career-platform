@@ -47,6 +47,24 @@ def _usage_tokens(usage: dict) -> dict[str, int | None]:
     }
 
 
+def _finish_reason(data: object) -> str | None:
+    """Read the first candidate's `finishReason`, tolerating any body shape.
+
+    This runs before the body is known to be well-formed, so every missing or
+    unexpected level yields `None` instead of raising.
+    """
+    if not isinstance(data, dict):
+        return None
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    candidate = candidates[0]
+    if not isinstance(candidate, dict):
+        return None
+    reason = candidate.get("finishReason")
+    return reason if isinstance(reason, str) else None
+
+
 def _classify_429(response: requests.Response) -> tuple[GeminiPauseKind, str | None]:
     """Classify a Gemini 429 body into one of the design spec's three pause kinds."""
     try:
@@ -240,20 +258,25 @@ class GeminiClient:
             raise GeminiError("Gemini response missing content") from exc
 
         usage = data.get("usageMetadata") if isinstance(data, dict) else None
+        finish_reason = _finish_reason(data)
+        # A truncated candidate can arrive with no text at all — thinking
+        # tokens can consume the whole output budget. That still reaches the
+        # caller as a missing-content failure, but the ledger names the
+        # truncation rather than blaming a malformed body for it.
+        no_content_code = finish_reason if finish_reason == "MAX_TOKENS" else "missing_content"
 
         try:
             candidate = data["candidates"][0]
             parts = candidate["content"]["parts"]
             text = "".join(part.get("text", "") for part in parts)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            self._record_response_failure(purpose, prompt, now, usage, "missing_content")
+            self._record_response_failure(purpose, prompt, now, usage, no_content_code)
             raise GeminiError("Gemini response missing content") from exc
 
         if not text:
-            self._record_response_failure(purpose, prompt, now, usage, "missing_content")
+            self._record_response_failure(purpose, prompt, now, usage, no_content_code)
             raise GeminiError("Gemini response missing content")
 
-        finish_reason = candidate.get("finishReason") if isinstance(candidate, dict) else None
         if finish_reason == "MAX_TOKENS":
             self._record_response_failure(purpose, prompt, now, usage, finish_reason)
             raise GeminiIncompleteResponse(finish_reason)
