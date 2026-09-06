@@ -139,9 +139,7 @@ def test_evaluations_table_has_market_id_column():
     assert "market_id" in columns
 
 
-def test_gemini_usage_rows_persist_success_without_prompt_or_response_content():
-    store = JobStore(":memory:")
-
+def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(store):
     store.record_gemini_usage(
         occurred_at="2026-09-01T08:00:00+00:00",
         run_id="run-1",
@@ -164,8 +162,9 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content():
     )
 
     assert len(rows) == 1
-    assert dict(rows[0]) == {
-        "id": 1,
+    row = dict(rows[0])
+    row.pop("id")
+    assert row == {
         "occurred_at": "2026-09-01T08:00:00+00:00",
         "run_id": "run-1",
         "model": "gemini-3.6-flash",
@@ -184,9 +183,7 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content():
     assert "response" not in rows[0].keys()
 
 
-def test_gemini_usage_rows_persist_429_attempt():
-    store = JobStore(":memory:")
-
+def test_gemini_usage_rows_persist_429_attempt(store):
     store.record_gemini_usage(
         occurred_at="2026-09-01T08:00:00+00:00",
         run_id="run-1",
@@ -208,9 +205,51 @@ def test_gemini_usage_rows_persist_429_attempt():
     assert rows[0]["error_code"] == "RESOURCE_EXHAUSTED"
 
 
-def test_gemini_pause_round_trip_and_clear():
-    store = JobStore(":memory:")
+def test_gemini_usage_rows_respects_half_open_time_range(store):
+    store.record_gemini_usage(
+        occurred_at="2026-09-01T00:00:00+00:00",
+        run_id="run-1",
+        model="gemini-3.6-flash",
+        purpose="job_evaluation",
+        status="success",
+        estimated_input_tokens=1,
+    )
+    store.record_gemini_usage(
+        occurred_at="2026-09-02T00:00:00+00:00",
+        run_id="run-2",
+        model="gemini-3.6-flash",
+        purpose="job_evaluation",
+        status="success",
+        estimated_input_tokens=1,
+    )
 
+    rows = store.gemini_usage_rows(
+        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00"
+    )
+
+    assert [row["run_id"] for row in rows] == ["run-1"]
+
+
+def test_record_gemini_usage_falls_back_to_unknown_run_id(store):
+    """`job_hunter_ai_usage.run_id` is NOT NULL; a caller with no run id must not 500."""
+    store.record_gemini_usage(
+        occurred_at="2026-09-01T08:00:00+00:00",
+        run_id=None,
+        model="gemini-3.6-flash",
+        purpose="job_evaluation",
+        status="success",
+        estimated_input_tokens=10,
+    )
+
+    rows = store.gemini_usage_rows(
+        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00"
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "unknown"
+
+
+def test_gemini_pause_round_trip_and_clear(store):
     store.set_gemini_pause(
         "gemini-3.6-flash",
         "2026-09-01T08:01:30+00:00",
@@ -229,8 +268,17 @@ def test_gemini_pause_round_trip_and_clear():
     assert store.get_gemini_pause("gemini-3.6-flash") is None
 
 
-def test_candidate_context_cache_round_trip_serializes_json_inside_store():
-    store = JobStore(":memory:")
+def test_gemini_pause_upsert_converges_on_repeated_writes(store):
+    """A retried POST on a transient 5xx must update the one row, not duplicate it."""
+    store.set_gemini_pause("gemini-3.6-flash", "2026-09-01T08:01:30+00:00", "rate_limit")
+    store.set_gemini_pause("gemini-3.6-flash", "2026-09-01T09:00:00+00:00", "daily_quota")
+
+    pause = store.get_gemini_pause("gemini-3.6-flash")
+    assert pause["paused_until"] == "2026-09-01T09:00:00+00:00"
+    assert pause["reason"] == "daily_quota"
+
+
+def test_candidate_context_cache_round_trip_serializes_json_inside_store(store):
     context = {"summary": "Frontend engineer", "technical_skills": ["Python"]}
 
     store.save_candidate_context(
@@ -251,23 +299,22 @@ def test_candidate_context_cache_round_trip_serializes_json_inside_store():
     assert cached.context == context
 
 
-def test_pending_ai_work_is_idempotent_and_updates_its_timestamp(monkeypatch):
-    store = JobStore(":memory:")
-    job_id, _, _ = store.upsert_job(Job(source="manual", title="Frontend Engineer"))
-    timestamps = iter(
-        ["2026-09-01T08:00:00+00:00", "2026-09-01T08:01:00+00:00"]
-    )
-    monkeypatch.setattr("job_hunter.store._now_iso", lambda: next(timestamps))
+def test_candidate_context_cache_is_none_for_unknown_key(store):
+    assert store.get_candidate_context("does-not-exist") is None
+
+
+def test_pending_ai_work_is_idempotent_and_updates_its_timestamp(store):
+    job_id, _, _ = store.upsert_job(make_job(fingerprint="ai-work"))
 
     store.enqueue_ai_work("cover_letter", job_id)
+    first = store.list_pending_ai_work("cover_letter")
     store.enqueue_ai_work("cover_letter", job_id)
+    second = store.list_pending_ai_work("cover_letter")
 
-    pending = store.list_pending_ai_work("cover_letter")
-
-    assert len(pending) == 1
-    assert pending[0]["job_id"] == job_id
-    assert pending[0]["created_at"] == "2026-09-01T08:00:00+00:00"
-    assert pending[0]["updated_at"] == "2026-09-01T08:01:00+00:00"
+    assert len(second) == 1
+    assert second[0]["job_id"] == job_id
+    assert second[0]["created_at"] == first[0]["created_at"]
+    assert from_iso(second[0]["updated_at"]) >= from_iso(first[0]["updated_at"])
 
     store.complete_ai_work("cover_letter", job_id)
 
@@ -1310,34 +1357,7 @@ def test_evaluation_market_id_round_trip(store):
     assert evaluation.market_id == "london"
 
 
-def test_gmail_persistence_schema_minimizes_private_email_data(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-
-    tables = {
-        row["name"]
-        for row in store._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
-    }
-    assert {
-        "gmail_sync_state",
-        "gmail_messages",
-        "inbound_job_candidates",
-        "application_events",
-        "review_deliveries",
-    } <= tables
-
-    for table in ("gmail_messages", "inbound_job_candidates", "application_events"):
-        columns = {
-            row["name"] for row in store._conn.execute(f"PRAGMA table_info({table})")
-        }
-        assert "body" not in columns
-        assert "email_body" not in columns
-
-
-def test_gmail_message_and_sync_state_roundtrip(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
-
+def test_gmail_message_and_sync_state_roundtrip(store):
     assert store.has_processed_gmail_message("m1") is False
     store.record_gmail_message(
         message_id="m1",
@@ -1364,10 +1384,61 @@ def test_gmail_message_and_sync_state_roundtrip(tmp_path):
     assert dict(state)["backfill_completed_at"] == "2026-08-31T10:05:00+00:00"
 
 
-def test_inbound_candidate_source_message_and_key_are_idempotent(tmp_path, monkeypatch):
-    store = JobStore(tmp_path / "state.sqlite3")
-    timestamps = iter(("2026-08-31T10:00:00+00:00", "2026-08-31T10:01:00+00:00"))
-    monkeypatch.setattr("job_hunter.store._now_iso", lambda: next(timestamps))
+def test_gmail_sync_state_upsert_advances_history_and_updated_at(store):
+    store.save_gmail_sync_state(
+        account_id="primary",
+        history_id="h1",
+        last_successful_sync_at="2026-08-31T10:05:00+00:00",
+        backfill_completed_at=None,
+    )
+    first = store.get_gmail_sync_state("primary")
+
+    store.save_gmail_sync_state(
+        account_id="primary",
+        history_id="h2",
+        last_successful_sync_at="2026-08-31T11:05:00+00:00",
+        backfill_completed_at="2026-08-31T11:05:00+00:00",
+    )
+    second = store.get_gmail_sync_state("primary")
+
+    assert second["history_id"] == "h2"
+    assert second["backfill_completed_at"] == "2026-08-31T11:05:00+00:00"
+    assert from_iso(second["updated_at"]) >= from_iso(first["updated_at"])
+
+
+def test_record_gmail_message_does_not_overwrite_an_already_processed_message(store):
+    """`INSERT OR IGNORE` semantics: a repeat call must not reclassify the message."""
+    store.record_gmail_message(
+        message_id="m1",
+        thread_id="t1",
+        sender="alerts@example.com",
+        subject="Frontend roles",
+        occurred_at="2026-08-31T10:00:00+00:00",
+        classification="JOB_ALERT",
+        confidence=0.98,
+        rationale="sender rule",
+    )
+
+    store.record_gmail_message(
+        message_id="m1",
+        thread_id="t1",
+        sender="alerts@example.com",
+        subject="Frontend roles",
+        occurred_at="2026-08-31T10:00:00+00:00",
+        classification="REVIEW_NEEDED",
+        confidence=0.1,
+        rationale="reclassified",
+    )
+
+    events = store._client.select(
+        "job_hunter_gmail_messages", params={"message_id": "eq.m1"}
+    )
+    assert len(events) == 1
+    assert events[0]["classification"] == "JOB_ALERT"
+    assert events[0]["confidence"] == 0.98
+
+
+def test_inbound_candidate_source_message_and_key_are_idempotent(store):
     job = ExtractedJob(
         source_platform="linkedin",
         source_job_id="job-1",
@@ -1379,16 +1450,16 @@ def test_inbound_candidate_source_message_and_key_are_idempotent(tmp_path, monke
     first = store.stage_inbound_job("m1", "linkedin:job-1", job)
     second = store.stage_inbound_job("m1", "linkedin:job-1", job)
 
-    row = store._conn.execute(
-        "SELECT id, created_at, last_seen_at FROM inbound_job_candidates"
-    ).fetchone()
-    assert second == first == row["id"]
-    assert row["created_at"] == "2026-08-31T10:00:00+00:00"
-    assert row["last_seen_at"] == "2026-08-31T10:01:00+00:00"
+    rows = store._client.select(
+        "job_hunter_inbound_job_candidates",
+        params={"select": "id,created_at,last_seen_at"},
+    )
+    assert len(rows) == 1
+    assert second == first == rows[0]["id"]
+    assert from_iso(rows[0]["last_seen_at"]) >= from_iso(rows[0]["created_at"])
 
 
-def test_application_event_source_message_is_idempotent(tmp_path):
-    store = JobStore(tmp_path / "db.sqlite3")
+def test_application_event_source_message_is_idempotent(store):
     first = store.save_application_event(
         job_id=None,
         event_type="REVIEW_NEEDED",
@@ -1414,8 +1485,7 @@ def test_application_event_source_message_is_idempotent(tmp_path):
     assert second == first
 
 
-def test_current_application_state_derives_the_latest_eligible_event(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_current_application_state_derives_the_latest_eligible_event(store):
     job_id, _, _ = store.upsert_job(
         Job(source="manual", source_job_id="1", title="Frontend Engineer")
     )
@@ -1445,8 +1515,7 @@ def test_current_application_state_derives_the_latest_eligible_event(tmp_path):
     assert store.current_application_state(job_id) == "APPLIED"
 
 
-def test_pending_reviews_include_subject_and_are_marked_delivered(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_reviews_include_subject_and_are_marked_delivered(store):
     job_id, _, _ = store.upsert_job(
         Job(source="manual", source_job_id="1", title="Frontend Engineer")
     )
@@ -1482,8 +1551,104 @@ def test_pending_reviews_include_subject_and_are_marked_delivered(tmp_path):
     assert store.pending_review_events() == []
 
 
-def test_candidate_not_emitted_when_any_job_has_same_canonical_url(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_review_events_excludes_high_confidence_auto_matched_events(store):
+    """A confident, matched non-REVIEW_NEEDED event needs no human review."""
+    job_id, _, _ = store.upsert_job(Job(source="manual", title="Frontend Engineer"))
+    store.record_gmail_message(
+        message_id="m1",
+        thread_id="t1",
+        sender="recruiter@example.com",
+        subject="You applied",
+        occurred_at="2026-08-31T10:00:00+00:00",
+        classification="APPLIED",
+        confidence=0.95,
+        rationale="confident",
+    )
+    store.save_application_event(
+        job_id=job_id,
+        event_type="APPLIED",
+        occurred_at="2026-08-31T10:00:00+00:00",
+        source_message_id="m1",
+        source_thread_id="t1",
+        confidence=0.95,
+        company="Acme",
+        role_title="Frontend Engineer",
+        rationale="confident",
+    )
+
+    assert store.pending_review_events() == []
+
+
+def test_release_legacy_gmail_semantic_failures_clears_only_the_legacy_rationale(store):
+    from job_hunter.gmail_models import LEGACY_SEMANTIC_FAILURE_RATIONALE
+
+    store.record_gmail_message(
+        message_id="legacy",
+        thread_id="t1",
+        sender="alerts@example.com",
+        subject="Unclear",
+        occurred_at="2026-08-31T10:00:00+00:00",
+        classification="REVIEW_NEEDED",
+        confidence=0.0,
+        rationale=LEGACY_SEMANTIC_FAILURE_RATIONALE,
+    )
+    legacy_event_id = store.save_application_event(
+        job_id=None,
+        event_type="REVIEW_NEEDED",
+        occurred_at="2026-08-31T10:00:00+00:00",
+        source_message_id="legacy",
+        source_thread_id="t1",
+        confidence=0.0,
+        company="",
+        role_title="",
+        rationale=LEGACY_SEMANTIC_FAILURE_RATIONALE,
+    )
+    store.mark_review_delivered([legacy_event_id], "telegram-1")
+
+    store.record_gmail_message(
+        message_id="genuine",
+        thread_id="t2",
+        sender="recruiter@example.com",
+        subject="Discuss role",
+        occurred_at="2026-08-31T11:00:00+00:00",
+        classification="REVIEW_NEEDED",
+        confidence=0.4,
+        rationale="genuinely ambiguous",
+    )
+    genuine_event_id = store.save_application_event(
+        job_id=None,
+        event_type="REVIEW_NEEDED",
+        occurred_at="2026-08-31T11:00:00+00:00",
+        source_message_id="genuine",
+        source_thread_id="t2",
+        confidence=0.4,
+        company="Acme",
+        role_title="Frontend Engineer",
+        rationale="genuinely ambiguous",
+    )
+
+    removed = store.release_legacy_gmail_semantic_failures()
+
+    assert removed == 1
+    assert store.has_processed_gmail_message("legacy") is False
+    assert store.has_processed_gmail_message("genuine") is True
+    assert store._client.select(
+        "job_hunter_review_deliveries", params={"event_id": f"eq.{legacy_event_id}"}
+    ) == []
+    remaining_ids = {
+        row["id"]
+        for row in store._client.select(
+            "job_hunter_application_events", params={"select": "id"}
+        )
+    }
+    assert remaining_ids == {genuine_event_id}
+
+
+def test_release_legacy_gmail_semantic_failures_is_a_no_op_when_none_exist(store):
+    assert store.release_legacy_gmail_semantic_failures() == 0
+
+
+def test_candidate_not_emitted_when_any_job_has_same_canonical_url(store):
     store.stage_inbound_job(
         "m1",
         "linkedin:1",
@@ -1508,8 +1673,7 @@ def test_candidate_not_emitted_when_any_job_has_same_canonical_url(tmp_path):
     assert store.list_unmaterialized_inbound_jobs() == []
 
 
-def test_candidate_not_emitted_when_gmail_source_and_candidate_key_match(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_candidate_not_emitted_when_gmail_source_and_candidate_key_match(store):
     store.stage_inbound_job(
         "m1",
         "candidate-key-1",
@@ -1533,8 +1697,7 @@ def test_candidate_not_emitted_when_gmail_source_and_candidate_key_match(tmp_pat
     assert store.list_unmaterialized_inbound_jobs() == []
 
 
-def test_candidate_not_emitted_when_url_missing_but_identity_matches(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_candidate_not_emitted_when_url_missing_but_identity_matches(store):
     store.stage_inbound_job(
         "m1",
         "linkedin:1",
@@ -1560,8 +1723,7 @@ def test_candidate_not_emitted_when_url_missing_but_identity_matches(tmp_path):
     assert store.list_unmaterialized_inbound_jobs() == []
 
 
-def test_candidate_emitted_when_no_existing_job_matches(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_candidate_emitted_when_no_existing_job_matches(store):
     candidate_id = store.stage_inbound_job(
         "m1",
         "linkedin:1",

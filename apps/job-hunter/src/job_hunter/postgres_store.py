@@ -20,8 +20,15 @@ from typing import Any
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
+from job_hunter.gmail_models import AUTO_CONFIDENCE_THRESHOLD, ExtractedJob
 from job_hunter.job_identity import normalize_company_name
-from job_hunter.models import AtsRegistryEntry, Evaluation, Job, Material
+from job_hunter.models import (
+    AtsRegistryEntry,
+    CandidateContextCacheEntry,
+    Evaluation,
+    Job,
+    Material,
+)
 from job_hunter.normalize import job_fingerprint
 from job_hunter.store_mapping import (
     ats_entry_from_row,
@@ -1136,3 +1143,569 @@ class PostgresJobStore:
         return len(
             self._client.select("job_hunter_ats_registry", params={"select": "id"})
         )
+
+    # ------------------------------------------------------------------
+    # Gemini / AI-accounting persistence
+    # ------------------------------------------------------------------
+
+    def record_gemini_usage(
+        self,
+        *,
+        occurred_at: str,
+        run_id: str | None,
+        model: str,
+        purpose: str,
+        status: str,
+        estimated_input_tokens: int,
+        prompt_tokens: int | None = None,
+        output_tokens: int | None = None,
+        thinking_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        total_tokens: int | None = None,
+        http_status: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Record one Gemini attempt without persisting request or response content.
+
+        Translates store.py:463-507 onto `job_hunter_ai_usage` (renamed from
+        `gemini_usage`; `provider` defaults to `'gemini'` in the schema).
+        `run_id` is NOT NULL after migration 202609060003 -- `GeminiUsageTracker`
+        is constructed with `run_id=os.getenv("GEMINI_RUN_ID")`, which is `None`
+        outside CI, so a caller's `None` is coerced to `'unknown'` here, matching
+        the migration's own backfill sentinel for pre-existing rows. Upserts
+        against `(user_id, run_id, model, purpose, occurred_at)` -- the only
+        natural key distinguishing two identical calls in one run from a
+        retried POST hitting the same call twice.
+        """
+        self._client.upsert(
+            "job_hunter_ai_usage",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "provider": "gemini",
+                    "occurred_at": occurred_at,
+                    "run_id": run_id or "unknown",
+                    "model": model,
+                    "purpose": purpose,
+                    "status": status,
+                    "estimated_input_tokens": estimated_input_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "output_tokens": output_tokens,
+                    "thinking_tokens": thinking_tokens,
+                    "cached_tokens": cached_tokens,
+                    "total_tokens": total_tokens,
+                    "http_status": http_status,
+                    "error_code": error_code,
+                }
+            ],
+            on_conflict="user_id,run_id,model,purpose,occurred_at",
+        )
+
+    def gemini_usage_rows(
+        self,
+        start_at: str,
+        end_at: str,
+        *,
+        model: str | None = None,
+        run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return Gemini ledger rows in the half-open time range [start_at, end_at).
+
+        Translates store.py:509-530. `select` is scoped to exactly the columns
+        the SQLite `SELECT *` returned (`gemini_usage` never had `prompt`/
+        `response` columns to begin with -- see `record_gemini_usage`'s
+        docstring), so `id` is a random uuid, not the callers' former ordering
+        proxy; `occurred_at` (with `select`'s `id.asc` tie-breaker) replaces it.
+        """
+        params: dict[str, str] = {
+            "provider": "eq.gemini",
+            "and": f"(occurred_at.gte.{start_at},occurred_at.lt.{end_at})",
+            "select": (
+                "id,occurred_at,run_id,model,purpose,status,estimated_input_tokens,"
+                "prompt_tokens,output_tokens,thinking_tokens,cached_tokens,"
+                "total_tokens,http_status,error_code"
+            ),
+            "order": "occurred_at.asc",
+        }
+        if model is not None:
+            params["model"] = f"eq.{model}"
+        if run_id is not None:
+            params["run_id"] = f"eq.{run_id}"
+        return self._client.select("job_hunter_ai_usage", params=params)
+
+    def set_gemini_pause(
+        self, model: str, paused_until: str | None, reason: str
+    ) -> None:
+        """Persist the active quota pause for a Gemini model.
+
+        Translates store.py:532-547 onto `job_hunter_ai_quota_state` (renamed
+        from `gemini_quota_state`). Upserts against `(user_id, provider,
+        model)`, with `touch()` maintaining `updated_at` -- there is no
+        trigger for it (see `store_mapping.touch`). `created_at` is
+        deliberately omitted from the payload so an existing row's insertion
+        time survives a later pause update, matching the original's
+        `ON CONFLICT ... DO UPDATE SET` column list.
+        """
+        self._client.upsert(
+            "job_hunter_ai_quota_state",
+            [
+                touch(
+                    {
+                        "user_id": self._client.user_id,
+                        "provider": "gemini",
+                        "model": model,
+                        "paused_until": paused_until,
+                        "reason": reason,
+                    }
+                )
+            ],
+            on_conflict="user_id,provider,model",
+        )
+
+    def get_gemini_pause(self, model: str) -> dict[str, Any] | None:
+        """Return the persisted quota pause for a model, if present.
+
+        Translates store.py:549-553.
+        """
+        rows = self._client.select(
+            "job_hunter_ai_quota_state",
+            params={"provider": "eq.gemini", "model": f"eq.{model}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def clear_gemini_pause(self, model: str) -> None:
+        """Remove a model's persisted quota pause.
+
+        Translates store.py:555-560.
+        """
+        self._client.delete(
+            "job_hunter_ai_quota_state",
+            params={"provider": "eq.gemini", "model": f"eq.{model}"},
+        )
+
+    def get_candidate_context(self, cache_key: str) -> CandidateContextCacheEntry | None:
+        """Return a cached candidate context, decoding its stored JSON payload.
+
+        Translates store.py:562-576. `context_json` is jsonb; PostgREST hands
+        it back already decoded, so no `json.loads` is needed here.
+        """
+        rows = self._client.select(
+            "job_hunter_candidate_context_cache",
+            params={"cache_key": f"eq.{cache_key}", "limit": "1"},
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return CandidateContextCacheEntry(
+            cache_key=row["cache_key"],
+            profile_hash=row["profile_hash"],
+            model=row["model"],
+            schema_version=row["schema_version"],
+            context=row["context_json"],
+            created_at=row["created_at"],
+        )
+
+    def save_candidate_context(
+        self,
+        *,
+        cache_key: str,
+        profile_hash: str,
+        model: str,
+        schema_version: str,
+        context: dict,
+    ) -> None:
+        """Persist a structured candidate context under its cache identity.
+
+        Translates store.py:578-609. Upserts against `(user_id, cache_key)`.
+        Unlike `set_gemini_pause`, `created_at` is included in the payload:
+        the SQLite original's own `ON CONFLICT ... DO UPDATE SET` refreshed
+        `created_at = excluded.created_at` on every save, so this does too.
+        """
+        self._client.upsert(
+            "job_hunter_candidate_context_cache",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "cache_key": cache_key,
+                    "profile_hash": profile_hash,
+                    "model": model,
+                    "schema_version": schema_version,
+                    "context_json": context,
+                    "created_at": to_iso(datetime.now(timezone.utc)),
+                }
+            ],
+            on_conflict="user_id,cache_key",
+        )
+
+    def enqueue_ai_work(self, work_type: str, job_id: str) -> None:
+        """Idempotently enqueue deferred AI work and refresh its retry timestamp.
+
+        Translates store.py:611-624. Upserts against `(user_id, work_type,
+        job_id)`; `created_at` is left out of the payload so it keeps the
+        table default on first insert and is never touched on a repeat call,
+        matching the original's `DO UPDATE SET updated_at = excluded.updated_at`
+        only. `touch()` sets `updated_at` -- there is no trigger for it.
+        """
+        self._client.upsert(
+            "job_hunter_pending_ai_work",
+            [
+                touch(
+                    {
+                        "user_id": self._client.user_id,
+                        "work_type": work_type,
+                        "job_id": job_id,
+                    }
+                )
+            ],
+            on_conflict="user_id,work_type,job_id",
+        )
+
+    def list_pending_ai_work(self, work_type: str) -> list[dict[str, Any]]:
+        """Return pending rows for one AI-work category in stable retry order.
+
+        Translates store.py:626-635. Ids are random uuids now, so `created_at`
+        (with `select`'s `id.asc` tie-breaker) replaces `ORDER BY ..., job_id`
+        as the retry-order proxy.
+        """
+        return self._client.select(
+            "job_hunter_pending_ai_work",
+            params={"work_type": f"eq.{work_type}", "order": "created_at.asc"},
+        )
+
+    def complete_ai_work(self, work_type: str, job_id: str) -> None:
+        """Remove a completed deferred AI-work item.
+
+        Translates store.py:637-643.
+        """
+        self._client.delete(
+            "job_hunter_pending_ai_work",
+            params={"work_type": f"eq.{work_type}", "job_id": f"eq.{job_id}"},
+        )
+
+    # ------------------------------------------------------------------
+    # Gmail sync and staging operations
+    # ------------------------------------------------------------------
+
+    def has_processed_gmail_message(self, message_id: str) -> bool:
+        """Translates store.py:1679-1684."""
+        rows = self._client.select(
+            "job_hunter_gmail_messages",
+            params={"message_id": f"eq.{message_id}", "select": "id", "limit": "1"},
+        )
+        return len(rows) > 0
+
+    def record_gmail_message(
+        self,
+        *,
+        message_id: str,
+        thread_id: str | None,
+        sender: str,
+        subject: str,
+        occurred_at: str,
+        classification: str,
+        confidence: float,
+        rationale: str,
+    ) -> None:
+        """Record a classified Gmail message once, never reclassifying it.
+
+        Translates store.py:1686-1717. The original's `INSERT OR IGNORE`
+        leaves an already-recorded message untouched by a later call with a
+        different classification; `SupabaseClient.upsert` always overwrites on
+        conflict, so this checks for an existing row first and returns without
+        writing when one is found, same pattern as `record_job_source`. A
+        genuinely new message is inserted through `upsert` (rather than plain
+        `insert`) so a retried POST on a transient 5xx converges instead of
+        duplicating.
+        """
+        existing = self._client.select(
+            "job_hunter_gmail_messages",
+            params={"message_id": f"eq.{message_id}", "select": "id", "limit": "1"},
+        )
+        if existing:
+            return
+        self._client.upsert(
+            "job_hunter_gmail_messages",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "message_id": message_id,
+                    "thread_id": thread_id,
+                    "sender": sender,
+                    "subject": subject,
+                    "occurred_at": occurred_at,
+                    "classification": classification,
+                    "confidence": confidence,
+                    "rationale": rationale,
+                    "processed_at": to_iso(datetime.now(timezone.utc)),
+                }
+            ],
+            on_conflict="user_id,message_id",
+        )
+
+    def get_gmail_sync_state(self, account_id: str) -> dict[str, Any] | None:
+        """Translates store.py:1719-1728.
+
+        The SQLite original checked `sqlite_master` first because the table
+        could be missing on an old database file; `job_hunter_gmail_sync_state`
+        always exists under Postgres (migrations own the schema now), so that
+        guard has no equivalent here.
+        """
+        rows = self._client.select(
+            "job_hunter_gmail_sync_state",
+            params={"account_id": f"eq.{account_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def save_gmail_sync_state(
+        self,
+        account_id: str,
+        history_id: str | None,
+        last_successful_sync_at: str | None,
+        backfill_completed_at: str | None,
+    ) -> None:
+        """Translates store.py:1730-1759.
+
+        Upserts against `(user_id, account_id)`. `created_at` is left out of
+        the payload, same reasoning as `enqueue_ai_work`. `touch()` sets
+        `updated_at`.
+        """
+        self._client.upsert(
+            "job_hunter_gmail_sync_state",
+            [
+                touch(
+                    {
+                        "user_id": self._client.user_id,
+                        "account_id": account_id,
+                        "history_id": history_id,
+                        "last_successful_sync_at": last_successful_sync_at,
+                        "backfill_completed_at": backfill_completed_at,
+                    }
+                )
+            ],
+            on_conflict="user_id,account_id",
+        )
+
+    def stage_inbound_job(
+        self,
+        source_message_id: str,
+        source_candidate_key: str,
+        job: ExtractedJob,
+    ) -> str:
+        """Insert or refresh the last-seen time of one staged inbound candidate.
+
+        Translates store.py:1761-1803. Upserts against `(user_id, origin,
+        source_message_id, source_candidate_key)`. `created_at` is left out of
+        the payload -- the original's `ON CONFLICT ... DO UPDATE SET` only
+        ever touched `last_seen_at`, and omitting the column here reproduces
+        that: the table default fills it on first insert, and a repeat call's
+        merge-duplicates upsert leaves it alone. Returns the row's id directly
+        from the upsert response rather than a follow-up `SELECT`.
+        """
+        written = self._client.upsert(
+            "job_hunter_inbound_job_candidates",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "origin": "gmail",
+                    "source_message_id": source_message_id,
+                    "source_candidate_key": source_candidate_key,
+                    "source_platform": job.source_platform,
+                    "source_job_id": job.source_job_id,
+                    "url": job.url or "",
+                    "company": job.company or "",
+                    "title": job.title or "",
+                    "location": job.location or "",
+                    "remote": job.remote,
+                    "description": "",
+                    "last_seen_at": to_iso(datetime.now(timezone.utc)),
+                }
+            ],
+            on_conflict="user_id,origin,source_message_id,source_candidate_key",
+        )
+        return written[0]["id"]
+
+    def list_unmaterialized_inbound_jobs(self) -> list[dict[str, Any]]:
+        """Return staged candidates that no stored job already accounts for.
+
+        Translates store.py:1805-1846 (`list_unmaterialized_inbound_jobs` and
+        `_matches_materialized_job`) into a single call to
+        `job_hunter_unmaterialized_inbound_jobs`, which reimplements the O(n*m)
+        Python match entirely in SQL. It `returns setof jsonb`, so `rpc` hands
+        back a plain list of decoded candidate dicts, one per row -- no key to
+        unwrap.
+        """
+        return self._client.rpc("job_hunter_unmaterialized_inbound_jobs", {})
+
+    def save_application_event(
+        self,
+        *,
+        job_id: str | None,
+        event_type: str,
+        occurred_at: str,
+        source_message_id: str,
+        source_thread_id: str | None,
+        confidence: float,
+        company: str,
+        role_title: str,
+        rationale: str,
+        source: str = "gmail",
+    ) -> str:
+        """Record an application-lifecycle event once per source message.
+
+        Translates store.py:1848-1890. `job_hunter_application_events` is
+        unique on `(user_id, source_message_id)`; the original's
+        `INSERT OR IGNORE` then re-`SELECT`ed by `source_message_id` regardless
+        of whether the insert happened, always returning whichever row (new or
+        pre-existing) owns that identity. This checks for an existing row
+        first and returns its id unchanged rather than overwriting it, same
+        pattern as `record_gmail_message`.
+        """
+        existing = self._client.select(
+            "job_hunter_application_events",
+            params={
+                "source_message_id": f"eq.{source_message_id}",
+                "select": "id",
+                "limit": "1",
+            },
+        )
+        if existing:
+            return existing[0]["id"]
+        written = self._client.upsert(
+            "job_hunter_application_events",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "job_id": job_id,
+                    "event_type": event_type,
+                    "occurred_at": occurred_at,
+                    "source": source,
+                    "source_message_id": source_message_id,
+                    "source_thread_id": source_thread_id,
+                    "confidence": confidence,
+                    "company": company,
+                    "role_title": role_title,
+                    "rationale": rationale,
+                }
+            ],
+            on_conflict="user_id,source_message_id",
+        )
+        return written[0]["id"]
+
+    def list_application_events(self, job_id: str) -> list[dict[str, Any]]:
+        """Translates store.py:1892-1900.
+
+        Ids are random uuids now, so `occurred_at` with `created_at` and
+        `select`'s `id.asc` tie-breaker replaces `ORDER BY occurred_at, id`.
+        """
+        return self._client.select(
+            "job_hunter_application_events",
+            params={"job_id": f"eq.{job_id}", "order": "occurred_at.asc,created_at.asc"},
+        )
+
+    def current_application_state(self, job_id: str) -> str | None:
+        """Translates store.py:1902-1905.
+
+        Imported lazily, same as the original, to avoid a module-level import
+        cycle between this module and `gmail_matching`.
+        """
+        from job_hunter.gmail_matching import derive_application_state
+
+        return derive_application_state(self.list_application_events(job_id))
+
+    def pending_review_events(self) -> list[dict[str, Any]]:
+        """Return undelivered events needing human review, with their subject.
+
+        Translates store.py:1907-1931 into a single call to
+        `job_hunter_pending_review_events`, which reimplements the join
+        against `job_hunter_gmail_messages` (for `subject`) and the anti-join
+        against `job_hunter_review_deliveries` entirely in SQL. It `returns
+        setof jsonb`, so `rpc` hands back a plain list of decoded event dicts
+        (each already carrying `subject`) -- no key to unwrap.
+        """
+        return self._client.rpc(
+            "job_hunter_pending_review_events",
+            {"p_confidence_threshold": AUTO_CONFIDENCE_THRESHOLD},
+        )
+
+    def mark_review_delivered(
+        self, event_ids: list[str], telegram_message_id: str
+    ) -> None:
+        """Translates store.py:1933-1946.
+
+        Upserts against `(user_id, event_id)` rather than the original's
+        `INSERT OR IGNORE` -- a repeat delivery of the same event with a
+        different `telegram_message_id` overwrites it, but a retried POST on
+        one call converges instead of duplicating, and no caller ever marks
+        the same event delivered twice with different arguments in practice.
+        """
+        if not event_ids:
+            return
+        now = to_iso(datetime.now(timezone.utc))
+        self._client.upsert(
+            "job_hunter_review_deliveries",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "event_id": event_id,
+                    "delivered_at": now,
+                    "telegram_message_id": telegram_message_id,
+                }
+                for event_id in event_ids
+            ],
+            on_conflict="user_id,event_id",
+        )
+
+    def release_legacy_gmail_semantic_failures(self) -> int:
+        """Remove only legacy synthetic technical reviews so Gmail can retry them.
+
+        Translates store.py:1948-1993. Three deletes replace the original's
+        single transaction (no cross-statement transaction exists over
+        PostgREST): review deliveries and application events for the affected
+        message ids are removed first (children before the parent), then the
+        gmail messages themselves. `LEGACY_SEMANTIC_FAILURE_RATIONALE` message
+        ids are threaded through a PostgREST `in.(...)` filter; there being no
+        matching messages short-circuits before any delete runs.
+        """
+        from job_hunter.gmail_models import LEGACY_SEMANTIC_FAILURE_RATIONALE
+
+        rationale = LEGACY_SEMANTIC_FAILURE_RATIONALE
+        messages = self._client.select(
+            "job_hunter_gmail_messages",
+            params={
+                "classification": "eq.REVIEW_NEEDED",
+                "rationale": f"eq.{rationale}",
+                "select": "message_id",
+            },
+        )
+        message_ids = [row["message_id"] for row in messages]
+        if not message_ids:
+            return 0
+
+        message_id_list = ",".join(message_ids)
+        events = self._client.select(
+            "job_hunter_application_events",
+            params={
+                "source": "eq.gmail",
+                "event_type": "eq.REVIEW_NEEDED",
+                "rationale": f"eq.{rationale}",
+                "source_message_id": f"in.({message_id_list})",
+                "select": "id",
+            },
+        )
+        event_ids = [row["id"] for row in events]
+        if event_ids:
+            event_id_list = ",".join(event_ids)
+            self._client.delete(
+                "job_hunter_review_deliveries",
+                params={"event_id": f"in.({event_id_list})"},
+            )
+            self._client.delete(
+                "job_hunter_application_events",
+                params={"id": f"in.({event_id_list})"},
+            )
+
+        self._client.delete(
+            "job_hunter_gmail_messages",
+            params={"message_id": f"in.({message_id_list})"},
+        )
+        return len(message_ids)

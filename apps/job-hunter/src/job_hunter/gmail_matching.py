@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from job_hunter.gmail_models import (
     AUTO_CONFIDENCE_THRESHOLD,
@@ -13,8 +13,6 @@ from job_hunter.gmail_models import (
 from job_hunter.normalize import canonicalize_url, normalize_text
 
 if TYPE_CHECKING:
-    import sqlite3
-
     from job_hunter.store import JobStore
 
 
@@ -35,7 +33,7 @@ _STATE_TIE_PRECEDENCE = {
 }
 
 
-def _single_match(rows: Iterable[sqlite3.Row], reason: str) -> JobMatch | None:
+def _single_match(rows: Iterable[dict[str, Any]], reason: str) -> JobMatch | None:
     matches = list(rows)
     if len(matches) == 1:
         return JobMatch(job_id=matches[0]["id"], reason=reason, ambiguous=False)
@@ -54,7 +52,7 @@ def _message_urls(
     }
 
 
-def _is_recent_company_match(row: sqlite3.Row, sent_at: datetime) -> bool:
+def _is_recent_company_match(row: dict[str, Any], sent_at: datetime) -> bool:
     timestamps = (row["first_seen_at"], row["last_seen_at"])
     return any(
         abs(sent_at - datetime.fromisoformat(value))

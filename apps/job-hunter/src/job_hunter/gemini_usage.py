@@ -11,15 +11,13 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from zoneinfo import ZoneInfo
 
 from job_hunter.models import GeminiQuotaSettings, GeminiUsageSummary
 
 if TYPE_CHECKING:
-    import sqlite3
-
     from job_hunter.store import JobStore
 
 GeminiPurpose = Literal[
@@ -81,14 +79,14 @@ def _pacific_day_bounds(now: datetime) -> tuple[datetime, datetime]:
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
-def _row_input_tokens(row: sqlite3.Row) -> int:
+def _row_input_tokens(row: dict[str, Any]) -> int:
     """Exact prompt tokens where Google reported them, else the pre-call estimate."""
     if row["prompt_tokens"] is not None:
         return row["prompt_tokens"]
     return row["estimated_input_tokens"]
 
 
-def _row_total_tokens(row: sqlite3.Row) -> int:
+def _row_total_tokens(row: dict[str, Any]) -> int:
     """Google's own `totalTokenCount` where reported, else a reconstructed estimate.
 
     `totalTokenCount` already equals `promptTokenCount + candidatesTokenCount +
@@ -103,7 +101,7 @@ def _row_total_tokens(row: sqlite3.Row) -> int:
     return _row_input_tokens(row) + (row["output_tokens"] or 0) + (row["thinking_tokens"] or 0)
 
 
-def _peak_rolling(rows: list[sqlite3.Row], window: timedelta) -> tuple[int, int]:
+def _peak_rolling(rows: list[dict[str, Any]], window: timedelta) -> tuple[int, int]:
     """Peak (request count, input tokens) over any `window`-wide span in `rows`.
 
     `rows` must be ordered by `occurred_at`. Each row is used as the trailing
@@ -128,7 +126,7 @@ def _peak_rolling(rows: list[sqlite3.Row], window: timedelta) -> tuple[int, int]
 
 
 def _retry_after_for_rolling_capacity(
-    rows: list[sqlite3.Row],
+    rows: list[dict[str, Any]],
     *,
     now: datetime,
     rpm_ceiling: int,
@@ -422,7 +420,7 @@ class GeminiUsageTracker:
             estimated_input_tokens=estimate_input_tokens(prompt),
         )
 
-    def _provider_rows(self, start: datetime, end: datetime) -> list[sqlite3.Row]:
+    def _provider_rows(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         rows = self._store.gemini_usage_rows(
             start.isoformat(), end.isoformat(), model=self._model
         )
