@@ -408,6 +408,19 @@ def settings(tmp_path, policy):
     )
 
 
+def test_canonical_search_sites_keeps_original_filter_order():
+    # _CANONICAL_SEARCH_SITES is generated from SUPPORTED_ATS_HOSTS and goes
+    # verbatim into a public search query, where reordering OR terms can move
+    # result ranking. Pin the three filters the hand-written string used, in
+    # their original order, so a table reshuffle cannot silently change which
+    # candidate a targeted canonical search returns.
+    sites = job_hunter.pipeline._CANONICAL_SEARCH_SITES
+    assert sites.startswith(
+        "site:jobs.ashbyhq.com OR site:jobs.lever.co OR site:boards.greenhouse.io"
+    )
+    assert sites.endswith(" OR careers")
+
+
 def test_pipeline_delivers_strong_match_and_dedupes_within_run(settings):
     strong_job = _job()
     duplicate_job = _job()

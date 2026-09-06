@@ -1,3 +1,5 @@
+import pytest
+
 import job_hunter.canonical as canonical
 from job_hunter.canonical import (
     CanonicalResolver,
@@ -52,6 +54,23 @@ def test_parse_greenhouse_reference_on_job_boards_host():
     # rather than boards.greenhouse.io; both hosts are live and a board's
     # absolute_url returns one or the other. Same board and job id either way.
     ref = parse_supported_ats_url("https://job-boards.greenhouse.io/acme/jobs/456")
+    assert ref is not None
+    assert (ref.provider, ref.board, ref.job_id) == ("greenhouse", "acme", "456")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://boards.eu.greenhouse.io/acme/jobs/456",
+        "https://job-boards.eu.greenhouse.io/acme/jobs/456",
+    ],
+)
+def test_parse_greenhouse_reference_on_eu_data_region_hosts(url):
+    # Organizations on Greenhouse's EU data region get the same legacy/modern
+    # host pair under `.eu.`, with the same path shape. These are not covered
+    # by the substring consumers either, since "boards.greenhouse.io" is not a
+    # substring of "job-boards.eu.greenhouse.io".
+    ref = parse_supported_ats_url(url)
     assert ref is not None
     assert (ref.provider, ref.board, ref.job_id) == ("greenhouse", "acme", "456")
 
