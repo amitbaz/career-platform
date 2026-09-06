@@ -11,6 +11,7 @@
     "relay:start": "pnpm --filter relay start",
     "relay:lint": "pnpm --filter relay lint",
     "relay:test": "pnpm --filter relay test",
+    "db:test": "supabase test db supabase/tests/pgtap",
     "job-hunter:install": "cd apps/job-hunter && python3 -m venv .venv && .venv/bin/python -m pip install -e '.[test,webhook]'",
     "job-hunter:test": "cd apps/job-hunter && .venv/bin/python -m pytest -q",
     "test": "pnpm run relay:test && pnpm run job-hunter:test"
