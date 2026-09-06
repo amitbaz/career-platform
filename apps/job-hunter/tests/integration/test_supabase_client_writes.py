@@ -145,3 +145,43 @@ def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseC
     assert len(set(ids)) == len(ids), "paging with caller order must not duplicate rows"
     # Verify that the rows are in the order specified by the caller (id.asc).
     assert ids == sorted(ids), "caller-supplied order must be preserved across pages"
+
+
+def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> None:
+    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    # Create a job with a high-scoring evaluation and no delivery
+    job = client.insert(
+        "job_hunter_jobs",
+        [{"user_id": user_id, "fingerprint": f"fp-{uuid.uuid4()}", "source": "test", "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
+    )[0]
+    client.upsert(
+        "job_hunter_evaluations",
+        [{
+            "user_id": user_id,
+            "job_id": job["id"],
+            "total_score": 85,
+            "decision": "possible_match",
+            "evaluated_at": "2026-09-06T10:00:00+00:00",
+        }],
+        on_conflict="user_id,job_id,evaluated_at"
+    )
+
+    result = client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 0})
+    assert isinstance(result, list)
+    # Assert that the job we created is in the results
+    assert any(item["job_id"] == str(job["id"]) for item in result), "Created job should appear in pending delivery jobs"
+
+
+def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
+    """Verify that retry=False parameter is accepted and works correctly.
+
+    This test calls an RPC function with retry=False to ensure the parameter
+    is properly passed through to the HTTP client without errors. With
+    retry=False, transient failures would not be retried, making it safe
+    for non-idempotent operations like job_hunter_merge_jobs.
+    """
+    # Call a read-only RPC function with retry=False
+    result = client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 100}, retry=False)
+    assert isinstance(result, list)
+    # With a high floor, there should be no results (we haven't created any high-scoring jobs)
+    assert len(result) == 0

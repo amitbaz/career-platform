@@ -151,6 +151,29 @@ class SupabaseClient:
         )
         return self._parse(response)
 
+    def rpc(
+        self,
+        function: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        retry: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Call a Postgres function through PostgREST.
+
+        The functions are ``security invoker``, so row-level security still
+        applies and the minted token still decides which rows are visible.
+
+        ``retry=False`` is for functions that mutate without being idempotent
+        — ``job_hunter_merge_jobs`` is the one such caller.
+        """
+        response = self._http.post(
+            f"{self._settings.url}/rest/v1/rpc/{function}",
+            headers=self._headers(write=True),
+            json=payload or {},
+            retry=retry,
+        )
+        return self._parse(response)
+
     def _url(self, table: str) -> str:
         return f"{self._settings.url}/rest/v1/{table}"
 
