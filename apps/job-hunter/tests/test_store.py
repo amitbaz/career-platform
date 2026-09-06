@@ -653,6 +653,62 @@ def test_ats_rejected_board_is_not_resurrected_by_rediscovery():
     assert store.list_due_ats_boards(now + timedelta(days=30)) == []
 
 
+def test_clear_ats_board_rejection_makes_a_rejected_board_due_again():
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="clientco")
+    store.reject_ats_board("lever", "clientco", "aggregator: 98% third-party", now)
+
+    store.clear_ats_board_rejection("lever", "clientco")
+
+    assert store.list_rejected_ats_boards() == []
+    due = store.list_due_ats_boards(now)
+    assert [e.board_identifier for e in due] == ["clientco"]
+    assert due[0].rejected_reason is None
+    assert due[0].active is True
+
+
+def test_clear_ats_board_rejection_matches_the_stored_provider_case_insensitively():
+    # Callers hold normalized ats_board_key values ("lever:jobgether"), while
+    # the row was written from whatever case discovery saw.
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="ClientCo")
+    store.reject_ats_board("lever", "ClientCo", "aggregator: 98% third-party", now)
+
+    store.clear_ats_board_rejection("Lever", "clientco")
+
+    assert store.list_rejected_ats_boards() == []
+    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["ClientCo"]
+
+
+def test_clear_ats_board_rejection_is_a_no_op_for_a_board_that_was_never_rejected():
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
+
+    store.clear_ats_board_rejection("lever", "healthy-co")
+    store.clear_ats_board_rejection("lever", "never-registered")
+
+    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["healthy-co"]
+
+
+def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board():
+    # A board deactivated by repeated 404s is broken, not misjudged. Clearing
+    # a rejection it never had must not put it back in the rotation.
+    store = JobStore(":memory:")
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="dead-co")
+    for i in range(3):
+        store.record_ats_scan_failure(
+            "lever", "dead-co", now + timedelta(hours=25 * i), permanent=True
+        )
+
+    store.clear_ats_board_rejection("lever", "dead-co")
+
+    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+
+
 def test_record_job_source_is_idempotent(tmp_path):
     store = JobStore(tmp_path / "state.sqlite3")
     job_id, _, _ = store.upsert_job(
