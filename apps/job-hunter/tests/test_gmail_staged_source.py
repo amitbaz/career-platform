@@ -1,6 +1,15 @@
 from job_hunter.gmail_models import ExtractedJob
+from job_hunter.job_identity import job_fallback_identity
 from job_hunter.models import Job
 from job_hunter.sources import GmailStagedSource
+
+
+class FakeStagedJobStore:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def list_unmaterialized_inbound_jobs(self):
+        return self._rows
 
 
 def test_staged_source_returns_stable_gmail_job_identity(store, tmp_path):
@@ -31,6 +40,78 @@ def test_staged_source_returns_stable_gmail_job_identity(store, tmp_path):
     assert job.url == "https://linkedin.example/jobs/123"
     assert job.description == ""
     assert job.remote is True
+
+
+def test_staged_source_normalizes_linkedin_hiring_page_title():
+    store = FakeStagedJobStore(
+        [
+            {
+                "source_platform": "linkedin",
+                "source_candidate_key": "linkedin:job-123",
+                "url": "https://www.linkedin.com/jobs/view/123",
+                "title": "Magentic hiring Senior Frontend Engineer in London, England, United Kingdom | LinkedIn",
+                "company": "",
+                "location": "",
+                "description": "",
+                "remote": None,
+            }
+        ]
+    )
+
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.title == "Senior Frontend Engineer"
+    assert job.company == "Magentic"
+    assert job.location == "London, England, United Kingdom"
+    assert job_fallback_identity(job.company, job.title, job.location) == (
+        "magentic|senior frontend engineer|london england united kingdom"
+    )
+
+
+def test_staged_source_keeps_existing_linkedin_metadata_over_page_title():
+    store = FakeStagedJobStore(
+        [
+            {
+                "source_platform": "linkedin",
+                "source_candidate_key": "linkedin:job-123",
+                "url": "https://www.linkedin.com/jobs/view/123",
+                "title": "Magentic hiring Senior Frontend Engineer in London, England, United Kingdom | LinkedIn",
+                "company": "Magentic GmbH",
+                "location": "Remote in the UK",
+                "description": "",
+                "remote": None,
+            }
+        ]
+    )
+
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.title == "Senior Frontend Engineer"
+    assert job.company == "Magentic GmbH"
+    assert job.location == "Remote in the UK"
+
+
+def test_staged_source_does_not_guess_from_an_unrecognized_linkedin_title():
+    store = FakeStagedJobStore(
+        [
+            {
+                "source_platform": "linkedin",
+                "source_candidate_key": "linkedin:job-123",
+                "url": "https://www.linkedin.com/jobs/view/123",
+                "title": "Magentic jobs | LinkedIn",
+                "company": "",
+                "location": "",
+                "description": "",
+                "remote": None,
+            }
+        ]
+    )
+
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.title == "Magentic jobs | LinkedIn"
+    assert job.company == ""
+    assert job.location == ""
 
 
 def test_same_canonical_url_already_materialized_by_public_source_is_not_emitted(store, tmp_path):
