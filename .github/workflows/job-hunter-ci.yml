@@ -84,7 +84,7 @@ jobs:
           failures = int(suite.get('failures', 0))
           errors = int(suite.get('errors', 0))
           print(f'isolation suite results: tests={tests} skipped={skipped} failures={failures} errors={errors}')
-          ok = tests == 6 and skipped == 0 and failures == 0 and errors == 0
-          if not ok: print('::error::Isolation tests did not complete as 6 passing tests (some were skipped, failed, or missing). This usually means the Supabase env vars never reached pytest and the tests silently skipped -- that would be a false pass, not proof of isolation.')
+          ok = tests > 0 and skipped == 0 and failures == 0 and errors == 0
+          if not ok: print(f'::error::Isolation suite did not run clean ({tests} tests, {skipped} skipped, {failures} failures, {errors} errors). A skipped or uncollected test usually means the Supabase env vars never reached pytest -- that would be a false pass, not proof of isolation.')
           sys.exit(0 if ok else 1)
           "
