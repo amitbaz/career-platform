@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.availability import CLOSED
-from job_hunter.ats_registry import harvest_ats_board
+from job_hunter.ats_registry import ats_board_reference, harvest_ats_board
 from job_hunter.canonical import (
     CanonicalResolver,
     apply_ats_identity,
@@ -243,6 +243,30 @@ def _harvest_ats_board_safely(
         return False
 
 
+def _ats_board_reference_safely(
+    job: Job,
+    market_hint: str | None = None,
+    denylist: frozenset[str] = frozenset(),
+) -> tuple[str, str, str, str] | None:
+    """Extract a job's ATS board reference without letting a bad URL drop the run.
+
+    `ats_board_reference` has no store call to fail, but URL parsing itself
+    (`parse_supported_ats_url`, reached via `extract_ats_reference`) can raise
+    on malformed input -- an unterminated IPv6 literal, for one. Design step 4
+    runs for every job in the run, unguarded, so a single bad URL here would
+    abort the whole daily run instead of being skipped, exactly the failure
+    class this branch exists to remove.
+    """
+    try:
+        return ats_board_reference(job, market_hint=market_hint, denylist=denylist)
+    except Exception:
+        logger.exception(
+            "ATS board reference extraction failed: source=%s",
+            metric_source_label(job.source),
+        )
+        return None
+
+
 def _record_reattribution(
     stats: DiscoveryStats,
     before: str | None,
@@ -324,8 +348,7 @@ def collect_candidates(
 
     # Persist every source copy before collapsing the run so provenance is
     # retained even when only one representative continues to evaluation.
-    for job in raw_jobs:
-        store.upsert_logical_job(job)
+    store.upsert_logical_jobs(raw_jobs)
 
     unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
     stats.unique = len(unique_jobs)
@@ -333,32 +356,89 @@ def collect_candidates(
     prefiltered: list[tuple[str, Job]] = []
     rediscovered_job_ids: list[str] = []
 
+    # Design step 4 (network work on unique jobs). Board references are
+    # captured here, while each job still carries the market hint it was
+    # observed with -- the attribution in step 6 overwrites job.market_id.
+    board_sightings: list[tuple[str, str, str, str]] = []
+    observed_markets: list[str | None] = []
     for job in unique_jobs:
         observed_market_id = _cheap_market_attribution(job, policy)
-        if _harvest_ats_board_safely(
-            store, job, market_hint=observed_market_id, denylist=denylist
-        ):
-            stats.ats_boards_discovered += 1
+        observed_markets.append(observed_market_id)
+        reference = _ats_board_reference_safely(
+            job, market_hint=observed_market_id, denylist=denylist
+        )
+        if reference is not None:
+            board_sightings.append(reference)
         if job.url and not job.description:
             enrich_job(job, http)
 
-        job_id, _is_new, _description_changed = store.upsert_logical_job(job)
+    # Design steps 5 and 6 (batch-upsert the unique jobs, then batch the
+    # remaining reads and writes): one batch of writes and one batch of reads
+    # for the whole run.
+    stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
+    upserted = store.upsert_logical_jobs(unique_jobs)
 
+    persisted: list[tuple[str, Job, str | None]] = []
+    skipped_count = 0
+    # strict=True: these three lists are built one entry per unique job and
+    # must stay that way. A store whose batch upsert returns a shorter list
+    # (DryRunStore._synthesize("list") returns []) would otherwise make
+    # collect_candidates silently return zero candidates.
+    for job, observed_market_id, result in zip(
+        unique_jobs, observed_markets, upserted, strict=True
+    ):
+        if result is None:
+            # upsert_logical_jobs already logged why. Dropping the job here is
+            # the only option: everything downstream is keyed by its id. It
+            # still counts in stats.unique (set above, from _dedupe's output)
+            # but never reaches unique_by_market/unique_by_source or
+            # _record_reattribution below -- logged so that gap is visible
+            # rather than a silent mismatch against the discovery: log line.
+            skipped_count += 1
+            continue
+        persisted.append((result[0], job, observed_market_id))
+
+    if skipped_count:
+        logger.warning(
+            "discovery dropped %s job(s) that could not be persisted; "
+            "stats.unique will not equal the sum of unique_by_market/unique_by_source",
+            skipped_count,
+        )
+
+    market_updates: list[tuple[str, str | None]] = []
+    for job_id, job, observed_market_id in persisted:
         job.market_id = attribute_market(job, policy.markets) if policy.markets else None
         _record_reattribution(stats, observed_market_id, job.market_id)
         if job.market_id:
-            store.set_job_market(job_id, job.market_id)
+            market_updates.append((job_id, job.market_id))
+    store.set_job_markets(market_updates)
+
+    evaluation_needed = store.needs_evaluation_bulk([job_id for job_id, _job, _hint in persisted])
+
+    # Design step 7 (prefilter and count): mostly pure -- the only I/O left
+    # here is collecting the terminal-status pairs for jobs rejected this
+    # run, flushed once after the loop.
+    # That write must survive: job_hunter_gmail_candidate_complete
+    # (20260907104935_job_hunter_gmail_candidate_eligibility.sql) treats a
+    # job whose status is "rejected" or "closed" as complete regardless of
+    # whether it has an evaluation, which is what stops a rejected public
+    # job's Gmail twin being re-emitted as an inbound candidate forever.
+    # (It is NOT read by needs_evaluation/needs_evaluation_bulk, which only
+    # look at the evaluations table -- a rejected job with no evaluation row
+    # still answers needs=True next run and is correctly re-evaluated.)
+    status_updates: list[tuple[str, str]] = []
+    for job_id, job, _observed_market_id in persisted:
         market_key = job.market_id or _UNATTRIBUTED
         source_label = metric_source_label(job.source)
         _bump(stats.unique_by_market, market_key)
         _bump(stats.unique_by_source, source_label)
 
-        if not store.needs_evaluation(job_id):
+        if not evaluation_needed[job_id]:
             rediscovered_job_ids.append(job_id)
             continue
 
         if job.availability == CLOSED:
-            store.set_job_status(job_id, "closed")
+            status_updates.append((job_id, "closed"))
             stats.availability_rejected += 1
             _bump(stats.rejected_by_market, market_key)
             _bump(stats.rejected_by_source, source_label)
@@ -367,7 +447,7 @@ def collect_candidates(
         market = market_by_id(policy, job.market_id) if job.market_id else None
         prefilter_result = prefilter_job(job, policy, market)
         if not prefilter_result.should_evaluate:
-            store.set_job_status(job_id, "rejected")
+            status_updates.append((job_id, "rejected"))
             if prefilter_result.reason_code == "off_target_profession":
                 stats.profession_rejected += 1
             else:
@@ -377,6 +457,8 @@ def collect_candidates(
             continue
 
         prefiltered.append((job_id, job))
+
+    store.set_job_statuses(status_updates)
 
     # Canonical resolution costs a page fetch plus a public search for jobs
     # not already on a supported ATS host, so that expensive path only runs

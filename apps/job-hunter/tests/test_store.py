@@ -1265,6 +1265,87 @@ def test_set_job_market_treats_none_as_unset(store):
     assert store.get_job(job_id).market_id is None
 
 
+def _job_status(store, job_id: str) -> str:
+    rows = store.client.select(
+        "job_hunter_jobs", params={"id": f"eq.{job_id}", "select": "status"}
+    )
+    return rows[0]["status"]
+
+
+def test_set_job_statuses_persists_both_statuses_in_one_batch(store):
+    rejected_id, _, _ = store.upsert_logical_job(
+        Job(source="x", source_job_id="r1", title="Senior Frontend Engineer")
+    )
+    closed_id, _, _ = store.upsert_logical_job(
+        Job(source="x", source_job_id="c1", title="Senior Backend Engineer")
+    )
+
+    store.set_job_statuses([(rejected_id, "rejected"), (closed_id, "closed")])
+
+    assert _job_status(store, rejected_id) == "rejected"
+    assert _job_status(store, closed_id) == "closed"
+
+
+def test_set_job_statuses_is_a_no_op_for_an_empty_list(store):
+    # Must not raise -- discovery calls this unconditionally every run, even
+    # when nothing was rejected.
+    store.set_job_statuses([])
+
+
+def test_set_job_statuses_keeps_every_url_filter_under_the_proxy_limit(
+    store, monkeypatch
+):
+    """The `id=in.(...)` filter rides in the query string, so it must be chunked
+    by `_URL_FILTER_CHUNK_SIZE`, not the body-sized `_ID_ARRAY_CHUNK_SIZE`.
+
+    A normal run rejects thousands of jobs. At 1,000 uuids per request the
+    request line is ~36 KB, roughly 4.5x the ~8 KB limit typical of proxies
+    in front of PostgREST -- and a 414 is not in `_RETRY_STATUS_CODES`, so
+    it would raise straight out of `collect_candidates` after all the
+    batching had already succeeded.
+
+    Written against the generated filters rather than the database: 2,500
+    real rows would make this slow without making it stronger, and the
+    invariant under test is the shape of the request, not the write.
+    """
+    from job_hunter import postgres_store as module
+
+    filters: list[str] = []
+
+    def capturing_update(table, payload, params=None, **kwargs):
+        filters.append(params["id"])
+        return []
+
+    monkeypatch.setattr(store._client, "update", capturing_update)
+
+    job_ids = [f"{index:08d}-0000-4000-8000-000000000000" for index in range(2500)]
+    store.set_job_statuses([(job_id, "rejected") for job_id in job_ids])
+
+    # Chunking must actually be happening, or the length assertion below
+    # would pass trivially on a single short request.
+    assert len(filters) > 1
+    assert sum(f.count(",") + 1 for f in filters) == len(job_ids)
+    for id_filter in filters:
+        # 8 KB is the whole request line's budget, and the filter is only
+        # part of it, so leave the path, the other params and the headers
+        # room by staying well inside it.
+        assert len(id_filter) < 8192, (
+            f"an id=in.(...) filter of {len(id_filter)} bytes will 414 -- "
+            "set_job_statuses is chunking by the body-sized constant again"
+        )
+    assert all(
+        f.count(",") + 1 <= module._URL_FILTER_CHUNK_SIZE for f in filters
+    )
+
+
+def test_set_job_statuses_rejects_an_invalid_status(store):
+    job_id, _, _ = store.upsert_logical_job(
+        Job(source="x", source_job_id="bad1", title="Senior Frontend Engineer")
+    )
+    with pytest.raises(ValueError):
+        store.set_job_statuses([(job_id, "new")])
+
+
 def test_evaluation_market_id_round_trip(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer", company="Acme")
     job_id, _, _ = store.upsert_job(job)
@@ -1575,7 +1656,7 @@ def test_release_legacy_gmail_semantic_failures_is_a_no_op_when_none_exist(store
 def test_release_legacy_gmail_semantic_failures_chunks_large_id_lists(store, monkeypatch):
     """A backlog bigger than one chunk must still be fully released.
 
-    Lowers the real `_RELEASE_LEGACY_CHUNK_SIZE` module constant used by
+    Lowers the real `_URL_FILTER_CHUNK_SIZE` module constant used by
     `release_legacy_gmail_semantic_failures` (not a test-only stand-in) so a
     handful of rows are enough to force more than one `in.(...)` batch on
     both the read and the deletes.
@@ -1583,7 +1664,7 @@ def test_release_legacy_gmail_semantic_failures_chunks_large_id_lists(store, mon
     from job_hunter import postgres_store
     from job_hunter.gmail_models import LEGACY_SEMANTIC_FAILURE_RATIONALE
 
-    monkeypatch.setattr(postgres_store, "_RELEASE_LEGACY_CHUNK_SIZE", 2)
+    monkeypatch.setattr(postgres_store, "_URL_FILTER_CHUNK_SIZE", 2)
 
     legacy_count = 5
     event_ids = []

@@ -1494,3 +1494,371 @@ def test_collect_candidates_always_resolves_already_ats_urls_outside_shortlist(
     assert len(resolver.calls) == 10
     assert result.stats.canonical_network_attempts == 0
     assert result.stats.canonical_budget_exhausted == 0
+
+
+class CountingClient:
+    """Delegates to a real SupabaseClient, counting requests by kind.
+
+    The bug this suite guards against is a request count that grows with the
+    job count. Asserting on returned data would not catch its return, so this
+    counts calls instead -- specifically the underlying HTTP-shaped client
+    calls (rpc/select/update/...), not the higher-level store methods, so a
+    store method that quietly reverts to looping internally still shows up
+    here.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        attribute = getattr(self._inner, name)
+        if not callable(attribute):
+            return attribute
+
+        def recording(*args, **kwargs):
+            label = args[0] if args else name
+            self.calls.append(f"{name}:{label}")
+            return attribute(*args, **kwargs)
+
+        return recording
+
+
+def test_collect_candidates_request_count_does_not_grow_with_job_count(
+    supabase_client, policy
+):
+    """Twenty jobs must not cost twenty times what one job costs."""
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="test",
+                source_job_id=f"count-{job_count}-{i}",
+                url=f"https://example.test/count-{job_count}-{i}",
+                company="Acme",
+                title="Frontend Engineer",
+                location="Remote",
+                remote=True,
+                description="A frontend engineering role working in React.",
+            )
+            for i in range(job_count)
+        ]
+        collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        return len(client.calls)
+
+    one_job = run_with(1)
+    twenty_jobs = run_with(20)
+
+    # Batched, the marginal cost of 19 more jobs is zero extra round trips.
+    # A per-job design would put this at roughly 20x.
+    assert twenty_jobs <= one_job + 2, (
+        f"{twenty_jobs} requests for 20 jobs vs {one_job} for 1 -- "
+        "discovery persistence is scaling with the job count again"
+    )
+
+
+def test_collect_candidates_request_count_does_not_grow_with_rejected_job_count(
+    supabase_client, policy
+):
+    """The prefilter-rejection path must stay batched too.
+
+    The base request-count test above only exercises jobs that survive to
+    `eligible`, so it never touches `set_job_statuses` -- the batched write
+    for jobs rejected as closed or prefiltered. Every job here is rejected
+    by the legacy remote-only hard blocker (`policy` carries no markets, so
+    `job.remote is False` always trips it), forcing that path to run for
+    all twenty jobs and proving it doesn't cost one request per job either.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="test",
+                source_job_id=f"rejected-{job_count}-{i}",
+                url=f"https://example.test/rejected-{job_count}-{i}",
+                company=f"Acme {i}",
+                title="Frontend Engineer",
+                location="Office",
+                remote=False,
+                description="A frontend engineering role working in React.",
+            )
+            for i in range(job_count)
+        ]
+        result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        assert result.stats.availability_rejected == 0
+        assert result.stats.prefilter_rejected == job_count, (
+            "sanity check: this test's jobs must actually take the "
+            "rejected/set_job_statuses path, not some other one"
+        )
+        return len(client.calls)
+
+    one_job = run_with(1)
+    twenty_jobs = run_with(20)
+
+    assert twenty_jobs <= one_job + 2, (
+        f"{twenty_jobs} requests for 20 rejected jobs vs {one_job} for 1 -- "
+        "set_job_statuses is scaling with the rejected job count"
+    )
+
+
+class _PerJobAtsResolver:
+    """Resolves every job to its own ATS posting, making no store calls itself."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def resolve(self, job):
+        self.calls.append(job.source_job_id)
+        board = f"acme-{job.source_job_id}"
+        return CanonicalResolution(
+            url=f"https://jobs.lever.co/{board}/abc",
+            ats=AtsReference(provider="lever", board=board, job_id="abc"),
+            confidence=0.9,
+            method="already_ats",
+        )
+
+
+def test_collect_candidates_resolver_tail_is_not_batched(supabase_client, policy):
+    """Record the cost of the one path `collect_candidates` did NOT batch.
+
+    The two request-count tests above pass no resolver, so the whole
+    canonical-resolution tail (`discovery.py`'s final loop over
+    `prefiltered`) is switched off in them -- while `pipeline.py` always
+    passes one. That tail was deliberately left per-job (see the design's
+    "Out of scope"), and this test exists so a reader of this file learns
+    that it exists and what it costs, rather than inferring from the tests
+    above that discovery is batched end to end.
+
+    Every job here already carries a supported ATS URL, which is the
+    expensive shape: such jobs bypass the `max_canonical_resolutions_per_run`
+    shortlist entirely (it bounds only jobs that need a *network* resolution),
+    so all of them enter the resolve branch. Each then pays, sequentially:
+    `_harvest_ats_board_safely` (a registry read plus a write),
+    `upsert_logical_job`, optionally `set_job_market`, `needs_evaluation`,
+    and -- outside the resolver gate altogether -- `record_ats_eligible_job`.
+
+    The bounds are deliberately loose. This is a shape assertion, not a
+    budget: it fails if the tail gets materially more expensive, and it also
+    fails if someone batches it -- in which case the fix is to update this
+    test, the design doc's "Out of scope", and `AGENTS.md`, all of which
+    currently document this path as per-job.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="arbeitnow",
+                source_job_id=f"tail-{job_count}-{i}",
+                title="Senior Product Engineer",
+                company=f"Acme {job_count} {i}",
+                url=f"https://jobs.lever.co/acme-tail-{job_count}-{i}/abc",
+                description="React TypeScript remote role.",
+                remote=True,
+            )
+            for i in range(job_count)
+        ]
+        resolver = _PerJobAtsResolver()
+        result = collect_candidates(
+            [FakeSource(jobs)], store, NoOpHttp(), policy, resolver=resolver
+        )
+        assert len(resolver.calls) == job_count, (
+            "sanity check: every already-ATS job must reach the resolve "
+            "branch, or this test is measuring the wrong path"
+        )
+        assert len(result.eligible) == job_count, (
+            "sanity check: these jobs must become eligible, or "
+            "record_ats_eligible_job never runs"
+        )
+        return len(client.calls)
+
+    one_job = run_with(1)
+    five_jobs = run_with(5)
+    marginal_per_job = (five_jobs - one_job) / 4
+
+    assert marginal_per_job >= 3, (
+        f"the resolver tail now costs {marginal_per_job} requests per extra "
+        f"job ({five_jobs} for 5 vs {one_job} for 1). If it was batched, "
+        "that is good news -- update this test, the design doc's 'Out of "
+        "scope', and apps/job-hunter/AGENTS.md, which all document this "
+        "path as per-job."
+    )
+    assert marginal_per_job <= 12, (
+        f"the resolver tail now costs {marginal_per_job} requests per extra "
+        f"job ({five_jobs} for 5 vs {one_job} for 1), up from the six to "
+        "eight the design records. This path is sequential and ungated for "
+        "already-ATS URLs, so growth here scales straight into the daily "
+        "run's wall clock."
+    )
+
+
+def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
+    supabase_client, policy
+):
+    """Twenty jobs on one ATS board must cost the same registry traffic as one.
+
+    `upsert_ats_boards` is documented as O(distinct boards), collapsing
+    thousands of sightings to dozens of registrations -- this pins that:
+    twenty jobs all pointing at the same (provider, board) must not cost
+    any more ATS-registry requests than a single job on that board.
+
+    Jobs are rejected by the legacy remote-only hard blocker (`remote=False`,
+    no markets configured) so none reach `eligible`. That keeps this test
+    isolated to `upsert_ats_boards` (design step 6's board-sighting write, in
+    scope for this task): an eligible ATS job would also call
+    `record_ats_eligible_job` in the untouched, out-of-scope final loop,
+    which touches the same `job_hunter_ats_registry` table once per
+    eligible job and would make this test fail for a reason this task was
+    never asked to fix.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="test",
+                source_job_id=f"board-{job_count}-{i}",
+                url=f"https://jobs.lever.co/acme/board-{job_count}-{i}",
+                company="Acme",
+                title=f"Frontend Engineer {i}",
+                location="Office",
+                remote=False,
+                description="A frontend engineering role working in React.",
+            )
+            for i in range(job_count)
+        ]
+        result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        assert result.eligible == [], (
+            "sanity check: these jobs must be rejected, not eligible, or "
+            "record_ats_eligible_job would contaminate this test's count"
+        )
+        return sum(
+            1 for call in client.calls if "job_hunter_ats_registry" in call
+        )
+
+    one_job = run_with(1)
+    twenty_jobs = run_with(20)
+
+    assert one_job > 0, (
+        "sanity check: registering the single job's board must actually "
+        "touch job_hunter_ats_registry, or this test proves nothing"
+    )
+    assert twenty_jobs == one_job, (
+        f"{twenty_jobs} ATS-registry requests for 20 jobs on one board vs "
+        f"{one_job} for 1 -- ATS board registration is scaling with the "
+        "job count instead of the distinct board count"
+    )
+
+
+def test_collect_candidates_harvests_ats_board_with_observed_not_attributed_market(
+    store, market_policy
+):
+    """ATS board harvesting must see the pre-attribution market hint.
+
+    The job's query-time hint points at "london", but its description/
+    location match "germany_eu" on stronger evidence, so full attribution
+    (which runs after board harvesting is decided) overwrites job.market_id
+    to "germany_eu". If harvesting were moved after attribution -- or if the
+    batched rewrite plumbed the wrong hint through -- the registry would
+    record "germany_eu" instead of the observed "london", silently losing
+    the invariant this test guards.
+    """
+    job = Job(
+        source="ashby",
+        source_job_id="1",
+        title="Senior Product Engineer",
+        company="Acme",
+        location="Berlin",
+        url="https://jobs.lever.co/acme/observed-hint-job",
+        description="React TypeScript remote role based in Berlin.",
+        remote=True,
+        market_hint="london",
+    )
+
+    result = collect_candidates([FakeSource([job])], store, NoOpHttp(), market_policy)
+
+    # Sanity check: full attribution did in fact override the hint, so this
+    # test is actually exercising the divergence it claims to.
+    assert result.eligible[0][1].market_id == "germany_eu"
+
+    boards = store.list_due_ats_boards(datetime.now(timezone.utc))
+    matching = [b for b in boards if b.board_identifier == "acme" and b.provider == "lever"]
+    assert len(matching) == 1
+    assert matching[0].market_hint == "london"
+
+
+def test_collect_candidates_rediscovered_job_ids_membership_survives_batching(
+    store, policy
+):
+    """rediscovered_job_ids must name exactly the already-evaluated jobs.
+
+    Two jobs already carry a saved evaluation (so needs_evaluation is False
+    for them) and two are new. Run together, batched evaluation-need lookups
+    must still map each id back to its own job rather than, e.g., collapsing
+    to all-or-nothing for the whole chunk.
+    """
+    already_evaluated = []
+    for i in range(2):
+        job = Job(
+            source="ashby",
+            source_job_id=f"seen-{i}",
+            title="Senior Product Engineer",
+            company=f"Seen {i}",
+            description="React TypeScript remote role",
+            remote=True,
+            content_confidence=OFFICIAL_ATS,
+        )
+        job_id, _is_new, _changed = store.upsert_job(job)
+        store.save_evaluation(
+            job_id,
+            Evaluation(
+                job_id=job_id,
+                total_score=90,
+                scores={},
+                decision="high_priority",
+                hard_blockers=[],
+                strengths=[],
+                gaps=[],
+                salary_note="",
+                location_note="",
+                rationale="",
+                model="gemini-test",
+                status="ok",
+                content_confidence=OFFICIAL_ATS,
+            ),
+        )
+        already_evaluated.append((job, job_id))
+
+    new_jobs = [
+        Job(
+            source="ashby",
+            source_job_id=f"new-{i}",
+            title="Senior Product Engineer",
+            company=f"New {i}",
+            description="React TypeScript remote role",
+            remote=True,
+        )
+        for i in range(2)
+    ]
+
+    result = collect_candidates(
+        [FakeSource([job for job, _id in already_evaluated] + new_jobs)],
+        store,
+        NoOpHttp(),
+        policy,
+    )
+
+    expected_rediscovered_ids = {job_id for _job, job_id in already_evaluated}
+    assert set(result.rediscovered_job_ids) == expected_rediscovered_ids
+    assert len(result.rediscovered_job_ids) == 2
+    assert len(result.eligible) == 2

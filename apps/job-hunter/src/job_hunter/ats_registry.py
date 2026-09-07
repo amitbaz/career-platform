@@ -41,17 +41,46 @@ def harvest_ats_board(
 
     A board whose `ats_board_key` is in `denylist` is never admitted, even
     on its first sighting.
+
+    The admission rules live in `ats_board_reference` and are not restated
+    here: both functions are live on the same run -- the reference on every
+    job in discovery's batch phase, this one on the canonical-resolution
+    path -- so a denylist or hint-precedence change to one must reach the
+    other. This is the store write and nothing else.
+    """
+    reference = ats_board_reference(job, market_hint=market_hint, denylist=denylist)
+    if reference is None:
+        return False
+    provider, board_identifier, company_name, resolved_market_hint = reference
+    return store.upsert_ats_board(
+        provider=provider,
+        board_identifier=board_identifier,
+        company_name=company_name,
+        market_hint=resolved_market_hint,
+    )
+
+
+def ats_board_reference(
+    job: Job,
+    market_hint: str | None = None,
+    denylist: frozenset[str] = frozenset(),
+) -> tuple[str, str, str, str] | None:
+    """Return the ATS board a job references, or None.
+
+    The pure half of `harvest_ats_board`: same admission rules, no store call.
+    Discovery needs the decision while it still holds the job's observed
+    market hint, but batches the writes until every job has been seen.
     """
     reference = extract_ats_reference(job)
     if reference is None:
-        return False
+        return None
     if ats_board_key(reference.provider, reference.board) in denylist:
-        return False
-    return store.upsert_ats_board(
-        provider=reference.provider,
-        board_identifier=reference.board,
-        company_name=job.company,
-        market_hint=market_hint or job.market_hint or job.market_id or "",
+        return None
+    return (
+        reference.provider,
+        reference.board,
+        job.company,
+        market_hint or job.market_hint or job.market_id or "",
     )
 
 

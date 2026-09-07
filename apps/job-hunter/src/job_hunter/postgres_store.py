@@ -15,11 +15,12 @@ migrations own the schema now (see `supabase/migrations/`).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, TypeVar
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
@@ -43,7 +44,9 @@ from job_hunter.store_mapping import (
     to_iso,
     touch,
 )
-from job_hunter.supabase_client import SupabaseClient
+from job_hunter.supabase_client import SupabaseClient, SupabaseRequestError
+
+logger = logging.getLogger(__name__)
 
 # Translates store.py's `_DELIVERABLE_SCORE_FLOOR`. A job must score strictly
 # above this to ever be a delivery candidate.
@@ -56,16 +59,56 @@ _DELIVERABLE_SCORE_FLOOR = 60
 _LATEST_EVALUATION_ORDER = "evaluated_at.desc,created_at.desc,id.desc"
 _LATEST_MATERIAL_ORDER = "generated_at.desc,created_at.desc,id.desc"
 
-# release_legacy_gmail_semantic_failures batches its `in.(...)` id lists at
-# this many ids per request. A Gmail message id/uuid is short, but a legacy
-# backlog of a few hundred ids strung into one query string can approach the
-# ~8 KB URL limit typical of proxies/load balancers in front of PostgREST,
-# which fails as a 414 rather than on any condition the code checks. 200 ids
-# keeps every request's URL comfortably under that regardless of id length.
-_RELEASE_LEGACY_CHUNK_SIZE = 200
+# Every id list that travels in a query-string filter (`id=in.(...)`,
+# `message_id=in.(...)`) is chunked at this many ids per request. A message
+# id/uuid is short, but a few hundred ids strung into one query string can
+# approach the ~8 KB URL limit typical of proxies/load balancers in front of
+# PostgREST, which fails as a 414 rather than on any condition the code
+# checks. 200 ids keeps every request's URL comfortably under that regardless
+# of id length. Use this -- not _ID_ARRAY_CHUNK_SIZE -- whenever the ids end
+# up in `params`, however large the body-carried batches around it are.
+_URL_FILTER_CHUNK_SIZE = 200
+
+# upsert_logical_jobs sends this many jobs per request. Payload size is not
+# the binding limit -- two server-side budgets are, and both are per-call:
+#   * Supabase's default `statement_timeout` on the `authenticated` role
+#     (8 s). One `job_hunter_upsert_jobs` call is a *single* statement that
+#     runs a full identity resolution (canonical URL, ATS triple, normalized
+#     company/title/location, fingerprint, plus any merges) for every job in
+#     the chunk, inside one transaction.
+#   * `HttpClient._timeout`'s 25 s read timeout.
+# A chunk that exceeds either comes back as 500/504, which _RETRY_STATUS_CODES
+# treats as retryable, so an oversized chunk burns three attempts and their
+# backoff before falling back to per-job replay -- turning a "faster" run into
+# a slower one. 100 keeps a chunk's server-side work well inside 8 s.
+# The tradeoff: a 19,000-job run (raw and unique passes together) now spends
+# about 318 upsert round trips instead of the 64 that 500 would give, against
+# a ~70,000-request per-job baseline. Trading ~250 requests for headroom
+# against the timeouts is the right side of that trade.
+_JOB_UPSERT_CHUNK_SIZE = 100
+
+# Bulk id arrays go in the request body, not the query string, so the 200-id
+# URL-length limit that constrains _URL_FILTER_CHUNK_SIZE does not apply.
+_ID_ARRAY_CHUNK_SIZE = 1000
+
+# How many consecutive failed job-upsert chunks upsert_logical_jobs tolerates
+# before it stops falling back to per-job replay and raises instead. Three,
+# because the two failure modes need separating and three is where they stop
+# overlapping: a poison posting is a property of one row, so it fails one
+# chunk and the next chunk succeeds -- three chunks failing back to back
+# would need three independently poisoned rows to land in three adjacent
+# chunks, which a batch built from arbitrary discovery order does not
+# produce. A broken batch path (timeout, missing function, dead PostgREST)
+# fails the first three immediately. Three also bounds the wasted work:
+# 300 jobs replayed individually, plus at most three chunks' retry budget
+# (~81 s each), before the run stops with a message that names the real
+# problem.
+_CONSECUTIVE_CHUNK_FAILURE_LIMIT = 3
+
+_T = TypeVar("_T")
 
 
-def _chunked(items: list[str], size: int) -> list[list[str]]:
+def _chunked(items: list[_T], size: int) -> list[list[_T]]:
     """Split ``items`` into consecutive chunks of at most ``size`` elements."""
     return [items[i : i + size] for i in range(0, len(items), size)]
 
@@ -233,6 +276,81 @@ class PostgresJobStore:
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
         return row["id"], row["is_new"], row["description_changed"]
 
+    def upsert_logical_jobs(self, jobs: list[Job]) -> list[tuple[str, bool, bool] | None]:
+        """Persist many logical jobs in as few round trips as possible.
+
+        Returns one entry per input job, in input order, so a caller can zip
+        the results back onto the list it passed. An entry is ``None`` when
+        that job could not be persisted and was skipped -- callers must
+        handle it.
+
+        Each chunk is one transaction on the server, so a failure rolls the
+        whole chunk back. Rather than paying for a savepoint per row inside
+        plpgsql to guard against that, a failed chunk is replayed here one
+        job at a time: clean runs cost nothing, and one malformed posting
+        costs its own row instead of the run.
+
+        That fallback only makes sense for an *isolated* bad chunk. If the
+        batch path itself is broken -- the function missing, the role's
+        `statement_timeout` cutting every call, PostgREST unreachable -- then
+        every chunk fails, and replaying them all one job at a time would
+        issue tens of thousands of requests to produce a run slower than the
+        unbatched code this replaced, while looking in the log like a handful
+        of unlucky postings. After
+        `_CONSECUTIVE_CHUNK_FAILURE_LIMIT` chunks fail back to back, stop
+        pretending and raise.
+        """
+        results: list[tuple[str, bool, bool] | None] = []
+        consecutive_failures = 0
+        for chunk in _chunked(jobs, _JOB_UPSERT_CHUNK_SIZE):
+            try:
+                results.extend(self._upsert_job_chunk(chunk))
+            except Exception as error:
+                consecutive_failures += 1
+                if consecutive_failures >= _CONSECUTIVE_CHUNK_FAILURE_LIMIT:
+                    raise SupabaseRequestError(
+                        f"{consecutive_failures} consecutive batch job upserts failed; "
+                        "the batch path is broken, not the postings -- refusing to "
+                        f"replay {len(jobs)} jobs one at a time"
+                    ) from error
+                logger.exception(
+                    "batch job upsert failed for %s jobs; retrying them one at a time",
+                    len(chunk),
+                )
+                results.extend(self._upsert_jobs_individually(chunk))
+            else:
+                consecutive_failures = 0
+        return results
+
+    def _upsert_job_chunk(self, chunk: list[Job]) -> list[tuple[str, bool, bool]]:
+        rows = self._client.rpc(
+            "job_hunter_upsert_jobs", {"p_jobs": [self._job_payload(job) for job in chunk]}
+        )
+        if len(rows) != len(chunk):
+            raise SupabaseRequestError(
+                f"job_hunter_upsert_jobs returned {len(rows)} rows for {len(chunk)} jobs"
+            )
+        ordered = sorted(rows, key=lambda row: row["input_index"])
+        return [
+            (row["id"], row["is_new"], row["description_changed"]) for row in ordered
+        ]
+
+    def _upsert_jobs_individually(
+        self, chunk: list[Job]
+    ) -> list[tuple[str, bool, bool] | None]:
+        results: list[tuple[str, bool, bool] | None] = []
+        for job in chunk:
+            try:
+                results.append(self.upsert_logical_job(job))
+            except Exception:
+                logger.exception(
+                    "dropping a job that could not be persisted: source=%s url=%s",
+                    job.source,
+                    job.url,
+                )
+                results.append(None)
+        return results
+
     def merge_jobs(self, survivor_id: str, duplicate_id: str) -> str:
         """Transactionally merge a duplicate job and all attached records.
 
@@ -384,6 +502,25 @@ class PostgresJobStore:
             params={"id": f"eq.{job_id}"},
         )
 
+    def set_job_markets(self, pairs: list[tuple[str, str | None]]) -> None:
+        """Attribute many jobs to their markets, chunked into few requests.
+
+        ``None`` is stored as ``''``, exactly as the single-job
+        `set_job_market` does.
+        """
+        if not pairs:
+            return
+        for chunk in _chunked(pairs, _ID_ARRAY_CHUNK_SIZE):
+            self._client.rpc(
+                "job_hunter_set_job_markets",
+                {
+                    "p_rows": [
+                        {"id": job_id, "market_id": market_id or ""}
+                        for job_id, market_id in chunk
+                    ]
+                },
+            )
+
     def count_jobs(self) -> int:
         """Translates store.py:1662-1664."""
         rows = self._client.select("job_hunter_jobs", params={"select": "id"})
@@ -518,6 +655,25 @@ class PostgresJobStore:
         if evaluation["content_confidence_at_eval"] != (job_row.get("content_confidence") or ""):
             return True
         return False
+
+    def needs_evaluation_bulk(self, job_ids: list[str]) -> dict[str, bool]:
+        """Answer `needs_evaluation` for many jobs in one request per chunk.
+
+        Duplicate ids are asked once and answered for every occurrence. An id
+        the caller cannot read comes back from Postgres as no row at all --
+        row-level security filters it before the function sees it -- and is
+        reported as ``True`` here, matching what the per-job method does with
+        a job whose evaluations it cannot see.
+        """
+        unique_ids = list(dict.fromkeys(job_ids))
+        if not unique_ids:
+            return {}
+        answered: dict[str, bool] = {}
+        for chunk in _chunked(unique_ids, _ID_ARRAY_CHUNK_SIZE):
+            rows = self._client.rpc("job_hunter_needs_evaluation", {"p_job_ids": chunk})
+            for row in rows:
+                answered[row["job_id"]] = row["needs"]
+        return {job_id: answered.get(job_id, True) for job_id in unique_ids}
 
     def save_evaluation(self, job_id: str, evaluation: Evaluation) -> None:
         """Translates store.py:2036-2075.
@@ -983,6 +1139,56 @@ class PostgresJobStore:
             params={"id": f"eq.{row['id']}"},
         )
         return False
+
+    def upsert_ats_boards(self, references: list[tuple[str, str, str, str]]) -> int:
+        """Register a run's distinct ATS boards, returning how many were new.
+
+        Takes ``(provider, board_identifier, company_name, market_hint)``
+        tuples, one per sighting, and asks the registry once per distinct
+        ``(provider, board_identifier)``. Discovery sees a board once per job
+        that references it -- thousands of sightings resolving to dozens of
+        boards -- so collapsing here is what keeps the request count off the
+        job count.
+
+        Sightings of one board are *merged*, first non-empty value wins per
+        field, rather than frozen at the first sighting. The per-job loop
+        this replaced called `upsert_ats_board` once per sighting, and that
+        method's `company_name or row["company_name"]` meant a later sighting
+        backfilled a field an earlier one left blank. Keeping only the first
+        sighting would drop that backfill for the whole run -- a board first
+        seen with a blank company would stay blank, and a blank
+        ``market_hint`` would cost it its place in `select_ats_boards`'
+        market ranking.
+
+        A board that fails to register is logged and skipped. Learning the
+        registry is opportunistic; losing one board must not cost the run.
+        """
+        merged: dict[tuple[str, str], tuple[str, str]] = {}
+        for provider, board_identifier, company_name, market_hint in references:
+            key = (provider, board_identifier)
+            seen_company, seen_market = merged.get(key, ("", ""))
+            merged[key] = (
+                seen_company or company_name,
+                seen_market or market_hint,
+            )
+
+        newly_registered = 0
+        for (provider, board_identifier), (company_name, market_hint) in merged.items():
+            try:
+                if self.upsert_ats_board(
+                    provider=provider,
+                    board_identifier=board_identifier,
+                    company_name=company_name,
+                    market_hint=market_hint,
+                ):
+                    newly_registered += 1
+            except Exception:
+                logger.exception(
+                    "ATS board registration failed: provider=%s board=%s",
+                    provider,
+                    board_identifier,
+                )
+        return newly_registered
 
     def reject_ats_board(
         self, provider: str, board_identifier: str, reason: str, now: datetime
@@ -1593,6 +1799,34 @@ class PostgresJobStore:
             raise ValueError("status must be rejected or closed")
         self._client.update("job_hunter_jobs", {"status": status}, params={"id": f"eq.{job_id}"})
 
+    def set_job_statuses(self, pairs: list[tuple[str, str]]) -> None:
+        """Persist many terminal discovery statuses in as few requests as possible.
+
+        Every status must be ``"rejected"`` or ``"closed"``, same as
+        `set_job_status`. There are only ever those two values, so this
+        groups ids by status and issues one PATCH per status per chunk
+        (``id=in.(...)``) rather than a per-row RPC like `set_job_markets`
+        needs for its arbitrary per-row values.
+
+        Those ids ride in the query string, so the chunk size is
+        `_URL_FILTER_CHUNK_SIZE`, not the larger body-carried
+        `_ID_ARRAY_CHUNK_SIZE`: a normal run rejects thousands of jobs, and
+        1,000 uuids in one filter is a ~36 KB request line -- a 414 that no
+        retry rule covers.
+        """
+        by_status: dict[str, list[str]] = {}
+        for job_id, status in pairs:
+            if status not in {"rejected", "closed"}:
+                raise ValueError("status must be rejected or closed")
+            by_status.setdefault(status, []).append(job_id)
+        for status, job_ids in by_status.items():
+            for chunk in _chunked(job_ids, _URL_FILTER_CHUNK_SIZE):
+                self._client.update(
+                    "job_hunter_jobs",
+                    {"status": status},
+                    params={"id": f"in.({','.join(chunk)})"},
+                )
+
     def save_application_event(
         self,
         *,
@@ -1732,7 +1966,7 @@ class PostgresJobStore:
         `LEGACY_SEMANTIC_FAILURE_RATIONALE` message ids are threaded through
         a PostgREST `in.(...)` filter; there being no matching messages
         short-circuits before any delete runs. The id lists are chunked at
-        `_RELEASE_LEGACY_CHUNK_SIZE` ids per request -- see that constant's
+        `_URL_FILTER_CHUNK_SIZE` ids per request -- see that constant's
         comment for why an unchunked `in.(...)` list is unsafe for a legacy
         backlog.
         """
@@ -1752,7 +1986,7 @@ class PostgresJobStore:
             return 0
 
         event_ids: list[str] = []
-        for chunk in _chunked(message_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+        for chunk in _chunked(message_ids, _URL_FILTER_CHUNK_SIZE):
             events = self._client.select(
                 "job_hunter_application_events",
                 params={
@@ -1765,7 +1999,7 @@ class PostgresJobStore:
             )
             event_ids.extend(row["id"] for row in events)
 
-        for chunk in _chunked(event_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+        for chunk in _chunked(event_ids, _URL_FILTER_CHUNK_SIZE):
             self._client.delete(
                 "job_hunter_review_deliveries",
                 params={"event_id": f"in.({','.join(chunk)})"},
@@ -1775,7 +2009,7 @@ class PostgresJobStore:
                 params={"id": f"in.({','.join(chunk)})"},
             )
 
-        for chunk in _chunked(message_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+        for chunk in _chunked(message_ids, _URL_FILTER_CHUNK_SIZE):
             self._client.delete(
                 "job_hunter_gmail_messages",
                 params={"message_id": f"in.({','.join(chunk)})"},
@@ -1861,7 +2095,7 @@ class PostgresJobStore:
             return 0
 
         job_alert_messages: set[str] = set()
-        for chunk in _chunked(candidate_message_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+        for chunk in _chunked(candidate_message_ids, _URL_FILTER_CHUNK_SIZE):
             rows = self._client.select(
                 "job_hunter_gmail_messages",
                 params={
@@ -1911,7 +2145,7 @@ class PostgresJobStore:
                     "id": f"in.({','.join(candidate['id'] for candidate in message_candidates)})"
                 },
             )
-            for chunk in _chunked(job_ids, _RELEASE_LEGACY_CHUNK_SIZE):
+            for chunk in _chunked(job_ids, _URL_FILTER_CHUNK_SIZE):
                 self._client.delete("job_hunter_jobs", params={"id": f"in.({','.join(chunk)})"})
             self._client.delete(
                 "job_hunter_gmail_messages",
@@ -2038,10 +2272,14 @@ class PostgresJobStore:
 _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_job": ("id", "bool", "bool"),
     "upsert_logical_job": ("id", "bool", "bool"),
+    "upsert_logical_jobs": "list",
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
+    "set_job_markets": None,
     "set_job_status": None,
+    "set_job_statuses": None,
+    "upsert_ats_boards": "count",
     "backfill_ats_identity": "count",
     "save_evaluation": None,
     "save_material": None,
@@ -2089,6 +2327,7 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "list_jobs_for_matching",
         "get_job",
         "needs_evaluation",
+        "needs_evaluation_bulk",
         "get_evaluation",
         "get_material",
         "has_delivery",
@@ -2120,6 +2359,12 @@ def _synthesize(shape: str) -> Any:
         return False
     if shape == "count":
         return 0
+    if shape == "list":
+        # A batch write's per-input results. Args are discarded like every
+        # other dry-run write, so there's no input length to mirror -- an
+        # empty list is the honest synthetic value; nothing in the current
+        # call graph zips this back onto its input under dry run.
+        return []
     raise AssertionError(f"unknown DryRunStore write shape: {shape!r}")  # pragma: no cover
 
 
