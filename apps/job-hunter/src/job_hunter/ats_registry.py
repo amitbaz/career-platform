@@ -55,6 +55,30 @@ def harvest_ats_board(
     )
 
 
+def ats_board_reference(
+    job: Job,
+    market_hint: str | None = None,
+    denylist: frozenset[str] = frozenset(),
+) -> tuple[str, str, str, str] | None:
+    """Return the ATS board a job references, or None.
+
+    The pure half of `harvest_ats_board`: same admission rules, no store call.
+    Discovery needs the decision while it still holds the job's observed
+    market hint, but batches the writes until every job has been seen.
+    """
+    reference = extract_ats_reference(job)
+    if reference is None:
+        return None
+    if ats_board_key(reference.provider, reference.board) in denylist:
+        return None
+    return (
+        reference.provider,
+        reference.board,
+        job.company,
+        market_hint or job.market_hint or job.market_id or "",
+    )
+
+
 def select_ats_boards(
     entries: list[AtsRegistryEntry],
     market_order: list[str],

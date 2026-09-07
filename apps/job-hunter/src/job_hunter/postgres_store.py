@@ -2186,10 +2186,13 @@ class PostgresJobStore:
 _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_job": ("id", "bool", "bool"),
     "upsert_logical_job": ("id", "bool", "bool"),
+    "upsert_logical_jobs": "list",
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
+    "set_job_markets": None,
     "set_job_status": None,
+    "upsert_ats_boards": "count",
     "backfill_ats_identity": "count",
     "save_evaluation": None,
     "save_material": None,
@@ -2237,6 +2240,7 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "list_jobs_for_matching",
         "get_job",
         "needs_evaluation",
+        "needs_evaluation_bulk",
         "get_evaluation",
         "get_material",
         "has_delivery",
@@ -2268,6 +2272,12 @@ def _synthesize(shape: str) -> Any:
         return False
     if shape == "count":
         return 0
+    if shape == "list":
+        # A batch write's per-input results. Args are discarded like every
+        # other dry-run write, so there's no input length to mirror -- an
+        # empty list is the honest synthetic value; nothing in the current
+        # call graph zips this back onto its input under dry run.
+        return []
     raise AssertionError(f"unknown DryRunStore write shape: {shape!r}")  # pragma: no cover
 
 

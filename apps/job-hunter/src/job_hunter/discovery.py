@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.availability import CLOSED
-from job_hunter.ats_registry import harvest_ats_board
+from job_hunter.ats_registry import ats_board_reference, harvest_ats_board
 from job_hunter.canonical import (
     CanonicalResolver,
     apply_ats_identity,
@@ -324,8 +324,7 @@ def collect_candidates(
 
     # Persist every source copy before collapsing the run so provenance is
     # retained even when only one representative continues to evaluation.
-    for job in raw_jobs:
-        store.upsert_logical_job(job)
+    store.upsert_logical_jobs(raw_jobs)
 
     unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
     stats.unique = len(unique_jobs)
@@ -333,27 +332,57 @@ def collect_candidates(
     prefiltered: list[tuple[str, Job]] = []
     rediscovered_job_ids: list[str] = []
 
+    # Phase 1: network work only. Board references are captured here, while
+    # each job still carries the market hint it was observed with -- the
+    # attribution in phase 3 overwrites job.market_id.
+    board_sightings: list[tuple[str, str, str, str]] = []
+    observed_markets: list[str | None] = []
     for job in unique_jobs:
         observed_market_id = _cheap_market_attribution(job, policy)
-        if _harvest_ats_board_safely(
-            store, job, market_hint=observed_market_id, denylist=denylist
-        ):
-            stats.ats_boards_discovered += 1
+        observed_markets.append(observed_market_id)
+        reference = ats_board_reference(
+            job, market_hint=observed_market_id, denylist=denylist
+        )
+        if reference is not None:
+            board_sightings.append(reference)
         if job.url and not job.description:
             enrich_job(job, http)
 
-        job_id, _is_new, _description_changed = store.upsert_logical_job(job)
+    # Phase 2: one batch of writes and one batch of reads for the whole run.
+    stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
+    upserted = store.upsert_logical_jobs(unique_jobs)
 
+    persisted: list[tuple[str, Job, str | None]] = []
+    for job, observed_market_id, result in zip(unique_jobs, observed_markets, upserted):
+        if result is None:
+            # upsert_logical_jobs already logged why. Dropping the job here is
+            # the only option: everything downstream is keyed by its id.
+            continue
+        persisted.append((result[0], job, observed_market_id))
+
+    market_updates: list[tuple[str, str | None]] = []
+    for job_id, job, observed_market_id in persisted:
         job.market_id = attribute_market(job, policy.markets) if policy.markets else None
         _record_reattribution(stats, observed_market_id, job.market_id)
         if job.market_id:
-            store.set_job_market(job_id, job.market_id)
+            market_updates.append((job_id, job.market_id))
+    store.set_job_markets(market_updates)
+
+    evaluation_needed = store.needs_evaluation_bulk([job_id for job_id, _job, _hint in persisted])
+
+    # Phase 3: mostly pure -- the only I/O left here is the terminal-status
+    # write for the (usually small) subset of jobs rejected this run. That
+    # write must survive: needs_evaluation_bulk above is what future runs use
+    # to skip re-persisting/re-evaluating a job, and it depends on this status
+    # having been set. Dropping it would silently make every closed/rejected
+    # job look unevaluated again next run.
+    for job_id, job, _observed_market_id in persisted:
         market_key = job.market_id or _UNATTRIBUTED
         source_label = metric_source_label(job.source)
         _bump(stats.unique_by_market, market_key)
         _bump(stats.unique_by_source, source_label)
 
-        if not store.needs_evaluation(job_id):
+        if not evaluation_needed[job_id]:
             rediscovered_job_ids.append(job_id)
             continue
 

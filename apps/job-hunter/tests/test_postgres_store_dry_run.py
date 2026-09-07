@@ -142,6 +142,8 @@ def _assert_synthetic(value, shape: str) -> None:
         assert value is False
     elif shape == "count":
         assert value == 0
+    elif shape == "list":
+        assert value == []
     else:  # pragma: no cover - defensive
         raise AssertionError(f"unknown shape {shape!r}")
 

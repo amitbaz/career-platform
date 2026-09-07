@@ -1494,3 +1494,171 @@ def test_collect_candidates_always_resolves_already_ats_urls_outside_shortlist(
     assert len(resolver.calls) == 10
     assert result.stats.canonical_network_attempts == 0
     assert result.stats.canonical_budget_exhausted == 0
+
+
+class CountingClient:
+    """Delegates to a real SupabaseClient, counting requests by kind.
+
+    The bug this suite guards against is a request count that grows with the
+    job count. Asserting on returned data would not catch its return, so this
+    counts calls instead -- specifically the underlying HTTP-shaped client
+    calls (rpc/select/update/...), not the higher-level store methods, so a
+    store method that quietly reverts to looping internally still shows up
+    here.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        attribute = getattr(self._inner, name)
+        if not callable(attribute):
+            return attribute
+
+        def recording(*args, **kwargs):
+            label = args[0] if args else name
+            self.calls.append(f"{name}:{label}")
+            return attribute(*args, **kwargs)
+
+        return recording
+
+
+def test_collect_candidates_request_count_does_not_grow_with_job_count(
+    supabase_client, policy
+):
+    """Twenty jobs must not cost twenty times what one job costs."""
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="test",
+                source_job_id=f"count-{job_count}-{i}",
+                url=f"https://example.test/count-{job_count}-{i}",
+                company="Acme",
+                title="Frontend Engineer",
+                location="Remote",
+                remote=True,
+                description="A frontend engineering role working in React.",
+            )
+            for i in range(job_count)
+        ]
+        collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        return len(client.calls)
+
+    one_job = run_with(1)
+    twenty_jobs = run_with(20)
+
+    # Batched, the marginal cost of 19 more jobs is zero extra round trips.
+    # A per-job design would put this at roughly 20x.
+    assert twenty_jobs <= one_job + 2, (
+        f"{twenty_jobs} requests for 20 jobs vs {one_job} for 1 -- "
+        "discovery persistence is scaling with the job count again"
+    )
+
+
+def test_collect_candidates_harvests_ats_board_with_observed_not_attributed_market(
+    store, market_policy
+):
+    """ATS board harvesting must see the pre-attribution market hint.
+
+    The job's query-time hint points at "london", but its description/
+    location match "germany_eu" on stronger evidence, so full attribution
+    (which runs after board harvesting is decided) overwrites job.market_id
+    to "germany_eu". If harvesting were moved after attribution -- or if the
+    batched rewrite plumbed the wrong hint through -- the registry would
+    record "germany_eu" instead of the observed "london", silently losing
+    the invariant this test guards.
+    """
+    job = Job(
+        source="ashby",
+        source_job_id="1",
+        title="Senior Product Engineer",
+        company="Acme",
+        location="Berlin",
+        url="https://jobs.lever.co/acme/observed-hint-job",
+        description="React TypeScript remote role based in Berlin.",
+        remote=True,
+        market_hint="london",
+    )
+
+    result = collect_candidates([FakeSource([job])], store, NoOpHttp(), market_policy)
+
+    # Sanity check: full attribution did in fact override the hint, so this
+    # test is actually exercising the divergence it claims to.
+    assert result.eligible[0][1].market_id == "germany_eu"
+
+    boards = store.list_due_ats_boards(datetime.now(timezone.utc))
+    matching = [b for b in boards if b.board_identifier == "acme" and b.provider == "lever"]
+    assert len(matching) == 1
+    assert matching[0].market_hint == "london"
+
+
+def test_collect_candidates_rediscovered_job_ids_membership_survives_batching(
+    store, policy
+):
+    """rediscovered_job_ids must name exactly the already-evaluated jobs.
+
+    Two jobs already carry a saved evaluation (so needs_evaluation is False
+    for them) and two are new. Run together, batched evaluation-need lookups
+    must still map each id back to its own job rather than, e.g., collapsing
+    to all-or-nothing for the whole chunk.
+    """
+    already_evaluated = []
+    for i in range(2):
+        job = Job(
+            source="ashby",
+            source_job_id=f"seen-{i}",
+            title="Senior Product Engineer",
+            company=f"Seen {i}",
+            description="React TypeScript remote role",
+            remote=True,
+            content_confidence=OFFICIAL_ATS,
+        )
+        job_id, _is_new, _changed = store.upsert_job(job)
+        store.save_evaluation(
+            job_id,
+            Evaluation(
+                job_id=job_id,
+                total_score=90,
+                scores={},
+                decision="high_priority",
+                hard_blockers=[],
+                strengths=[],
+                gaps=[],
+                salary_note="",
+                location_note="",
+                rationale="",
+                model="gemini-test",
+                status="ok",
+                content_confidence=OFFICIAL_ATS,
+            ),
+        )
+        already_evaluated.append((job, job_id))
+
+    new_jobs = [
+        Job(
+            source="ashby",
+            source_job_id=f"new-{i}",
+            title="Senior Product Engineer",
+            company=f"New {i}",
+            description="React TypeScript remote role",
+            remote=True,
+        )
+        for i in range(2)
+    ]
+
+    result = collect_candidates(
+        [FakeSource([job for job, _id in already_evaluated] + new_jobs)],
+        store,
+        NoOpHttp(),
+        policy,
+    )
+
+    expected_rediscovered_ids = {job_id for _job, job_id in already_evaluated}
+    assert set(result.rediscovered_job_ids) == expected_rediscovered_ids
+    assert len(result.rediscovered_job_ids) == 2
+    assert len(result.eligible) == 2
