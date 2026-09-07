@@ -1,6 +1,7 @@
 name: Relay CI
 on:
   push:
+    branches: [main]
     paths:
       - 'apps/relay/**'
       - 'supabase/**'

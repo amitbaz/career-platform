@@ -103,7 +103,7 @@ python -m job_hunter run --scheduled           # only runs at the scheduled_hour
 
 Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, fill in `GEMINI_API_KEY`, `CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64`, set `JOB_HUNTER_DRY_RUN=1`, then `set -a; source .env; set +a` before running. `JOB_HUNTER_DRY_RUN` truthy values are `1/true/yes` (case-insensitive); anything else is treated as unset/false.
 
-CI (`.github/workflows/ci.yml`) runs `pytest -q` on Python 3.12 for every push/PR — no lint step configured.
+CI (`.github/workflows/job-hunter-ci.yml`) runs `pytest -q` on Python 3.12 — no lint step configured. It triggers on every pull request, and on pushes to `main` only. The push trigger is deliberately scoped to `main`: without it, a commit on a pull request branch starts both workflows against the same commit and costs twice the Actions minutes, which matters while the repository is private and subject to the monthly cap.
 
 ## Testing Guidelines
 
