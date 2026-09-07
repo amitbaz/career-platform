@@ -39,7 +39,12 @@ class TargetedSearchSource:
         self._backend = backend
         self._queries = [_normalize_query(query) for query in queries]
         self._breaker = breaker
-        self._source_label = source_label
+        # Labels the jobs, and stays None for a generic backend: those jobs
+        # are labelled per response, by the backend that answered.
+        self._job_source_label = source_label
+        # Labels this source's cost (`discovery.source_cost_label`), which
+        # has to be known before any response is.
+        self.source_label = source_label or "targeted_search"
         self.stats = TargetedSearchStats()
         for query in self._queries:
             _bump(self.stats.planned_by_market, query.market_id or "legacy")
@@ -81,7 +86,7 @@ class TargetedSearchSource:
             _bump(self.stats.succeeded_by_market, market_key)
             _bump(self.stats.results_by_market, market_key, len(response.hits))
 
-            source = self._source_label or f"search:{response.backend}"
+            source = self._job_source_label or f"search:{response.backend}"
             for hit in response.hits:
                 jobs.append(
                     Job(

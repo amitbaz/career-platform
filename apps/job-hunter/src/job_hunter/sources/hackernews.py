@@ -3,6 +3,8 @@ from job_hunter.models import Job
 from .base import strip_html
 
 class HackerNewsHiringSource:
+    source_label = "hackernews"
+
     def __init__(self, http): self._http = http
     def discover(self) -> list[Job]:
         search = self._http.get_json("https://hn.algolia.com/api/v1/search", params={"query": "Ask HN: Who is hiring?", "tags": "story"})

@@ -14,6 +14,10 @@ class GreenhouseSource:
         self._token = token
         self._http = http
 
+    @property
+    def source_label(self) -> str:
+        return f"greenhouse:{self._token}"
+
     def discover(self) -> list[Job]:
         try:
             data = self._http.get_json(_URL_TEMPLATE.format(token=self._token))

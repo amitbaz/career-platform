@@ -16,6 +16,8 @@ _BASE_URL = "https://www.ycombinator.com"
 class YCSource:
     """Map public YC job-card links into jobs without using authenticated endpoints."""
 
+    source_label = "yc"
+
     def __init__(self, http, urls: list[str]) -> None:
         self._http = http
         self._urls = urls

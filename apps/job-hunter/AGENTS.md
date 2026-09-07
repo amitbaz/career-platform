@@ -138,6 +138,23 @@ Key modules:
 - `src/job_hunter/sources/` — one adapter per job source, all implementing a common `discover()` interface (`base.py`). Built-ins now include Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, and DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source **fails open**: an exception during discovery is caught in `run_pipeline`, logged, and that source is skipped — the rest of the run continues.
 - `src/job_hunter/discovery.py`, `discovery_queries.py`, `ranking.py` — aggregate, generate expanded search queries, and rank candidates before Gemini. `generate_search_queries()` expands each role/template across configured ATS domains.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
+- `DiscoveryStats` also carries the cost half of each source's scorecard: `elapsed_by_source`
+  and `requests_by_source`, keyed by the source *instance* (`discovery.source_cost_label`, so
+  `lever:acme` and `lever:globex` stay apart and a source yielding nothing is still reported),
+  plus `total_elapsed_seconds` for discovery as a whole — deliberately not the sum of the parts,
+  since the difference is work happening around the sources rather than inside them. Time comes
+  from the `clock` injected into `collect_candidates`; requests are counted at the shared
+  `HttpClient` (`request_count`) and attributed to whichever source is running, so a new adapter
+  is measured without doing anything. Give a new source a `source_label` (`JobSource` declares it):
+  a class attribute, or a property including the board for adapters configured one instance per
+  board. Two caveats when reading the figures. The request count is everything that source sent
+  through the shared client, and `cli.py` hands the same client to `SupabaseClient`, so for the
+  store-backed sources (company watch, learned ATS, staged Gmail) it counts Postgres traffic as
+  well as job-board fetches. And a cost label keys the source *instance*, which is deliberately
+  not always the `source` string its jobs carry — a targeted search emits `search:<backend>`, a
+  learned-ATS scan emits one string per provider — so cost and yield line up per source for the
+  feeds and boards but not for those two. Dividing yield by cost for them needs per-instance
+  yield, which is #119's problem, not this instrumentation's.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids()` retries undelivered Telegram work without re-calling Gemini, but only for jobs scoring `>60`. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, and `upsert_ats_boards` — `collect_candidates` calls these instead of looping the single-job methods. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time — and for `collect_candidates`'s own canonical-resolution tail, which is deliberately still per-job and costs roughly six to eight requests per resolved job (unbounded for jobs already on a supported ATS URL, since those bypass the `max_canonical_resolutions_per_run` shortlist): that tail is the branch's largest remaining scaling risk and the next thing to batch. New bulk work should use the batch methods rather than looping the single-job ones.
 - `src/job_hunter/config.py` — loads the user's search profile (from Postgres, via `load_settings(store)`) + required env vars into a `Settings`/`SearchPolicy` (see `models.py`). Candidate profile and cover letter template are base64-encoded secrets (`CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64`), decoded in memory only — never write decoded plaintext to the repo or logs.
 - `src/job_hunter/cli.py` — `python -m job_hunter run` entrypoint. `--scheduled` gates execution on `should_run_scheduled` (pipeline.py), comparing current local hour in `settings.timezone` against `settings.scheduled_hour`.

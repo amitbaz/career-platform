@@ -3,6 +3,8 @@ from job_hunter.models import Job
 from .base import strip_html
 
 class WeWorkRemotelySource:
+    source_label = "weworkremotely"
+
     def __init__(self, http, feed_urls=None):
         self._http = http
         self._feed_urls = feed_urls or [

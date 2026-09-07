@@ -29,6 +29,8 @@ def _linkedin_page_title_metadata(
 class GmailStagedSource:
     """Expose staged Gmail candidates to the normal discovery pipeline."""
 
+    source_label = "gmail"
+
     def __init__(self, store: PostgresJobStore) -> None:
         self._store = store
 

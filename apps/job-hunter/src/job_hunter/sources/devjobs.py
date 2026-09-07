@@ -22,6 +22,8 @@ _WORK_MODES = {
 class DevJobsSource:
     """Discover Israel-market postings from devjobs.co.il listing/detail pages."""
 
+    source_label = "devjobs"
+
     def __init__(self, http, *, max_jobs_per_category: int = 30) -> None:
         self._http = http
         self._max_jobs_per_category = max_jobs_per_category
