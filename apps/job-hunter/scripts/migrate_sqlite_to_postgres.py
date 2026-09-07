@@ -1,0 +1,664 @@
+"""One-shot migration of a legacy Job Hunter SQLite database into Postgres.
+
+Run once per owner, by hand, against the SQLite file store.py used to write
+before issue #70 deleted it. Safe to run more than once: every write is an
+upsert against the destination table's user-scoped unique key (the same
+constraints migration 202609060003 added), so a second run converges on the
+same rows instead of duplicating them.
+
+Import order matters. Tables are migrated in foreign-key order -- ``jobs``
+first, everything that references a job next -- building an
+``old_int_id -> new_uuid`` map as each table is inserted, because every
+legacy integer primary key becomes a fresh Postgres uuid. Two tables need a
+map: most tables reference ``jobs.id``; ``job_hunter_review_deliveries``
+also needs ``application_events.id``, so that map is built too.
+
+Three legacy tables are skipped outright rather than migrated, because nothing
+depends on their historical content and the next real run rebuilds them from
+scratch: ``pending_ai_work`` (a retry queue -- stale entries would just be
+retried again), ``gemini_quota_state`` (a pause timer that should start fresh
+rather than resume a stale pause from a different runtime), and
+``candidate_context_cache`` (a cache keyed by a profile hash that would need
+revalidating anyway).
+
+Dangling foreign keys: a legacy row whose foreign key points at a job that
+did not migrate (should not happen in an internally-consistent SQLite file,
+but the legacy schema had no fingerprint-collision guard against exactly the
+race this port fixes) is handled per table:
+
+- ``job_sources``, ``evaluations``, ``materials``, ``deliveries``: the
+  Postgres column is ``NOT NULL``, so the row is dropped and logged. There is
+  no lossless way to keep provenance for a job that isn't there.
+- ``company_watch.discovered_from_job_id``: nullable in Postgres, so the
+  watch row still migrates with that column set to ``NULL`` rather than being
+  dropped -- the watch itself (company name, ATS identity, confidence) is
+  useful on its own.
+- ``application_events.job_id``: nullable in Postgres for the same reason as
+  ``company_watch`` -- an application event is itself a first-class signal
+  (an email thread, a confidence score) independent of whether the job
+  survived deduplication.
+- ``review_deliveries.event_id``: NOT NULL, referencing
+  ``application_events``. Dropped and logged if the event it names did not
+  migrate (only possible if the source database's own foreign key was
+  already broken).
+- ``telegram_navigation_sessions.cards_json``: the one place a legacy job id
+  hides *inside* a jsonb blob rather than in a column. Each card's
+  ``job_id`` is remapped individually; a card whose job did not migrate is
+  dropped from the array, but the session row itself is still written (with
+  a shorter, or possibly empty, ``cards_json``) because the session's
+  Telegram message and expiry are still meaningful on their own.
+- Tables with no foreign key to another job_hunter table (``ats_registry``,
+  ``gmail_sync_state``, ``gmail_messages``, ``inbound_job_candidates``,
+  ``search_api_usage``) migrate unconditionally.
+
+Timestamps: legacy SQLite stored naive ISO-8601 TEXT with no UTC offset.
+Postgres columns are ``timestamptz``. The port's standing rule elsewhere
+(``store_mapping.to_iso``) is that a *caller-supplied* naive datetime is
+assumed to already be UTC rather than guessed at another zone -- it is never
+refused, because the legacy writer (`datetime.now(timezone.utc).isoformat()`
+minus the offset in older rows) always meant UTC in practice, and there is no
+live caller here to ask for a correction. This migration applies the exact
+same rule to historical strings for consistency, and — because silently
+reinterpreting the clock of years-old data deserves to be auditable — logs
+one INFO line per naive value encountered, naming the table, column and raw
+string, so a run's log is a complete record of every assumption it made.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from job_hunter.supabase_client import SupabaseClient
+
+logger = logging.getLogger(__name__)
+
+#: Rebuilt by the next real run; migrating stale rows would be actively wrong.
+_SKIPPED_TABLES = ("pending_ai_work", "gemini_quota_state", "candidate_context_cache")
+
+
+def _iso(table: str, column: str, value: str | None) -> str | None:
+    """Normalize a legacy TEXT timestamp to an offset-aware ISO-8601 string.
+
+    A naive value is assumed UTC (see the module docstring) and the
+    assumption is logged so it is auditable after the fact.
+    """
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        logger.info(
+            "migrate_sqlite_to_postgres: naive timestamp %s.%s=%r assumed UTC",
+            table,
+            column,
+            value,
+        )
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
+
+
+def _bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return row is not None
+
+
+def _rows(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    if not _table_exists(conn, table):
+        return []
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(f"SELECT * FROM {table}")
+    return [dict(row) for row in cur.fetchall()]
+
+
+def _json_list(value: str | None) -> list[Any]:
+    if not value:
+        return []
+    return json.loads(value)
+
+
+def _json_dict(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    return json.loads(value)
+
+
+def _upsert_one(
+    client: SupabaseClient, table: str, payload: dict[str, Any], *, on_conflict: str
+) -> dict[str, Any]:
+    rows = client.upsert(table, [payload], on_conflict=on_conflict)
+    return rows[0]
+
+
+def migrate(sqlite_path: Path, client: SupabaseClient) -> dict[str, int]:
+    """Migrate one legacy SQLite database into Postgres for ``client``'s user.
+
+    Returns the number of rows migrated per destination table (Postgres
+    table names, without the ``job_hunter_`` prefix stripped -- i.e. keys are
+    the legacy table names this function reads, since that is the caller's
+    frame of reference). Re-running with the same file and client is safe:
+    every write is an upsert against a user-scoped unique key.
+    """
+    counts: dict[str, int] = {}
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        job_id_map = _migrate_jobs(conn, client, counts)
+        _migrate_job_sources(conn, client, job_id_map, counts)
+        _migrate_evaluations(conn, client, job_id_map, counts)
+        _migrate_materials(conn, client, job_id_map, counts)
+        _migrate_deliveries(conn, client, job_id_map, counts)
+        _migrate_company_watch(conn, client, job_id_map, counts)
+        _migrate_ats_registry(conn, client, counts)
+        _migrate_gmail_sync_state(conn, client, counts)
+        _migrate_gmail_messages(conn, client, counts)
+        _migrate_inbound_job_candidates(conn, client, counts)
+        event_id_map = _migrate_application_events(conn, client, job_id_map, counts)
+        _migrate_review_deliveries(conn, client, event_id_map, counts)
+        _migrate_search_api_usage(conn, client, counts)
+        _migrate_navigation_sessions(conn, client, job_id_map, counts)
+    finally:
+        conn.close()
+    for table in _SKIPPED_TABLES:
+        counts.setdefault(table, 0)
+    return counts
+
+
+def _migrate_jobs(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> dict[int, str]:
+    job_id_map: dict[int, str] = {}
+    migrated = 0
+    for row in _rows(conn, "jobs"):
+        payload = {
+            "user_id": client.user_id,
+            "fingerprint": row["fingerprint"],
+            "source": row.get("source") or "",
+            "source_job_id": row.get("source_job_id"),
+            "url": row.get("url") or "",
+            "canonical_url": row.get("canonical_url") or "",
+            "company": row.get("company") or "",
+            "title": row.get("title") or "",
+            "location": row.get("location") or "",
+            "remote": _bool(row.get("remote")),
+            "description": row.get("description") or "",
+            "description_hash": row.get("description_hash") or "",
+            "content_confidence": row.get("content_confidence") or "",
+            "ats_provider": row.get("ats_provider"),
+            "ats_board": row.get("ats_board"),
+            "ats_job_id": row.get("ats_job_id"),
+            "market_id": row.get("market_id") or "",
+            "status": row.get("status") or "new",
+            "first_seen_at": _iso("jobs", "first_seen_at", row["first_seen_at"]),
+            "last_seen_at": _iso("jobs", "last_seen_at", row["last_seen_at"]),
+        }
+        new_row = _upsert_one(client, "job_hunter_jobs", payload, on_conflict="user_id,fingerprint")
+        job_id_map[row["id"]] = new_row["id"]
+        migrated += 1
+    counts["jobs"] = migrated
+    return job_id_map
+
+
+def _migrate_job_sources(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "job_sources"):
+        new_job_id = job_id_map.get(row["job_id"])
+        if new_job_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: dropping job_sources row %s -- job %s did not migrate",
+                row["id"],
+                row["job_id"],
+            )
+            continue
+        payload = {
+            "user_id": client.user_id,
+            "job_id": new_job_id,
+            "source": row["source"],
+            "source_job_id": row.get("source_job_id"),
+            "source_url": row.get("source_url") or "",
+            "identity_key": row["identity_key"],
+            "first_seen_at": _iso("job_sources", "first_seen_at", row["first_seen_at"]),
+            "last_seen_at": _iso("job_sources", "last_seen_at", row["last_seen_at"]),
+        }
+        _upsert_one(client, "job_hunter_job_sources", payload, on_conflict="job_id,identity_key")
+        migrated += 1
+    counts["job_sources"] = migrated
+
+
+def _migrate_evaluations(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "evaluations"):
+        new_job_id = job_id_map.get(row["job_id"])
+        if new_job_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: dropping evaluations row %s -- job %s did not migrate",
+                row["id"],
+                row["job_id"],
+            )
+            continue
+        payload = {
+            "user_id": client.user_id,
+            "job_id": new_job_id,
+            "total_score": row.get("total_score", 0),
+            "raw_model_score": row.get("raw_model_score", 0),
+            "scores_json": _json_dict(row.get("scores_json")),
+            "decision": row.get("decision") or "",
+            "hard_blockers_json": _json_list(row.get("hard_blockers_json")),
+            "strengths_json": _json_list(row.get("strengths_json")),
+            "gaps_json": _json_list(row.get("gaps_json")),
+            "requirements_json": _json_dict(row.get("requirements_json")),
+            "salary_note": row.get("salary_note") or "",
+            "location_note": row.get("location_note") or "",
+            "rationale": row.get("rationale") or "",
+            "model": row.get("model") or "",
+            "status": row.get("status") or "ok",
+            "market_id": row.get("market_id") or "",
+            "description_hash_at_eval": row.get("description_hash_at_eval") or "",
+            "content_confidence_at_eval": row.get("content_confidence_at_eval") or "",
+            "evaluated_at": _iso("evaluations", "evaluated_at", row["evaluated_at"]),
+        }
+        _upsert_one(
+            client, "job_hunter_evaluations", payload, on_conflict="user_id,job_id,evaluated_at"
+        )
+        migrated += 1
+    counts["evaluations"] = migrated
+
+
+def _migrate_materials(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "materials"):
+        new_job_id = job_id_map.get(row["job_id"])
+        if new_job_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: dropping materials row %s -- job %s did not migrate",
+                row["id"],
+                row["job_id"],
+            )
+            continue
+        payload = {
+            "user_id": client.user_id,
+            "job_id": new_job_id,
+            "cover_letter_text": row.get("cover_letter_text") or "",
+            "generated_at": _iso("materials", "generated_at", row["generated_at"]),
+        }
+        _upsert_one(
+            client, "job_hunter_materials", payload, on_conflict="user_id,job_id,generated_at"
+        )
+        migrated += 1
+    counts["materials"] = migrated
+
+
+def _migrate_deliveries(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "deliveries"):
+        new_job_id = job_id_map.get(row["job_id"])
+        if new_job_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: dropping deliveries row %s -- job %s did not migrate",
+                row["id"],
+                row["job_id"],
+            )
+            continue
+        payload = {
+            "user_id": client.user_id,
+            "job_id": new_job_id,
+            "delivery_type": row.get("delivery_type") or "",
+            "status": row.get("status") or "sent",
+            "delivered_at": _iso("deliveries", "delivered_at", row["delivered_at"]),
+            "telegram_message_id": row.get("telegram_message_id"),
+        }
+        _upsert_one(
+            client,
+            "job_hunter_deliveries",
+            payload,
+            on_conflict="user_id,job_id,delivery_type,delivered_at",
+        )
+        migrated += 1
+    counts["deliveries"] = migrated
+
+
+def _migrate_company_watch(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "company_watch"):
+        discovered_from = row.get("discovered_from_job_id")
+        new_discovered_from = job_id_map.get(discovered_from) if discovered_from is not None else None
+        if discovered_from is not None and new_discovered_from is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: company_watch row %s -- "
+                "discovered_from_job_id %s did not migrate, nulling it",
+                row["id"],
+                discovered_from,
+            )
+        payload = {
+            "user_id": client.user_id,
+            "company_name": row["company_name"],
+            "normalized_company_name": row["normalized_company_name"],
+            "careers_url": row.get("careers_url") or "",
+            "ats_provider": row.get("ats_provider"),
+            "ats_identifier": row.get("ats_identifier"),
+            "discovered_from_job_id": new_discovered_from,
+            "promotion_source": row["promotion_source"],
+            "confidence": row.get("confidence", 0),
+            "active": bool(row.get("active", 1)),
+            "paused_until": _iso("company_watch", "paused_until", row.get("paused_until")),
+            "first_seen_at": _iso("company_watch", "first_seen_at", row["first_seen_at"]),
+            "last_verified_at": _iso(
+                "company_watch", "last_verified_at", row.get("last_verified_at")
+            ),
+            "last_successful_check_at": _iso(
+                "company_watch", "last_successful_check_at", row.get("last_successful_check_at")
+            ),
+            "consecutive_failures": row.get("consecutive_failures", 0),
+            "created_at": _iso("company_watch", "created_at", row["created_at"]),
+            "updated_at": _iso("company_watch", "updated_at", row["updated_at"]),
+        }
+        _upsert_one(
+            client,
+            "job_hunter_company_watch",
+            payload,
+            on_conflict="user_id,normalized_company_name",
+        )
+        migrated += 1
+    counts["company_watch"] = migrated
+
+
+def _migrate_ats_registry(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "ats_registry"):
+        payload = {
+            "user_id": client.user_id,
+            "provider": row["provider"],
+            "board_identifier": row["board_identifier"],
+            "company_name": row.get("company_name") or "",
+            "market_hint": row.get("market_hint") or "",
+            "first_seen_at": _iso("ats_registry", "first_seen_at", row["first_seen_at"]),
+            "last_seen_at": _iso("ats_registry", "last_seen_at", row["last_seen_at"]),
+            "last_checked_at": _iso("ats_registry", "last_checked_at", row.get("last_checked_at")),
+            "last_success_at": _iso("ats_registry", "last_success_at", row.get("last_success_at")),
+            "last_eligible_at": _iso(
+                "ats_registry", "last_eligible_at", row.get("last_eligible_at")
+            ),
+            "last_job_count": row.get("last_job_count", 0),
+            "eligible_jobs_seen": row.get("eligible_jobs_seen", 0),
+            "consecutive_failures": row.get("consecutive_failures", 0),
+            "active": bool(row.get("active", 1)),
+            "paused_until": _iso("ats_registry", "paused_until", row.get("paused_until")),
+            "rejected_reason": row.get("rejected_reason"),
+        }
+        _upsert_one(
+            client,
+            "job_hunter_ats_registry",
+            payload,
+            on_conflict="user_id,provider,board_identifier",
+        )
+        migrated += 1
+    counts["ats_registry"] = migrated
+
+
+def _migrate_gmail_sync_state(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "gmail_sync_state"):
+        payload = {
+            "user_id": client.user_id,
+            "account_id": row["account_id"],
+            "history_id": row.get("history_id"),
+            "last_successful_sync_at": _iso(
+                "gmail_sync_state", "last_successful_sync_at", row.get("last_successful_sync_at")
+            ),
+            "last_processed_message_at": _iso(
+                "gmail_sync_state",
+                "last_processed_message_at",
+                row.get("last_processed_message_at"),
+            ),
+            "backfill_completed_at": _iso(
+                "gmail_sync_state", "backfill_completed_at", row.get("backfill_completed_at")
+            ),
+            "created_at": _iso("gmail_sync_state", "created_at", row["created_at"]),
+            "updated_at": _iso("gmail_sync_state", "updated_at", row["updated_at"]),
+        }
+        _upsert_one(
+            client, "job_hunter_gmail_sync_state", payload, on_conflict="user_id,account_id"
+        )
+        migrated += 1
+    counts["gmail_sync_state"] = migrated
+
+
+def _migrate_gmail_messages(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "gmail_messages"):
+        payload = {
+            "user_id": client.user_id,
+            "message_id": row["message_id"],
+            "thread_id": row.get("thread_id"),
+            "sender": row.get("sender") or "",
+            "subject": row.get("subject") or "",
+            "occurred_at": _iso("gmail_messages", "occurred_at", row["occurred_at"]),
+            "classification": row["classification"],
+            "confidence": row.get("confidence", 0.0),
+            "rationale": row.get("rationale") or "",
+            "processed_at": _iso("gmail_messages", "processed_at", row["processed_at"]),
+        }
+        _upsert_one(client, "job_hunter_gmail_messages", payload, on_conflict="user_id,message_id")
+        migrated += 1
+    counts["gmail_messages"] = migrated
+
+
+def _migrate_inbound_job_candidates(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "inbound_job_candidates"):
+        payload = {
+            "user_id": client.user_id,
+            "origin": row.get("origin") or "gmail",
+            "source_message_id": row["source_message_id"],
+            "source_candidate_key": row["source_candidate_key"],
+            "source_platform": row.get("source_platform") or "",
+            "source_job_id": row.get("source_job_id"),
+            "url": row.get("url") or "",
+            "company": row.get("company") or "",
+            "title": row.get("title") or "",
+            "location": row.get("location") or "",
+            "remote": _bool(row.get("remote")),
+            "description": row.get("description") or "",
+            "created_at": _iso("inbound_job_candidates", "created_at", row["created_at"]),
+            "last_seen_at": _iso(
+                "inbound_job_candidates", "last_seen_at", row["last_seen_at"]
+            ),
+        }
+        _upsert_one(
+            client,
+            "job_hunter_inbound_job_candidates",
+            payload,
+            on_conflict="user_id,origin,source_message_id,source_candidate_key",
+        )
+        migrated += 1
+    counts["inbound_job_candidates"] = migrated
+
+
+def _migrate_application_events(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> dict[int, str]:
+    event_id_map: dict[int, str] = {}
+    migrated = 0
+    for row in _rows(conn, "application_events"):
+        legacy_job_id = row.get("job_id")
+        new_job_id = job_id_map.get(legacy_job_id) if legacy_job_id is not None else None
+        if legacy_job_id is not None and new_job_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: application_events row %s -- "
+                "job %s did not migrate, nulling job_id",
+                row["id"],
+                legacy_job_id,
+            )
+        payload = {
+            "user_id": client.user_id,
+            "job_id": new_job_id,
+            "event_type": row["event_type"],
+            "occurred_at": _iso("application_events", "occurred_at", row["occurred_at"]),
+            "source": row.get("source") or "gmail",
+            "source_message_id": row["source_message_id"],
+            "source_thread_id": row.get("source_thread_id"),
+            "confidence": row.get("confidence", 0.0),
+            "company": row.get("company") or "",
+            "role_title": row.get("role_title") or "",
+            "rationale": row.get("rationale") or "",
+            "created_at": _iso("application_events", "created_at", row["created_at"]),
+        }
+        new_row = _upsert_one(
+            client,
+            "job_hunter_application_events",
+            payload,
+            on_conflict="user_id,source_message_id",
+        )
+        event_id_map[row["id"]] = new_row["id"]
+        migrated += 1
+    counts["application_events"] = migrated
+    return event_id_map
+
+
+def _migrate_review_deliveries(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    event_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "review_deliveries"):
+        new_event_id = event_id_map.get(row["event_id"])
+        if new_event_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: dropping review_deliveries row -- "
+                "event %s did not migrate",
+                row["event_id"],
+            )
+            continue
+        payload = {
+            "user_id": client.user_id,
+            "event_id": new_event_id,
+            "delivered_at": _iso("review_deliveries", "delivered_at", row["delivered_at"]),
+            "telegram_message_id": row.get("telegram_message_id"),
+        }
+        _upsert_one(
+            client, "job_hunter_review_deliveries", payload, on_conflict="user_id,event_id"
+        )
+        migrated += 1
+    counts["review_deliveries"] = migrated
+
+
+def _migrate_search_api_usage(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "search_api_usage"):
+        payload = {
+            "user_id": client.user_id,
+            "provider": row["provider"],
+            "occurred_at": _iso("search_api_usage", "occurred_at", row["occurred_at"]),
+        }
+        _upsert_one(
+            client,
+            "job_hunter_search_api_usage",
+            payload,
+            on_conflict="user_id,provider,occurred_at",
+        )
+        migrated += 1
+    counts["search_api_usage"] = migrated
+
+
+def _remap_cards(
+    cards_json: str | None, job_id_map: dict[int, str], session_id: str
+) -> list[dict[str, Any]]:
+    cards = _json_list(cards_json)
+    remapped: list[dict[str, Any]] = []
+    for card in cards:
+        legacy_job_id = card.get("job_id")
+        new_job_id = job_id_map.get(legacy_job_id)
+        if new_job_id is None:
+            logger.warning(
+                "migrate_sqlite_to_postgres: dropping navigation card for session %s -- "
+                "job %s did not migrate",
+                session_id,
+                legacy_job_id,
+            )
+            continue
+        remapped.append({**card, "job_id": new_job_id})
+    return remapped
+
+
+def _migrate_navigation_sessions(
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    job_id_map: dict[int, str],
+    counts: dict[str, int],
+) -> None:
+    migrated = 0
+    for row in _rows(conn, "telegram_navigation_sessions"):
+        cards = _remap_cards(row.get("cards_json"), job_id_map, row["session_id"])
+        payload = {
+            "user_id": client.user_id,
+            "session_id": row["session_id"],
+            "cards_json": cards,
+            "telegram_message_id": row.get("telegram_message_id"),
+            "expires_at": _iso(
+                "telegram_navigation_sessions", "expires_at", row["expires_at"]
+            ),
+        }
+        if row.get("created_at"):
+            payload["created_at"] = _iso(
+                "telegram_navigation_sessions", "created_at", row["created_at"]
+            )
+        _upsert_one(
+            client,
+            "job_hunter_telegram_navigation_sessions",
+            payload,
+            on_conflict="user_id,session_id",
+        )
+        migrated += 1
+    counts["telegram_navigation_sessions"] = migrated
