@@ -62,8 +62,22 @@ Three principles constrain the design:
    fingerprint, merging every duplicate it finds. It is the most intricate SQL in the
    repository, ported line by line from `store.py:744-905`. The batch path calls it;
    it does not restate it.
-2. **The request count must stop tracking the job count.** After this change a run's
-   discovery writes are bounded by the number of chunks, not the number of postings.
+2. **The request count must stop tracking the job count.** After this change the writes
+   in discovery's batch phases (design steps 2 and 5-7 below: raw upsert, unique upsert,
+   market attribution, evaluation-need lookup, board registration, terminal statuses) are
+   bounded by the number of chunks, not the number of postings.
+
+   This is scoped to those phases on purpose. The canonical-resolution tail
+   (`discovery.py`'s final loop over `prefiltered`) is **not** batched — see
+   [Out of scope](#out-of-scope) — and remains per-job: a job that reaches the resolve
+   branch pays roughly six to eight PostgREST requests (`_harvest_ats_board_safely`,
+   `upsert_logical_job`, `set_job_market`, `needs_evaluation`, and, once eligible,
+   `record_ats_eligible_job`). `max_canonical_resolutions_per_run` bounds only the jobs
+   whose URL is *not* already a supported ATS URL; a prefiltered job that already carries
+   one bypasses the shortlist gate entirely and always resolves. So a run where 1,000
+   ATS-hosted jobs survive prefilter still spends 6,000-8,000 sequential requests in that
+   tail. That is this branch's largest remaining scaling risk, and the next thing to
+   batch if the daily run approaches its timeout again.
 3. **One bad posting must not cost a run.** Today an exception from any of those calls
    propagates and kills the process. Batching must not make that worse, and should make
    it better.
@@ -228,3 +242,11 @@ shape.
   reading these logs, unrelated to this issue, deliberately left alone.
 - Evaluation-phase and delivery-phase store calls. They run over the ~100 selected jobs,
   not the ~19,000 discovered ones, so they are not what spends the hour.
+- The canonical-resolution loop at the end of `collect_candidates`. It stays per-job.
+  Batching it means restructuring a loop that interleaves outbound page fetches, a
+  resolver, re-attribution, and store writes whose results feed the next decision — a
+  different problem from "the same write, N times". It is bounded for non-ATS URLs by
+  `max_canonical_resolutions_per_run` but unbounded for jobs already on a supported ATS
+  URL, and that is the cost principle 2 above names.
+  `test_collect_candidates_resolver_tail_is_not_batched` records its per-job shape so a
+  change to it is visible.
