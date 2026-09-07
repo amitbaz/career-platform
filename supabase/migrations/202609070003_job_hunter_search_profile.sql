@@ -107,3 +107,5 @@ create policy delete_own on public.job_hunter_search_profile_markets
 
 create index job_hunter_search_profile_markets_profile_id_idx
   on public.job_hunter_search_profile_markets (profile_id);
+create index job_hunter_search_profile_markets_user_id_idx
+  on public.job_hunter_search_profile_markets (user_id);
