@@ -2,6 +2,28 @@
 
 Guidance for coding agents working in this repository.
 
+## What this project is optimising for
+
+**The search-and-match engine is the product. Everything else is a surface.** Telegram, the
+scheduled daily run, and any future application consume the engine; none of them is where
+matching lives. See [ADR-0001](docs/adr/0001-the-engine-is-the-product.md), and epic #114 for
+the decisions in full.
+
+Four rules follow, and they decide most judgement calls in this repository:
+
+1. **Match quality is the product; everything else is packaging.** When a change could improve
+   match quality or improve a surface, match quality wins.
+2. **Cost scales with jobs, not with users.** Objective facts about a posting are extracted once
+   and shared. Any change that makes that work per-user is a regression, however convenient.
+3. **No matching, ranking, eligibility or scoring logic in a surface.** A surface asks the engine
+   and renders the answer. Logic that leaks into an adapter has to be extracted again before the
+   next surface can exist.
+4. **Measure quality claims; do not assert them.** Yield per source is already recorded. A claim
+   about match quality without a number behind it is a hypothesis, and should be written as one.
+
+Use the vocabulary in [CONTEXT.md](CONTEXT.md) — in code, tests, issues and specs. The terms
+there exist because their synonyms have already caused confusion here.
+
 ## What this repository is
 
 A single monorepo holding the whole career platform:
