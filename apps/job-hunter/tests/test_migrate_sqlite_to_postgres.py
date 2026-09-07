@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from job_hunter.store_mapping import from_iso
 from job_hunter.supabase_client import SupabaseClient
 from scripts.migrate_sqlite_to_postgres import migrate
 
@@ -200,6 +202,23 @@ CREATE TABLE search_api_usage (
     occurred_at TEXT NOT NULL
 );
 
+CREATE TABLE gemini_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    run_id TEXT,
+    model TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    status TEXT NOT NULL,
+    estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER,
+    output_tokens INTEGER,
+    thinking_tokens INTEGER,
+    cached_tokens INTEGER,
+    total_tokens INTEGER,
+    http_status INTEGER,
+    error_code TEXT
+);
+
 CREATE TABLE telegram_navigation_sessions (
     session_id          TEXT PRIMARY KEY,
     cards_json          TEXT NOT NULL,
@@ -258,6 +277,7 @@ def build_legacy_db(
     application_events: list[dict[str, Any]] | None = None,
     review_deliveries: list[dict[str, Any]] | None = None,
     search_api_usage: list[dict[str, Any]] | None = None,
+    gemini_usage: list[dict[str, Any]] | None = None,
     sessions: list[dict[str, Any]] | None = None,
 ) -> Path:
     db_path = tmp_path / "legacy.sqlite3"
@@ -420,6 +440,23 @@ def build_legacy_db(
             review_deliveries or [],
         )
         _insert(conn, "search_api_usage", {}, search_api_usage or [])
+        _insert(
+            conn,
+            "gemini_usage",
+            {
+                "run_id": None,
+                "status": "success",
+                "estimated_input_tokens": 0,
+                "prompt_tokens": None,
+                "output_tokens": None,
+                "thinking_tokens": None,
+                "cached_tokens": None,
+                "total_tokens": None,
+                "http_status": None,
+                "error_code": None,
+            },
+            gemini_usage or [],
+        )
         _insert(conn, "telegram_navigation_sessions", {"telegram_message_id": None}, sessions or [])
         conn.commit()
     finally:
@@ -657,3 +694,81 @@ def test_tables_absent_from_the_sqlite_file_migrate_as_zero(tmp_path, supabase_c
     counts = migrate(db_path, supabase_client)
 
     assert all(value == 0 for value in counts.values())
+
+
+def test_gemini_usage_rows_are_carried_with_their_token_accounting(
+    tmp_path, supabase_client: SupabaseClient
+):
+    """The AI ledger must survive the move, values intact.
+
+    `gemini_usage_rows` reads this table back to pace against Gemini's
+    rolling per-minute, per-day and token limits, so dropping it would leave
+    those windows empty and let a run exceed a daily cap it had already
+    partly spent.
+    """
+    sqlite_path = build_legacy_db(
+        tmp_path,
+        gemini_usage=[
+            {
+                "occurred_at": "2026-09-02T10:05:37.841539+00:00",
+                "run_id": "33617613605",
+                "model": "gemini-3.6-flash",
+                "purpose": "gmail_semantic",
+                "status": "success",
+                "estimated_input_tokens": 5172,
+                "prompt_tokens": 8388,
+                "output_tokens": 657,
+                "total_tokens": 9045,
+            }
+        ],
+    )
+
+    counts = migrate(sqlite_path, supabase_client)
+
+    assert counts["gemini_usage"] == 1
+    stored = supabase_client.select(
+        "job_hunter_ai_usage", params={"run_id": "eq.33617613605"}
+    )
+    assert len(stored) == 1
+    row = stored[0]
+    assert row["provider"] == "gemini"
+    assert row["model"] == "gemini-3.6-flash"
+    assert row["purpose"] == "gmail_semantic"
+    assert row["status"] == "success"
+    assert row["estimated_input_tokens"] == 5172
+    assert row["prompt_tokens"] == 8388
+    assert row["output_tokens"] == 657
+    assert row["total_tokens"] == 9045
+    assert from_iso(row["occurred_at"]) == datetime(
+        2026, 9, 2, 10, 5, 37, 841539, tzinfo=timezone.utc
+    )
+
+
+def test_gemini_usage_row_without_a_run_id_becomes_unknown(
+    tmp_path, supabase_client: SupabaseClient
+):
+    """`run_id` is nullable in SQLite and NOT NULL in Postgres.
+
+    Migration 202609060003 backfilled existing nulls to 'unknown' and
+    `record_gemini_usage` uses the same sentinel, so a legacy row with no
+    run id must land on it rather than failing the insert.
+    """
+    sqlite_path = build_legacy_db(
+        tmp_path,
+        gemini_usage=[
+            {
+                "occurred_at": "2026-09-02T11:00:00+00:00",
+                "run_id": None,
+                "model": "gemini-3.6-flash",
+                "purpose": "evaluation",
+                "status": "success",
+            }
+        ],
+    )
+
+    migrate(sqlite_path, supabase_client)
+
+    stored = supabase_client.select(
+        "job_hunter_ai_usage", params={"purpose": "eq.evaluation"}
+    )
+    assert [row["run_id"] for row in stored] == ["unknown"]

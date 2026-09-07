@@ -168,6 +168,7 @@ def migrate(sqlite_path: Path, client: SupabaseClient) -> dict[str, int]:
         event_id_map = _migrate_application_events(conn, client, job_id_map, counts)
         _migrate_review_deliveries(conn, client, event_id_map, counts)
         _migrate_search_api_usage(conn, client, counts)
+        _migrate_gemini_usage(conn, client, counts)
         _migrate_navigation_sessions(conn, client, job_id_map, counts)
     finally:
         conn.close()
@@ -610,6 +611,53 @@ def _migrate_search_api_usage(
         )
         migrated += 1
     counts["search_api_usage"] = migrated
+
+
+def _migrate_gemini_usage(
+    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+) -> None:
+    """Carry the AI accounting ledger across (`gemini_usage` -> `job_hunter_ai_usage`).
+
+    The destination is the renamed table from issue #70: one row per model
+    call, read back by `gemini_usage_rows` to pace against Gemini's rolling
+    per-minute, per-day and token limits. Dropping it would leave those
+    windows empty, so a migration part-way through a day would let the run
+    exceed the free-tier daily cap it had already partly spent -- the same
+    shape as an empty search budget ledger.
+
+    `run_id` is nullable in the legacy schema but NOT NULL in Postgres, so a
+    missing one becomes `'unknown'`, matching both the backfill in migration
+    202609060003 and `PostgresJobStore.record_gemini_usage`'s own fallback.
+    `provider` does not exist in the legacy table, which predates any second
+    provider; every row it holds is Gemini.
+    """
+    migrated = 0
+    for row in _rows(conn, "gemini_usage"):
+        payload = {
+            "user_id": client.user_id,
+            "provider": "gemini",
+            "occurred_at": _iso("gemini_usage", "occurred_at", row["occurred_at"]),
+            "run_id": row["run_id"] or "unknown",
+            "model": row["model"],
+            "purpose": row["purpose"],
+            "status": row["status"],
+            "estimated_input_tokens": row["estimated_input_tokens"],
+            "prompt_tokens": row["prompt_tokens"],
+            "output_tokens": row["output_tokens"],
+            "thinking_tokens": row["thinking_tokens"],
+            "cached_tokens": row["cached_tokens"],
+            "total_tokens": row["total_tokens"],
+            "http_status": row["http_status"],
+            "error_code": row["error_code"],
+        }
+        _upsert_one(
+            client,
+            "job_hunter_ai_usage",
+            payload,
+            on_conflict="user_id,run_id,model,purpose,occurred_at",
+        )
+        migrated += 1
+    counts["gemini_usage"] = migrated
 
 
 def _remap_cards(
