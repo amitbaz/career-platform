@@ -140,3 +140,30 @@ revoke execute on function public.list_user_provider_credentials() from public, 
 grant execute on function public.set_user_provider_credential(text, text) to authenticated;
 grant execute on function public.delete_user_provider_credential(text) to authenticated;
 grant execute on function public.list_user_provider_credentials() to authenticated;
+
+create function public.job_hunter_get_provider_credentials()
+returns table(provider text, secret text)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+begin
+  if v_user_id is null
+     or coalesce((select auth.jwt() -> 'job_hunter_runner'), 'false'::jsonb) <> 'true'::jsonb then
+    raise exception using errcode = '42501', message = 'trusted Job Hunter runner required';
+  end if;
+
+  return query
+  select credentials.provider, decrypted.decrypted_secret
+    from private.user_provider_credentials as credentials
+    join vault.decrypted_secrets as decrypted
+      on decrypted.id = credentials.vault_secret_id
+   where credentials.user_id = v_user_id
+   order by credentials.provider;
+end;
+$$;
+
+revoke execute on function public.job_hunter_get_provider_credentials() from public, anon;
+grant execute on function public.job_hunter_get_provider_credentials() to authenticated;
