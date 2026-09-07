@@ -114,7 +114,12 @@ def test_staged_source_does_not_guess_from_an_unrecognized_linkedin_title():
     assert job.location == ""
 
 
-def test_same_canonical_url_already_materialized_by_public_source_is_not_emitted(store, tmp_path):
+def test_same_canonical_url_on_unevaluated_public_job_is_still_emitted(store):
+    """A public job that has not been evaluated must not suppress the candidate.
+
+    This is the retry #96 exists for: a Gmail posting that was materialized
+    but missed a shortlist has to come back on the next run.
+    """
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-123",
@@ -135,10 +140,40 @@ def test_same_canonical_url_already_materialized_by_public_source_is_not_emitted
         )
     )
 
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.source == "gmail:linkedin"
+    assert job.source_job_id == "linkedin:job-123"
+
+
+def test_same_canonical_url_on_closed_public_job_is_not_emitted(store):
+    """A terminal public job suppresses the candidate across sources."""
+    store.stage_inbound_job(
+        "message-1",
+        "linkedin:job-123",
+        ExtractedJob(
+            source_platform="linkedin",
+            url="https://jobs.example.com/role?utm_source=linkedin",
+            company="Email Company",
+            title="Email Title",
+        ),
+    )
+    job_id, _, _ = store.upsert_job(
+        Job(
+            source="public",
+            source_job_id="public-123",
+            url="https://jobs.example.com/role",
+            company="Public Company",
+            title="Public Title",
+        )
+    )
+    store.set_job_status(job_id, "closed")
+
     assert GmailStagedSource(store).discover() == []
 
 
-def test_same_identity_already_materialized_by_public_source_is_not_emitted(store, tmp_path):
+def test_same_identity_on_unevaluated_public_job_is_still_emitted(store):
+    """Identity matching alone does not suppress; completeness does."""
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-123",
@@ -159,5 +194,39 @@ def test_same_identity_already_materialized_by_public_source_is_not_emitted(stor
             location=" berlin ",
         )
     )
+
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.source == "gmail:linkedin"
+    assert job.source_job_id == "linkedin:job-123"
+
+
+def test_same_identity_on_closed_public_job_is_not_emitted(store):
+    """The normalized company/title/location branch honours terminal status.
+
+    Proves the identity match really is what suppresses here: the two jobs
+    share no URL at all, only normalized company, title and location.
+    """
+    store.stage_inbound_job(
+        "message-1",
+        "linkedin:job-123",
+        ExtractedJob(
+            source_platform="linkedin",
+            company="  ACME  ",
+            title="Senior   Frontend Engineer",
+            location="Berlin",
+        ),
+    )
+    job_id, _, _ = store.upsert_job(
+        Job(
+            source="public",
+            source_job_id="public-123",
+            url="https://jobs.example.com/role",
+            company="Acme",
+            title="senior frontend engineer",
+            location=" berlin ",
+        )
+    )
+    store.set_job_status(job_id, "closed")
 
     assert GmailStagedSource(store).discover() == []
