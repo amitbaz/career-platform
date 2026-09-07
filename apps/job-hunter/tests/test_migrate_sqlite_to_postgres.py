@@ -12,14 +12,18 @@ search_api_usage, telegram_navigation_sessions) -- store.py itself is gone
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from job_hunter.store_mapping import from_iso
 from job_hunter.supabase_client import SupabaseClient
+from scripts.migrate_sqlite_to_postgres import main as migration_main
 from scripts.migrate_sqlite_to_postgres import migrate
 
 _SCHEMA = """
@@ -772,3 +776,40 @@ def test_gemini_usage_row_without_a_run_id_becomes_unknown(
         "job_hunter_ai_usage", params={"purpose": "eq.evaluation"}
     )
     assert [row["run_id"] for row in stored] == ["unknown"]
+
+
+def test_cli_rejects_a_missing_sqlite_file(tmp_path, capsys):
+    """The entry point fails on a bad path before it builds any client.
+
+    `migrate` is destructive to the destination in the sense that it writes;
+    a typo in `--sqlite` should stop at argument parsing rather than after a
+    connection is opened.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        migration_main(["--sqlite", str(tmp_path / "nope.sqlite3"), "--yes"])
+
+    assert excinfo.value.code == 2
+    assert "no such SQLite file" in capsys.readouterr().err
+
+
+def test_cli_aborts_without_confirmation(tmp_path, monkeypatch, capsys):
+    """Without `--yes` the operator must type the confirmation word.
+
+    The destination is decided entirely by environment variables, so the
+    prompt naming the URL and user is the only thing between a rehearsal
+    against a local stack and a write to production.
+    """
+    sqlite_path = build_legacy_db(tmp_path)
+    monkeypatch.setenv("JOB_HUNTER_USER_ID", "aaaaaaaa-0000-0000-0000-000000000001")
+    monkeypatch.setenv("SUPABASE_URL", "https://example.test")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "publishable")
+    monkeypatch.setenv(
+        "SUPABASE_SIGNING_KEY_B64",
+        base64.b64encode(json.dumps({"kid": "k", "kty": "EC"}).encode()).decode(),
+    )
+    monkeypatch.setattr("builtins.input", lambda *_: "no")
+
+    assert migration_main(["--sqlite", str(sqlite_path)]) == 1
+    out = capsys.readouterr().out
+    assert "https://example.test" in out
+    assert "Aborted." in out

@@ -66,6 +66,7 @@ string, so a run's log is a complete record of every assumption it made.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import sqlite3
@@ -73,6 +74,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from job_hunter.config import load_supabase_settings
+from job_hunter.http import HttpClient
+from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
@@ -710,3 +714,63 @@ def _migrate_navigation_sessions(
         )
         migrated += 1
     counts["telegram_navigation_sessions"] = migrated
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Command-line entry point: `python -m scripts.migrate_sqlite_to_postgres`.
+
+    The module docstring says this migration is run once, by hand. That needs
+    a way to actually run it, so this builds a `SupabaseClient` from the
+    environment exactly as `cli._build_client` does -- meaning it targets
+    whatever `SUPABASE_URL` points at. Point it at the local stack first and
+    rehearse against a copy of the real file: the destination is decided by
+    environment variables alone, and there is no confirmation prompt beyond
+    the one below.
+
+    Prints the per-table counts `migrate` returns, which is what the operator
+    compares against the source database's own counts.
+    """
+    parser = argparse.ArgumentParser(
+        prog="migrate_sqlite_to_postgres",
+        description="Migrate one legacy Job Hunter SQLite file into Postgres.",
+    )
+    parser.add_argument(
+        "--sqlite", required=True, type=Path, help="Path to the legacy SQLite file"
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt (required when stdin is not a terminal)",
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    if not args.sqlite.is_file():
+        parser.error(f"no such SQLite file: {args.sqlite}")
+
+    settings = load_supabase_settings()
+    if not args.yes:
+        print(f"About to migrate {args.sqlite} into {settings.url}")
+        print(f"  as user {settings.user_id}")
+        if input("Type 'migrate' to proceed: ").strip() != "migrate":
+            print("Aborted.")
+            return 1
+
+    client = SupabaseClient(
+        HttpClient(),
+        settings,
+        AccessTokenMinter(settings.user_id, settings.signing_key_jwk),
+    )
+    counts = migrate(args.sqlite, client)
+
+    width = max(len(name) for name in counts)
+    print(f"\nMigrated into {settings.url}:")
+    for name in sorted(counts):
+        print(f"  {name:<{width}}  {counts[name]:>7}")
+    print(f"  {'TOTAL':<{width}}  {sum(counts.values()):>7}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by hand
+    raise SystemExit(main())
