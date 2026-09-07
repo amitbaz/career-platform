@@ -1,6 +1,7 @@
 name: Job Hunter CI
 on:
   push:
+    branches: [main]
     paths:
       - 'apps/job-hunter/**'
       - 'supabase/**'
