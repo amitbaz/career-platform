@@ -43,7 +43,7 @@ all public sources (Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work R
 Cover letter generation + PDF rendering happens on demand, not as part of the daily run: tapping "Gen CL" on a job's Telegram card fires a `repository_dispatch` GitHub Actions workflow that generates (or resends) that job's cover letter and PDF.
 
 - `src/job_hunter/sources/` — public job discovery adapters: Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source fails open: if one adapter errors, the run continues with the rest.
-- `config/search.yml` supports role families, query templates, ATS domains, and `max_search_queries_per_run`; DuckDuckGo queries expand each role/template pair across the configured ATS domains before deduping.
+- The user's search profile (stored in Postgres) supports role families, query templates, ATS domains, and `max_search_queries_per_run`; DuckDuckGo queries expand each role/template pair across the configured ATS domains before deduping.
 - Only software/product-engineering professions reach Gemini. The default evaluation budget is 35 jobs per run, with source-diverse selection (`source_minimum_per_run: 2`, `source_max_share: 0.5`) when profile extraction succeeds.
 - `src/job_hunter/preferences.py` extracts a compact preference profile from `CANDIDATE_PROFILE_B64`; `src/job_hunter/ranking.py` then uses preferred roles, seniority, must-have signals, location fit, avoid signals, and source quality to rank eligible jobs before Gemini. If profile extraction or diversity selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
 - `skip` evaluations are persisted but never sent to Telegram. Telegram sections are ordered by effective match score descending, unknown decisions are omitted, and only scores strictly greater than 60 are eligible for digest or retry delivery.
@@ -75,7 +75,7 @@ An evaluated job can promote its company to a watch only when its final decision
 
 #### Manual company watch configuration
 
-Add manual watch entries to `config/search.yml` when you know an employer's public ATS board or careers page:
+Add manual watch entries to the user's search profile (stored in Postgres) when you know an employer's public ATS board or careers page:
 
 ```yaml
 manual_company_watch:
@@ -90,7 +90,7 @@ Manual entries are synchronized idempotently and preserved: automatic promotion 
 
 ### Market-driven search
 
-When `markets:` exists in `config/search.yml`, it is authoritative.
+When `markets:` exists in the user's search profile, it is authoritative.
 List order is priority order. `query_share` divides the bounded
 `max_search_queries_per_run` budget, while every enabled market receives
 at least one slot when the budget permits it.
@@ -112,7 +112,7 @@ The six configured markets, in priority (list) order, with their approved gross 
 | `us_nyc_sf` | 0.10 | New York, NYC, San Francisco, Bay Area | USD 180,000 (San Francisco/Bay Area: 200,000) | required |
 | `secondary_eu_relocation` | 0.03 | Amsterdam, Paris, Barcelona | EUR 70,000 (Amsterdam: 90,000; Paris: 80,000) | not required |
 
-Normal tuning — shifting how much search volume a market gets, which job boards are preferred first within a market, or which query phrasing is tried first — should change `query_share`, the order of `source_domains`, or the order of `query_templates` for the relevant market in `config/search.yml`. It should not require code changes.
+Normal tuning — shifting how much search volume a market gets, which job boards are preferred first within a market, or which query phrasing is tried first — should change `query_share`, the order of `source_domains`, or the order of `query_templates` for the relevant market in the user's search profile. It should not require code changes.
 
 ## Required GitHub secrets
 
@@ -187,7 +187,7 @@ Paste the resulting string as the secret value. The bot decodes it in memory at 
 1. In Telegram, message **@BotFather** and send `/newbot`. Follow the prompts to name your bot; BotFather returns a bot token — this is `TELEGRAM_BOT_TOKEN`.
 2. Send any message to your new bot (or add it to a group/channel you want the digest posted to).
 3. Find your chat id without exposing the token in git: call `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser or with `curl` locally (substitute your real token only in that local command, never in a committed file), and read the `chat.id` field from the JSON response for your message.
-4. Store the bot token and chat id as the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` GitHub secrets above. Do not put either value in `config/search.yml`, `.env`, or any committed file.
+4. Store the bot token and chat id as the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` GitHub secrets above. Do not put either value in the user's search profile, `.env`, or any committed file.
 
 ## Gemini API key and free-tier quota setup
 
@@ -261,7 +261,7 @@ nothing to restore before the run or upload afterward:
 
 ## Adding ATS board slugs
 
-Edit `config/search.yml`'s `ats` section to add direct board adapters, keyed by ATS provider, with a list of board identifiers:
+Edit the user's search profile's `ats` section to add direct board adapters, keyed by ATS provider, with a list of board identifiers:
 
 ```yaml
 ats:
