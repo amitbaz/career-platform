@@ -11,6 +11,7 @@ class FakeGemini:
     def __init__(self):
         self.text = ""
         self.prompts = []
+        self.read_timeouts = []
 
     def generate_text(
         self,
@@ -21,8 +22,10 @@ class FakeGemini:
         max_output_tokens=None,
         json_mode=False,
         json_schema=None,
+        read_timeout=None,
     ):
         self.prompts.append((prompt, purpose, thinking_level, max_output_tokens, json_mode))
+        self.read_timeouts.append(read_timeout)
         return self.text
 
 
@@ -189,3 +192,20 @@ def test_cover_letter_repeated_max_tokens_raises_cleanly(job, evaluation, contex
 
     # Bounded: exactly two attempts, never unbounded retrying.
     assert gemini.calls == 2
+
+
+def test_cover_letter_generation_gets_a_longer_read_budget(
+    fake_gemini, job, evaluation, context
+):
+    """A cover letter must not die on the default 25s read timeout.
+
+    It is the longest single generation this app makes, and a slow reply
+    means the model is still writing rather than that something is broken.
+    Every other call keeps the short default, where a slow reply really is
+    a fault worth failing fast on.
+    """
+    fake_gemini.text = "Dear team,\n\nI am writing about the role.\n\nRegards"
+
+    generate_cover_letter(job, evaluation, context, "template", fake_gemini, date(2026, 9, 7))
+
+    assert fake_gemini.read_timeouts == [120]

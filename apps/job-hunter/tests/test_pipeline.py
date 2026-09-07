@@ -54,6 +54,7 @@ class FakeGemini:
         json_mode=False,
         json_schema=None,
         max_attempts=1,
+        read_timeout=None,
     ):
         if purpose == "candidate_context":
             self.preference_calls += 1

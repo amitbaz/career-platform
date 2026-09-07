@@ -58,6 +58,16 @@ Return only the final cover letter text. No markdown code fences, no commentary.
 """
 
 
+# A cover letter is the longest single generation this app asks for, and it
+# routinely takes longer than the HTTP client's default 25s read budget: the
+# model is still writing, not stuck. Everything else -- evaluations, database
+# calls, Telegram sends -- keeps the short default, where a slow reply really
+# does mean something is wrong. Sized well above the observed generation time
+# rather than just above it, because the cost of waiting too long here is one
+# slow run, while the cost of being too tight is no cover letter at all.
+_READ_TIMEOUT_SECONDS = 120
+
+
 def generate_cover_letter(
     job: Job,
     evaluation: Evaluation,
@@ -77,6 +87,7 @@ def generate_cover_letter(
                 purpose="cover_letter",
                 thinking_level="low",
                 max_output_tokens=max_output_tokens,
+                read_timeout=_READ_TIMEOUT_SECONDS,
             )
         except GeminiIncompleteResponse as exc:
             last_finish_reason = exc.finish_reason
