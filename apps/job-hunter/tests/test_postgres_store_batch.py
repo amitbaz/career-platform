@@ -6,6 +6,8 @@ they exercise the real functions, real RLS, and a real token.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from job_hunter.models import Evaluation, Job
@@ -142,6 +144,82 @@ def test_upsert_logical_jobs_skips_a_job_that_fails_on_replay(store, monkeypatch
 
     assert results[0] is not None
     assert results[1] is None
+
+
+def test_upsert_logical_jobs_raises_when_every_chunk_fails(store, monkeypatch):
+    """A systemically broken batch path must stop the run, not replay it per job.
+
+    Falling back to one request per job is the right answer for a single
+    poison posting. It is the wrong answer when the batch path itself is
+    down (statement_timeout, missing function, dead PostgREST): replaying
+    19,000 jobs individually produces a run slower than the unbatched code
+    this replaced, and it looks in the log like a few unlucky postings
+    rather than an outage. After `_CONSECUTIVE_CHUNK_FAILURE_LIMIT` chunks
+    fail back to back, the store raises.
+    """
+    from job_hunter import postgres_store as module
+
+    monkeypatch.setattr(module, "_JOB_UPSERT_CHUNK_SIZE", 1)
+    original_rpc = store._client.rpc
+    replayed: list[str] = []
+
+    def always_failing_batch(function, payload=None, **kwargs):
+        if function == "job_hunter_upsert_jobs":
+            raise RuntimeError("statement timeout")
+        return original_rpc(function, payload, **kwargs)
+
+    def recording_single(job):
+        replayed.append(job.source_job_id)
+        return ("00000000-0000-0000-0000-000000000001", False, False)
+
+    monkeypatch.setattr(store._client, "rpc", always_failing_batch)
+    monkeypatch.setattr(store, "upsert_logical_job", recording_single)
+
+    jobs = [
+        _make_job(f"systemic-{i}", f"Engineer {i}", f"https://example.test/sy{i}")
+        for i in range(10)
+    ]
+
+    with pytest.raises(Exception, match="consecutive batch job upserts failed"):
+        store.upsert_logical_jobs(jobs)
+
+    # It gave the isolated-poison-posting theory exactly
+    # _CONSECUTIVE_CHUNK_FAILURE_LIMIT - 1 chances (one job per chunk here)
+    # before giving up, rather than replaying all ten.
+    assert len(replayed) == module._CONSECUTIVE_CHUNK_FAILURE_LIMIT - 1
+
+
+def test_upsert_logical_jobs_tolerates_isolated_chunk_failures(store, monkeypatch):
+    """The consecutive-failure guard must not fire on scattered bad chunks.
+
+    Failures separated by a success are the poison-posting case the per-job
+    replay exists for, however many of them a run hits. Only an unbroken
+    streak means the batch path itself is down.
+    """
+    from job_hunter import postgres_store as module
+
+    monkeypatch.setattr(module, "_JOB_UPSERT_CHUNK_SIZE", 1)
+    original_rpc = store._client.rpc
+    chunk_number = {"n": 0}
+
+    def failing_on_even_chunks(function, payload=None, **kwargs):
+        if function == "job_hunter_upsert_jobs":
+            chunk_number["n"] += 1
+            if chunk_number["n"] % 2 == 1:
+                raise RuntimeError("one bad posting")
+        return original_rpc(function, payload, **kwargs)
+
+    monkeypatch.setattr(store._client, "rpc", failing_on_even_chunks)
+
+    jobs = [
+        _make_job(f"scattered-{i}", f"Engineer {i}", f"https://example.test/sc{i}")
+        for i in range(8)
+    ]
+
+    results = store.upsert_logical_jobs(jobs)
+
+    assert len(results) == 8
+    assert all(result is not None for result in results)
 
 
 def test_upsert_logical_jobs_on_empty_input_makes_no_request(store, monkeypatch):
@@ -437,6 +515,45 @@ def test_upsert_ats_boards_dedupe_key_is_provider_and_board_only(store, monkeypa
         ("greenhouse", "acme-eu", "Acme Inc.", "israel"),
     ]
     assert newly_registered == 2
+
+
+def test_upsert_ats_boards_backfills_blank_fields_from_a_later_sighting(
+    store, monkeypatch
+):
+    """A board first seen with a blank field must still learn it from a later sighting.
+
+    The per-job loop this replaced called `upsert_ats_board` once per
+    sighting, and that method's `company_name or row["company_name"]` meant
+    the second sighting backfilled whatever the first left blank. Freezing
+    the first sighting would keep the blank for the whole run -- and a blank
+    `market_hint` costs the board its place in `select_ats_boards`' market
+    ranking, so this is not cosmetic.
+    """
+    calls: list[tuple[str, str, str, str]] = []
+    original = store.upsert_ats_board
+
+    def counting(provider, board_identifier, company_name="", market_hint=""):
+        calls.append((provider, board_identifier, company_name, market_hint))
+        return original(provider, board_identifier, company_name, market_hint)
+
+    monkeypatch.setattr(store, "upsert_ats_board", counting)
+
+    store.upsert_ats_boards(
+        [
+            ("greenhouse", "backfill", "", ""),  # first sighting knows nothing
+            ("greenhouse", "backfill", "Backfill Inc.", ""),  # learns the company
+            ("greenhouse", "backfill", "Other Name", "israel"),  # learns the market
+        ]
+    )
+
+    # Still one request for the board -- merging must not cost the collapse.
+    assert calls == [("greenhouse", "backfill", "Backfill Inc.", "israel")]
+
+    boards = store.list_due_ats_boards(datetime.now(timezone.utc))
+    matching = [b for b in boards if b.board_identifier == "backfill"]
+    assert len(matching) == 1
+    assert matching[0].company_name == "Backfill Inc."
+    assert matching[0].market_hint == "israel"
 
 
 def test_upsert_ats_boards_returns_only_the_newly_registered_count(store):
