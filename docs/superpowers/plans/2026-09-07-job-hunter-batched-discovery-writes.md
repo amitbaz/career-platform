@@ -23,27 +23,39 @@
 - Chunk size for job upserts is 500. Chunk size for uuid arrays is 1000.
 - The single-job store methods (`upsert_logical_job`, `set_job_market`, `needs_evaluation`, `upsert_ats_board`) stay. The webhook and cover-letter paths use them.
 
-## Environment setup (do this once, before Task 1)
+## Environment setup (already done — read it, verify it)
 
-The store-backed tests run against the local Supabase stack, not an in-process engine. The stack is already running on this machine; these exports are what pytest needs to see it.
+This work happens in a git worktree at `/Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes`, on branch `fix/job-hunter-batched-discovery-writes`. Run every command from there, never from the main checkout at `/Users/amitbaz/career-platform`.
+
+The setup is already done: `pnpm install` has run, the virtualenv exists at `apps/job-hunter/.venv` (built with the `[test,webhook]` extras — the `[test]`-only line in `apps/job-hunter/AGENTS.md` is wrong and breaks collection on Flask), the local dev `supabase/signing_keys.json` has been copied in, and `supabase db reset` has applied every existing migration to the local stack.
+
+The store-backed tests run against that local Supabase stack, not an in-process engine. A wrapper script exports the three variables pytest needs and runs the worktree's own pytest:
 
 ```bash
-cd /Users/amitbaz/career-platform
-eval "$(supabase status -o env | sed 's/^/export /')"
-export SUPABASE_TEST_URL="$API_URL"
-export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
-export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
+/private/tmp/claude-501/-Users-amitbaz-career-platform/1a3617ba-b8e6-40d5-b7bd-0d9fbff5f5a3/scratchpad/jh-test.sh -q
 ```
 
-**Two traps that will waste your time if you skip them:**
+It takes the same arguments as `pytest`. If the stack has been restarted since it was written, regenerate its inputs:
 
-1. Always run pytest as `apps/job-hunter/.venv/bin/pytest`. A stale global install at `~/job-hunter-bot` hijacks `python -m pytest` and silently tests the wrong code.
-2. Without those exports every store-backed test **skips** rather than fails. A green run with skips is not a passing run. Check the summary line for `skipped`.
+```bash
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
+SP=/private/tmp/claude-501/-Users-amitbaz-career-platform/1a3617ba-b8e6-40d5-b7bd-0d9fbff5f5a3/scratchpad
+supabase status -o env > "$SP/sb.env"
+python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())" > "$SP/key.b64"
+```
+
+**Three traps that will waste your time if you skip them:**
+
+1. Run pytest from `apps/job-hunter/`, not the repository root. `tests/test_vercel_config.py` opens `vercel.json` by a relative path and fails anywhere else.
+2. Always run pytest through `apps/job-hunter/.venv/bin/pytest` (which the wrapper script does). A stale global install at `~/job-hunter-bot` hijacks `python -m pytest` and silently tests the wrong code.
+3. Without those exports every store-backed test **skips** rather than fails. A green run with skips is not a passing run. Check the summary line for `skipped`.
+
+**Baseline:** before Task 0, the suite is `2 failed, 1171 passed` and `pnpm db:test` is `Result: PASS` (263 assertions). The two failures are the subject of Task 0. `main` itself is red on them — CI run 34114033433 on `d12d118` failed with exactly these two.
 
 To apply a new migration to the local stack:
 
 ```bash
-cd /Users/amitbaz/career-platform && supabase db reset
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && supabase db reset
 ```
 
 This drops and rebuilds the local database from `supabase/migrations` plus `supabase/seed.sql`. Local throwaway data only — it never touches the hosted project.
@@ -52,14 +64,195 @@ This drops and rebuilds the local database from `supabase/migrations` plus `supa
 
 | File | Responsibility |
 | --- | --- |
+| `apps/job-hunter/tests/test_gmail_staged_source.py` | Modify: two stale cross-source tests, in Task 0 |
 | `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql` | Create: the three batch functions |
 | `supabase/tests/pgtap/job_hunter_batch_discovery_writes.sql` | Create: behaviour + RLS isolation for those functions |
+| `supabase/tests/pgtap/job_hunter_store_functions.sql` | Modify: the exhaustive function-name assertion, in Task 1 |
 | `apps/job-hunter/src/job_hunter/postgres_store.py` | Modify: add four batch methods, a module logger, generalize `_chunked` |
 | `apps/job-hunter/src/job_hunter/discovery.py` | Modify: restructure `collect_candidates` into phases |
 | `apps/job-hunter/tests/test_postgres_store_batch.py` | Create: batch store method behaviour and fallback |
 | `apps/job-hunter/tests/test_discovery.py` | Modify: request-count regression test |
 | `apps/job-hunter/AGENTS.md` | Modify: the "six SQL functions" count |
 | `docs/superpowers/specs/2026-09-07-job-hunter-batched-discovery-writes-design.md` | Modify: one paragraph, in Task 5 |
+
+---
+
+### Task 0: Correct the stale Gmail cross-source eligibility tests
+
+This task is unrelated to batching. It exists because the branch cannot start from a green baseline without it: `main` is red, and leaving it red would make every later failure in this plan ambiguous.
+
+**Background.** #96 (`d12d118`) changed when a staged Gmail candidate is suppressed. Under the old `job_hunter_unmaterialized_inbound_jobs()`, *any* matching logical job suppressed the candidate. `job_hunter_eligible_inbound_jobs()` suppresses it only when the matching job is **complete** — terminal status (`rejected`/`closed`) or a current successful evaluation — which is the whole point of the issue: a candidate that missed one shortlist must survive to the next run.
+
+#96's own design doc states the intended cross-source rule outright: *"a Gmail candidate can enrich an unevaluated matching public job, while a current evaluated public job suppresses further Gmail work"* (`apps/job-hunter/docs/superpowers/specs/2026-09-07-linkedin-gmail-candidate-eligibility-design.md`). Its acceptance criterion 5 asks that the cross-source tests "remain valid" — and that is the step that was missed. #96 updated `FakeStagedJobStore.list_unmaterialized_inbound_jobs` to `list_eligible_inbound_jobs` but left two store-backed tests asserting the old rule.
+
+So the production code is right and the tests are wrong. Do not "fix" the SQL or the source to make them pass — that would reintroduce the bug #96 fixed.
+
+The matching itself works. Both branches (canonical URL, normalized identity) find the public job; only the completeness gate lets the candidate through. Verified against the local stack: adding `store.set_job_status(job_id, "closed")` to each of the two tests makes both pass unchanged otherwise.
+
+**Files:**
+- Modify: `apps/job-hunter/tests/test_gmail_staged_source.py:117-163`
+
+**Interfaces:**
+- Consumes: `PostgresJobStore.set_job_status(job_id, status)` (`apps/job-hunter/src/job_hunter/postgres_store.py:1590`), which accepts only `"rejected"` or `"closed"`; `PostgresJobStore.upsert_job(job)` returns `tuple[str, bool, bool]` whose first element is the job id.
+- Produces: nothing later tasks depend on.
+
+- [ ] **Step 1: Confirm the failure and its cause**
+
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && /private/tmp/claude-501/-Users-amitbaz-career-platform/1a3617ba-b8e6-40d5-b7bd-0d9fbff5f5a3/scratchpad/jh-test.sh -q tests/test_gmail_staged_source.py`
+
+Expected: `2 failed, 4 passed`, both failures `AssertionError: assert [Job(source='gmail:linkedin', ...)] == []`. The candidate is emitted because the matching public job has no evaluation and a non-terminal status.
+
+- [ ] **Step 2: Replace the two tests with four**
+
+In `apps/job-hunter/tests/test_gmail_staged_source.py`, replace both `test_same_canonical_url_already_materialized_by_public_source_is_not_emitted` and `test_same_identity_already_materialized_by_public_source_is_not_emitted` — the whole block from line 117 to the end of the file — with:
+
+```python
+def test_same_canonical_url_on_unevaluated_public_job_is_still_emitted(store):
+    """A public job that has not been evaluated must not suppress the candidate.
+
+    This is the retry #96 exists for: a Gmail posting that was materialized
+    but missed a shortlist has to come back on the next run.
+    """
+    store.stage_inbound_job(
+        "message-1",
+        "linkedin:job-123",
+        ExtractedJob(
+            source_platform="linkedin",
+            url="https://jobs.example.com/role?utm_source=linkedin",
+            company="Email Company",
+            title="Email Title",
+        ),
+    )
+    store.upsert_job(
+        Job(
+            source="public",
+            source_job_id="public-123",
+            url="https://jobs.example.com/role",
+            company="Public Company",
+            title="Public Title",
+        )
+    )
+
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.source == "gmail:linkedin"
+    assert job.source_job_id == "linkedin:job-123"
+
+
+def test_same_canonical_url_on_closed_public_job_is_not_emitted(store):
+    """A terminal public job suppresses the candidate across sources."""
+    store.stage_inbound_job(
+        "message-1",
+        "linkedin:job-123",
+        ExtractedJob(
+            source_platform="linkedin",
+            url="https://jobs.example.com/role?utm_source=linkedin",
+            company="Email Company",
+            title="Email Title",
+        ),
+    )
+    job_id, _, _ = store.upsert_job(
+        Job(
+            source="public",
+            source_job_id="public-123",
+            url="https://jobs.example.com/role",
+            company="Public Company",
+            title="Public Title",
+        )
+    )
+    store.set_job_status(job_id, "closed")
+
+    assert GmailStagedSource(store).discover() == []
+
+
+def test_same_identity_on_unevaluated_public_job_is_still_emitted(store):
+    """Identity matching alone does not suppress; completeness does."""
+    store.stage_inbound_job(
+        "message-1",
+        "linkedin:job-123",
+        ExtractedJob(
+            source_platform="linkedin",
+            company="  ACME  ",
+            title="Senior   Frontend Engineer",
+            location="Berlin",
+        ),
+    )
+    store.upsert_job(
+        Job(
+            source="public",
+            source_job_id="public-123",
+            url="https://jobs.example.com/role",
+            company="Acme",
+            title="senior frontend engineer",
+            location=" berlin ",
+        )
+    )
+
+    [job] = GmailStagedSource(store).discover()
+
+    assert job.source == "gmail:linkedin"
+    assert job.source_job_id == "linkedin:job-123"
+
+
+def test_same_identity_on_closed_public_job_is_not_emitted(store):
+    """The normalized company/title/location branch honours terminal status.
+
+    Proves the identity match really is what suppresses here: the two jobs
+    share no URL at all, only normalized company, title and location.
+    """
+    store.stage_inbound_job(
+        "message-1",
+        "linkedin:job-123",
+        ExtractedJob(
+            source_platform="linkedin",
+            company="  ACME  ",
+            title="Senior   Frontend Engineer",
+            location="Berlin",
+        ),
+    )
+    job_id, _, _ = store.upsert_job(
+        Job(
+            source="public",
+            source_job_id="public-123",
+            url="https://jobs.example.com/role",
+            company="Acme",
+            title="senior frontend engineer",
+            location=" berlin ",
+        )
+    )
+    store.set_job_status(job_id, "closed")
+
+    assert GmailStagedSource(store).discover() == []
+```
+
+The two "still emitted" tests are the ones that pin #96's behaviour; the two "closed" tests keep the cross-source suppression path covered, which is what the old tests were really there for.
+
+- [ ] **Step 3: Run the file and verify all four pass**
+
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && /private/tmp/claude-501/-Users-amitbaz-career-platform/1a3617ba-b8e6-40d5-b7bd-0d9fbff5f5a3/scratchpad/jh-test.sh -q tests/test_gmail_staged_source.py`
+
+Expected: `6 passed`. If any is `skipped`, the environment is not set up — see "Environment setup"; a skip here proves nothing.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
+git add apps/job-hunter/tests/test_gmail_staged_source.py
+git commit -m "$(cat <<'EOF'
+test: align the Gmail cross-source tests with eligibility
+
+#96 replaced materialization with completeness as the rule for suppressing a
+staged Gmail candidate, so an unevaluated public job no longer hides one. Two
+cross-source tests were left asserting the old rule and have been red on main
+since that merge.
+
+Assert the new rule in both directions: an unevaluated match still emits the
+candidate, a closed one suppresses it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
 
 ---
 
@@ -164,7 +357,7 @@ rollback;
 
 - [ ] **Step 2: Run it and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform && pnpm db:test`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && pnpm db:test`
 Expected: FAIL — `function public.job_hunter_upsert_jobs(jsonb) does not exist`.
 
 - [ ] **Step 3: Write the migration**
@@ -230,16 +423,34 @@ comment on function public.job_hunter_upsert_jobs(jsonb) is
   'the bad element.';
 ```
 
-- [ ] **Step 4: Apply it and run the test**
+- [ ] **Step 4: Extend the exhaustive function-name assertion**
 
-Run: `cd /Users/amitbaz/career-platform && supabase db reset && pnpm db:test`
-Expected: PASS, all assertions in the new file green.
+`supabase/tests/pgtap/job_hunter_store_functions.sql:87-106` asserts the *complete* sorted list of `public.job_hunter_*` functions, deliberately, so that adding one forces someone to look at the coverage checks above it. Adding a function without updating it turns that file red. Update it now for all three functions this plan adds, even though only one exists yet — the other two arrive in Tasks 3 and 4, and splitting this edit across three tasks would leave the suite red in between.
 
-- [ ] **Step 5: Commit**
+Add the three names to the array, keeping it sorted:
+
+- `'job_hunter_needs_evaluation',` between `'job_hunter_merge_jobs',` and `'job_hunter_normalize_company',`
+- `'job_hunter_set_job_markets',` between `'job_hunter_pending_review_events',` and `'job_hunter_upsert_job'`
+- `'job_hunter_upsert_jobs'` after `'job_hunter_upsert_job',` (it sorts last: same prefix, longer)
+
+and change the assertion's description from `thirteen` to `sixteen`:
+
+```sql
+  'exactly the sixteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+```
+
+Because Tasks 3 and 4 have not run yet, this file is now *expected* to fail until Task 4 lands. That is deliberate and it is the only place in this plan where a committed test is knowingly red. Task 3 Step 4 and Task 4's `pnpm db:test` steps are what turn it green again; if `pnpm db:test` still reports a missing function after Task 4, that is a real bug, not this.
+
+- [ ] **Step 5: Apply it and run the test**
+
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && supabase db reset && pnpm db:test`
+Expected: every assertion in `job_hunter_batch_discovery_writes.sql` green. `job_hunter_store_functions.sql` fails on the function-name array, listing `job_hunter_needs_evaluation` and `job_hunter_set_job_markets` as missing — expected until Task 4, per Step 4.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/amitbaz/career-platform
-git add supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql supabase/tests/pgtap/job_hunter_batch_discovery_writes.sql
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
+git add supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql supabase/tests/pgtap/job_hunter_batch_discovery_writes.sql supabase/tests/pgtap/job_hunter_store_functions.sql
 git commit -m "$(cat <<'EOF'
 feat(db): add a batch job upsert function
 
@@ -408,7 +619,7 @@ def test_upsert_logical_jobs_on_empty_input_makes_no_request(store, monkeypatch)
 
 - [ ] **Step 2: Run the tests and verify they fail**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
 Expected: FAIL with `AttributeError: 'PostgresJobStore' object has no attribute 'upsert_logical_jobs'`. If instead you see `s` (skipped), the environment exports from "Environment setup" are missing — fix that before continuing.
 
 - [ ] **Step 3: Add the module logger and generalize `_chunked`**
@@ -514,13 +725,13 @@ Add to `PostgresJobStore`, directly after `upsert_logical_job`:
 
 - [ ] **Step 6: Run the tests and verify they pass**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
 Expected: PASS, 6 passed, 0 skipped.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/amitbaz/career-platform
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
 git add apps/job-hunter/src/job_hunter/postgres_store.py apps/job-hunter/tests/test_postgres_store_batch.py
 git commit -m "$(cat <<'EOF'
 job-hunter: add a chunked batch job upsert to the store
@@ -588,7 +799,7 @@ select is(
 
 - [ ] **Step 2: Run and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform && pnpm db:test`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && pnpm db:test`
 Expected: FAIL — `function public.job_hunter_needs_evaluation(uuid[]) does not exist`.
 
 - [ ] **Step 3: Add the function to the migration**
@@ -638,8 +849,8 @@ comment on function public.job_hunter_needs_evaluation(uuid[]) is
 
 - [ ] **Step 4: Apply and verify the pgTAP passes**
 
-Run: `cd /Users/amitbaz/career-platform && supabase db reset && pnpm db:test`
-Expected: PASS.
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && supabase db reset && pnpm db:test`
+Expected: every assertion in `job_hunter_batch_discovery_writes.sql` green. `job_hunter_store_functions.sql` still fails on its function-name array, now listing only `job_hunter_set_job_markets` as missing — expected until Task 4, per Task 1 Step 4. If it lists anything else, stop and read the diff.
 
 - [ ] **Step 5: Write the failing Python test**
 
@@ -708,7 +919,7 @@ def test_needs_evaluation_bulk_on_empty_input_makes_no_request(store, monkeypatc
 
 - [ ] **Step 6: Run and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q -k needs_evaluation_bulk`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q -k needs_evaluation_bulk`
 Expected: FAIL with `AttributeError: ... has no attribute 'needs_evaluation_bulk'`.
 
 - [ ] **Step 7: Write the store method**
@@ -746,13 +957,13 @@ Add to `PostgresJobStore`, directly after `needs_evaluation`:
 
 - [ ] **Step 8: Run and verify it passes**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
 Expected: PASS, 10 passed, 0 skipped.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd /Users/amitbaz/career-platform
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
 git add supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql supabase/tests/pgtap/job_hunter_batch_discovery_writes.sql apps/job-hunter/src/job_hunter/postgres_store.py apps/job-hunter/tests/test_postgres_store_batch.py
 git commit -m "$(cat <<'EOF'
 job-hunter: answer needs_evaluation in bulk
@@ -819,7 +1030,7 @@ select is(
 
 - [ ] **Step 2: Run and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform && pnpm db:test`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && pnpm db:test`
 Expected: FAIL — `function public.job_hunter_set_job_markets(jsonb) does not exist`.
 
 - [ ] **Step 3: Add the function**
@@ -849,8 +1060,8 @@ comment on function public.job_hunter_set_job_markets(jsonb) is
 
 - [ ] **Step 4: Apply and verify the pgTAP passes**
 
-Run: `cd /Users/amitbaz/career-platform && supabase db reset && pnpm db:test`
-Expected: PASS.
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && supabase db reset && pnpm db:test`
+Expected: `Result: PASS` for the whole suite. All three functions now exist, so the function-name array in `job_hunter_store_functions.sql` matches for the first time since Task 1 Step 4. If it does not, do not edit that array to match reality — a name that differs from the plan means a function was created under the wrong name.
 
 - [ ] **Step 5: Write the failing Python test**
 
@@ -893,7 +1104,7 @@ def test_set_job_markets_on_empty_input_makes_no_request(store, monkeypatch):
 
 - [ ] **Step 6: Run and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q -k set_job_markets`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q -k set_job_markets`
 Expected: FAIL with `AttributeError: ... has no attribute 'set_job_markets'`.
 
 - [ ] **Step 7: Write the store method**
@@ -923,13 +1134,13 @@ Add directly after `set_job_market`:
 
 - [ ] **Step 8: Run and verify it passes**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
 Expected: PASS, 13 passed, 0 skipped.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd /Users/amitbaz/career-platform
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
 git add supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql supabase/tests/pgtap/job_hunter_batch_discovery_writes.sql apps/job-hunter/src/job_hunter/postgres_store.py apps/job-hunter/tests/test_postgres_store_batch.py
 git commit -m "$(cat <<'EOF'
 job-hunter: set job markets in one request
@@ -1011,7 +1222,7 @@ def test_upsert_ats_boards_on_empty_input_does_nothing(store, monkeypatch):
 
 - [ ] **Step 2: Run and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q -k upsert_ats_boards`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q -k upsert_ats_boards`
 Expected: FAIL with `AttributeError: ... has no attribute 'upsert_ats_boards'`.
 
 - [ ] **Step 3: Write the method**
@@ -1060,7 +1271,7 @@ Add directly after `upsert_ats_board`:
 
 - [ ] **Step 4: Run and verify it passes**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_postgres_store_batch.py -q`
 Expected: PASS, 16 passed, 0 skipped.
 
 - [ ] **Step 5: Correct the spec**
@@ -1082,7 +1293,7 @@ Then change the corresponding phrase in "Restructuring `collect_candidates`" ste
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/amitbaz/career-platform
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
 git add apps/job-hunter/src/job_hunter/postgres_store.py apps/job-hunter/tests/test_postgres_store_batch.py docs/superpowers/specs/2026-09-07-job-hunter-batched-discovery-writes-design.md
 git commit -m "$(cat <<'EOF'
 job-hunter: register each ATS board once per run
@@ -1189,7 +1400,7 @@ def test_collect_candidates_request_count_does_not_grow_with_job_count(
 
 - [ ] **Step 2: Run it and verify it fails**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_discovery.py -q -k request_count`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_discovery.py -q -k request_count`
 Expected: FAIL, with the assertion message showing roughly 20x the single-job request count.
 
 - [ ] **Step 3: Add a pure ATS reference extractor**
@@ -1311,18 +1522,18 @@ Update the import at the top of `discovery.py` to bring in `ats_board_reference`
 
 - [ ] **Step 5: Run the request-count test and verify it passes**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_discovery.py -q -k request_count`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_discovery.py -q -k request_count`
 Expected: PASS.
 
 - [ ] **Step 6: Run the whole discovery and pipeline suites**
 
-Run: `cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest tests/test_discovery.py tests/test_pipeline.py -q`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && .venv/bin/pytest tests/test_discovery.py tests/test_pipeline.py -q`
 Expected: PASS, 0 skipped. These cover the stats counters and `rediscovered_job_ids`; a failure here means one of the three invariants above was broken, not that the test is stale.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/amitbaz/career-platform
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
 git add apps/job-hunter/src/job_hunter/discovery.py apps/job-hunter/src/job_hunter/ats_registry.py apps/job-hunter/tests/test_discovery.py
 git commit -m "$(cat <<'EOF'
 fix: batch discovery's writes so the daily run finishes
@@ -1354,19 +1565,20 @@ EOF
 
 Run:
 ```bash
-cd /Users/amitbaz/career-platform/apps/job-hunter && .venv/bin/pytest -q
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter
+/private/tmp/claude-501/-Users-amitbaz-career-platform/1a3617ba-b8e6-40d5-b7bd-0d9fbff5f5a3/scratchpad/jh-test.sh -q
 ```
-Expected: PASS, 0 failures, 0 skipped. Skips mean the stack env vars are missing — that is a false pass, not a green run.
+Expected: PASS, 0 failures, 0 skipped. The pre-Task-0 baseline was `2 failed, 1171 passed`; Task 0 turns those two into four passing tests, and Tasks 2–6 add more, so the passing count is well above 1175 and the failing count is 0. Skips mean the stack env vars are missing — that is a false pass, not a green run.
 
 - [ ] **Step 3: Run the pgTAP suite**
 
-Run: `cd /Users/amitbaz/career-platform && pnpm db:test`
+Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes && pnpm db:test`
 Expected: PASS.
 
 - [ ] **Step 4: Commit and push**
 
 ```bash
-cd /Users/amitbaz/career-platform
+cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes
 git add apps/job-hunter/AGENTS.md
 git commit -m "$(cat <<'EOF'
 docs: count the three new store functions
@@ -1381,7 +1593,10 @@ git push -u origin fix/job-hunter-batched-discovery-writes
 
 - [ ] **Step 5: Open the pull request**
 
-Use `.github/PULL_REQUEST_TEMPLATE.md`. Fill in: Summary (with `Closes #97`), Scope (`apps/job-hunter`, `supabase`), Testing (the two commands above and their real results), and — this one matters — **Notes for the reviewer** must state that `supabase db push` has to be applied to the hosted project before or with the merge, because the deployed workflow runs `main` and the new store methods call functions that will not exist until then.
+Use `.github/PULL_REQUEST_TEMPLATE.md`. Fill in: Summary (with `Closes #97`), Scope (`apps/job-hunter`, `supabase`), Testing (the two commands above and their real results), and — this one matters — **Notes for the reviewer** must state two things:
+
+1. `supabase db push` has to be applied to the hosted project before or with the merge, because the deployed workflow runs `main` and the new store methods call functions that will not exist until then.
+2. The branch also carries Task 0, which is unrelated to #97: it corrects two Gmail cross-source tests that #96 left asserting pre-#96 behaviour and that have had `main` red since `d12d118` (CI run 34114033433). It changes tests only, no production code. Say so plainly rather than letting a reviewer discover an unexplained test rewrite in a performance PR.
 
 - [ ] **Step 6: Verify the fix in production**
 
@@ -1393,4 +1608,5 @@ After merge and `supabase db push`, trigger the daily workflow and confirm the `
 
 - **Spec coverage:** SQL surface → Tasks 1, 3, 4. Store methods → Tasks 2–5. Failure handling → Task 2. `collect_candidates` restructure → Task 6. Testing → the test steps in every task plus Task 7. Rollout → Task 7 steps 5–6. The spec's fourth-function proposal for ATS boards is deliberately not implemented; Task 5 step 5 corrects the spec.
 - **Deviation:** `upsert_ats_boards` is Python-side deduplication, not a SQL function. Reasoned in Task 5.
+- **Added after the spec was approved:** Task 0 (green baseline; tests only, unrelated to #97) and Task 1 Step 4 (the exhaustive pgTAP function-name array, which three new functions would otherwise break). Neither changes the design.
 - **Out of scope, as the spec says:** the canonical-resolution loop's per-job calls, and the `GMAIL_CLIENT_ID` secret that makes the Gmail sync step fail on every run.
