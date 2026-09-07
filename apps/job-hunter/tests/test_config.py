@@ -11,39 +11,7 @@ from job_hunter.config import (
 from job_hunter.models import CompanyWatchSeed
 from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.search_profile import SearchProfile, SearchProfileMarket
-
-
-class FakeSupabaseClient:
-    """In-memory stand-in for SupabaseClient, scoped to one fake user's rows."""
-
-    def __init__(self):
-        self.user_id = "u1"
-        self.rows = {"job_hunter_search_profiles": [], "job_hunter_search_profile_markets": []}
-        self._next_id = 1
-
-    def _new_id(self):
-        value = f"id-{self._next_id}"
-        self._next_id += 1
-        return value
-
-    def select(self, table, *, params=None):
-        params = params or {}
-        rows = self.rows[table]
-        if "profile_id" in params:
-            rows = [r for r in rows if r["profile_id"] == params["profile_id"].removeprefix("eq.")]
-        return rows[: int(params["limit"])] if "limit" in params else rows
-
-    def upsert(self, table, rows, *, on_conflict):
-        written = []
-        for row in rows:
-            row = dict(row)
-            row.setdefault("id", self._new_id())
-            self.rows[table].append(row)
-            written.append(row)
-        return written
-
-    def delete(self, table, *, params):
-        pass
+from tests.fake_supabase_client import FakeSupabaseClient
 
 
 def _set_required_bot_env(monkeypatch):

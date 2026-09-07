@@ -83,7 +83,7 @@ class LearnedAtsSource:
         checked_at = self._now()
         # Recover before reading the due list, so a board the operator
         # un-rejected is scanned in the same run that recovered it --
-        # editing config/search.yml is the whole recovery procedure.
+        # editing the user's search profile is the whole recovery procedure.
         self._recover_allowlisted_boards()
         due = self._store.list_due_ats_boards(checked_at)
 

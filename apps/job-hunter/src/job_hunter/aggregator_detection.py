@@ -7,7 +7,7 @@ way it identifies a 4,000-posting one -- so no signal here may reject a board
 for its size alone.
 
 This detection is the mechanism, and it needs no operator configuration.
-Two lists in `config/search.yml` are overrides only, never the mechanism:
+Two lists in the user's search profile are overrides only, never the mechanism:
 `learned_ats_denylist` is an instant kill for a board these signals miss,
 enforced in `ats_registry.harvest_ats_board` (refusing admission) and
 `sources/learned_ats.LearnedAtsSource` (rejecting an already-registered

@@ -1,47 +1,6 @@
 from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.search_profile import SearchProfile, SearchProfileMarket
-
-
-class FakeSupabaseClient:
-    def __init__(self):
-        self.user_id = "u1"
-        self.rows = {"job_hunter_search_profiles": [], "job_hunter_search_profile_markets": []}
-        self._next_id = 1
-
-    def _new_id(self) -> str:
-        value = f"id-{self._next_id}"
-        self._next_id += 1
-        return value
-
-    def select(self, table, *, params=None):
-        params = params or {}
-        rows = self.rows[table]
-        if "user_id" in params:
-            rows = [r for r in rows if r["user_id"] == params["user_id"].removeprefix("eq.")]
-        if "profile_id" in params:
-            rows = [r for r in rows if r["profile_id"] == params["profile_id"].removeprefix("eq.")]
-        return rows
-
-    def upsert(self, table, rows, *, on_conflict):
-        written = []
-        for row in rows:
-            row = dict(row)
-            row.setdefault("id", self._new_id())
-            existing = [
-                r for r in self.rows[table]
-                if all(r.get(k) == row.get(k) for k in on_conflict.split(","))
-            ]
-            if existing:
-                existing[0].update(row)
-                written.append(existing[0])
-            else:
-                self.rows[table].append(row)
-                written.append(row)
-        return written
-
-    def delete(self, table, *, params):
-        key = params["profile_id"].removeprefix("eq.")
-        self.rows[table] = [r for r in self.rows[table] if r.get("profile_id") != key]
+from tests.fake_supabase_client import FakeSupabaseClient
 
 
 def _profile() -> SearchProfile:

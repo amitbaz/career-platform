@@ -161,9 +161,10 @@ def _profile_location_fit(job: Job, preferences: CandidatePreferences) -> int:
 
 
 # Markets where remote work is the primary/preferred mode of engagement
-# (config/search.yml remote_policy: "preferred" or "required") count as the
-# candidate's "home" market for location scoring - remote roles there score
-# highest, ahead of remote roles in relocation-style markets.
+# (the user's search profile remote_policy: "preferred" or "required")
+# count as the candidate's "home" market for location scoring - remote
+# roles there score highest, ahead of remote roles in relocation-style
+# markets.
 _HOME_MARKET_REMOTE_POLICIES = frozenset({"preferred", "required"})
 
 
