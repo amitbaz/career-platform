@@ -50,12 +50,13 @@ def test_run_scheduled_skips_outside_target_hour(monkeypatch, tmp_path, caplog):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
     monkeypatch.setattr(cli, "should_run_scheduled", lambda now, tz, hour: False)
+    _patch_build_client(monkeypatch)
 
     called = []
     monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: called.append(s) or RunSummary())
 
     with caplog.at_level("INFO"):
-        exit_code = cli.main(["run", "--scheduled", "--config", "config/search.yml"])
+        exit_code = cli.main(["run", "--scheduled"])
 
     assert exit_code == 0
     assert called == []
@@ -372,7 +373,6 @@ def test_parser_accepts_generate_cover_letter_job_id():
     args = cli.build_parser().parse_args(["generate-cover-letter", "--job-id", "7"])
     assert args.command == "generate-cover-letter"
     assert args.job_id == "7"
-    assert args.config == "config/search.yml"
 
 
 def test_generate_cover_letter_delegates_with_job_id(monkeypatch, tmp_path):
