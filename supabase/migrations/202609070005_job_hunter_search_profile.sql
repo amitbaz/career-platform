@@ -1,4 +1,4 @@
--- 202609070003_job_hunter_search_profile.sql
+-- 202609070005_job_hunter_search_profile.sql
 -- Per-user search configuration (issue #71). One profile row per user;
 -- markets are a child table so each market stays independently RLS-checkable.
 

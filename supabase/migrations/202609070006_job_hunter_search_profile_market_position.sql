@@ -1,4 +1,4 @@
--- 202609070004_job_hunter_search_profile_market_position.sql
+-- 202609070006_job_hunter_search_profile_market_position.sql
 -- job_hunter_search_profile_markets has no ordinal column. save_search_profile
 -- deletes all markets and re-inserts them in one batch; every row in that
 -- batch gets an identical created_at, so ordering by created_at.asc (what
