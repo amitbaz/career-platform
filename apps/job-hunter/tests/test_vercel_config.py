@@ -16,6 +16,10 @@ def test_vercel_config_skips_builds_unaffected_by_a_commit():
     # Without this, every pull request rebuilds this project even when only
     # unrelated files changed, which costs build minutes on a shared free tier.
     assert "../../scripts/vercel-ignore-build.sh" in config["ignoreCommand"]
+    # Job Hunter opts production in as well: it is a Flask function installed
+    # from this directory and importing nothing outside it, so the watched path
+    # list is exhaustive rather than inferred.
+    assert "--allow-production" in config["ignoreCommand"]
 
 
 def test_relay_vercel_config_watches_the_paths_it_is_built_from():
@@ -27,3 +31,6 @@ def test_relay_vercel_config_watches_the_paths_it_is_built_from():
     # and the shared schema both change what it produces.
     for watched in ("':/pnpm-lock.yaml'", "':/supabase'"):
         assert watched in command
+    # Relay deliberately does NOT opt production in. Its watched path list is
+    # inferred, and a missing input would silently fail to deploy a real change.
+    assert "--allow-production" not in command

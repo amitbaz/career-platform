@@ -10,12 +10,23 @@
 # project's own directory are given with git's `:/` prefix, which resolves
 # against the repository root.
 #
-# The bias throughout is to build. A build that runs unnecessarily costs a few
+# Pass --allow-production as the first argument to let production builds be
+# skipped too. Only do that for a project whose pathspecs are known to be
+# complete rather than inferred: if an input is missing from the list, a real
+# change silently fails to deploy, and production is where that hurts. When the
+# list IS complete, a skipped production build is correct — the artifact would
+# have been identical, and the existing deployment stays aliased.
+#
+# The bias otherwise is to build. A build that runs unnecessarily costs a few
 # minutes; a build wrongly skipped ships nothing and is much harder to notice.
 
-# Never skip production. A skipped production build silently leaves the live
-# deployment stale, which is the one outcome worth spending minutes to avoid.
-if [ "${VERCEL_ENV:-}" = "production" ]; then
+allow_production=0
+if [ "${1:-}" = "--allow-production" ]; then
+  allow_production=1
+  shift
+fi
+
+if [ "${VERCEL_ENV:-}" = "production" ] && [ "${allow_production}" -eq 0 ]; then
   exit 1
 fi
 

@@ -8,5 +8,5 @@
       "excludeFiles": "{tests/**,.superpowers/**,docs/**,var/**}"
     }
   },
-  "ignoreCommand": "sh ../../scripts/vercel-ignore-build.sh . ':/scripts/vercel-ignore-build.sh'"
+  "ignoreCommand": "sh ../../scripts/vercel-ignore-build.sh --allow-production . ':/scripts/vercel-ignore-build.sh'"
 }

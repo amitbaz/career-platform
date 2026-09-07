@@ -42,11 +42,46 @@ def _repo(tmp_path):
     ).stdout.strip()
 
 
-def test_production_always_builds_even_when_nothing_changed(tmp_path):
+def test_production_builds_by_default_even_when_nothing_changed(tmp_path):
+    """Without an explicit opt-in, production is never skipped.
+
+    A project whose watched paths are inferred rather than verified can have an
+    input missing from the list. On preview that costs nothing; on production it
+    would silently fail to deploy a real change.
+    """
     base = _repo(tmp_path)
     env = {"PATH": "/usr/bin:/bin", "VERCEL_ENV": "production", "VERCEL_GIT_PREVIOUS_SHA": base}
 
     assert _run(tmp_path, env, "watched") == BUILD
+
+
+def test_production_skips_when_opted_in_and_nothing_changed(tmp_path):
+    base = _repo(tmp_path)
+    (tmp_path / "ignored" / "b.txt").write_text("two\n")
+    _git(tmp_path, "commit", "-aqm", "unrelated change")
+    env = {"PATH": "/usr/bin:/bin", "VERCEL_ENV": "production", "VERCEL_GIT_PREVIOUS_SHA": base}
+
+    assert _run(tmp_path, env, "--allow-production", "watched") == SKIP
+
+
+def test_production_builds_when_opted_in_and_something_changed(tmp_path):
+    base = _repo(tmp_path)
+    (tmp_path / "watched" / "a.txt").write_text("two\n")
+    _git(tmp_path, "commit", "-aqm", "relevant change")
+    env = {"PATH": "/usr/bin:/bin", "VERCEL_ENV": "production", "VERCEL_GIT_PREVIOUS_SHA": base}
+
+    assert _run(tmp_path, env, "--allow-production", "watched") == BUILD
+
+
+def test_opting_in_still_builds_when_the_previous_sha_is_unusable(tmp_path):
+    _repo(tmp_path)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "VERCEL_ENV": "production",
+        "VERCEL_GIT_PREVIOUS_SHA": "0" * 40,
+    }
+
+    assert _run(tmp_path, env, "--allow-production", "watched") == BUILD
 
 
 def test_missing_previous_sha_builds(tmp_path):
