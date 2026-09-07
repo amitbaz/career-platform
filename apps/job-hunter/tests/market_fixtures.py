@@ -57,6 +57,13 @@ def make_market_policy(*, max_queries: int = 30) -> SearchPolicy:
             "full-stack engineer",
         ],
         max_search_queries_per_run=max_queries,
+        specialist_board_hosts=["devjobs.co.il", "wellfound.com"],
+        frontend_signals=["react", "next.js", "nextjs", "frontend", "front-end", "typescript", "design system"],
+        backend_heavy_signals=[
+            "distributed systems", "kubernetes", "golang", "java",
+            "event-driven architecture", "backend architecture",
+            "high-throughput", "message queues",
+        ],
         markets=[
             make_market("germany_eu", 0.35, locations=["Berlin", "Germany", "Europe"], remote_policy="preferred", relocation_policy="selective"),
             make_market("israel_remote", 0.25, locations=["Israel", "Tel Aviv"], currency="ILS", floor=420000, languages=["English", "Hebrew"], remote_policy="required", relocation_policy="none"),

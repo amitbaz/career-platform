@@ -1,5 +1,6 @@
 from job_hunter.models import CandidatePreferences, Job, SearchPolicy
 from job_hunter.ranking import (
+    _backend_transition_penalty,
     market_priority_bonus,
     priority_score,
     profile_priority_score,
@@ -61,9 +62,10 @@ def test_explicit_europe_remote_outranks_unknown_location():
 
 
 def test_ats_url_gets_higher_source_quality_than_general_web_result():
+    policy = make_policy()
     ats = Job(source="duckduckgo", title="Senior Product Engineer", url="https://jobs.ashbyhq.com/acme/123")
     web = Job(source="duckduckgo", title="Senior Product Engineer", url="https://example.com/jobs/123")
-    assert source_quality(ats) > source_quality(web)
+    assert source_quality(ats, policy) > source_quality(web, policy)
 
 
 def test_keyword_repetition_is_capped():
@@ -280,7 +282,34 @@ def test_market_priority_bonus_rewards_higher_priority_market():
 
 
 def test_specialist_board_url_source_quality_between_ats_and_generic_web():
+    policy = make_market_policy()
     ats = Job(source="ashby", title="x", url="https://jobs.ashbyhq.com/acme/1")
     specialist = Job(source="duckduckgo", title="x", url="https://wellfound.com/jobs/123")
     generic = Job(source="duckduckgo", title="x", url="https://example.com/jobs/123")
-    assert source_quality(ats) > source_quality(specialist) > source_quality(generic)
+    assert source_quality(ats, policy) > source_quality(specialist, policy) > source_quality(generic, policy)
+
+
+def test_source_quality_uses_specialist_board_hosts_from_policy():
+    policy = make_market_policy()
+    policy.specialist_board_hosts = ["myboard.example.com"]
+    job = Job(source="web", title="Engineer", url="https://myboard.example.com/jobs/1")
+    assert source_quality(job, policy) == 8
+
+
+def test_source_quality_ignores_host_not_in_policy():
+    policy = make_market_policy()
+    policy.specialist_board_hosts = ["myboard.example.com"]
+    job = Job(source="web", title="Engineer", url="https://devjobs.co.il/jobs/1")
+    assert source_quality(job, policy) == 3
+
+
+def test_backend_transition_penalty_uses_signals_from_policy():
+    policy = make_market_policy()
+    policy.frontend_signals = []
+    policy.backend_heavy_signals = ["kubernetes", "golang"]
+    job = Job(
+        source="web",
+        title="Full Stack Engineer",
+        description="kubernetes golang expert needed",
+    )
+    assert _backend_transition_penalty(job, policy) == 15

@@ -1,10 +1,25 @@
 import base64
-from pathlib import Path
+
 import pytest
 
-from job_hunter.config import load_settings
-from job_hunter.config import load_gmail_settings
-from job_hunter.models import CompanyWatchSeed
+from job_hunter.config import (
+    ProfileNotFoundError,
+    _parse_manual_company_watch,
+    load_gmail_settings,
+    load_settings,
+)
+from job_hunter.models import (
+    DEFAULT_BACKEND_HEAVY_SIGNALS,
+    DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
+    DEFAULT_ENGINEERING_TITLE_KEYWORDS,
+    DEFAULT_ENGINEERING_TITLE_PHRASES,
+    DEFAULT_FRONTEND_SIGNALS,
+    DEFAULT_SPECIALIST_BOARD_HOSTS,
+    CompanyWatchSeed,
+)
+from job_hunter.postgres_store import PostgresJobStore
+from job_hunter.search_profile import SearchProfile, SearchProfileMarket
+from tests.fake_supabase_client import FakeSupabaseClient
 
 
 def _set_required_bot_env(monkeypatch):
@@ -25,34 +40,87 @@ def _set_gemini_free_tier_limits(monkeypatch):
     monkeypatch.setenv("GEMINI_FREE_RPD", "500")
 
 
-def _load_manual_watch_config(monkeypatch, tmp_path, manual_watch_yaml):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds:\n  package: 75\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        f"manual_company_watch: {manual_watch_yaml}\n"
+def _profile(**overrides) -> SearchProfile:
+    defaults = dict(
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        max_jobs_per_run=35,
+        source_minimum_per_run=0,
+        source_max_share=0.5,
+        thresholds={"package": 75, "possible": 65},
+        salary_floor_eur=90000,
+        target_titles=[],
+        positive_keywords=[],
+        blocked_title_keywords=[],
+        search_queries=[],
+        ats={"ashby": [], "lever": [], "greenhouse": []},
+        max_search_queries_per_run=30,
+        max_canonical_resolutions_per_run=80,
+        max_learned_ats_boards_per_run=75,
+        markets=[],
     )
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv(
-        "COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode()
-    )
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    return load_settings(cfg)
+    defaults.update(overrides)
+    return SearchProfile(**defaults)
 
 
-def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch, tmp_path):
+def _store_for(profile: SearchProfile) -> PostgresJobStore:
+    store = PostgresJobStore(FakeSupabaseClient())
+    store.save_search_profile(profile)
+    return store
+
+
+def _load(profile: SearchProfile):
+    return load_settings(_store_for(profile))
+
+
+def test_load_settings_reads_the_search_profile(monkeypatch):
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds:\n  package: 75\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
+    profile = _profile(
+        target_titles=["senior product engineer"],
+        specialist_board_hosts=["jobs.lever.co"],
+        frontend_signals=["react", "typescript"],
+        backend_heavy_signals=["kubernetes", "kafka"],
+        markets=[
+            SearchProfileMarket(
+                market_id="germany_eu",
+                query_share=1.0,
+                currency="EUR",
+                gross_base_floor=90000,
+                remote_policy="preferred",
+                relocation_policy="selective",
+                sponsorship_policy="not_required",
+                direct_sources=["devjobs"],
+            )
+        ],
     )
+    settings = _load(profile)
+    assert settings.timezone == "Europe/Berlin"
+    assert settings.policy.salary_floor_eur == 90000
+    assert settings.policy.target_titles == ["senior product engineer"]
+    assert len(settings.policy.markets) == 1
+    assert settings.policy.markets[0].id == "germany_eu"
+    assert settings.policy.markets[0].direct_sources == ["devjobs"]
+    # Regression: these three lists must round-trip from the saved profile --
+    # they were previously dropped when constructing SearchPolicy, silently
+    # giving every user the dataclass default [] regardless of what they saved.
+    assert settings.policy.specialist_board_hosts == ["jobs.lever.co"]
+    assert settings.policy.frontend_signals == ["react", "typescript"]
+    assert settings.policy.backend_heavy_signals == ["kubernetes", "kafka"]
+
+
+def test_load_settings_raises_when_no_profile_exists():
+    store = PostgresJobStore(FakeSupabaseClient())
+    with pytest.raises(ProfileNotFoundError):
+        load_settings(store)
+
+
+def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch):
+    _set_required_bot_env(monkeypatch)
     monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
     monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
     monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
 
-    bot_settings = load_settings(cfg)
+    bot_settings = _load(_profile())
     gmail_settings = load_gmail_settings()
 
     assert bot_settings.gemini_quota == gmail_settings.gemini_quota
@@ -67,17 +135,12 @@ def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch, tmp_path)
 @pytest.mark.parametrize(
     "name", ["GEMINI_FREE_RPM", "GEMINI_FREE_TPM", "GEMINI_FREE_RPD"]
 )
-def test_gemini_free_tier_limit_is_required(monkeypatch, tmp_path, name):
+def test_gemini_free_tier_limit_is_required(monkeypatch, name):
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds:\n  package: 75\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-    )
     monkeypatch.delenv(name)
 
     with pytest.raises(ValueError, match=name):
-        load_settings(cfg)
+        _load(_profile())
 
 
 @pytest.mark.parametrize(
@@ -88,19 +151,12 @@ def test_gemini_free_tier_limit_is_required(monkeypatch, tmp_path, name):
         ("GEMINI_FREE_RPD", "not-an-integer"),
     ],
 )
-def test_gemini_free_tier_limit_must_be_a_positive_integer(
-    monkeypatch, tmp_path, name, value
-):
+def test_gemini_free_tier_limit_must_be_a_positive_integer(monkeypatch, name, value):
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds:\n  package: 75\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-    )
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
-        load_settings(cfg)
+        _load(_profile())
 
 
 def test_load_gmail_settings_does_not_require_candidate_profile(monkeypatch):
@@ -122,54 +178,34 @@ def test_load_gmail_settings_requires_refresh_token(monkeypatch):
         load_gmail_settings()
 
 
-def test_load_settings_decodes_private_sources(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\nmax_jobs_per_run: 25\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-    )
+def test_load_settings_decodes_private_sources(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
     monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    settings = load_settings(cfg)
+
+    settings = _load(_profile(max_jobs_per_run=25))
     assert settings.candidate_profile == "profile"
     assert settings.cover_letter_template == "template"
     assert settings.timezone == "Europe/Berlin"
     assert settings.dry_run is True
 
 
-def test_load_settings_dry_run_env_zero_is_false(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\nmax_jobs_per_run: 25\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-    )
+def test_load_settings_dry_run_env_zero_is_false(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
     monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "0")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
-    settings = load_settings(cfg)
+
+    settings = _load(_profile(max_jobs_per_run=25))
     assert settings.dry_run is False
 
 
-def test_load_settings_requires_telegram_in_non_dry_run(monkeypatch, tmp_path: Path):
-    import pytest
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\nmax_jobs_per_run: 25\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-    )
+def test_load_settings_requires_telegram_in_non_dry_run(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
     monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
@@ -177,59 +213,53 @@ def test_load_settings_requires_telegram_in_non_dry_run(monkeypatch, tmp_path: P
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     with pytest.raises((ValueError, KeyError)):
-        load_settings(cfg)
+        _load(_profile(max_jobs_per_run=25))
 
 
-def test_load_settings_discovery_config(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\nmax_jobs_per_run: 75\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "engineering_title_keywords:\n"
-        "  - engineer\n"
-        "  - developer\n"
-        "engineering_title_phrases:\n"
-        "  - technical lead\n"
-        "  - frontend lead\n"
-        "  - software architect\n"
-        "blocked_profession_title_phrases:\n"
-        "  - product manager\n"
-        "  - product designer\n"
-        "  - sales engineer\n"
-        "  - data engineer\n"
-        "max_search_queries_per_run: 4\n"
-        "role_families:\n"
-        "  - staff product engineer\n"
-        "  - senior software engineer frontend\n"
-        "search_query_templates:\n"
-        "  - '\"{role}\" React TypeScript remote Europe'\n"
-        "search_domains:\n"
-        "  - jobs.ashbyhq.com\n"
-        "specialist_search_domains:\n"
-        "  - wellfound.com\n"
-        "  - app.welcometothejungle.com\n"
-        "specialist_query_templates:\n"
-        "  - '\"{role}\" remote Europe'\n"
-        "yc_job_pages:\n"
-        "  - https://www.ycombinator.com/jobs/role\n"
-        "manual_company_watch:\n"
-        "  - company_name: Acme GmbH\n"
-        "    ats_provider: greenhouse\n"
-        "    ats_identifier: acme\n"
-        "  - company_name: Beta\n"
-        "    careers_url: https://beta.test/careers\n"
-        "search_queries:\n"
-        "  - '\"Senior Product Engineer\" remote'\n"
-        "ats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-    )
+def test_load_settings_discovery_config(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
     monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    settings = load_settings(cfg)
+
+    settings = _load(
+        _profile(
+            max_jobs_per_run=75,
+            engineering_title_keywords=["engineer", "developer"],
+            engineering_title_phrases=[
+                "technical lead",
+                "frontend lead",
+                "software architect",
+            ],
+            blocked_profession_title_phrases=[
+                "product manager",
+                "product designer",
+                "sales engineer",
+                "data engineer",
+            ],
+            max_search_queries_per_run=4,
+            role_families=[
+                "staff product engineer",
+                "senior software engineer frontend",
+            ],
+            search_query_templates=['"{role}" React TypeScript remote Europe'],
+            search_domains=["jobs.ashbyhq.com"],
+            specialist_search_domains=["wellfound.com", "app.welcometothejungle.com"],
+            specialist_query_templates=['"{role}" remote Europe'],
+            yc_job_pages=["https://www.ycombinator.com/jobs/role"],
+            manual_company_watch=[
+                {
+                    "company_name": "Acme GmbH",
+                    "ats_provider": "greenhouse",
+                    "ats_identifier": "acme",
+                },
+                {"company_name": "Beta", "careers_url": "https://beta.test/careers"},
+            ],
+            search_queries=['"Senior Product Engineer" remote'],
+        )
+    )
     assert settings.policy.max_jobs_per_run == 75
     assert settings.policy.engineering_title_keywords == ["engineer", "developer"]
     assert settings.policy.engineering_title_phrases == [
@@ -272,19 +302,13 @@ def test_load_settings_discovery_config(monkeypatch, tmp_path: Path):
     assert settings.policy.search_queries == ['"Senior Product Engineer" remote']
 
 
-def test_load_settings_uses_profile_discovery_defaults(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-    )
+def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
     monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    settings = load_settings(cfg)
+
+    settings = _load(_profile())
 
     assert settings.policy.max_jobs_per_run == 35
     assert settings.policy.source_minimum_per_run == 0
@@ -294,279 +318,209 @@ def test_load_settings_uses_profile_discovery_defaults(monkeypatch, tmp_path: Pa
     assert settings.policy.learned_ats_denylist == []
 
 
-def test_load_settings_reads_learned_ats_denylist(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-        "learned_ats_denylist:\n  - lever:jobgether\n"
-    )
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    settings = load_settings(cfg)
+def test_load_settings_falls_back_to_defaults_for_empty_ranking_lists(monkeypatch):
+    """A profile that never explicitly configured these six list fields still
+    gets the known-good ranking defaults, not an empty list.
 
+    Every one of these columns is `not null default '{}'` in Postgres, so
+    "missing" never happens -- but "empty" does, for any profile that was
+    never edited for these fields. Detection logic must work with zero
+    operator knowledge, so an unconfigured profile must fall back exactly
+    like one saved before these fields existed.
+    """
+    _set_required_bot_env(monkeypatch)
+    settings = _load(
+        _profile(
+            engineering_title_keywords=[],
+            engineering_title_phrases=[],
+            blocked_profession_title_phrases=[],
+            specialist_board_hosts=[],
+            frontend_signals=[],
+            backend_heavy_signals=[],
+        )
+    )
+    assert settings.policy.engineering_title_keywords == DEFAULT_ENGINEERING_TITLE_KEYWORDS
+    assert settings.policy.engineering_title_phrases == DEFAULT_ENGINEERING_TITLE_PHRASES
+    assert (
+        settings.policy.blocked_profession_title_phrases
+        == DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES
+    )
+    assert settings.policy.specialist_board_hosts == DEFAULT_SPECIALIST_BOARD_HOSTS
+    assert settings.policy.frontend_signals == DEFAULT_FRONTEND_SIGNALS
+    assert settings.policy.backend_heavy_signals == DEFAULT_BACKEND_HEAVY_SIGNALS
+
+
+def test_load_settings_explicit_ranking_lists_override_rather_than_merge(monkeypatch):
+    """A non-empty configured value replaces the default outright -- it is
+    not merged with it."""
+    _set_required_bot_env(monkeypatch)
+    settings = _load(
+        _profile(
+            engineering_title_keywords=["custom-keyword"],
+            engineering_title_phrases=["custom-phrase"],
+            blocked_profession_title_phrases=["custom-blocked"],
+            specialist_board_hosts=["custom.example.com"],
+            frontend_signals=["custom-frontend"],
+            backend_heavy_signals=["custom-backend"],
+        )
+    )
+    assert settings.policy.engineering_title_keywords == ["custom-keyword"]
+    assert settings.policy.engineering_title_phrases == ["custom-phrase"]
+    assert settings.policy.blocked_profession_title_phrases == ["custom-blocked"]
+    assert settings.policy.specialist_board_hosts == ["custom.example.com"]
+    assert settings.policy.frontend_signals == ["custom-frontend"]
+    assert settings.policy.backend_heavy_signals == ["custom-backend"]
+
+
+def test_load_settings_reads_learned_ats_denylist(monkeypatch):
+    _set_required_bot_env(monkeypatch)
+    settings = _load(_profile(learned_ats_denylist=["lever:jobgether"]))
     assert settings.policy.learned_ats_denylist == ["lever:jobgether"]
 
 
-def test_load_settings_treats_empty_learned_ats_denylist_key_as_no_entries(
-    monkeypatch, tmp_path: Path
-):
-    # Commenting out the single shipped entry leaves a bare key, which YAML
-    # parses as None -- that must read as "no denylist", not abort the run.
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-        "learned_ats_denylist:\n"
-    )
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    settings = load_settings(cfg)
-
-    assert settings.policy.learned_ats_denylist == []
-
-
-def test_load_settings_normalizes_learned_ats_denylist_entries(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-        "learned_ats_denylist:\n  - ' Lever:JobGether '\n"
-    )
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    settings = load_settings(cfg)
-
+def test_load_settings_normalizes_learned_ats_denylist_entries(monkeypatch):
+    _set_required_bot_env(monkeypatch)
+    settings = _load(_profile(learned_ats_denylist=[" Lever:JobGether "]))
     assert settings.policy.learned_ats_denylist == ["lever:jobgether"]
 
 
-def test_load_settings_rejects_malformed_learned_ats_denylist_entry(
-    monkeypatch, tmp_path: Path
-):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-        "learned_ats_denylist:\n  - jobgether\n"
-    )
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-
+def test_load_settings_rejects_malformed_learned_ats_denylist_entry(monkeypatch):
+    _set_required_bot_env(monkeypatch)
     with pytest.raises(ValueError, match="learned_ats_denylist"):
-        load_settings(cfg)
+        _load(_profile(learned_ats_denylist=["jobgether"]))
 
 
-def _minimal_config_body(extra: str = "") -> str:
-    return (
-        "timezone: Europe/Berlin\nscheduled_hour: 9\n"
-        "thresholds:\n  package: 75\n  possible: 65\nsalary_floor_eur: 90000\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "search_queries: []\nats:\n  ashby: []\n  lever: []\n  greenhouse: []\n"
-        + extra
-    )
-
-
-def _set_required_env(monkeypatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv(
-        "COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode()
-    )
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-
-
-def test_load_settings_defaults_learned_ats_allowlist_to_no_entries(
-    monkeypatch, tmp_path: Path
-):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(_minimal_config_body())
-    _set_required_env(monkeypatch)
-
-    settings = load_settings(cfg)
-
+def test_load_settings_defaults_learned_ats_allowlist_to_no_entries(monkeypatch):
+    _set_required_bot_env(monkeypatch)
+    settings = _load(_profile())
     assert settings.policy.learned_ats_allowlist == []
 
 
-def test_load_settings_reads_and_normalizes_learned_ats_allowlist(
-    monkeypatch, tmp_path: Path
-):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        _minimal_config_body("learned_ats_allowlist:\n  - ' Lever:ClientCo '\n")
-    )
-    _set_required_env(monkeypatch)
-
-    settings = load_settings(cfg)
-
+def test_load_settings_reads_and_normalizes_learned_ats_allowlist(monkeypatch):
+    _set_required_bot_env(monkeypatch)
+    settings = _load(_profile(learned_ats_allowlist=[" Lever:ClientCo "]))
     assert settings.policy.learned_ats_allowlist == ["lever:clientco"]
 
 
-def test_load_settings_treats_empty_learned_ats_allowlist_key_as_no_entries(
-    monkeypatch, tmp_path: Path
-):
-    # The state left behind by commenting out the list's only entry.
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(_minimal_config_body("learned_ats_allowlist:\n"))
-    _set_required_env(monkeypatch)
-
-    settings = load_settings(cfg)
-
-    assert settings.policy.learned_ats_allowlist == []
-
-
-def test_load_settings_rejects_malformed_learned_ats_allowlist_entry(
-    monkeypatch, tmp_path: Path
-):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(_minimal_config_body("learned_ats_allowlist:\n  - clientco\n"))
-    _set_required_env(monkeypatch)
-
+def test_load_settings_rejects_malformed_learned_ats_allowlist_entry(monkeypatch):
+    _set_required_bot_env(monkeypatch)
     with pytest.raises(ValueError, match="learned_ats_allowlist"):
-        load_settings(cfg)
+        _load(_profile(learned_ats_allowlist=["clientco"]))
 
 
-def test_load_settings_rejects_a_board_in_both_ats_lists(monkeypatch, tmp_path: Path):
+def test_load_settings_rejects_a_board_in_both_ats_lists(monkeypatch):
     # The two lists express opposite operator intent; honouring either one
     # silently would hide an editing mistake in the only operator surface.
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        _minimal_config_body(
-            "learned_ats_denylist:\n  - lever:clientco\n"
-            "learned_ats_allowlist:\n  - Lever:ClientCo\n"
-        )
-    )
-    _set_required_env(monkeypatch)
-
+    _set_required_bot_env(monkeypatch)
     with pytest.raises(ValueError, match="lever:clientco"):
-        load_settings(cfg)
+        _load(
+            _profile(
+                learned_ats_denylist=["lever:clientco"],
+                learned_ats_allowlist=["Lever:ClientCo"],
+            )
+        )
 
 
-def test_load_settings_supports_legacy_manual_company_names(monkeypatch, tmp_path: Path):
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds:\n  package: 75\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "manual_company_watch:\n  - Acme GmbH\n"
-    )
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv(
-        "COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode()
-    )
-    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-
-    settings = load_settings(cfg)
-
-    assert settings.policy.manual_company_watch == [
+def test_load_settings_supports_legacy_manual_company_names():
+    # _parse_manual_company_watch still accepts bare-string entries (a
+    # SearchProfile-backed profile now always stores dicts, but the parsing
+    # function itself is unchanged and reused as-is -- exercise it directly).
+    assert _parse_manual_company_watch(["Acme GmbH"]) == [
         CompanyWatchSeed(company_name="Acme GmbH")
     ]
 
 
 @pytest.mark.parametrize(
-    "manual_watch_yaml",
-    ["Acme", "{company_name: Acme}"],
+    "value",
+    ["Acme", {"company_name": "Acme"}],
     ids=["scalar", "mapping"],
 )
-def test_load_settings_rejects_non_list_manual_company_watch(
-    monkeypatch, tmp_path, manual_watch_yaml
-):
+def test_load_settings_rejects_non_list_manual_company_watch(value):
     with pytest.raises(ValueError, match="manual_company_watch must be a list"):
-        _load_manual_watch_config(monkeypatch, tmp_path, manual_watch_yaml)
+        _parse_manual_company_watch(value)
 
 
 @pytest.mark.parametrize(
-    "entry_yaml",
-    ["'   '", "{}", "{company_name: 123}"],
+    "entry",
+    ["   ", {}, {"company_name": 123}],
     ids=["empty-string", "missing-company-name", "non-string-company-name"],
 )
-def test_load_settings_rejects_invalid_manual_company_name(
-    monkeypatch, tmp_path, entry_yaml
-):
+def test_load_settings_rejects_invalid_manual_company_name(entry):
     with pytest.raises(
         ValueError,
         match=r"manual_company_watch\[0\].*company_name.*non-empty string",
     ):
-        _load_manual_watch_config(monkeypatch, tmp_path, f"[{entry_yaml}]")
+        _parse_manual_company_watch([entry])
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("careers_url", "123"),
-        ("ats_provider", "[greenhouse]"),
-        ("ats_identifier", "{board: acme}"),
+        ("careers_url", 123),
+        ("ats_provider", ["greenhouse"]),
+        ("ats_identifier", {"board": "acme"}),
     ],
 )
 def test_load_settings_rejects_non_string_manual_watch_optional_field(
-    monkeypatch, tmp_path, field, value
+    monkeypatch, field, value
 ):
+    _set_required_bot_env(monkeypatch)
     with pytest.raises(
         ValueError,
         match=rf"manual_company_watch\[0\].{field} must be a string or null",
     ):
-        _load_manual_watch_config(
-            monkeypatch,
-            tmp_path,
-            f"[{{company_name: Acme, {field}: {value}}}]",
+        _load(
+            _profile(
+                manual_company_watch=[{"company_name": "Acme", field: value}]
+            )
         )
 
 
-def test_load_settings_rejects_unknown_manual_watch_mapping_key(
-    monkeypatch, tmp_path
-):
+def test_load_settings_rejects_unknown_manual_watch_mapping_key(monkeypatch):
+    _set_required_bot_env(monkeypatch)
     with pytest.raises(
         ValueError,
         match=r"manual_company_watch\[0\]\.ats_identifer is not allowed",
     ):
-        _load_manual_watch_config(
-            monkeypatch,
-            tmp_path,
-            "[{company_name: Acme, ats_identifer: acme}]",
+        _load(
+            _profile(
+                manual_company_watch=[
+                    {"company_name": "Acme", "ats_identifer": "acme"}
+                ]
+            )
         )
 
 
-def test_load_settings_parses_markets_in_declared_order(monkeypatch, tmp_path):
+def test_load_settings_parses_markets_in_declared_order(monkeypatch):
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds: {package: 75, possible: 65}\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "markets:\n"
-        "  - id: germany_eu\n"
-        "    query_share: 0.35\n"
-        "    locations: [Berlin, Germany, Europe]\n"
-        "    allowed_languages: [English]\n"
-        "    salary: {currency: EUR, gross_base_floor: 90000}\n"
-        "    remote_policy: preferred\n"
-        "    relocation_policy: selective\n"
-        "    sponsorship_policy: not_required\n"
-        "  - id: israel_remote\n"
-        "    query_share: 0.25\n"
-        "    locations: [Israel, Tel Aviv]\n"
-        "    allowed_languages: [English, Hebrew]\n"
-        "    salary: {currency: ILS, gross_base_floor: 420000}\n"
-        "    remote_policy: required\n"
-        "    relocation_policy: none\n"
-        "    sponsorship_policy: not_required\n"
+    settings = _load(
+        _profile(
+            markets=[
+                SearchProfileMarket(
+                    market_id="germany_eu",
+                    query_share=0.35,
+                    locations=["Berlin", "Germany", "Europe"],
+                    allowed_languages=["English"],
+                    currency="EUR",
+                    gross_base_floor=90000,
+                    remote_policy="preferred",
+                    relocation_policy="selective",
+                    sponsorship_policy="not_required",
+                ),
+                SearchProfileMarket(
+                    market_id="israel_remote",
+                    query_share=0.25,
+                    locations=["Israel", "Tel Aviv"],
+                    allowed_languages=["English", "Hebrew"],
+                    currency="ILS",
+                    gross_base_floor=420000,
+                    remote_policy="required",
+                    relocation_policy="none",
+                    sponsorship_policy="not_required",
+                ),
+            ]
+        )
     )
-
-    settings = load_settings(cfg)
 
     assert [market.id for market in settings.policy.markets] == [
         "germany_eu",
@@ -576,138 +530,81 @@ def test_load_settings_parses_markets_in_declared_order(monkeypatch, tmp_path):
     assert settings.policy.markets[1].salary.gross_base_floor == 420000
 
 
-def test_load_settings_rejects_duplicate_market_ids(monkeypatch, tmp_path):
+def test_load_settings_rejects_duplicate_market_ids(monkeypatch):
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds: {package: 75, possible: 65}\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "markets:\n"
-        "  - {id: london, query_share: 0.5, locations: [London], allowed_languages: [English], salary: {currency: GBP, gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: required}\n"
-        "  - {id: london, query_share: 0.5, locations: [London], allowed_languages: [English], salary: {currency: GBP, gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: required}\n"
+    market_kwargs = dict(
+        market_id="london",
+        query_share=0.5,
+        locations=["London"],
+        allowed_languages=["English"],
+        currency="GBP",
+        gross_base_floor=90000,
+        remote_policy="allowed",
+        relocation_policy="allowed",
+        sponsorship_policy="required",
     )
-
     with pytest.raises(ValueError, match="duplicate market id: london"):
-        load_settings(cfg)
+        _load(
+            _profile(
+                markets=[
+                    SearchProfileMarket(**market_kwargs),
+                    SearchProfileMarket(**market_kwargs),
+                ]
+            )
+        )
 
 
-@pytest.mark.parametrize(
-    "bad_market_yaml,expected_error",
-    [
-        (
-            "{id: a, query_share: -0.1, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: not_required}",
-            "query_share cannot be negative",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: '', gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: not_required}",
-            "currency cannot be empty",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 0}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: not_required}",
-            "salary.gross_base_floor must be positive",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 90000, location_floors: {Berlin: 0}}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: not_required}",
-            "location_floors.*must be positive",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: not_required, unknown_field: 1}",
-            "unknown_field is not allowed",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 90000}, remote_policy: invalid, relocation_policy: allowed, sponsorship_policy: not_required}",
-            "invalid remote_policy: invalid",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: invalid, sponsorship_policy: not_required}",
-            "invalid relocation_policy: invalid",
-        ),
-        (
-            "{id: a, query_share: 0.5, locations: [A], allowed_languages: [English], salary: {currency: EUR, gross_base_floor: 90000}, remote_policy: allowed, relocation_policy: allowed, sponsorship_policy: invalid}",
-            "invalid sponsorship_policy: invalid",
-        ),
-    ],
-)
-def test_load_settings_rejects_invalid_market(monkeypatch, tmp_path, bad_market_yaml, expected_error):
+def test_market_source_config_distinguishes_direct_and_discovery(monkeypatch):
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds: {package: 75, possible: 65}\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "markets:\n"
-        f"  - {bad_market_yaml}\n"
-    )
-    with pytest.raises(ValueError, match=expected_error):
-        load_settings(cfg)
-
-
-def test_market_source_config_distinguishes_direct_and_discovery(monkeypatch, tmp_path):
-    _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds: {package: 75, possible: 65}\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "markets:\n"
-        "  - id: israel_remote\n"
-        "    query_share: 1.0\n"
-        "    locations: [Israel]\n"
-        "    allowed_languages: [English, Hebrew]\n"
-        "    salary: {currency: ILS, gross_base_floor: 420000}\n"
-        "    remote_policy: required\n"
-        "    relocation_policy: none\n"
-        "    sponsorship_policy: not_required\n"
-        "    direct_sources: [devjobs]\n"
-        "    discovery_domains: [jobs.techaviv.com, jobs.ashbyhq.com]\n"
+    settings = _load(
+        _profile(
+            markets=[
+                SearchProfileMarket(
+                    market_id="israel_remote",
+                    query_share=1.0,
+                    locations=["Israel"],
+                    allowed_languages=["English", "Hebrew"],
+                    currency="ILS",
+                    gross_base_floor=420000,
+                    remote_policy="required",
+                    relocation_policy="none",
+                    sponsorship_policy="not_required",
+                    direct_sources=["devjobs"],
+                    discovery_domains=["jobs.techaviv.com", "jobs.ashbyhq.com"],
+                )
+            ]
+        )
     )
 
-    market = load_settings(cfg).policy.markets[0]
-
+    market = settings.policy.markets[0]
     assert market.direct_sources == ["devjobs"]
     assert market.discovery_domains == ["jobs.techaviv.com", "jobs.ashbyhq.com"]
 
 
-def test_legacy_source_domains_are_discovery_only(monkeypatch, tmp_path):
+def test_load_settings_rejects_non_positive_location_floor(monkeypatch):
+    # SearchProfileMarket.location_floors is `dict[str, int]` with no
+    # per-value constraint at the Pydantic layer, so a non-positive floor
+    # still reaches config.py's unchanged _parse_markets check and must
+    # still raise there.
     _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds: {package: 75, possible: 65}\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "markets:\n"
-        "  - id: london\n"
-        "    query_share: 1.0\n"
-        "    locations: [London]\n"
-        "    allowed_languages: [English]\n"
-        "    salary: {currency: GBP, gross_base_floor: 90000}\n"
-        "    remote_policy: allowed\n"
-        "    relocation_policy: allowed\n"
-        "    sponsorship_policy: required\n"
-        "    source_domains: [wellfound.com]\n"
-    )
-
-    market = load_settings(cfg).policy.markets[0]
-
-    assert market.direct_sources == []
-    assert market.discovery_domains == ["wellfound.com"]
-
-
-def test_market_rejects_source_domains_and_discovery_domains_together(monkeypatch, tmp_path):
-    _set_required_bot_env(monkeypatch)
-    cfg = tmp_path / "search.yml"
-    cfg.write_text(
-        "thresholds: {package: 75, possible: 65}\n"
-        "target_titles: []\npositive_keywords: []\nblocked_title_keywords: []\n"
-        "markets:\n"
-        "  - id: london\n"
-        "    query_share: 1.0\n"
-        "    locations: [London]\n"
-        "    allowed_languages: [English]\n"
-        "    salary: {currency: GBP, gross_base_floor: 90000}\n"
-        "    remote_policy: allowed\n"
-        "    relocation_policy: allowed\n"
-        "    sponsorship_policy: required\n"
-        "    source_domains: [wellfound.com]\n"
-        "    discovery_domains: [jobs.ashbyhq.com]\n"
-    )
-
-    with pytest.raises(ValueError, match="cannot define both source_domains and discovery_domains"):
-        load_settings(cfg)
+    with pytest.raises(
+        ValueError, match=r"salary\.location_floors\.Berlin must be positive"
+    ):
+        _load(
+            _profile(
+                markets=[
+                    SearchProfileMarket(
+                        market_id="germany_eu",
+                        query_share=0.5,
+                        locations=["Berlin"],
+                        allowed_languages=["English"],
+                        currency="EUR",
+                        gross_base_floor=90000,
+                        location_floors={"Berlin": 0},
+                        remote_policy="preferred",
+                        relocation_policy="selective",
+                        sponsorship_policy="not_required",
+                    )
+                ]
+            )
+        )

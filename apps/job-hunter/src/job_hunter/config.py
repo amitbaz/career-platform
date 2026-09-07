@@ -5,16 +5,17 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-
-import yaml
+from typing import TYPE_CHECKING
 
 from .gmail_models import GmailSettings
 from .normalize import ats_board_key
 from .models import (
+    DEFAULT_BACKEND_HEAVY_SIGNALS,
     DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
     DEFAULT_ENGINEERING_TITLE_KEYWORDS,
     DEFAULT_ENGINEERING_TITLE_PHRASES,
+    DEFAULT_FRONTEND_SIGNALS,
+    DEFAULT_SPECIALIST_BOARD_HOSTS,
     CompanyWatchSeed,
     GeminiQuotaSettings,
     SearchPolicy,
@@ -22,6 +23,9 @@ from .models import (
     MarketPolicy,
     SalaryPolicy,
 )
+
+if TYPE_CHECKING:
+    from .postgres_store import PostgresJobStore
 
 
 _REMOTE_POLICIES = {"preferred", "required", "allowed"}
@@ -70,9 +74,19 @@ def load_gmail_settings() -> GmailSettings:
     )
 
 
-def load_settings(config_path: Path) -> Settings:
-    with open(config_path) as f:
-        data = yaml.safe_load(f)
+class ProfileNotFoundError(RuntimeError):
+    """Raised when the acting user has no row in job_hunter_search_profiles."""
+
+
+def load_settings(store: "PostgresJobStore") -> Settings:
+    result = store.get_search_profile()
+    if result is None:
+        raise ProfileNotFoundError(
+            "no job_hunter_search_profiles row exists for this user's account; "
+            "create one first, e.g. via PostgresJobStore.save_search_profile"
+        )
+    profile_row, market_row_list = result
+    data = _profile_row_to_legacy_dict(profile_row, market_row_list)
 
     gemini_api_key = _require_env("GEMINI_API_KEY")
     candidate_profile = base64.b64decode(_require_env("CANDIDATE_PROFILE_B64")).decode("utf-8")
@@ -114,16 +128,21 @@ def load_settings(config_path: Path) -> Settings:
         learned_ats_denylist=_parse_learned_ats_denylist(data),
         learned_ats_allowlist=_parse_learned_ats_allowlist(data),
         engineering_title_keywords=list(
-            data.get("engineering_title_keywords", DEFAULT_ENGINEERING_TITLE_KEYWORDS)
+            data.get("engineering_title_keywords") or DEFAULT_ENGINEERING_TITLE_KEYWORDS
         ),
         engineering_title_phrases=list(
-            data.get("engineering_title_phrases", DEFAULT_ENGINEERING_TITLE_PHRASES)
+            data.get("engineering_title_phrases") or DEFAULT_ENGINEERING_TITLE_PHRASES
         ),
         blocked_profession_title_phrases=list(
-            data.get(
-                "blocked_profession_title_phrases",
-                DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
-            )
+            data.get("blocked_profession_title_phrases")
+            or DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES
+        ),
+        specialist_board_hosts=list(
+            data.get("specialist_board_hosts") or DEFAULT_SPECIALIST_BOARD_HOSTS
+        ),
+        frontend_signals=list(data.get("frontend_signals") or DEFAULT_FRONTEND_SIGNALS),
+        backend_heavy_signals=list(
+            data.get("backend_heavy_signals") or DEFAULT_BACKEND_HEAVY_SIGNALS
         ),
         markets=_parse_markets(data.get("markets", [])),
     )
@@ -146,6 +165,42 @@ def load_settings(config_path: Path) -> Settings:
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
         output_dir=os.environ.get("JOB_HUNTER_OUTPUT_DIR", "var"),
     )
+
+
+def _profile_row_to_legacy_dict(
+    profile_row: dict, market_rows: list[dict]
+) -> dict:
+    """Reshape Postgres rows into the dict shape `_parse_*` already expects.
+
+    Keeps every existing YAML-era parsing/validation function (`_parse_markets`,
+    `_parse_manual_company_watch`, the ATS-list parsers) unchanged: they were
+    written against `yaml.safe_load`'s output, and a Postgres row reshaped into
+    the same shape is a drop-in replacement for it.
+    """
+    data = dict(profile_row)
+    data["markets"] = [
+        {
+            "id": row["market_id"],
+            "query_share": row["query_share"],
+            "locations": row["locations"],
+            "allowed_languages": row["allowed_languages"],
+            "salary": {
+                "currency": row["currency"],
+                "gross_base_floor": row["gross_base_floor"],
+                "location_floors": row["location_floors"],
+            },
+            "remote_policy": row["remote_policy"],
+            "relocation_policy": row["relocation_policy"],
+            "sponsorship_policy": row["sponsorship_policy"],
+            "direct_sources": row["direct_sources"],
+            "discovery_domains": row["discovery_domains"],
+            "query_templates": row["query_templates"],
+            "role_families": row["role_families"],
+            "enabled": row["enabled"],
+        }
+        for row in market_rows
+    ]
+    return data
 
 
 def load_webhook_settings() -> WebhookSettings:

@@ -12,22 +12,6 @@ from job_hunter.normalize import normalize_text
 # the employer posting it points at. See ats_hosts.
 _ATS_HOSTS = tuple(SUPPORTED_ATS_HOSTS)
 
-# Approved market-specialist boards (config/search.yml markets[*].source_domains):
-# hand-picked per market, but not the canonical direct-employer link an ATS
-# host is, so they rank below ATS and above generic web/aggregator results.
-_SPECIALIST_BOARD_HOSTS = (
-    "wellfound.com",
-    "jobs.techaviv.com",
-    "devjobs.co.il",
-    "workvisajobs.co.uk",
-    "nodeflair.com",
-    "sg.jobstreet.com",
-    "mycareersfuture.gov.sg",
-    "builtin.com",
-    "startup.jobs",
-    "ycombinator.com",
-)
-
 _CAREER_SIGNALS = (
     "ownership",
     "architecture",
@@ -49,13 +33,13 @@ _REGION_WORDS = frozenset({
 _REMOTE_FRIENDLY_WORDS = frozenset({"remote", "worldwide", "global", "anywhere", "distributed"})
 
 
-def source_quality(job: Job) -> int:
+def source_quality(job: Job, policy: SearchPolicy) -> int:
     url = (job.url or "").lower()
     if any(host in url for host in _ATS_HOSTS):
         return 10
     if job.source in {"ashby", "lever", "greenhouse"}:
         return 10
-    if any(host in url for host in _SPECIALIST_BOARD_HOSTS):
+    if any(host in url for host in policy.specialist_board_hosts):
         return 8
     if job.source in {"remoteok", "remotive", "weworkremotely", "arbeitnow"}:
         return 7
@@ -177,9 +161,10 @@ def _profile_location_fit(job: Job, preferences: CandidatePreferences) -> int:
 
 
 # Markets where remote work is the primary/preferred mode of engagement
-# (config/search.yml remote_policy: "preferred" or "required") count as the
-# candidate's "home" market for location scoring - remote roles there score
-# highest, ahead of remote roles in relocation-style markets.
+# (the user's search profile remote_policy: "preferred" or "required")
+# count as the candidate's "home" market for location scoring - remote
+# roles there score highest, ahead of remote roles in relocation-style
+# markets.
 _HOME_MARKET_REMOTE_POLICIES = frozenset({"preferred", "required"})
 
 
@@ -206,36 +191,15 @@ def _market_location_fit(job: Job, preferences: CandidatePreferences, policy: Se
 
 _FULL_STACK_TITLE_PHRASES = ("full stack", "full-stack")
 
-_FRONTEND_SIGNALS = (
-    "react",
-    "next.js",
-    "nextjs",
-    "frontend",
-    "front-end",
-    "typescript",
-    "design system",
-)
 
-_BACKEND_HEAVY_SIGNALS = (
-    "distributed systems",
-    "kubernetes",
-    "golang",
-    "java",
-    "event-driven architecture",
-    "backend architecture",
-    "high-throughput",
-    "message queues",
-)
-
-
-def _backend_transition_penalty(job: Job) -> int:
+def _backend_transition_penalty(job: Job, policy: SearchPolicy) -> int:
     normalized_title = normalize_text(job.title or "")
     if not any(phrase in normalized_title for phrase in _FULL_STACK_TITLE_PHRASES):
         return 0
 
     haystack = normalize_text(" ".join([job.title or "", job.description or ""]))
-    frontend_matches = sum(1 for signal in _FRONTEND_SIGNALS if signal in haystack)
-    backend_matches = sum(1 for signal in _BACKEND_HEAVY_SIGNALS if signal in haystack)
+    frontend_matches = sum(1 for signal in policy.frontend_signals if signal in haystack)
+    backend_matches = sum(1 for signal in policy.backend_heavy_signals if signal in haystack)
 
     if backend_matches < 2:
         return 0
@@ -268,10 +232,10 @@ def profile_priority_score(job: Job, preferences: CandidatePreferences, policy: 
         _role_seniority_fit(job, preferences)
         + _signal_coverage(job, preferences)
         + _market_location_fit(job, preferences, policy)
-        + source_quality(job)
+        + source_quality(job, policy)
         + market_priority_bonus(job, policy)
         - _avoid_signal_penalty(job, preferences)
-        - _backend_transition_penalty(job)
+        - _backend_transition_penalty(job, policy)
     )
     return max(0, min(100, total))
 
@@ -282,7 +246,7 @@ def priority_score(job: Job, policy: SearchPolicy) -> int:
         + _strength_evidence(job.description, policy)
         + _career_direction_evidence(job.description)
         + _location_evidence(job)
-        + source_quality(job)
+        + source_quality(job, policy)
     )
     return max(0, min(100, total))
 

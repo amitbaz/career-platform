@@ -35,6 +35,7 @@ from job_hunter.models import (
     NavigationSession,
 )
 from job_hunter.normalize import job_fingerprint
+from job_hunter.search_profile import SearchProfile
 from job_hunter.store_mapping import (
     ats_entry_from_row,
     evaluation_from_row,
@@ -1638,6 +1639,53 @@ class PostgresJobStore:
         )
 
     # ------------------------------------------------------------------
+    # Search profile
+    # ------------------------------------------------------------------
+
+    def get_search_profile(self) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+        """Return the caller's search profile row and its market rows, if any.
+
+        RLS scopes both selects to the acting user; no explicit user_id
+        filter is needed.
+        """
+        profiles = self._client.select("job_hunter_search_profiles", params={"limit": "1"})
+        if not profiles:
+            return None
+        profile_row = profiles[0]
+        market_rows = self._client.select(
+            "job_hunter_search_profile_markets",
+            params={"profile_id": f"eq.{profile_row['id']}", "order": "position.asc"},
+        )
+        return profile_row, market_rows
+
+    def save_search_profile(self, profile: SearchProfile) -> str:
+        """Upsert the caller's one search profile and replace its market rows.
+
+        Markets have no natural per-row update semantics from the caller's
+        point of view (the profile is edited as a whole) -- existing market
+        rows for this profile are deleted and replaced, matching the "one
+        active search profile" model rather than trying to diff old and new
+        market lists.
+        """
+        profile_row = touch({**profile.to_profile_row(), "user_id": self._client.user_id})
+        written = self._client.upsert(
+            "job_hunter_search_profiles", [profile_row], on_conflict="user_id"
+        )
+        profile_id = written[0]["id"]
+
+        self._client.delete(
+            "job_hunter_search_profile_markets", params={"profile_id": f"eq.{profile_id}"}
+        )
+        market_rows = profile.to_market_rows(profile_id, self._client.user_id)
+        if market_rows:
+            self._client.upsert(
+                "job_hunter_search_profile_markets",
+                market_rows,
+                on_conflict="profile_id,market_id",
+            )
+        return profile_id
+
+    # ------------------------------------------------------------------
     # Gmail sync and staging operations
     # ------------------------------------------------------------------
 
@@ -2309,6 +2357,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "create_navigation_session": None,
     "attach_navigation_message_id": "bool",
     "prune_navigation_sessions": "count",
+    "save_search_profile": "id",
 }
 
 # Every public method that only reads, plus `close`/`__enter__`/`__exit__`
@@ -2348,6 +2397,7 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "current_application_state",
         "pending_review_events",
         "get_navigation_session",
+        "get_search_profile",
     }
 )
 

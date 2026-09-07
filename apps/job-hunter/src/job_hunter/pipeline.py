@@ -544,7 +544,7 @@ def _evaluate_and_deliver_job(
             job_id=job_id,
             job=job,
             evaluation=evaluation,
-            package_threshold=settings.policy.thresholds["package"],
+            package_threshold=settings.policy.thresholds.get("package", 75),
         )
         promotion_after = _watch_promotion_state(store.get_company_watch(job.company))
         promoted = promoted_watch_id is not None and promotion_after != promotion_before

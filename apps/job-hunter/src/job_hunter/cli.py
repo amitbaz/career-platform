@@ -4,7 +4,6 @@ import argparse
 import logging
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 
 from job_hunter.config import load_gmail_settings, load_settings, load_supabase_settings
 from job_hunter.gemini import GeminiClient
@@ -44,7 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Discover, evaluate, and deliver jobs")
     run_parser.add_argument("--scheduled", action="store_true", help="Only proceed at the configured scheduled hour")
-    run_parser.add_argument("--config", default="config/search.yml", help="Path to search.yml")
 
     sync_parser = subparsers.add_parser("sync-gmail", help="Read Gmail job signals into shared state")
     sync_parser.add_argument(
@@ -62,7 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
         "generate-cover-letter", help="Generate (or resend) a cover letter for one job on demand"
     )
     gen_parser.add_argument("--job-id", type=str, required=True)
-    gen_parser.add_argument("--config", default="config/search.yml", help="Path to search.yml")
 
     return parser
 
@@ -84,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    settings = load_settings(Path(args.config))
+    http = HttpClient()
+    store = PostgresJobStore(_build_client(http))
+    settings = load_settings(store)
 
     if args.scheduled:
         now = datetime.now(timezone.utc)
@@ -99,8 +98,6 @@ def _run(args: argparse.Namespace) -> int:
 
     cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
 
-    http = HttpClient()
-    store = PostgresJobStore(_build_client(http))
     tracker = GeminiUsageTracker(
         store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
     )
@@ -131,11 +128,11 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _generate_cover_letter(args: argparse.Namespace) -> int:
-    settings = load_settings(Path(args.config))
-    cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
-
     http = HttpClient()
     store = PostgresJobStore(_build_client(http))
+    settings = load_settings(store)
+    cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
+
     tracker = GeminiUsageTracker(
         store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
     )

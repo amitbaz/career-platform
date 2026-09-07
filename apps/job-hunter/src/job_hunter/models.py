@@ -47,6 +47,21 @@ DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES = [
     "embedded engineer",
 ]
 
+DEFAULT_SPECIALIST_BOARD_HOSTS = [
+    "wellfound.com", "jobs.techaviv.com", "devjobs.co.il", "workvisajobs.co.uk",
+    "nodeflair.com", "sg.jobstreet.com", "mycareersfuture.gov.sg", "builtin.com",
+    "startup.jobs", "ycombinator.com",
+]
+
+DEFAULT_FRONTEND_SIGNALS = [
+    "react", "next.js", "nextjs", "frontend", "front-end", "typescript", "design system",
+]
+
+DEFAULT_BACKEND_HEAVY_SIGNALS = [
+    "distributed systems", "kubernetes", "golang", "java",
+    "event-driven architecture", "backend architecture", "high-throughput", "message queues",
+]
+
 
 @dataclass(slots=True)
 class SalaryPolicy:
@@ -218,6 +233,9 @@ class SearchPolicy:
     blocked_profession_title_phrases: list[str] = field(
         default_factory=lambda: list(DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES)
     )
+    specialist_board_hosts: list[str] = field(default_factory=list)
+    frontend_signals: list[str] = field(default_factory=list)
+    backend_heavy_signals: list[str] = field(default_factory=list)
     markets: list[MarketPolicy] = field(default_factory=list)
 
 

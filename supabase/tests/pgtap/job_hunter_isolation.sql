@@ -68,7 +68,9 @@ select unnest(array[
   'job_hunter_inbound_job_candidates',
   'job_hunter_application_events',
   'job_hunter_review_deliveries',
-  'job_hunter_telegram_navigation_sessions'
+  'job_hunter_telegram_navigation_sessions',
+  'job_hunter_search_profiles',
+  'job_hunter_search_profile_markets'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -80,6 +82,7 @@ declare
   v_id uuid;
   v_job uuid;
   v_event uuid;
+  v_profile uuid;
 begin
   case p_table
     when 'job_hunter_jobs' then
@@ -142,6 +145,29 @@ begin
     when 'job_hunter_telegram_navigation_sessions' then
       insert into public.job_hunter_telegram_navigation_sessions (user_id, session_id, cards_json, expires_at)
       values (p_owner, gen_random_uuid()::text, '[]'::jsonb, now() + interval '1 hour') returning id into v_id;
+    when 'job_hunter_search_profiles' then
+      -- job_hunter_search_profiles is unique(user_id): the markets check
+      -- below seeds its own parent profile for the same owner, and this
+      -- table's own check_isolation call seeds twice too (once as the
+      -- owner, once as the attacker impersonating the owner). Select the
+      -- existing row (RLS-scoped to the caller, same as any other select
+      -- here) before inserting, so seeding is idempotent per owner instead
+      -- of colliding on the unique constraint.
+      select id into v_id from public.job_hunter_search_profiles where user_id = p_owner;
+      if v_id is null then
+        insert into public.job_hunter_search_profiles
+          (user_id, timezone, scheduled_hour, max_jobs_per_run, source_minimum_per_run,
+           source_max_share, salary_floor_eur, max_search_queries_per_run,
+           max_canonical_resolutions_per_run, max_learned_ats_boards_per_run)
+        values (p_owner, 'Europe/Berlin', 9, 35, 0, 0.5, 90000, 30, 80, 75) returning id into v_id;
+      end if;
+    when 'job_hunter_search_profile_markets' then
+      v_profile := pg_temp.job_hunter_seed_row('job_hunter_search_profiles', p_owner);
+      insert into public.job_hunter_search_profile_markets
+        (user_id, profile_id, market_id, query_share, currency, gross_base_floor,
+         remote_policy, relocation_policy, sponsorship_policy)
+      values (p_owner, v_profile, gen_random_uuid()::text, 0.5, 'EUR', 90000,
+              'preferred', 'selective', 'not_required') returning id into v_id;
     else
       raise exception 'no seed row defined for table %', p_table;
   end case;
@@ -214,8 +240,8 @@ select is(
   'every public.job_hunter_* table is covered by the isolation check');
 
 select is(
-  (select count(*)::int from pg_temp.job_hunter_tables), 18,
-  'eighteen Job Hunter tables are under test');
+  (select count(*)::int from pg_temp.job_hunter_tables), 20,
+  'twenty Job Hunter tables are under test');
 
 select pg_temp.check_isolation(
   t.table_name,

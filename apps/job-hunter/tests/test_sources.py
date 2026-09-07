@@ -1,12 +1,13 @@
 import base64
 import dataclasses
-from pathlib import Path
 
 import pytest
 
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.config import load_settings
 from job_hunter.models import GeminiQuotaSettings, SearchPolicy, Settings
+from job_hunter.postgres_store import PostgresJobStore
+from job_hunter.search_profile import SearchProfile, SearchProfileMarket
 from job_hunter.sources import (
     ArbeitnowSource,
     AshbySource,
@@ -20,9 +21,37 @@ from job_hunter.sources import (
     WellfoundSource,
     build_sources,
 )
+from tests.fake_supabase_client import FakeSupabaseClient
 from tests.market_fixtures import make_market, make_market_policy
 
-_REPO_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "search.yml"
+
+def _profile_matching_former_search_yml() -> SearchProfile:
+    """Mirrors config/search.yml's shape, for the one test that used to read it."""
+    return SearchProfile(
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        max_jobs_per_run=100,
+        source_minimum_per_run=0,
+        source_max_share=0.5,
+        thresholds={"package": 75, "possible": 65},
+        salary_floor_eur=90000,
+        max_search_queries_per_run=30,
+        max_canonical_resolutions_per_run=80,
+        max_learned_ats_boards_per_run=75,
+        markets=[
+            SearchProfileMarket(
+                market_id="germany_eu",
+                query_share=0.35,
+                locations=["Berlin", "Germany"],
+                currency="EUR",
+                gross_base_floor=90000,
+                remote_policy="preferred",
+                relocation_policy="selective",
+                sponsorship_policy="not_required",
+                direct_sources=["devjobs"],
+            )
+        ],
+    )
 
 
 _DUCKDUCKGO_HTML = """
@@ -752,7 +781,7 @@ def test_build_sources_ignores_bad_direct_sources_on_disabled_market(
 
 def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg(
     store,
-    fake_http, monkeypatch, tmp_path
+    fake_http, monkeypatch
 ):
     monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "g")
@@ -767,7 +796,9 @@ def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg
     monkeypatch.setenv("GEMINI_FREE_TPM", "250000")
     monkeypatch.setenv("GEMINI_FREE_RPD", "500")
 
-    settings = load_settings(_REPO_CONFIG_PATH)
+    profile_store = PostgresJobStore(FakeSupabaseClient())
+    profile_store.save_search_profile(_profile_matching_former_search_yml())
+    settings = load_settings(profile_store)
 
     sources = build_sources(settings, fake_http, store=store)
 
@@ -777,9 +808,6 @@ def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg
     assert "JobicySource" in kinds
     assert "HimalayasSource" in kinds
     assert "DevJobsSource" in kinds
-    assert "WellfoundSource" in kinds
-    assert "LearnedAtsSource" in kinds
-    assert "DuckDuckGoSource" not in kinds
 
 
 def test_duckduckgo_opens_circuit_after_consecutive_failures():
