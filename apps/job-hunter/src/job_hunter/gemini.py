@@ -153,8 +153,14 @@ class GeminiClient:
         json_mode: bool = False,
         json_schema: dict | None = None,
         max_attempts: int = 1,
+        read_timeout: float | None = None,
     ) -> str:
         """Call Gemini, optionally retrying transient failures.
+
+        `read_timeout` overrides the HTTP client's default read budget for
+        this call. Pass it when the generation is long enough that a slow
+        reply means the model is still working rather than that something is
+        broken -- a cover letter is the one such call today.
 
         `max_attempts` bounds retries for HTTP 5xx responses and network
         timeouts only (`_RETRYABLE_STATUS_CODES` / `requests.Timeout`) —
@@ -188,12 +194,16 @@ class GeminiClient:
             now = self._preflight_with_pacing(purpose, prompt)
 
             try:
+                post_kwargs: dict[str, Any] = {}
+                if read_timeout is not None:
+                    post_kwargs["timeout"] = self._http.timeout_for_read(read_timeout)
                 response = self._http.post(
                     url,
                     json=payload,
                     headers=headers,
                     retry_status_codes=_RETRYABLE_STATUS_CODES,
                     retry=False,
+                    **post_kwargs,
                 )
             except requests.RequestException as exc:
                 if self._tracker is not None:

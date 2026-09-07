@@ -18,6 +18,19 @@ class HttpClient:
         self._session.headers.update({"User-Agent": "job-hunter-bot/1.0"})
         self._timeout = (5, 25)
 
+    def timeout_for_read(self, read_seconds: float) -> tuple[float, float]:
+        """Return this client's timeout with a longer read budget.
+
+        The default read budget suits request/response traffic -- PostgREST
+        calls, Telegram sends, job-board fetches -- where a slow reply means
+        something is wrong and failing fast is right. Long-form model
+        generation is the exception: the server is legitimately still
+        working. Callers in that position widen the read budget through this
+        helper so they keep the shared connect budget rather than inventing
+        their own pair.
+        """
+        return (self._timeout[0], read_seconds)
+
     def get(
         self,
         url: str,

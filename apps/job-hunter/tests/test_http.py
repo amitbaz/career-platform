@@ -201,3 +201,17 @@ def test_patch_applies_the_default_timeout(monkeypatch):
     client.patch("https://example.test/rows")
 
     assert seen["timeout"] == (5, 25)
+
+
+def test_timeout_for_read_keeps_the_connect_budget():
+    """A longer read budget must not silently widen the connect budget too.
+
+    A slow TCP handshake still means something is wrong, even when the
+    caller is willing to wait a long time for the response body.
+    """
+    client = HttpClient()
+    connect, read = client.timeout_for_read(120)
+
+    assert read == 120
+    assert (connect, read) != client._timeout
+    assert connect == client._timeout[0]
