@@ -66,6 +66,45 @@ signing key there.
 Job Hunter's Python environment is independent of pnpm. Install it with
 `pip install -e '.[test,webhook]'` from `apps/job-hunter`.
 
+## Working alongside other sessions
+
+More than one agent may be working this repository at the same time, in separate git worktrees.
+Two shared resources are **not** isolated per worktree, and both have already caused real problems
+here.
+
+### The local Supabase stack is one instance per machine
+
+Every worktree's tests connect to the same local database. It is not per-branch and not
+per-worktree.
+
+- **Never run `supabase db reset` without first checking whether another session is mid-run.** It
+  wipes state that every session shares, and the other session sees inexplicable failures rather
+  than a clear error.
+- **Avoid running database-touching suites concurrently from two worktrees.** Serialise them
+  instead. The Job Hunter suite and the pgTAP suite both qualify.
+- **Check before assuming you are alone.** `git worktree list` shows other active workspaces;
+  `docker ps` shows whether the stack is already up and who brought it up.
+
+### Migration filenames are allocated across the whole repository
+
+Supabase applies migrations in the order their numeric filename prefixes sort, and the hosted
+project records what it has already applied. A filename that sorts before an applied version fails
+the push.
+
+- **Use the full `YYYYMMDDHHMMSS` format.** The shorter `YYYYMMDDNNNN` form sorts *before* it, which
+  has already forced a renumber on this repository once.
+- **Check other worktrees' branches, not just `main`.** An in-flight branch may already carry a
+  migration later than anything on `main`, and picking a timestamp from `main` alone will sort
+  wrong.
+- **A ticket may pre-assign your timestamp.** When two tickets that both add migrations can be
+  worked in parallel, the timestamps are allocated on the issues rather than chosen independently.
+  Use the assigned one.
+
+### When another session is in your way
+
+Say so rather than working around it. Deleting, resetting or force-pushing over someone else's
+in-flight work costs more than waiting. Report what you found and let the human decide.
+
 ## Boundaries
 
 - Keep the app boundary. Job Hunter stays Python, Relay stays TypeScript. There is no shared
