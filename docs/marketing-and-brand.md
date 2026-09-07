@@ -28,6 +28,10 @@ not the primary concern.
   for the desired qualities, not a decision to copy its mascot, colors, or visual identity.
 - **Shared progress:** keep decisions and discussion progress in this repository so other
   agents can continue with the same context.
+- **Design tool:** use pen.dev for all design work, including visual concepts, the design
+  system, landing-page designs, logos, icons, images, ad creatives, and animation design.
+  This is the founder's required workflow. If a required capability is unavailable, discuss
+  the limitation before substituting another design tool.
 
 ## Proposed interpretation — to explore
 
@@ -45,7 +49,7 @@ These ideas came from the discussion but have not been selected as a final desig
 
 ## Suggested next design step
 
-Compare a few visual concepts using the same realistic content. Each could include:
+Compare a few visual concepts in pen.dev using the same realistic content. Each could include:
 
 - A landing-page first screen.
 - A logo or wordmark concept.
@@ -79,6 +83,7 @@ This is a proposed workflow; no visual concept or implementation has been approv
 - Agreed on calm confidence and a sense of progress, with cheerful playfulness and
   professionalism across generations; Duolingo supplied as a reference.
 - Created this repository document at the founder's request.
+- Specified pen.dev as the required tool for all design work.
 - No ads launched, assets produced, or final design system chosen in this discussion.
 
 ## Continuing this work
