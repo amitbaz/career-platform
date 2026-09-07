@@ -23,11 +23,13 @@ Target direction:
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
-   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and fifteen `security invoker`
-   SQL functions across two migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`
-   and `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`) for operations
-   PostgREST cannot express in one call. (A later migration,
-   `202609070004_job_hunter_upsert_job_distinct_timestamps.sql`, re-creates
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and sixteen `security invoker`
+   SQL functions across three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
+   `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`, and
+   `supabase/migrations/20260907104935_job_hunter_gmail_candidate_eligibility.sql`, which drops
+   `job_hunter_unmaterialized_inbound_jobs` and adds `job_hunter_gmail_candidate_complete` and
+   `job_hunter_eligible_inbound_jobs`) for operations PostgREST cannot express in one call.
+   (A later migration, `202609070004_job_hunter_upsert_job_distinct_timestamps.sql`, re-creates
    `job_hunter_upsert_job` rather than adding a new function.) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
@@ -137,7 +139,7 @@ Key modules:
 - `src/job_hunter/sources/` — one adapter per job source, all implementing a common `discover()` interface (`base.py`). Built-ins now include Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, and DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source **fails open**: an exception during discovery is caught in `run_pipeline`, logged, and that source is skipped — the rest of the run continues.
 - `src/job_hunter/discovery.py`, `discovery_queries.py`, `ranking.py` — aggregate, generate expanded search queries, and rank candidates before Gemini. `generate_search_queries()` expands each role/template across configured ATS domains.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
-- `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids()` retries undelivered Telegram work without re-calling Gemini, but only for jobs scoring `>60`.
+- `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids()` retries undelivered Telegram work without re-calling Gemini, but only for jobs scoring `>60`. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, and `upsert_ats_boards` — `collect_candidates` calls these instead of looping the single-job methods. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time. New bulk work should use the batch methods rather than looping the single-job ones.
 - `src/job_hunter/config.py` — loads `config/search.yml` + required env vars into a `Settings`/`SearchPolicy` (see `models.py`). Candidate profile and cover letter template are base64-encoded secrets (`CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64`), decoded in memory only — never write decoded plaintext to the repo or logs.
 - `src/job_hunter/cli.py` — `python -m job_hunter run` entrypoint. `--scheduled` gates execution on `should_run_scheduled` (pipeline.py), comparing current local hour in `settings.timezone` against `settings.scheduled_hour`.
 - `src/job_hunter/preferences.py` extracts a compact preference profile from the candidate profile. When that succeeds, `pipeline.py` uses `rank_jobs(..., preferences)` plus `select_diverse_candidates()` to enforce profile-aware ranking with per-source diversity. The shortlist knobs are `max_jobs_per_run` (code default 35, set to 100 in `config/search.yml`), `source_minimum_per_run` (0) and `source_max_share` (0.5) — `config/search.yml` is what a real run uses, so read the values there rather than the code defaults. If preference extraction or shortlist selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
