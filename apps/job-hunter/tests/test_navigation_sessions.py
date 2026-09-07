@@ -92,6 +92,51 @@ def test_create_navigation_session_upsert_converges_on_repeat_write(store):
     assert loaded.telegram_message_id == "7"
 
 
+def test_legacy_cards_json_without_market_fields_loads_with_empty_defaults(
+    store, supabase_client
+):
+    """Pre-market-fields `cards_json` rows must still load, not raise.
+
+    `navigation_session_from_row` handles cards written before market_id/
+    market_note/availability_note existed purely through `.get(...) or ""`
+    defaults. Writing the row directly (bypassing `create_navigation_session`,
+    which always serializes a full `NavigationCard`) reproduces a legacy row
+    shape and pins that the defaults come back empty rather than `None` or
+    an exception.
+    """
+    supabase_client.upsert(
+        "job_hunter_telegram_navigation_sessions",
+        [
+            {
+                "user_id": supabase_client.user_id,
+                "session_id": "legacy-session",
+                "cards_json": [
+                    {
+                        "job_id": 1,
+                        "title": "Senior FE",
+                        "company": "Acme",
+                        "location": "Berlin",
+                        "score": 91,
+                        "url": "https://example.test/1",
+                    }
+                ],
+                "telegram_message_id": None,
+                "created_at": "2026-08-31T12:00:00+00:00",
+                "expires_at": "2026-09-30T12:00:00+00:00",
+            }
+        ],
+        on_conflict="user_id,session_id",
+    )
+
+    loaded = store.get_navigation_session("legacy-session")
+
+    assert loaded is not None
+    card = loaded.cards[0]
+    assert card.market_id == ""
+    assert card.market_note == ""
+    assert card.availability_note == ""
+
+
 def test_navigation_session_is_isolated_by_user(store, other_supabase_client):
     from job_hunter.postgres_store import PostgresJobStore
 

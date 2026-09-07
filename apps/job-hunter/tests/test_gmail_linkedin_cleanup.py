@@ -130,6 +130,33 @@ def test_a_dependent_evaluation_blocks_release(store):
     assert store.get_job(job_id) is not None
 
 
+def test_a_job_referenced_by_company_watch_blocks_release(store):
+    """A job that seeded a `company_watch` row is never safe to delete.
+
+    `job_hunter_company_watch.discovered_from_job_id` references
+    `job_hunter_jobs (id, user_id)` with no `on delete cascade` (migration
+    202609060002:128). Without this check, `release_legacy_blank_linkedin_jobs`
+    would pass every other dependency check, then have its DELETE on
+    `job_hunter_jobs` fail with a 409 -- after this message's candidate rows
+    were already deleted.
+    """
+    _record_job_alert(store, "m1")
+    _stage_linkedin_candidate(store, "m1", "cand1")
+    job_id = _blank_linkedin_job(store, "cand1")
+    store.upsert_company_watch(
+        company_name="Acme",
+        careers_url="https://acme.example/careers",
+        ats_provider=None,
+        ats_identifier=None,
+        discovered_from_job_id=job_id,
+        promotion_source="automatic",
+        confidence=0.9,
+    )
+
+    assert store.release_legacy_blank_linkedin_jobs() == 0
+    assert store.get_job(job_id) is not None
+
+
 def test_non_poisoned_populated_job_is_left_alone(store):
     """A real (non-blank, non-`Sign in`) job under the same source is untouched."""
     _record_job_alert(store, "m1")

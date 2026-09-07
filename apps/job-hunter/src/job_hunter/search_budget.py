@@ -8,12 +8,16 @@ open across a `select` and a later `upsert`. `try_record` below is a plain
 read-then-write: two concurrent callers can each read "under the cap" and
 both write, overshooting the daily/monthly limit by the number of racing
 callers. What protects this in practice is not application logic but
-deployment shape: every workflow that can call `try_record` shares
-`concurrency: group: job-hunter-state` in its GitHub Actions definition, so
-at most one writer is ever running against a given user's rows at a time.
-A caller outside that guarantee (e.g. a second manually-triggered run
-overlapping the scheduled one) reintroduces the race this docstring
-describes.
+deployment shape: every workflow that can call `try_record`
+(`job-hunter-daily.yml`, `job-hunter-generate-cover-letter.yml`) shares
+`concurrency: group: job-hunter-state` with `cancel-in-progress: false`, so
+at most one writer is ever *running* against a given user's rows at a time
+-- a second run in that group, including a manually-triggered
+`workflow_dispatch` of either workflow, queues behind the first rather than
+overlapping it. The real escape hatch is anything outside GitHub Actions
+entirely: a local `cli.py` invocation on the owner's machine runs with no
+concurrency group at all and can call `try_record` while an Actions run is
+in flight, reintroducing the race this docstring describes.
 """
 
 from __future__ import annotations
@@ -204,6 +208,7 @@ class BraveRequestBudget:
         self.monthly_limit = monthly_limit
         self.discovery_share = discovery_share
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._last_occurred_at: datetime | None = None
 
     def available_today(self) -> int:
         return brave_queries_available_today(
@@ -220,8 +225,22 @@ class BraveRequestBudget:
         return min(available, max(1, math.floor(available * self.discovery_share)))
 
     def reserve(self) -> bool:
-        """Reserve one Brave attempt before HTTP; false means make no request."""
+        """Reserve one Brave attempt before HTTP; false means make no request.
+
+        The `(user_id, provider, occurred_at)` unique key on
+        `job_hunter_search_api_usage` makes a retried write converge instead
+        of double-counting -- but it does so by treating a repeated
+        `occurred_at` as *the same* reservation. If this instance's clock
+        ever returns a value it has already issued (or an earlier one), the
+        upsert in `record` overwrites the prior row instead of adding a new
+        one: the ledger stops growing, `count()` stops rising, and this cap
+        stops applying. Guard against clock resolution/monotonicity by
+        bumping into strictly-increasing territory ourselves.
+        """
         now = _normalize_utc(self._now())
+        if self._last_occurred_at is not None and now <= self._last_occurred_at:
+            now = self._last_occurred_at + timedelta(microseconds=1)
+        self._last_occurred_at = now
         daily_limit = _brave_daily_limit(
             self._ledger,
             monthly_limit=self.monthly_limit,

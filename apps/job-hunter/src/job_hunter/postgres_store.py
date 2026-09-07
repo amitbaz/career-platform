@@ -1773,16 +1773,22 @@ class PostgresJobStore:
         """Translates `gmail_linkedin_cleanup.py`'s (deleted) `_job_has_dependencies`.
 
         One `select ... limit 1` per dependent table replaces the original's
-        single-connection loop over the same four tables.
+        single-connection loop over the same four tables, plus
+        `job_hunter_company_watch.discovered_from_job_id`: that foreign key
+        (migration 202609060002:128) has no `on delete cascade`, so a job
+        that seeded a watch row would otherwise pass every check here and
+        then fail the DELETE with a 409 mid-loop, after that message's other
+        candidate rows were already deleted.
         """
-        for table in (
-            "job_hunter_evaluations",
-            "job_hunter_materials",
-            "job_hunter_deliveries",
-            "job_hunter_application_events",
+        for table, column in (
+            ("job_hunter_evaluations", "job_id"),
+            ("job_hunter_materials", "job_id"),
+            ("job_hunter_deliveries", "job_id"),
+            ("job_hunter_application_events", "job_id"),
+            ("job_hunter_company_watch", "discovered_from_job_id"),
         ):
             rows = self._client.select(
-                table, params={"job_id": f"eq.{job_id}", "select": "id", "limit": "1"}
+                table, params={column: f"eq.{job_id}", "select": "id", "limit": "1"}
             )
             if rows:
                 return True
@@ -1798,8 +1804,11 @@ class PostgresJobStore:
         correlated anti-join in one request, so this fetches every gmail/
         LinkedIn candidate row once and does the blank/populated split in
         Python instead (`trim(...) = ''` becomes `.strip()`, `lower(...) =
-        'linkedin'` becomes an `ilike` exact-match filter, which is
-        case-insensitive without wildcards).
+        'linkedin'` becomes an `ilike` exact-match filter: without a `*`
+        wildcard it's case-insensitive exact-match for the literal
+        `linkedin`, true here because that string has no `_` in it -- `_`
+        is still a single-character LIKE wildcard even with no `*` present,
+        as Task 10 already ruled on for `clear_ats_board_rejection`).
 
         A message is still only released when every step confirms safety:
         its gmail message exists and is classified `JOB_ALERT`, every
@@ -1969,7 +1978,11 @@ class PostgresJobStore:
         Translates `navigation_store.py`'s (deleted)
         `prune_navigation_sessions`. `delete`'s default
         `return=representation` hands back the deleted rows, so the count is
-        their length rather than a driver-level `rowcount`.
+        their length rather than a driver-level `rowcount`. `HttpClient`
+        retries a DELETE on 5xx, so a first attempt that commits and then
+        returns a 502 makes the retry see nothing left to delete and report
+        0 instead of the true count. Harmless today -- every caller discards
+        the return value -- but worth knowing if that ever changes.
         """
         rows = self._client.delete(
             "job_hunter_telegram_navigation_sessions",

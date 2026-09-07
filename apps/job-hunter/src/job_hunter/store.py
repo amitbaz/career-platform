@@ -2029,6 +2029,7 @@ class JobStore:
         return len(message_ids)
 
     def release_legacy_blank_linkedin_jobs(self) -> int:
+        # Deleted along with the whole `store.py` module at issue #70 task 14.
         """Release only safe blank/poisoned LinkedIn Gmail artifacts for reprocessing.
 
         Formerly the free function `gmail_linkedin_cleanup.release_legacy_blank_linkedin_jobs`,
@@ -2153,6 +2154,7 @@ class JobStore:
     # ------------------------------------------------------------------
 
     def create_navigation_session(self, session: NavigationSession) -> None:
+        # Deleted along with the whole `store.py` module at issue #70 task 14.
         """Formerly `navigation_store.create_navigation_session(store, session)`.
 
         Moved onto `JobStore` (issue #70 task 12) so both backends expose the
@@ -2178,6 +2180,7 @@ class JobStore:
             )
 
     def attach_navigation_message_id(self, session_id: str, message_id: str) -> bool:
+        # Deleted along with the whole `store.py` module at issue #70 task 14.
         """Formerly `navigation_store.attach_navigation_message_id(store, ...)`."""
         with self._conn:
             cursor = self._conn.execute(
@@ -2187,6 +2190,7 @@ class JobStore:
         return cursor.rowcount > 0
 
     def get_navigation_session(self, session_id: str) -> NavigationSession | None:
+        # Deleted along with the whole `store.py` module at issue #70 task 14.
         """Formerly `navigation_store.get_navigation_session(store, session_id)`."""
         try:
             row = self._conn.execute(
@@ -2213,6 +2217,7 @@ class JobStore:
         )
 
     def prune_navigation_sessions(self, now_iso: str) -> int:
+        # Deleted along with the whole `store.py` module at issue #70 task 14.
         """Formerly `navigation_store.prune_navigation_sessions(store, now_iso)`."""
         self._ensure_navigation_schema()
         with self._conn:
@@ -2223,6 +2228,9 @@ class JobStore:
         return cursor.rowcount
 
     def _ensure_navigation_schema(self) -> None:
+        # Stays at task 14: backs the SQLite bridge deleted wholesale then, and
+        # the Postgres path never creates schema lazily (migrations own it) --
+        # a decision, not an oversight.
         with self._conn:
             self._conn.execute(_CREATE_TELEGRAM_NAVIGATION_SESSIONS)
 

@@ -647,6 +647,12 @@ def run_pipeline(
     # task 14 wires real Postgres construction here), so Brave search is
     # deliberately disabled -- see `build_brave_budget`'s docstring -- rather
     # than passed a stale `settings.db_path`.
+    logger.warning(
+        "Brave source-discovery is disabled: run_pipeline does not thread a "
+        "Supabase client through to build_brave_budget/build_sources yet "
+        "(pending issue #70 task 14); falling back to DuckDuckGo for "
+        "canonical resolution and building no TargetedSearchSource."
+    )
     brave_budget = build_brave_budget(settings, None)
     query_date = datetime.now(ZoneInfo(settings.timezone)).date()
     base_sources = (

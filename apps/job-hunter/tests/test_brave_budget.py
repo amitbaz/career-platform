@@ -102,6 +102,32 @@ def test_brave_request_budget_hard_cap_is_shared_across_consumers(supabase_clien
     assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 3
 
 
+def test_brave_request_budget_stops_at_limit_with_frozen_clock(supabase_client):
+    """Repeated `occurred_at` must not collapse reservations into one row.
+
+    The unique key on `job_hunter_search_api_usage` makes a retried write
+    converge -- but `BraveRequestBudget.reserve()` guards against a
+    genuinely frozen (or non-monotonic) clock by bumping into
+    strictly-increasing territory itself. A single instance issuing every
+    reservation at the exact same instant must still stop at the limit,
+    exactly like the old SQLite autoincrement ledger did.
+    """
+    frozen = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    budget = search_budget.BraveRequestBudget(
+        SearchUsageLedger(supabase_client), monthly_limit=3, now=lambda: frozen
+    )
+
+    assert budget.reserve() is True
+    assert budget.reserve() is True
+    assert budget.reserve() is True
+    assert budget.reserve() is False
+
+    ledger = SearchUsageLedger(supabase_client)
+    month_start = datetime(2026, 9, 1, tzinfo=UTC)
+    next_month = datetime(2026, 10, 1, tzinfo=UTC)
+    assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 3
+
+
 def test_brave_discovery_priority_is_soft_within_shared_daily_allowance(supabase_client):
     now = _distinct_instants(datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
     budget = search_budget.BraveRequestBudget(

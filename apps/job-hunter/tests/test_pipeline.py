@@ -2191,6 +2191,49 @@ def test_run_pipeline_forwards_store_to_build_sources_when_sources_not_given(
     assert captured["store"] is store
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "run_pipeline does not thread a Supabase client through to "
+        "build_brave_budget/build_sources yet; Brave source-discovery stays "
+        "disabled until issue #70 task 14 wires real Postgres construction "
+        "into run_pipeline. This must start failing (forcing a fix to the "
+        "xfail marker or the code) the moment that wiring lands."
+    ),
+)
+def test_run_pipeline_builds_brave_backed_source_when_configured(
+    settings, monkeypatch
+):
+    """`run_pipeline` itself -- not `build_sources` called directly with a
+    client -- must produce a Brave-backed source when Brave is configured.
+
+    `test_sources.py::test_build_sources_uses_only_brave_for_metered_market_discovery`
+    already proves `build_sources` does the right thing given a client; it
+    would keep passing even if `run_pipeline` never threaded one through.
+    This test wraps the real `build_sources` to observe what `run_pipeline`
+    actually calls it with.
+    """
+    import job_hunter.pipeline as pipeline_module
+    from job_hunter.sources import build_sources as real_build_sources
+
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    store = JobStore(settings.db_path)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+    captured = {}
+
+    def capturing_build_sources(*args, **kwargs):
+        result = real_build_sources(*args, **kwargs)
+        captured["kinds"] = [type(s).__name__ for s in result]
+        return result
+
+    monkeypatch.setattr(pipeline_module, "build_sources", capturing_build_sources)
+
+    run_pipeline(settings, store=store, gemini=gemini, telegram=telegram)
+
+    assert "TargetedSearchSource" in captured.get("kinds", [])
+
+
 def test_capped_job_is_excluded_from_delivery():
     capped = DigestItem(
         job_id=1,
