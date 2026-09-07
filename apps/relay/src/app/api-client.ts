@@ -33,6 +33,8 @@ import type {
   OpportunityStatus,
   PracticeFormat,
   PracticePlan,
+  ProviderCredential,
+  ProviderCredentialStatus,
   UpdateOpportunityDetailsInput,
 } from "@/lib/types";
 
@@ -79,6 +81,36 @@ async function postAction<T>(url: string, body: Record<string, unknown>): Promis
  */
 export async function fetchCareerDashboard(): Promise<CareerDashboard> {
   return api<CareerDashboard>("/api/career/dashboard");
+}
+
+// --- Provider credentials ---------------------------------------------------
+
+const PROVIDER_CREDENTIALS_URL = "/api/profile/credentials";
+
+/** Loads only non-secret provider configuration metadata for the signed-in user. */
+export async function fetchProviderCredentials(): Promise<ProviderCredentialStatus[]> {
+  return (await api<{ credentials: ProviderCredentialStatus[] }>(PROVIDER_CREDENTIALS_URL)).credentials;
+}
+
+/** Stores one provider secret and returns only its non-secret status metadata. */
+export async function saveProviderCredential(
+  provider: ProviderCredential,
+  secret: string,
+): Promise<ProviderCredentialStatus> {
+  return (await api<{ credential: ProviderCredentialStatus }>(PROVIDER_CREDENTIALS_URL, {
+    method: "PUT",
+    body: JSON.stringify({ provider, secret }),
+  })).credential;
+}
+
+/** Removes one provider secret and returns its cleared non-secret status metadata. */
+export async function removeProviderCredential(
+  provider: ProviderCredential,
+): Promise<ProviderCredentialStatus> {
+  return (await api<{ credential: ProviderCredentialStatus }>(PROVIDER_CREDENTIALS_URL, {
+    method: "DELETE",
+    body: JSON.stringify({ provider }),
+  })).credential;
 }
 
 // --- Opportunities ----------------------------------------------------------

@@ -302,6 +302,19 @@ function mockCoachData(options: {
       } satisfies Partial<Response>;
     }
 
+    if (url === "/api/profile/credentials") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          credentials: [
+            { provider: "gemini", configured: false, updatedAt: null },
+            { provider: "brave", configured: false, updatedAt: null },
+          ],
+        }),
+      } satisfies Partial<Response>;
+    }
+
     // Stories and Coach are dedicated detail views with their own read
     // models, fetched alongside the dashboard at bootstrap (see
     // `loadCareerData` in relay-shell.tsx). Callers that only care about
@@ -372,6 +385,14 @@ type RouteHandler = (init: RequestInit | undefined) => RouteResponse;
  * same path in `routes`.
  */
 const DEFAULT_ROUTES: Record<string, RouteHandler> = {
+  "/api/profile/credentials": () => ({
+    body: {
+      credentials: [
+        { provider: "gemini", configured: false, updatedAt: null },
+        { provider: "brave", configured: false, updatedAt: null },
+      ],
+    },
+  }),
   "/api/stories": () => ({ body: { stories: [] } }),
   "/api/observations": () => ({ body: { active: [], history: [] } }),
 };
@@ -785,6 +806,7 @@ describe("App profile view", () => {
     await screen.findByRole("heading", { name: "Ready when you are." });
     fireEvent.click(screen.getByRole("button", { name: "profile" }));
 
+    expect(await screen.findByRole("heading", { name: "Provider credentials" })).toBeInTheDocument();
     expect(await screen.findByText("Your source profile has enough detail for evidence-grounded practice.")).toBeInTheDocument();
   });
 
