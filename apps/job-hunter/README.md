@@ -1,16 +1,18 @@
 # Job Hunter Bot
 
-A daily, mostly hands-off job-hunting assistant that runs on GitHub Actions. It reads Gmail job signals, discovers public remote job postings, deduplicates them in SQLite, evaluates each one against your candidate profile with Gemini, and delivers a concise digest through Telegram. Tapping "Gen CL" on a job's card triggers on-demand cover letter drafting and PDF rendering for that job.
+A daily, mostly hands-off job-hunting assistant that runs on GitHub Actions. It reads Gmail job signals, discovers public remote job postings, deduplicates them in Postgres, evaluates each one against your candidate profile with Gemini, and delivers a concise digest through Telegram. Tapping "Gen CL" on a job's card triggers on-demand cover letter drafting and PDF rendering for that job.
 
 The bot **never submits applications**. It prepares material for you to review and send yourself — see [v1 safety boundary](#v1-safety-boundary) below.
 
 ## Project direction
 
-Job Hunter Bot currently runs as a standalone Python application using SQLite for persistence.
+Job Hunter Bot persists to Postgres — the shared Supabase project also used by the
+[Interviewer App](https://github.com/amitbaz/interviewer-app). Both applications now write to
+the same database; they do not yet share a domain model beyond that.
 
-The longer-term direction is to share the same Supabase/Postgres backend used by the [Interviewer App](https://github.com/amitbaz/interviewer-app). The migration will happen incrementally and must not block ongoing feature development in either project.
-
-Until an individual persistence domain is explicitly migrated, SQLite remains the production source of truth for Job Hunter Bot. New features should avoid unnecessary coupling to SQLite so that persistence can later move behind shared repository/service boundaries without requiring unrelated feature rewrites.
+Postgres is the production source of truth for Job Hunter Bot, via `PostgresJobStore`
+(`src/job_hunter/postgres_store.py`), which reaches PostgREST with a short-lived per-user ES256
+token. Row-level security decides which rows are visible.
 
 Target ecosystem:
 
@@ -18,15 +20,12 @@ Target ecosystem:
 Job Hunter Bot  ->  Supabase/Postgres  <-  Interviewer App
 ```
 
-This is an evolutionary migration, not a rewrite. Documentation describing the target architecture should not be interpreted as meaning that Supabase is already available or in use by this repository.
-
 ## Roadmap
 
 Current product direction includes:
 
 - Improve Telegram job browsing and navigation.
 - Add an explicit application workflow and application status tracking.
-- Gradually migrate persistent job/application data from SQLite to Supabase/Postgres.
 - Share candidate, job, application, and related data with the Interviewer App where appropriate.
 - Move toward a unified job-search -> application -> interview-preparation workflow across both projects.
 
@@ -53,7 +52,7 @@ Cover letter generation + PDF rendering happens on demand, not as part of the da
 - `src/job_hunter/cover_letter.py` / `pdf.py` — cover letter drafting and PDF rendering, triggered on demand per job via the "Gen CL" Telegram button.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`: dedup, evaluation cache, delivery tracking) against the shared Supabase project.
 - `src/job_hunter/telegram.py` — outbound-only Telegram Bot API delivery (digest message + PDF documents).
-- `src/job_hunter/gmail_sync.py` — read-only Gmail intake that classifies job signals and stages discovered jobs or review-needed events in the shared SQLite state.
+- `src/job_hunter/gmail_sync.py` — read-only Gmail intake that classifies job signals and stages discovered jobs or review-needed events in the shared Postgres state.
 - `src/job_hunter/pipeline.py` / `cli.py` — orchestration and the `python -m job_hunter run` and `python -m job_hunter sync-gmail` entrypoints.
 State now lives in Postgres (the shared Supabase project), not on the Actions runner, so `scripts/restore_state.py` and the artifact restore/upload steps it describes no longer exist.
 
@@ -68,7 +67,7 @@ Gmail + existing sources + YC + specialist-domain search + company watch
   -> high_priority/package_match may promote company
 ```
 
-Every discovered source copy is retained as provenance in SQLite before one logical job proceeds through deduplication. Canonical resolution uses public URLs and may recognize direct ATS listings, public redirects or embedded links, a known watch ATS target, or one targeted public search result. An unresolved lookup keeps the original candidate rather than blocking the run.
+Every discovered source copy is retained as provenance in Postgres before one logical job proceeds through deduplication. Canonical resolution uses public URLs and may recognize direct ATS listings, public redirects or embedded links, a known watch ATS target, or one targeted public search result. An unresolved lookup keeps the original candidate rather than blocking the run.
 
 Gmail contributes only staged job signals from the read-only intake; its message bodies are not logged by the R2 discovery flow. YC uses public job pages. Wellfound, Welcome to the Jungle, and configured portfolio domains are reached through public targeted search queries. R2 does not perform authenticated scraping, sign into job platforms, or bypass access controls.
 
@@ -129,10 +128,34 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 | `GMAIL_CLIENT_ID` | OAuth client ID used only by the Gmail intelligence sync |
 | `GMAIL_CLIENT_SECRET` | OAuth client secret used only by the Gmail intelligence sync |
 | `GMAIL_REFRESH_TOKEN` | Refresh token printed by the local Gmail OAuth bootstrap |
-| `JOB_HUNTER_USER_ID` | UUID of the platform user a run acts for (issue #69). Not yet required by any runtime path — the store port in issue #70 is what starts using it. |
-| `SUPABASE_URL` | Base URL of the Supabase project (issue #69). Not yet required by any runtime path. |
-| `SUPABASE_PUBLISHABLE_KEY` | Supabase project's publishable API key, sent as the `apikey` header (issue #69). Public by design, not yet required by any runtime path. |
-| `SUPABASE_SIGNING_KEY_B64` | Base64-encoded private ES256 JWK used to mint per-user access tokens (issue #69). It can mint a token for any user — treat it as the platform's most sensitive secret. Not yet required by any runtime path — the store port in issue #70 is what starts using it. |
+| `JOB_HUNTER_USER_ID` | UUID of the platform user a run acts for. Required — the pipeline and webhook read/write Postgres as this user. |
+| `SUPABASE_URL` | Base URL of the Supabase project. Required. |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase project's publishable API key, sent as the `apikey` header. Public by design, but required. |
+| `SUPABASE_SIGNING_KEY_B64` | Base64-encoded private ES256 JWK used to mint per-user access tokens. It can mint a token for any user — treat it as the platform's most sensitive secret. Required. |
+
+**As of this writing these four secrets do not exist yet in either GitHub repository settings or
+the Vercel project.** Both the workflows and the Telegram webhook are non-functional until an
+operator creates them — see [Cutover runbook](#cutover-runbook-order-matters) below.
+
+## Cutover runbook (order matters)
+
+> **Run the data migration BEFORE anything deletes the artifact.** The only copy of production
+> history is the last `job-hunter-state` artifact, and GitHub expires artifacts after 90 days.
+> Once it expires there is no way to recover pre-Postgres history — do not let step 6 happen
+> before steps 1-5 are done and verified.
+
+1. Create the four Supabase secrets — `JOB_HUNTER_USER_ID`, `SUPABASE_URL`,
+   `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64` — in **both** GitHub repository settings
+   and the Vercel project. Merge order relative to this step is irrelevant, but the migration
+   below cannot run without them.
+2. Apply migrations to the hosted Supabase project: `supabase db push`.
+3. Download the latest `job-hunter-state` artifact (from the most recent successful workflow run,
+   before it expires) and run `apps/job-hunter/scripts/migrate_sqlite_to_postgres.py` against it.
+4. Check the per-table row counts the migration script reports against the source SQLite
+   database's counts for every carried table.
+5. Trigger the daily workflow manually and confirm it completes end to end against Postgres.
+6. **Only then** let the artifact expire naturally. Do not delete it by hand, and do not skip
+   ahead to this step before 1-5 are verified.
 
 ## Required GitHub Actions variables
 
@@ -186,18 +209,18 @@ Copy `.env.example` to `.env`, fill in `GEMINI_API_KEY`, `CANDIDATE_PROFILE_B64`
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[test]'
+pip install -e '.[test,webhook]'
 cp .env.example .env
 # edit .env with your values, then:
 set -a; source .env; set +a
 python -m job_hunter run
 ```
 
-This runs discovery, profile extraction, source-diverse shortlisting, and evaluation against the local SQLite database at `var/job_hunter.sqlite3` (override with `JOB_HUNTER_DB_PATH`) without sending anything to Telegram. Cover letter/PDF generation is a separate on-demand step (`python -m job_hunter generate-cover-letter --job-id <id>`), not part of this run.
+This runs discovery, profile extraction, source-diverse shortlisting, and evaluation against Postgres (the shared Supabase project — `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`, and `JOB_HUNTER_USER_ID` must be set) without sending anything to Telegram. Cover letter/PDF generation is a separate on-demand step (`python -m job_hunter generate-cover-letter --job-id <id>`), not part of this run.
 
 ## Gmail intelligence setup
 
-Gmail intelligence reads job-related messages into the shared SQLite state before normal job discovery. It uses the Gmail read-only OAuth scope: Gmail is never modified, and full email bodies are not stored. The sync stores only the privacy-minimized message metadata and extracted job/application signals needed by the bot.
+Gmail intelligence reads job-related messages into the shared Postgres state before normal job discovery. It uses the Gmail read-only OAuth scope: Gmail is never modified, and full email bodies are not stored. The sync stores only the privacy-minimized message metadata and extracted job/application signals needed by the bot.
 
 Create an OAuth client for the Gmail API, then run the local bootstrap with the client credentials available only in your shell:
 
@@ -218,7 +241,7 @@ python -m job_hunter sync-gmail --force-backfill
 
 `--dry-run` classifies and extracts without advancing the Gmail cursor or persisting Gmail-derived state. `--force-backfill` repeats the 120-day backfill idempotently and is non-destructive. A completed sync with individual message errors keeps its cursor so those messages retry on the next sync; setup, authorization, profile, or listing failures return a nonzero status.
 
-The first successful Gmail setup performs a 120-day historical backfill. Historical processing is resumable and intentionally bounded to 100 previously unprocessed messages per sync invocation, so a large mailbox may need multiple workflow runs to finish. Successfully processed message IDs are stored in the SQLite state artifact and skipped on later runs. In GitHub Actions the Gmail step also has a 10-minute fail-open timeout; if it reaches that safety limit, the normal Job Hunter pipeline continues and the next run resumes the remaining Gmail backlog.
+The first successful Gmail setup performs a 120-day historical backfill. Historical processing is resumable and intentionally bounded to 100 previously unprocessed messages per sync invocation, so a large mailbox may need multiple workflow runs to finish. Successfully processed message IDs are stored in Postgres and skipped on later runs. In GitHub Actions the Gmail step also has a 10-minute fail-open timeout; if it reaches that safety limit, the normal Job Hunter pipeline continues and the next run resumes the remaining Gmail backlog.
 
 ## Manual GitHub Actions dispatch
 
@@ -228,10 +251,13 @@ Go to **Actions -> Daily Job Hunter -> Run workflow** to trigger an on-demand ru
 
 The repository workflow exposes `workflow_dispatch` only. Daily execution is expected to come from the configured external scheduler, which dispatches **Daily Job Hunter** at the desired local time; GitHub Actions itself has no cron trigger. Every external or manual dispatch runs the full pipeline directly, including the fail-open Gmail sync followed by `python -m job_hunter run`.
 
-Because GitHub Actions runners are ephemeral, the workflow:
-1. Restores `var/job_hunter.sqlite3` from the most recent non-expired `job-hunter-state` artifact (via `scripts/restore_state.py`, using the run's `GITHUB_TOKEN`) before running — silently starting with a fresh database if none exists.
-2. Runs the read-only Gmail intelligence sync before the normal job pipeline. This step is fail-open, so Gmail setup or service failures do not prevent the public-source job run.
-3. Uploads the resulting `var/job_hunter.sqlite3` as a `job-hunter-state` artifact (90-day retention) after the run, even if a prior step failed partway through (as long as the database file was created).
+State lives in Postgres (the shared Supabase project), not on the Actions runner, so there is
+nothing to restore before the run or upload afterward:
+1. The workflow runs the read-only Gmail intelligence sync before the normal job pipeline. This step is fail-open, so Gmail setup or service failures do not prevent the public-source job run.
+2. `python -m job_hunter run` reads and writes Postgres directly via `PostgresJobStore` for the
+   duration of the run. `concurrency: group: job-hunter-state` is still set on this workflow to
+   keep runs from overlapping, since several read-then-update sequences (company watch, ATS
+   registry, search budget) assume a single writer.
 
 ## Adding ATS board slugs
 
@@ -262,17 +288,13 @@ You remain responsible for reviewing and submitting every application yourself.
 
 ## Troubleshooting
 
-### No prior state artifact found
-
-On the very first run (or if the `job-hunter-state` artifact has expired past its 90-day retention, or was deleted), `scripts/restore_state.py` logs that no matching artifact was found and exits normally — the bot proceeds with a fresh, empty database. This is expected on first setup and simply means every discovered job is treated as new.
-
 ### Gemini quota / rate limits
 
 The pipeline does not implement a Gemini-quota circuit breaker. Each daily run uses one compact profile-extraction call, then up to `max_jobs_per_run` (default 35) independent evaluation calls. A separate on-demand cover-letter call happens only when "Gen CL" is tapped for a given job. If quota or rate limits interrupt the run, each affected job fails independently and can be retried on the next run without blocking the rest. If you see repeated Gemini failures in the Actions log, check your API key's quota/rate limit in Google AI Studio.
 
 ### Telegram delivery errors
 
-A failed Telegram send (bad token, bot not started, wrong chat id, message too large) is logged and does not crash the run or discard evaluation results. The job stays evaluated and marked undelivered in SQLite, and later runs retry only the missing Telegram deliveries without re-calling Gemini. Retry eligibility follows the same score floor as the digest: only jobs with final score `>60` are retried, and ready-to-apply jobs retry both the digest message and PDF until both succeed. Verify `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are correct and that you've sent at least one message to the bot (see [Telegram bot setup](#telegram-bot-setup)).
+A failed Telegram send (bad token, bot not started, wrong chat id, message too large) is logged and does not crash the run or discard evaluation results. The job stays evaluated and marked undelivered in Postgres, and later runs retry only the missing Telegram deliveries without re-calling Gemini. Retry eligibility follows the same score floor as the digest: only jobs with final score `>60` are retried, and ready-to-apply jobs retry both the digest message and PDF until both succeed. Verify `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are correct and that you've sent at least one message to the bot (see [Telegram bot setup](#telegram-bot-setup)).
 
 ### Flaky web sources
 
