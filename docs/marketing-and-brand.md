@@ -15,6 +15,12 @@ not the primary concern.
 
 ## Agreed direction
 
+- **Initial focus:** speak to job seekers across professions, covering both finding jobs
+  and preparing for interviews. Geography, language, and the first paid-ad targeting segment
+  remain open.
+- **pen.dev organization:** start with the existing `career-platform` workspace. Organize
+  brand exploration, the design system, landing page, paid ads, and product designs into
+  separate design files as needed. Begin with brand exploration.
 - **Acquisition context:** YouTube, Facebook, and Instagram were suggested as possible paid
   advertising channels. They were not a request for an organic content strategy. No channel
   has been selected.
@@ -64,7 +70,7 @@ This is a proposed workflow; no visual concept or implementation has been approv
 
 | Topic | Still to decide |
 | --- | --- |
-| Initial audience | Who are the first users, and what career problem brings them here? |
+| First campaign audience | Which targeting segment should we test first within the cross-profession audience? |
 | Market | Geography, language, and initial age segment. |
 | Positioning | The primary promise and which product experience leads the marketing. |
 | Brand identity | Public-facing name, logo, palette, typography, illustration style, and mascot choice. |
@@ -84,6 +90,9 @@ This is a proposed workflow; no visual concept or implementation has been approv
   professionalism across generations; Duolingo supplied as a reference.
 - Created this repository document at the founder's request.
 - Specified pen.dev as the required tool for all design work.
+- Agreed to begin in one pen.dev workspace with separate design files as needed.
+- Confirmed that the first brand exploration should address both job search and interview preparation.
+- Confirmed that the brand should address job seekers across professions.
 - No ads launched, assets produced, or final design system chosen in this discussion.
 
 ## Continuing this work
