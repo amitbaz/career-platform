@@ -7,5 +7,6 @@
       "maxDuration": 30,
       "excludeFiles": "{tests/**,.superpowers/**,docs/**,var/**}"
     }
-  }
+  },
+  "ignoreCommand": "sh ../../scripts/vercel-ignore-build.sh . ':/scripts/vercel-ignore-build.sh'"
 }
