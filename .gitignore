@@ -64,3 +64,6 @@ apps/relay/data/
 .superpowers/
 .claude/
 .vscode/
+
+# design generation logs
+designs/**/*.log

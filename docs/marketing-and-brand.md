@@ -2,9 +2,10 @@
 
 Last updated: 2026-09-07
 
-Status: early discovery. This document preserves the marketing discussion and distinguishes
-agreed direction from proposals and open decisions. Use it as the shared reference for future
-marketing, landing-page, and visual-identity work.
+Status: brand exploration in progress. A working name, a visual base, a mascot species, and a
+logo direction have been chosen as starting points. None is final. This document preserves the
+marketing discussion and distinguishes agreed direction from proposals and open decisions. Use it
+as the shared reference for future marketing, landing-page, and visual-identity work.
 
 ## Purpose
 
@@ -13,18 +14,61 @@ recognizable visual identity. The founder's main concern is design: choosing a c
 system and creating beautiful icons, logos, images, and animations. Code implementation is
 not the primary concern.
 
+## Origin story and positioning input
+
+The founder's own experience is the brief. Two feelings started the product:
+
+1. **Exhaustion with the hunt.** "I need a new job again and I don't want to do the work":
+   scanning job boards, reading postings carefully, tailoring cover letters. The wish is for
+   something that does that work on the job seeker's behalf.
+2. **Fear of freezing in the interview.** Six years since the last interview, stress causes
+   blackouts, and knowledge that is clearly there fails to come out under pressure. The wish is
+   rehearsal until answers hold up even when nervous.
+
+Consequences for the brand:
+
+- The primary promise is relief plus readiness. "Sense of progress" is how the product proves
+  the relief is real, not the headline.
+- The product is not a calm or wellness app. Names and visuals should say what it does (carries
+  the load, gets you ready) or the outcome, not a mood.
+- Cheerfulness stays gentle. A tired, anxious person wants a competent companion, not a hype
+  coach.
+- Working one-line positioning: *We do the hunt. We get you ready. You walk in prepared.*
+- The ad line "The job hunt, minus the dread" from the illustration concept captures this and
+  should be kept.
+
 ## Agreed direction
 
 - **Initial focus:** speak to job seekers across professions, covering both finding jobs
   and preparing for interviews. Geography, language, and the first paid-ad targeting segment
   remain open.
-- **pen.dev organization:** start with the existing `career-platform` workspace. Organize
-  brand exploration, the design system, landing page, paid ads, and product designs into
-  separate design files as needed. Begin with brand exploration.
+- **Working name: Caddie.** Chosen because a caddie carries your bag, walks beside you, knows
+  the course, and hands you the right club at the right moment, which covers both the
+  "does the legwork" and the "gets you ready" halves. It also works as the mascot's name.
+  Not trademark-, domain-, or app-store-checked yet. Earlier placeholder "Stride" is retired;
+  it said movement, and the target user wants to stop carrying weight, not move faster.
+- **Visual base: illustration and editorial type** (brand exploration direction 2). Warm
+  expressive line illustration, Newsreader serif for display, Inter for text, palette of
+  paper, ink, clay (primary action), sage (progress), amber (celebration), plum (illustration
+  depth). Chosen over a mascot-first concept and a geometric-progress concept.
+- **Mascot: a llama named Caddie**, added on top of the illustration base (direction 4). The
+  llama walks beside the job seeker and carries the load in saddlebags. It accompanies the
+  person rather than replacing them in the hero illustration. Chosen over a bear (generated
+  by default, rejected as generic). Should read as cute and funny; current drafts are cute
+  but not yet funny.
+- **Logo direction: llama silhouette mark** (logo option C) with the Newsreader wordmark.
+  Chosen because a stranger can name it in a second and it ties the mark to the mascot.
+  Explicitly a starting direction, not a final logo. The original arc-and-dot mark was
+  rejected as unreadable without a caption.
+- **pen.dev organization:** use the existing `career-platform` workspace. Brand exploration
+  files live in this repository under `designs/brand-exploration/` as `.pen` sources with PNG
+  exports. Organize the design system, landing page, paid ads, and product designs into
+  separate design files as needed.
 - **Acquisition context:** YouTube, Facebook, and Instagram were suggested as possible paid
   advertising channels. They were not a request for an organic content strategy. No channel
   has been selected.
-- **Core feeling:** calm confidence with a sense of progress.
+- **Core feeling:** calm confidence with a sense of progress, understood through the origin
+  story above: calm as the outcome of being prepared, not as a style.
 - **Personality:** combine professionalism with a cheerful, playful vibe. Calm should not
   become bland or overly restrained.
 - **Generational appeal:** the brand should welcome both very young and older users. This
@@ -39,6 +83,26 @@ not the primary concern.
   This is the founder's required workflow. If a required capability is unavailable, discuss
   the limitation before substituting another design tool.
 
+## Design files
+
+All under `designs/brand-exploration/`. Each `.pen` has a matching `.png` export. Generation
+logs (`*.log`) are ignored by git.
+
+| File | What it is | Status |
+| --- | --- | --- |
+| `direction-1-mascot` | Penguin mascot concept, name Stride | Parked |
+| `direction-2-illustration` | Illustration and type concept, name Stride | Superseded by v2 |
+| `direction-2-illustration-v2` | Same, renamed Caddie, flag logo mark | Reference, no mascot |
+| `direction-3-progress` | Geometric progress concept, name Stride | Parked |
+| `direction-4-caddie` | Illustration base plus bear mascot | Rejected |
+| `direction-4-caddie-v2` | Illustration base plus llama mascot, three llama options | Superseded |
+| `direction-4-caddie-v3` | Adds logo exploration, four mark options | Superseded |
+| `direction-4-caddie-v4` | Llama mark (option C) applied across the board | **Current** |
+| `direction-4-caddie-v3-logos.png` | Crop of the four logo options for legibility | Reference |
+
+Iterate from `direction-4-caddie-v4.pen` using `pen --in`. Keep earlier versions; do not
+overwrite.
+
 ## Proposed interpretation — to explore
 
 These ideas came from the discussion but have not been selected as a final design:
@@ -48,33 +112,43 @@ These ideas came from the discussion but have not been selected as a final desig
 - Celebrate meaningful progress with thoughtful motion and encouragement.
 - Adapt the tone to the situation: cheerful around progress, considerate around rejection
   or difficult feedback.
-- Explore a character or mascot alongside a direction based on illustration and typography.
-  A mascot is optional.
 - Make ads and the landing page feel like the same brand through consistent imagery,
   language, typography, and motion.
+- Motion concept from the illustration direction: "motion is the step, not the sparkle".
+  Content rises and settles, never bounces; amber flecks only for real milestones; nothing
+  animates after a rejection.
+
+## Naming notes
+
+Shortlists considered before settling on Caddie, kept for reference if the name changes:
+
+- Calm and steadiness words (Steady, Stead, Poise, Aplomb) and their equivalents in other
+  languages. Dropped because the product is not a mood; it does work.
+- Doing-the-legwork words: Legwork, Stand-in, Scout, Understudy, Caddie. Caddie won because
+  it covers both halves and names the mascot.
+- Hebrew slang candidates if Israel is the first market: Alai (on me), Chik chak, Sagur,
+  Mesudar. Tav and Tau were liked as sounds.
 
 ## Suggested next design step
 
-Compare a few visual concepts in pen.dev using the same realistic content. Each could include:
+From `direction-4-caddie-v4.pen`:
 
-- A landing-page first screen.
-- A logo or wordmark concept.
-- A small palette, typography sample, and representative icons.
-- A paid-ad creative example.
-- A motion concept.
-
-Use the comparison to choose a direction, then define reusable design rules and refine assets.
-This is a proposed workflow; no visual concept or implementation has been approved yet.
+1. Pick one llama variant (A Packmate, B Woolly, C Longneck) and produce a canonical model
+   sheet: proportions, three views, expression set. Push the "funny" further.
+2. Redraw the hero and ad illustrations to match the canonical llama.
+3. Refine the llama silhouette mark: test at 16, 24, 64 px and in one colour.
+4. Then split into separate pen.dev files: design system, landing page, ad set.
 
 ## Open decisions
 
 | Topic | Still to decide |
 | --- | --- |
 | First campaign audience | Which targeting segment should we test first within the cross-profession audience? |
-| Market | Geography, language, and initial age segment. |
-| Positioning | The primary promise and which product experience leads the marketing. |
-| Brand identity | Public-facing name, logo, palette, typography, illustration style, and mascot choice. |
-| Motion | How progress and personality appear through animation. |
+| Market | Geography, language, and initial age segment. Affects whether the name and slang choices travel. |
+| Name | Caddie is the working name. Needs trademark, domain, and app-store checks before anything public. |
+| Mascot | Which llama variant, how funny, and the canonical model sheet. |
+| Logo | Refine the llama silhouette mark, or combine with a flag or bag element. |
+| Motion | How progress and personality appear through animation, beyond the concept notes. |
 | Landing page | Main message, product proof, and primary call to action. |
 | Paid acquisition | Initial channel, budget, creative formats, and experiment duration. |
 | Measurement | Conversion event and criteria for evaluating acquisition quality and cost. |
@@ -93,10 +167,26 @@ This is a proposed workflow; no visual concept or implementation has been approv
 - Agreed to begin in one pen.dev workspace with separate design files as needed.
 - Confirmed that the first brand exploration should address both job search and interview preparation.
 - Confirmed that the brand should address job seekers across professions.
-- No ads launched, assets produced, or final design system chosen in this discussion.
+- Generated three brand exploration concepts with the pen.dev CLI under
+  `designs/brand-exploration/`, all with placeholder name "Stride": mascot-led (penguin),
+  illustration and type, and geometric measured progress.
+- Founder chose the illustration and type concept as the base.
+- Founder shared the origin story (exhaustion with the hunt, fear of freezing in interviews),
+  recorded above as positioning input.
+- Naming exploration: calm-word synonyms and translations, Hebrew slang, then a pivot to
+  words that describe what the product does. Founder chose **Caddie** as working name.
+- Renamed the illustration concept to Caddie (v2). The design agent replaced the arc-and-dot
+  mark with a flag mark in that file.
+- Built direction 4: illustration base plus mascot. First pass produced a bear by default;
+  founder rejected it. Second pass with a llama accepted as the direction, with three llama
+  variants and three expressions of the leading one.
+- Logo exploration produced four marks (stairs and flag, bag, llama silhouette, golf pin).
+  Founder chose the llama silhouette as a starting direction; applied across the board in v4.
+- Nothing launched, no name checks done, no final design system chosen.
 
 ## Continuing this work
 
 Read this document before proposing marketing or brand changes. Preserve the distinction
 between agreed direction, exploratory proposals, and open questions. Record new decisions
-and update the progress log as the discussion advances.
+and update the progress log as the discussion advances. Iterate designs from the file marked
+Current in the Design files table.
