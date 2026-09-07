@@ -7,6 +7,7 @@ from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import Evaluation, Job, Material
+from job_hunter.search_profile import SearchProfile, SearchProfileMarket
 from job_hunter.store_mapping import from_iso
 
 
@@ -2758,4 +2759,80 @@ def test_backfill_ats_identity_is_idempotent(store):
     )
 
     assert store.backfill_ats_identity() == 1
+
+
+# ---------------------------------------------------------------------------
+# Search profile
+# ---------------------------------------------------------------------------
+
+
+def _search_profile(**overrides) -> SearchProfile:
+    defaults = dict(
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        max_jobs_per_run=35,
+        source_minimum_per_run=0,
+        source_max_share=0.5,
+        thresholds={"package": 75, "possible": 65},
+        salary_floor_eur=90000,
+        max_search_queries_per_run=30,
+        max_canonical_resolutions_per_run=80,
+        max_learned_ats_boards_per_run=75,
+        markets=[],
+    )
+    defaults.update(overrides)
+    return SearchProfile(**defaults)
+
+
+def _search_profile_market(market_id: str, **overrides) -> SearchProfileMarket:
+    defaults = dict(
+        market_id=market_id,
+        query_share=0.5,
+        currency="EUR",
+        gross_base_floor=90000,
+        remote_policy="preferred",
+        relocation_policy="selective",
+        sponsorship_policy="not_required",
+    )
+    defaults.update(overrides)
+    return SearchProfileMarket(**defaults)
+
+
+def test_get_search_profile_returns_none_for_a_fresh_user(store):
+    assert store.get_search_profile() is None
+
+
+def test_save_then_get_search_profile_round_trips_with_markets_in_declared_order(
+    store,
+):
+    declared_order = ["germany_eu", "israel_remote", "us_nyc_sf"]
+    profile = _search_profile(
+        target_titles=["senior product engineer"],
+        markets=[_search_profile_market(market_id) for market_id in declared_order],
+    )
+
+    profile_id = store.save_search_profile(profile)
+
+    result = store.get_search_profile()
+    assert result is not None
+    profile_row, market_rows = result
+    assert profile_row["id"] == profile_id
+    assert profile_row["timezone"] == "Europe/Berlin"
+    assert profile_row["target_titles"] == ["senior product engineer"]
+    assert [row["market_id"] for row in market_rows] == declared_order
+
+
+def test_save_search_profile_replaces_markets_rather_than_accumulating(store):
+    store.save_search_profile(
+        _search_profile(markets=[_search_profile_market("germany_eu")])
+    )
+
+    second_profile_id = store.save_search_profile(
+        _search_profile(markets=[_search_profile_market("israel_remote")])
+    )
+
+    _, market_rows = store.get_search_profile()
+    assert [row["market_id"] for row in market_rows] == ["israel_remote"]
+    # Same user -> same profile row (upsert on user_id), not a second one.
+    assert store.get_search_profile()[0]["id"] == second_profile_id
     assert store.backfill_ats_identity() == 0

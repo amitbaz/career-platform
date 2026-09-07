@@ -1654,7 +1654,7 @@ class PostgresJobStore:
         profile_row = profiles[0]
         market_rows = self._client.select(
             "job_hunter_search_profile_markets",
-            params={"profile_id": f"eq.{profile_row['id']}", "order": "created_at.asc"},
+            params={"profile_id": f"eq.{profile_row['id']}", "order": "position.asc"},
         )
         return profile_row, market_rows
 

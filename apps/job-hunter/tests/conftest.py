@@ -58,6 +58,12 @@ SEED_USER_B = "bbbbbbbb-0000-0000-0000-000000000002"
 # relative to each other is unconstrained; they are listed after the
 # tables whose position matters. job_hunter_jobs is the root every other
 # table (transitively) hangs off of, so it must be last.
+#
+#   job_hunter_search_profile_markets -> job_hunter_search_profiles (profile_id, user_id)
+#
+# job_hunter_search_profiles carries no foreign key to job_hunter_jobs, so
+# its own position relative to the other parentless tables is unconstrained;
+# only its market child must come before it.
 _TABLES_CHILD_FIRST = (
     "job_hunter_review_deliveries",
     "job_hunter_application_events",
@@ -76,6 +82,8 @@ _TABLES_CHILD_FIRST = (
     "job_hunter_gmail_messages",
     "job_hunter_inbound_job_candidates",
     "job_hunter_telegram_navigation_sessions",
+    "job_hunter_search_profile_markets",
+    "job_hunter_search_profiles",
     "job_hunter_jobs",
 )
 

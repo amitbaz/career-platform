@@ -47,6 +47,21 @@ DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES = [
     "embedded engineer",
 ]
 
+DEFAULT_SPECIALIST_BOARD_HOSTS = [
+    "wellfound.com", "jobs.techaviv.com", "devjobs.co.il", "workvisajobs.co.uk",
+    "nodeflair.com", "sg.jobstreet.com", "mycareersfuture.gov.sg", "builtin.com",
+    "startup.jobs", "ycombinator.com",
+]
+
+DEFAULT_FRONTEND_SIGNALS = [
+    "react", "next.js", "nextjs", "frontend", "front-end", "typescript", "design system",
+]
+
+DEFAULT_BACKEND_HEAVY_SIGNALS = [
+    "distributed systems", "kubernetes", "golang", "java",
+    "event-driven architecture", "backend architecture", "high-throughput", "message queues",
+]
+
 
 @dataclass(slots=True)
 class SalaryPolicy:

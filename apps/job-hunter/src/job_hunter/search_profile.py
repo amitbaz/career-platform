@@ -32,10 +32,11 @@ class SearchProfileMarket(BaseModel):
         if self.sponsorship_policy not in _SPONSORSHIP_POLICIES:
             raise ValueError(f"invalid sponsorship_policy: {self.sponsorship_policy!r}")
 
-    def to_market_row(self, profile_id: str, user_id: str) -> dict:
+    def to_market_row(self, profile_id: str, user_id: str, position: int) -> dict:
         return {
             "user_id": user_id,
             "profile_id": profile_id,
+            "position": position,
             "market_id": self.market_id,
             "query_share": self.query_share,
             "locations": self.locations,
@@ -98,4 +99,7 @@ class SearchProfile(BaseModel):
         return row
 
     def to_market_rows(self, profile_id: str, user_id: str = "") -> list[dict]:
-        return [market.to_market_row(profile_id, user_id) for market in self.markets]
+        return [
+            market.to_market_row(profile_id, user_id, index)
+            for index, market in enumerate(self.markets)
+        ]

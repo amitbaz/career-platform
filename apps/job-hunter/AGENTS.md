@@ -99,7 +99,6 @@ pytest tests/test_pipeline.py::test_name -q  # single test
 
 python -m job_hunter run                       # full pipeline run
 python -m job_hunter run --scheduled           # only runs at the scheduled_hour in the user's search profile
-python -m job_hunter run --config path/to.yml  # alternate config
 ```
 
 Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, fill in `GEMINI_API_KEY`, `CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64`, set `JOB_HUNTER_DRY_RUN=1`, then `set -a; source .env; set +a` before running. `JOB_HUNTER_DRY_RUN` truthy values are `1/true/yes` (case-insensitive); anything else is treated as unset/false.

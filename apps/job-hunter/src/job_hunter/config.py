@@ -10,9 +10,12 @@ from typing import TYPE_CHECKING
 from .gmail_models import GmailSettings
 from .normalize import ats_board_key
 from .models import (
+    DEFAULT_BACKEND_HEAVY_SIGNALS,
     DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
     DEFAULT_ENGINEERING_TITLE_KEYWORDS,
     DEFAULT_ENGINEERING_TITLE_PHRASES,
+    DEFAULT_FRONTEND_SIGNALS,
+    DEFAULT_SPECIALIST_BOARD_HOSTS,
     CompanyWatchSeed,
     GeminiQuotaSettings,
     SearchPolicy,
@@ -79,8 +82,8 @@ def load_settings(store: "PostgresJobStore") -> Settings:
     result = store.get_search_profile()
     if result is None:
         raise ProfileNotFoundError(
-            "no job_hunter_search_profiles row for this user; run the "
-            "one-off migration script or create a profile first"
+            "no job_hunter_search_profiles row exists for this user's account; "
+            "create one first, e.g. via PostgresJobStore.save_search_profile"
         )
     profile_row, market_row_list = result
     data = _profile_row_to_legacy_dict(profile_row, market_row_list)
@@ -125,20 +128,22 @@ def load_settings(store: "PostgresJobStore") -> Settings:
         learned_ats_denylist=_parse_learned_ats_denylist(data),
         learned_ats_allowlist=_parse_learned_ats_allowlist(data),
         engineering_title_keywords=list(
-            data.get("engineering_title_keywords", DEFAULT_ENGINEERING_TITLE_KEYWORDS)
+            data.get("engineering_title_keywords") or DEFAULT_ENGINEERING_TITLE_KEYWORDS
         ),
         engineering_title_phrases=list(
-            data.get("engineering_title_phrases", DEFAULT_ENGINEERING_TITLE_PHRASES)
+            data.get("engineering_title_phrases") or DEFAULT_ENGINEERING_TITLE_PHRASES
         ),
         blocked_profession_title_phrases=list(
-            data.get(
-                "blocked_profession_title_phrases",
-                DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
-            )
+            data.get("blocked_profession_title_phrases")
+            or DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES
         ),
-        specialist_board_hosts=list(data.get("specialist_board_hosts", [])),
-        frontend_signals=list(data.get("frontend_signals", [])),
-        backend_heavy_signals=list(data.get("backend_heavy_signals", [])),
+        specialist_board_hosts=list(
+            data.get("specialist_board_hosts") or DEFAULT_SPECIALIST_BOARD_HOSTS
+        ),
+        frontend_signals=list(data.get("frontend_signals") or DEFAULT_FRONTEND_SIGNALS),
+        backend_heavy_signals=list(
+            data.get("backend_heavy_signals") or DEFAULT_BACKEND_HEAVY_SIGNALS
+        ),
         markets=_parse_markets(data.get("markets", [])),
     )
 

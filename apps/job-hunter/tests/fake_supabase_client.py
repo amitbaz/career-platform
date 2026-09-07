@@ -18,6 +18,9 @@ class FakeSupabaseClient:
             rows = [r for r in rows if r["user_id"] == params["user_id"].removeprefix("eq.")]
         if "profile_id" in params:
             rows = [r for r in rows if r["profile_id"] == params["profile_id"].removeprefix("eq.")]
+        if "order" in params:
+            column, _, direction = params["order"].partition(".")
+            rows = sorted(rows, key=lambda r: r[column], reverse=direction == "desc")
         return rows[: int(params["limit"])] if "limit" in params else rows
 
     def upsert(self, table, rows, *, on_conflict):

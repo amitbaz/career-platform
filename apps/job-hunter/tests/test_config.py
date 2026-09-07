@@ -8,7 +8,15 @@ from job_hunter.config import (
     load_gmail_settings,
     load_settings,
 )
-from job_hunter.models import CompanyWatchSeed
+from job_hunter.models import (
+    DEFAULT_BACKEND_HEAVY_SIGNALS,
+    DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
+    DEFAULT_ENGINEERING_TITLE_KEYWORDS,
+    DEFAULT_ENGINEERING_TITLE_PHRASES,
+    DEFAULT_FRONTEND_SIGNALS,
+    DEFAULT_SPECIALIST_BOARD_HOSTS,
+    CompanyWatchSeed,
+)
 from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.search_profile import SearchProfile, SearchProfileMarket
 from tests.fake_supabase_client import FakeSupabaseClient
@@ -308,6 +316,60 @@ def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
     assert settings.policy.manual_company_watch == []
     assert settings.policy.max_learned_ats_boards_per_run == 75
     assert settings.policy.learned_ats_denylist == []
+
+
+def test_load_settings_falls_back_to_defaults_for_empty_ranking_lists(monkeypatch):
+    """A profile that never explicitly configured these six list fields still
+    gets the known-good ranking defaults, not an empty list.
+
+    Every one of these columns is `not null default '{}'` in Postgres, so
+    "missing" never happens -- but "empty" does, for any profile that was
+    never edited for these fields. Detection logic must work with zero
+    operator knowledge, so an unconfigured profile must fall back exactly
+    like one saved before these fields existed.
+    """
+    _set_required_bot_env(monkeypatch)
+    settings = _load(
+        _profile(
+            engineering_title_keywords=[],
+            engineering_title_phrases=[],
+            blocked_profession_title_phrases=[],
+            specialist_board_hosts=[],
+            frontend_signals=[],
+            backend_heavy_signals=[],
+        )
+    )
+    assert settings.policy.engineering_title_keywords == DEFAULT_ENGINEERING_TITLE_KEYWORDS
+    assert settings.policy.engineering_title_phrases == DEFAULT_ENGINEERING_TITLE_PHRASES
+    assert (
+        settings.policy.blocked_profession_title_phrases
+        == DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES
+    )
+    assert settings.policy.specialist_board_hosts == DEFAULT_SPECIALIST_BOARD_HOSTS
+    assert settings.policy.frontend_signals == DEFAULT_FRONTEND_SIGNALS
+    assert settings.policy.backend_heavy_signals == DEFAULT_BACKEND_HEAVY_SIGNALS
+
+
+def test_load_settings_explicit_ranking_lists_override_rather_than_merge(monkeypatch):
+    """A non-empty configured value replaces the default outright -- it is
+    not merged with it."""
+    _set_required_bot_env(monkeypatch)
+    settings = _load(
+        _profile(
+            engineering_title_keywords=["custom-keyword"],
+            engineering_title_phrases=["custom-phrase"],
+            blocked_profession_title_phrases=["custom-blocked"],
+            specialist_board_hosts=["custom.example.com"],
+            frontend_signals=["custom-frontend"],
+            backend_heavy_signals=["custom-backend"],
+        )
+    )
+    assert settings.policy.engineering_title_keywords == ["custom-keyword"]
+    assert settings.policy.engineering_title_phrases == ["custom-phrase"]
+    assert settings.policy.blocked_profession_title_phrases == ["custom-blocked"]
+    assert settings.policy.specialist_board_hosts == ["custom.example.com"]
+    assert settings.policy.frontend_signals == ["custom-frontend"]
+    assert settings.policy.backend_heavy_signals == ["custom-backend"]
 
 
 def test_load_settings_reads_learned_ats_denylist(monkeypatch):

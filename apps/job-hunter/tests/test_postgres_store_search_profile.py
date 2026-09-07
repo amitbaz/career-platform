@@ -50,6 +50,44 @@ def test_get_search_profile_returns_none_when_absent():
     assert store.get_search_profile() is None
 
 
+def _market(market_id: str, **overrides) -> SearchProfileMarket:
+    defaults = dict(
+        market_id=market_id,
+        query_share=0.5,
+        currency="EUR",
+        gross_base_floor=90000,
+        remote_policy="preferred",
+        relocation_policy="selective",
+        sponsorship_policy="not_required",
+    )
+    defaults.update(overrides)
+    return SearchProfileMarket(**defaults)
+
+
+def test_save_search_profile_preserves_declared_market_order_across_resave():
+    """Re-saving a profile (e.g. an edit) must not scramble market order.
+
+    save_search_profile deletes and re-inserts every market row in one
+    batch, so a real Postgres/PostgREST insert would give every row in
+    that batch an identical created_at -- without an explicit position
+    column, get_search_profile's order would then be an unpredictable
+    permutation (tiebreak on a random id) rather than the declared order.
+    Saving the same three markets twice, in the same order, is the exact
+    scenario that would previously have been at risk.
+    """
+    client = FakeSupabaseClient()
+    store = PostgresJobStore(client)
+    declared_order = ["germany_eu", "israel_remote", "us_nyc_sf"]
+    profile = _profile()
+    profile.markets = [_market(market_id) for market_id in declared_order]
+
+    store.save_search_profile(profile)
+    store.save_search_profile(profile)
+
+    _, market_rows = store.get_search_profile()
+    assert [row["market_id"] for row in market_rows] == declared_order
+
+
 def test_save_search_profile_replaces_markets():
     client = FakeSupabaseClient()
     store = PostgresJobStore(client)
