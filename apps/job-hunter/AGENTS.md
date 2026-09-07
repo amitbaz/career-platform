@@ -23,9 +23,12 @@ Target direction:
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
-   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and six `security invoker`
-   SQL functions (`supabase/migrations/202609060004_*.sql`) for operations PostgREST cannot
-   express in one call. Job Hunter's runtime reads and writes these tables through
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and fifteen `security invoker`
+   SQL functions across two migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`
+   and `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`) for operations
+   PostgREST cannot express in one call. (A later migration,
+   `202609070004_job_hunter_upsert_job_distinct_timestamps.sql`, re-creates
+   `job_hunter_upsert_job` rather than adding a new function.) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
    `tests/integration/test_supabase_isolation.py` proves those policies hold by writing and
