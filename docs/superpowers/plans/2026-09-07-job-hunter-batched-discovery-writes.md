@@ -233,7 +233,7 @@ The two "still emitted" tests are the ones that pin #96's behaviour; the two "cl
 
 Run: `cd /Users/amitbaz/career-platform/.claude/worktrees/batched-discovery-writes/apps/job-hunter && /private/tmp/claude-501/-Users-amitbaz-career-platform/1a3617ba-b8e6-40d5-b7bd-0d9fbff5f5a3/scratchpad/jh-test.sh -q tests/test_gmail_staged_source.py`
 
-Expected: `6 passed`. If any is `skipped`, the environment is not set up — see "Environment setup"; a skip here proves nothing.
+Expected: `8 passed` (four untouched tests plus these four). If any is `skipped`, the environment is not set up — see "Environment setup"; a skip here proves nothing.
 
 - [ ] **Step 4: Commit**
 
@@ -498,7 +498,6 @@ from job_hunter.models import Job
 
 def _make_job(fingerprint: str, title: str, url: str) -> Job:
     return Job(
-        fingerprint=fingerprint,
         source="test",
         source_job_id=fingerprint,
         url=url,
@@ -1374,7 +1373,6 @@ def test_collect_candidates_request_count_does_not_grow_with_job_count(
         store = PostgresJobStore(client)
         jobs = [
             Job(
-                fingerprint=f"count-{job_count}-{i}",
                 source="test",
                 source_job_id=f"count-{job_count}-{i}",
                 url=f"https://example.test/count-{job_count}-{i}",
