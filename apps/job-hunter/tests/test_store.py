@@ -2759,6 +2759,7 @@ def test_backfill_ats_identity_is_idempotent(store):
     )
 
     assert store.backfill_ats_identity() == 1
+    assert store.backfill_ats_identity() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2835,4 +2836,3 @@ def test_save_search_profile_replaces_markets_rather_than_accumulating(store):
     assert [row["market_id"] for row in market_rows] == ["israel_remote"]
     # Same user -> same profile row (upsert on user_id), not a second one.
     assert store.get_search_profile()[0]["id"] == second_profile_id
-    assert store.backfill_ats_identity() == 0
