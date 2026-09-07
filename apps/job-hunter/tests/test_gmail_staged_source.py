@@ -8,7 +8,7 @@ class FakeStagedJobStore:
     def __init__(self, rows):
         self._rows = rows
 
-    def list_unmaterialized_inbound_jobs(self):
+    def list_eligible_inbound_jobs(self):
         return self._rows
 
 

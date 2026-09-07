@@ -1634,7 +1634,7 @@ def test_release_legacy_gmail_semantic_failures_chunks_large_id_lists(store, mon
         )
 
 
-def test_candidate_not_emitted_when_any_job_has_same_canonical_url(store):
+def test_candidate_remains_eligible_when_matching_job_has_no_evaluation(store):
     store.stage_inbound_job(
         "m1",
         "linkedin:1",
@@ -1656,10 +1656,10 @@ def test_candidate_not_emitted_when_any_job_has_same_canonical_url(store):
         )
     )
 
-    assert store.list_unmaterialized_inbound_jobs() == []
+    assert [row["source_candidate_key"] for row in store.list_eligible_inbound_jobs()] == ["linkedin:1"]
 
 
-def test_candidate_not_emitted_when_gmail_source_and_candidate_key_match(store):
+def test_candidate_remains_eligible_when_gmail_job_has_no_evaluation(store):
     store.stage_inbound_job(
         "m1",
         "candidate-key-1",
@@ -1680,10 +1680,10 @@ def test_candidate_not_emitted_when_gmail_source_and_candidate_key_match(store):
         )
     )
 
-    assert store.list_unmaterialized_inbound_jobs() == []
+    assert [row["source_candidate_key"] for row in store.list_eligible_inbound_jobs()] == ["candidate-key-1"]
 
 
-def test_candidate_not_emitted_when_url_missing_but_identity_matches(store):
+def test_candidate_remains_eligible_when_identity_match_has_no_evaluation(store):
     store.stage_inbound_job(
         "m1",
         "linkedin:1",
@@ -1706,7 +1706,7 @@ def test_candidate_not_emitted_when_url_missing_but_identity_matches(store):
         )
     )
 
-    assert store.list_unmaterialized_inbound_jobs() == []
+    assert [row["source_candidate_key"] for row in store.list_eligible_inbound_jobs()] == ["linkedin:1"]
 
 
 def test_candidate_emitted_when_no_existing_job_matches(store):
@@ -1722,7 +1722,7 @@ def test_candidate_emitted_when_no_existing_job_matches(store):
         ),
     )
 
-    rows = store.list_unmaterialized_inbound_jobs()
+    rows = store.list_eligible_inbound_jobs()
     assert [(row["id"], row["source_candidate_key"]) for row in rows] == [
         (candidate_id, "linkedin:1")
     ]

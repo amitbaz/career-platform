@@ -358,6 +358,7 @@ def collect_candidates(
             continue
 
         if job.availability == CLOSED:
+            store.set_job_status(job_id, "closed")
             stats.availability_rejected += 1
             _bump(stats.rejected_by_market, market_key)
             _bump(stats.rejected_by_source, source_label)
@@ -366,6 +367,7 @@ def collect_candidates(
         market = market_by_id(policy, job.market_id) if job.market_id else None
         prefilter_result = prefilter_job(job, policy, market)
         if not prefilter_result.should_evaluate:
+            store.set_job_status(job_id, "rejected")
             if prefilter_result.reason_code == "off_target_profession":
                 stats.profession_rejected += 1
             else:
@@ -445,6 +447,7 @@ def collect_candidates(
                     )
                     resolution = None
                 if job.availability == CLOSED:
+                    store.set_job_status(job_id, "closed")
                     stats.availability_rejected += 1
                     _bump(stats.rejected_by_market, job.market_id or _UNATTRIBUTED)
                     _bump(stats.rejected_by_source, metric_source_label(job.source))

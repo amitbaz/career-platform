@@ -34,7 +34,7 @@ class GmailStagedSource:
 
     def discover(self) -> list[Job]:
         jobs: list[Job] = []
-        for row in self._store.list_unmaterialized_inbound_jobs():
+        for row in self._store.list_eligible_inbound_jobs():
             title, company, location = _linkedin_page_title_metadata(
                 row["source_platform"] or "",
                 row["title"],
