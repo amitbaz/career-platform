@@ -69,6 +69,9 @@ def test_load_settings_reads_the_search_profile(monkeypatch):
     _set_required_bot_env(monkeypatch)
     profile = _profile(
         target_titles=["senior product engineer"],
+        specialist_board_hosts=["jobs.lever.co"],
+        frontend_signals=["react", "typescript"],
+        backend_heavy_signals=["kubernetes", "kafka"],
         markets=[
             SearchProfileMarket(
                 market_id="germany_eu",
@@ -89,6 +92,12 @@ def test_load_settings_reads_the_search_profile(monkeypatch):
     assert len(settings.policy.markets) == 1
     assert settings.policy.markets[0].id == "germany_eu"
     assert settings.policy.markets[0].direct_sources == ["devjobs"]
+    # Regression: these three lists must round-trip from the saved profile --
+    # they were previously dropped when constructing SearchPolicy, silently
+    # giving every user the dataclass default [] regardless of what they saved.
+    assert settings.policy.specialist_board_hosts == ["jobs.lever.co"]
+    assert settings.policy.frontend_signals == ["react", "typescript"]
+    assert settings.policy.backend_heavy_signals == ["kubernetes", "kafka"]
 
 
 def test_load_settings_raises_when_no_profile_exists():

@@ -136,6 +136,9 @@ def load_settings(store: "PostgresJobStore") -> Settings:
                 DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES,
             )
         ),
+        specialist_board_hosts=list(data.get("specialist_board_hosts", [])),
+        frontend_signals=list(data.get("frontend_signals", [])),
+        backend_heavy_signals=list(data.get("backend_heavy_signals", [])),
         markets=_parse_markets(data.get("markets", [])),
     )
 
