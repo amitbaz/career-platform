@@ -4,7 +4,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from job_hunter.models import CompanyWatchSeed, Evaluation, Job
-from job_hunter.store import JobStore
 from job_hunter.watchlist import (
     promote_company,
     should_auto_promote,
@@ -56,8 +55,7 @@ def test_auto_promotion_rejects_failed_evaluation():
     assert should_auto_promote(evaluation) is False
 
 
-def test_syncing_manual_greenhouse_seed_is_idempotent(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_syncing_manual_greenhouse_seed_is_idempotent(store, tmp_path):
     seed = CompanyWatchSeed(
         company_name="Acme GmbH",
         ats_provider="greenhouse",
@@ -73,11 +71,10 @@ def test_syncing_manual_greenhouse_seed_is_idempotent(tmp_path):
     assert row["promotion_source"] == "manual"
     assert row["ats_provider"] == "greenhouse"
     assert row["ats_identifier"] == "acme"
-    assert store._conn.execute("SELECT COUNT(*) FROM company_watch").fetchone()[0] == 1
+    assert len(store.client.select("job_hunter_company_watch", params={"select": "id"})) == 1
 
 
-def test_syncing_manual_generic_careers_seed(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_syncing_manual_generic_careers_seed(store, tmp_path):
     seed = CompanyWatchSeed(
         company_name="Beta",
         careers_url="https://beta.test/careers",
@@ -91,8 +88,7 @@ def test_syncing_manual_generic_careers_seed(tmp_path):
     assert row["promotion_source"] == "manual"
 
 
-def test_automatic_promotion_prefers_supported_ats_metadata(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_automatic_promotion_prefers_supported_ats_metadata(store, tmp_path):
     job = Job(
         source="greenhouse",
         title="Frontend Engineer",
@@ -120,8 +116,7 @@ def test_automatic_promotion_prefers_supported_ats_metadata(tmp_path):
     assert row["promotion_source"] == "automatic"
 
 
-def test_automatic_promotion_uses_canonical_url_without_supported_ats(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_automatic_promotion_uses_canonical_url_without_supported_ats(store, tmp_path):
     job = Job(
         source="public",
         title="Frontend Engineer",
@@ -143,8 +138,7 @@ def test_automatic_promotion_uses_canonical_url_without_supported_ats(tmp_path):
     assert row["ats_identifier"] is None
 
 
-def test_automatic_promotion_uses_canonical_url_for_whitespace_ats_board(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_automatic_promotion_uses_canonical_url_for_whitespace_ats_board(store, tmp_path):
     job = Job(
         source="greenhouse",
         title="Frontend Engineer",
@@ -168,8 +162,7 @@ def test_automatic_promotion_uses_canonical_url_for_whitespace_ats_board(tmp_pat
     assert row["ats_identifier"] is None
 
 
-def test_automatic_promotion_stores_company_only_without_usable_endpoint(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_automatic_promotion_stores_company_only_without_usable_endpoint(store, tmp_path):
     job = Job(source="public", title="Frontend Engineer", company="No Endpoint GmbH")
     job_id, _, _ = store.upsert_job(job)
 
@@ -187,8 +180,7 @@ def test_automatic_promotion_stores_company_only_without_usable_endpoint(tmp_pat
     assert row["ats_identifier"] is None
 
 
-def test_automatic_promotion_rejects_empty_company_identity(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_automatic_promotion_rejects_empty_company_identity(store, tmp_path):
     job = Job(source="public", title="Frontend Engineer", company="GmbH")
     job_id, _, _ = store.upsert_job(job)
 
@@ -200,13 +192,13 @@ def test_automatic_promotion_rejects_empty_company_identity(tmp_path):
     )
 
     assert watch_id is None
-    assert store._conn.execute("SELECT COUNT(*) FROM company_watch").fetchone()[0] == 0
+    assert store.client.select("job_hunter_company_watch", params={"select": "id"}) == []
 
 
 def test_automatic_promotion_rejects_inconsistent_score_below_configured_threshold(
+    store,
     tmp_path,
 ):
-    store = JobStore(tmp_path / "state.sqlite3")
     job = Job(source="public", title="Frontend Engineer", company="Acme")
     job_id, _, _ = store.upsert_job(job)
 
@@ -222,8 +214,7 @@ def test_automatic_promotion_rejects_inconsistent_score_below_configured_thresho
     assert store.get_company_watch("Acme") is None
 
 
-def test_automatic_promotion_rejects_non_promotable_decision(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_automatic_promotion_rejects_non_promotable_decision(store, tmp_path):
     job = Job(source="public", title="Frontend Engineer", company="Acme")
     job_id, _, _ = store.upsert_job(job)
 
@@ -251,23 +242,25 @@ def _manual_watch(store, company_name="Acme"):
     )
 
 
-def test_due_watches_include_unpaused_and_expired_active_rows(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_due_watches_include_unpaused_and_expired_active_rows(store, tmp_path):
     unpaused_id = _manual_watch(store, "Acme")
     expired_id = _manual_watch(store, "Beta")
     paused_id = _manual_watch(store, "Gamma")
     inactive_id = _manual_watch(store, "Delta")
-    store._conn.execute(
-        "UPDATE company_watch SET paused_until = ? WHERE id = ?",
-        ("2026-08-31T11:59:59+00:00", expired_id),
+    store.client.update(
+        "job_hunter_company_watch",
+        {"paused_until": "2026-08-31T11:59:59+00:00"},
+        params={"id": f"eq.{expired_id}"},
     )
-    store._conn.execute(
-        "UPDATE company_watch SET paused_until = ? WHERE id = ?",
-        ("2026-08-31T12:00:01+00:00", paused_id),
+    store.client.update(
+        "job_hunter_company_watch",
+        {"paused_until": "2026-08-31T12:00:01+00:00"},
+        params={"id": f"eq.{paused_id}"},
     )
-    store._conn.execute(
-        "UPDATE company_watch SET active = 0 WHERE id = ?",
-        (inactive_id,),
+    store.client.update(
+        "job_hunter_company_watch",
+        {"active": False},
+        params={"id": f"eq.{inactive_id}"},
     )
 
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -278,8 +271,7 @@ def test_due_watches_include_unpaused_and_expired_active_rows(tmp_path):
     ]
 
 
-def test_first_two_failures_remain_due(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_first_two_failures_remain_due(store, tmp_path):
     watch_id = _manual_watch(store)
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
@@ -292,8 +284,7 @@ def test_first_two_failures_remain_due(tmp_path):
     assert [row["id"] for row in store.list_due_company_watches(now)] == [watch_id]
 
 
-def test_third_failure_pauses_for_24_hours(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_third_failure_pauses_for_24_hours(store, tmp_path):
     watch_id = _manual_watch(store)
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
@@ -307,8 +298,7 @@ def test_third_failure_pauses_for_24_hours(tmp_path):
     assert store.list_due_company_watches(now) == []
 
 
-def test_failed_retry_after_pause_expiry_pauses_for_another_24_hours(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_failed_retry_after_pause_expiry_pauses_for_another_24_hours(store, tmp_path):
     watch_id = _manual_watch(store)
     first_check = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     retry = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
@@ -324,8 +314,7 @@ def test_failed_retry_after_pause_expiry_pauses_for_another_24_hours(tmp_path):
     assert row["paused_until"] == "2026-09-02T12:00:00+00:00"
 
 
-def test_success_clears_failures_and_pause_and_updates_health_timestamps(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_success_clears_failures_and_pause_and_updates_health_timestamps(store, tmp_path):
     watch_id = _manual_watch(store)
     failed_at = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     succeeded_at = datetime(2026, 9, 1, 13, 30, tzinfo=timezone.utc)
@@ -342,8 +331,7 @@ def test_success_clears_failures_and_pause_and_updates_health_timestamps(tmp_pat
     assert row["promotion_source"] == "manual"
 
 
-def test_success_timestamps_are_normalized_to_utc(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_success_timestamps_are_normalized_to_utc(store, tmp_path):
     watch_id = _manual_watch(store)
     now = datetime(
         2026,
@@ -361,12 +349,12 @@ def test_success_timestamps_are_normalized_to_utc(tmp_path):
     assert row["last_verified_at"] == "2026-08-31T12:00:00+00:00"
 
 
-def test_due_watch_compares_equivalent_offset_instants(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_due_watch_compares_equivalent_offset_instants(store, tmp_path):
     watch_id = _manual_watch(store)
-    store._conn.execute(
-        "UPDATE company_watch SET paused_until = ? WHERE id = ?",
-        ("2026-08-31T14:00:00+02:00", watch_id),
+    store.client.update(
+        "job_hunter_company_watch",
+        {"paused_until": "2026-08-31T14:00:00+02:00"},
+        params={"id": f"eq.{watch_id}"},
     )
     same_instant = datetime(
         2026,
@@ -382,8 +370,7 @@ def test_due_watch_compares_equivalent_offset_instants(tmp_path):
     ]
 
 
-def test_failure_pause_is_24_elapsed_hours_across_dst(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_failure_pause_is_24_elapsed_hours_across_dst(store, tmp_path):
     watch_id = _manual_watch(store)
     before_spring_forward = datetime(
         2026,
@@ -409,8 +396,7 @@ def test_failure_pause_is_24_elapsed_hours_across_dst(tmp_path):
         "record_watch_failure",
     ],
 )
-def test_watch_time_methods_reject_naive_datetimes(tmp_path, method_name):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_watch_time_methods_reject_naive_datetimes(store, tmp_path, method_name):
     watch_id = _manual_watch(store)
     naive = datetime(2026, 8, 31, 12, 0)
     method = getattr(store, method_name)

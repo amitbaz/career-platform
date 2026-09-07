@@ -12,7 +12,6 @@ from job_hunter.candidate_context import (
 from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
 from job_hunter.models import CandidateContext, SearchPolicy
 from job_hunter.preferences import FALLBACK_PREFERENCES_SUMMARY
-from job_hunter.store import JobStore
 
 
 class FakeGemini:
@@ -89,8 +88,7 @@ def valid_context_json(**overrides) -> str:
     return json.dumps(valid_context_payload(**overrides))
 
 
-def test_get_candidate_context_extracts_valid_response():
-    store = JobStore(":memory:")
+def test_get_candidate_context_extracts_valid_response(store):
     gemini = FakeGemini([valid_context_json()])
 
     context = get_candidate_context("candidate profile text", make_policy(), gemini, store)
@@ -102,8 +100,7 @@ def test_get_candidate_context_extracts_valid_response():
     assert len(gemini.calls) == 1
 
 
-def test_get_candidate_context_uses_exact_gemini_request_control():
-    store = JobStore(":memory:")
+def test_get_candidate_context_uses_exact_gemini_request_control(store):
     gemini = FakeGemini([valid_context_json()])
 
     get_candidate_context("candidate profile text", make_policy(), gemini, store)
@@ -116,8 +113,7 @@ def test_get_candidate_context_uses_exact_gemini_request_control():
     assert call["json_schema"] == CANDIDATE_CONTEXT_SCHEMA
 
 
-def test_extraction_prompt_states_anti_hallucination_rule():
-    store = JobStore(":memory:")
+def test_extraction_prompt_states_anti_hallucination_rule(store):
     gemini = FakeGemini([valid_context_json()])
 
     get_candidate_context("candidate profile text", make_policy(), gemini, store)
@@ -129,8 +125,7 @@ def test_extraction_prompt_states_anti_hallucination_rule():
     assert "never infer" in lowered or "not infer" in lowered
 
 
-def test_get_candidate_context_cache_hit_makes_zero_additional_gemini_calls():
-    store = JobStore(":memory:")
+def test_get_candidate_context_cache_hit_makes_zero_additional_gemini_calls(store):
     gemini = FakeGemini([valid_context_json()])
     policy = make_policy()
 
@@ -141,8 +136,7 @@ def test_get_candidate_context_cache_hit_makes_zero_additional_gemini_calls():
     assert second == first
 
 
-def test_get_candidate_context_profile_change_triggers_new_extraction():
-    store = JobStore(":memory:")
+def test_get_candidate_context_profile_change_triggers_new_extraction(store):
     gemini = FakeGemini([valid_context_json(), valid_context_json(evaluation_summary="Different summary.")])
     policy = make_policy()
 
@@ -153,8 +147,7 @@ def test_get_candidate_context_profile_change_triggers_new_extraction():
     assert second.evaluation_summary == "Different summary."
 
 
-def test_get_candidate_context_model_change_triggers_new_extraction():
-    store = JobStore(":memory:")
+def test_get_candidate_context_model_change_triggers_new_extraction(store):
     policy = make_policy()
     gemini_a = FakeGemini([valid_context_json()], model="gemini-model-a")
     gemini_b = FakeGemini(
@@ -169,8 +162,7 @@ def test_get_candidate_context_model_change_triggers_new_extraction():
     assert second.evaluation_summary == "Different summary."
 
 
-def test_get_candidate_context_schema_version_change_triggers_new_extraction(monkeypatch):
-    store = JobStore(":memory:")
+def test_get_candidate_context_schema_version_change_triggers_new_extraction(store, monkeypatch):
     policy = make_policy()
     gemini = FakeGemini([valid_context_json(), valid_context_json(evaluation_summary="Different summary.")])
 
@@ -182,8 +174,7 @@ def test_get_candidate_context_schema_version_change_triggers_new_extraction(mon
     assert second.evaluation_summary == "Different summary."
 
 
-def test_get_candidate_context_empty_profile_uses_fallback_without_gemini_call():
-    store = JobStore(":memory:")
+def test_get_candidate_context_empty_profile_uses_fallback_without_gemini_call(store):
     gemini = FakeGemini([valid_context_json()])
     policy = make_policy()
 
@@ -195,8 +186,7 @@ def test_get_candidate_context_empty_profile_uses_fallback_without_gemini_call()
     assert context.technical_skills == []
 
 
-def test_get_candidate_context_falls_back_on_malformed_json_and_does_not_cache():
-    store = JobStore(":memory:")
+def test_get_candidate_context_falls_back_on_malformed_json_and_does_not_cache(store):
     policy = make_policy()
     gemini = FakeGemini(["not json", valid_context_json()])
 
@@ -210,8 +200,7 @@ def test_get_candidate_context_falls_back_on_malformed_json_and_does_not_cache()
     assert len(gemini.calls) == 2
 
 
-def test_get_candidate_context_falls_back_when_evidence_list_exceeds_bound():
-    store = JobStore(":memory:")
+def test_get_candidate_context_falls_back_when_evidence_list_exceeds_bound(store):
     policy = make_policy()
     oversized = [f"skill {i}" for i in range(21)]
     gemini = FakeGemini([valid_context_json(technical_skills=oversized)])
@@ -222,8 +211,7 @@ def test_get_candidate_context_falls_back_when_evidence_list_exceeds_bound():
     assert context.technical_skills == []
 
 
-def test_get_candidate_context_falls_back_when_evidence_item_exceeds_length_bound():
-    store = JobStore(":memory:")
+def test_get_candidate_context_falls_back_when_evidence_item_exceeds_length_bound(store):
     policy = make_policy()
     gemini = FakeGemini([valid_context_json(technical_skills=["x" * 181])])
 
@@ -232,8 +220,7 @@ def test_get_candidate_context_falls_back_when_evidence_item_exceeds_length_boun
     assert context.preferences.summary == FALLBACK_PREFERENCES_SUMMARY
 
 
-def test_get_candidate_context_propagates_gemini_budget_exceeded():
-    store = JobStore(":memory:")
+def test_get_candidate_context_propagates_gemini_budget_exceeded(store):
     policy = make_policy()
     gemini = FakeGemini([], exceptions=[GeminiBudgetExceeded("over budget")])
 
@@ -241,8 +228,7 @@ def test_get_candidate_context_propagates_gemini_budget_exceeded():
         get_candidate_context("candidate profile text", policy, gemini, store)
 
 
-def test_get_candidate_context_propagates_gemini_quota_paused():
-    store = JobStore(":memory:")
+def test_get_candidate_context_propagates_gemini_quota_paused(store):
     policy = make_policy()
     gemini = FakeGemini(
         [],

@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -8,7 +7,6 @@ from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import Evaluation, Job, Material
-from job_hunter.store import JobStore
 from job_hunter.store_mapping import from_iso
 
 
@@ -45,98 +43,6 @@ def _evaluation(job_id, **overrides):
     )
     defaults.update(overrides)
     return Evaluation(**defaults)
-
-
-def _drop_raw_model_score_column(db_path):
-    """Simulate a database written before `raw_model_score` existed.
-
-    Drops the column outright (rather than just zeroing its values) so that
-    reopening the store genuinely exercises the add-column-then-backfill
-    migration path in `_add_missing_columns` / `_backfill_raw_model_score`.
-    """
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        if sqlite3.sqlite_version_info >= (3, 35, 0):
-            conn.execute("ALTER TABLE evaluations DROP COLUMN raw_model_score")
-        else:
-            columns = [
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(evaluations)")
-                if row["name"] != "raw_model_score"
-            ]
-            column_list = ", ".join(columns)
-            conn.execute(
-                f"CREATE TABLE evaluations_legacy AS SELECT {column_list} FROM evaluations"
-            )
-            conn.execute("DROP TABLE evaluations")
-            conn.execute("ALTER TABLE evaluations_legacy RENAME TO evaluations")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _create_r1_jobs_only_db(path):
-    conn = sqlite3.connect(path)
-    conn.execute(
-        """
-        CREATE TABLE jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fingerprint TEXT NOT NULL UNIQUE,
-            source TEXT NOT NULL DEFAULT '',
-            source_job_id TEXT,
-            url TEXT NOT NULL DEFAULT '',
-            company TEXT NOT NULL DEFAULT '',
-            title TEXT NOT NULL DEFAULT '',
-            location TEXT NOT NULL DEFAULT '',
-            remote INTEGER,
-            description TEXT NOT NULL DEFAULT '',
-            description_hash TEXT NOT NULL DEFAULT '',
-            first_seen_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'new'
-        )
-        """
-    )
-    conn.execute(
-        """
-        INSERT INTO jobs
-            (fingerprint, source, url, company, title, description_hash,
-             first_seen_at, last_seen_at)
-        VALUES ('legacy', 'gmail:linkedin', 'https://example.test/job',
-                'Acme', 'Frontend Engineer', '',
-                '2026-08-01T00:00:00+00:00', '2026-08-01T00:00:00+00:00')
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-def test_r2_schema_upgrades_legacy_jobs_table(tmp_path):
-    db = tmp_path / "state.sqlite3"
-    _create_r1_jobs_only_db(db)
-
-    store = JobStore(db)
-
-    columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(jobs)")}
-    assert "canonical_url" in columns
-    assert "ats_provider" in columns
-    assert "ats_board" in columns
-    assert "ats_job_id" in columns
-    assert "market_id" in columns
-    assert store.count_jobs() == 1
-    tables = {
-        row["name"]
-        for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    assert "job_sources" in tables
-    assert "company_watch" in tables
-
-
-def test_evaluations_table_has_market_id_column():
-    store = JobStore(":memory:")
-    columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(evaluations)")}
-    assert "market_id" in columns
 
 
 def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(store):
@@ -1876,8 +1782,7 @@ def test_same_title_at_different_companies_does_not_merge(store):
     assert first_id != second_id
 
 
-def test_merge_jobs_preserves_associations_provenance_and_richer_fields(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
     plain_id, _, _ = store.upsert_job(
         Job(source="gmail:linkedin", source_job_id="1", title="Frontend Engineer")
     )
@@ -1923,21 +1828,27 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(tmp_path
         Material(job_id=history_id, cover_letter_text="Tailored letter"),
     )
     store.mark_delivered(history_id, "telegram_message", "delivery-1")
-    now = "2026-08-31T10:00:00+00:00"
-    store._conn.execute(
-        """
-        INSERT INTO company_watch
-            (company_name, normalized_company_name, discovered_from_job_id,
-             promotion_source, confidence, first_seen_at, created_at, updated_at)
-        VALUES ('Acme', 'acme', ?, 'automatic', 1.0, ?, ?, ?)
-        """,
-        (history_id, now, now, now),
+    store.upsert_company_watch(
+        company_name="Acme",
+        careers_url="",
+        ats_provider=None,
+        ats_identifier=None,
+        discovered_from_job_id=history_id,
+        promotion_source="automatic",
+        confidence=1.0,
     )
-    store._conn.commit()
 
     assert store.merge_jobs(plain_id, history_id) == history_id
 
-    merged = store._conn.execute("SELECT * FROM jobs WHERE id = ?", (history_id,)).fetchone()
+    # `get_job` selects a narrow column set that omits the ATS identity, so
+    # read the row itself here -- the merge must carry ats_provider across.
+    merged = store.client.select(
+        "job_hunter_jobs",
+        params={
+            "id": f"eq.{history_id}",
+            "select": "company,description,url,ats_provider",
+        },
+    )[0]
     assert merged["company"] == "Acme"
     assert merged["description"] == "A detailed React role description"
     assert merged["url"] == "https://jobs.lever.co/acme/abc"
@@ -1947,17 +1858,17 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(tmp_path
         "gmail:linkedin",
         "yc",
     }
-    for table in ("application_events", "evaluations", "materials", "deliveries"):
-        row = store._conn.execute(f"SELECT job_id FROM {table}").fetchone()
-        assert row["job_id"] == history_id
-    watch = store._conn.execute("SELECT discovered_from_job_id FROM company_watch").fetchone()
+    assert store.current_application_state(history_id) == "APPLIED"
+    assert store.get_evaluation(history_id) is not None
+    assert store.get_material(history_id) is not None
+    assert store.has_delivery(history_id, "telegram_message")
+    watch = store.get_company_watch("Acme")
     assert watch["discovered_from_job_id"] == history_id
 
 
 def test_late_canonical_merge_keeps_application_history_job_and_all_associations(
-    tmp_path,
+    store,
 ):
-    store = JobStore(tmp_path / "state.sqlite3")
     legacy_url = "https://aggregator.test/jobs/acme-frontend"
     canonical_url = "https://jobs.lever.co/acme/abc"
     legacy_id, _, _ = store.upsert_job(
@@ -2085,9 +1996,8 @@ def test_late_canonical_upsert_enriches_single_existing_job_in_place(store):
 
 
 def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
-    tmp_path,
+    store,
 ):
-    store = JobStore(tmp_path / "state.sqlite3")
     canonical_url = "https://jobs.lever.co/acme/abc"
     rows = [
         Job(
@@ -2197,11 +2107,6 @@ def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
         "ats-application",
         "ats-delivery",
     }
-    for table in ("evaluations", "materials", "application_events", "deliveries"):
-        associated_ids = {
-            row["job_id"] for row in store._conn.execute(f"SELECT job_id FROM {table}")
-        }
-        assert associated_ids == {survivor_id}
 
 
 def test_missing_location_does_not_merge_incompatible_role_locations(store):
@@ -2268,8 +2173,7 @@ def test_missing_location_does_not_merge_incompatible_role_locations(store):
     assert store.get_job(new_york_id) is not None
 
 
-def test_merge_survivor_prefers_other_history_over_age_and_lower_id(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_merge_survivor_prefers_other_history_over_age_and_lower_id(store):
     older_id, _, _ = store.upsert_job(
         Job(source="older", source_job_id="1", title="Frontend Engineer")
     )
@@ -2286,8 +2190,7 @@ def test_merge_survivor_prefers_other_history_over_age_and_lower_id(tmp_path):
     assert store.get_material(history_id) is not None
 
 
-def test_merge_survivor_prefers_application_events_over_other_history(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_merge_survivor_prefers_application_events_over_other_history(store):
     other_history_id, _, _ = store.upsert_job(
         Job(source="history", source_job_id="1", title="Frontend Engineer")
     )
@@ -2669,41 +2572,6 @@ def test_get_material_returns_the_newer_material_when_generated_at_differs(store
     material = store.get_material(job_id)
     assert material is not None
     assert material.cover_letter_text == "Dear Hiring Team, v2"
-
-
-def test_legacy_evaluation_rows_backfill_raw_model_score(tmp_path):
-    db_path = tmp_path / "state.sqlite3"
-    store = JobStore(db_path)
-    job_id, _, _ = store.upsert_job(Job(source="x", source_job_id="1", title="Analyst", company="Acme"))
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=77, raw_model_score=77))
-    store._conn.close()
-
-    # Simulate a database from before `raw_model_score` existed: the column
-    # is genuinely absent, so reopening must add it and then backfill it.
-    _drop_raw_model_score_column(db_path)
-
-    reopened = JobStore(db_path)
-    columns = {row["name"] for row in reopened._conn.execute("PRAGMA table_info(evaluations)")}
-    assert "raw_model_score" in columns
-    assert reopened.get_evaluation(job_id).raw_model_score == 77
-
-
-def test_legacy_evaluation_row_with_genuinely_zero_score_stays_zero(tmp_path):
-    db_path = tmp_path / "state.sqlite3"
-    store = JobStore(db_path)
-    job_id, _, _ = store.upsert_job(Job(source="x", source_job_id="1", title="Analyst", company="Acme"))
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=0, raw_model_score=0))
-    store._conn.close()
-
-    # Same missing-column simulation as above, but for a row whose true raw
-    # score is 0 rather than merely defaulted to 0 — the backfill must leave
-    # it at 0, not mistake it for an un-migrated row and rewrite it wrongly.
-    _drop_raw_model_score_column(db_path)
-
-    reopened = JobStore(db_path)
-    evaluation = reopened.get_evaluation(job_id)
-    assert evaluation.total_score == 0
-    assert evaluation.raw_model_score == 0
 
 
 def test_backfill_ats_identity_fills_rows_from_their_urls(store, supabase_client):

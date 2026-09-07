@@ -53,7 +53,6 @@ from job_hunter.sources import (
 )
 from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.sources.learned_ats import LearnedAtsStats
-from job_hunter.store import JobStore
 from job_hunter.telegram import (
     TelegramClient,
     build_digest,
@@ -108,7 +107,7 @@ def _targeted_canonical_candidates(
 
 
 def _persisted_watch_target(
-    store: JobStore, company_name: str
+    store: PostgresJobStore, company_name: str
 ) -> AtsReference | None:
     """Return only a persisted, complete, supported ATS watch target."""
     watch = store.get_company_watch(company_name)
@@ -304,7 +303,7 @@ def _log_source_metrics(
         )
 
 
-def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: LearnedAtsStats) -> None:
+def _log_ats_registry_metrics(store: PostgresJobStore, discovery, learned_stats: LearnedAtsStats) -> None:
     """Log one final ats_registry line summarizing registry health this run."""
     rejected_boards = store.list_rejected_ats_boards()
     logger.info(
@@ -329,7 +328,7 @@ def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: Learned
 
 
 def _due_watch_state(
-    store: JobStore,
+    store: PostgresJobStore,
 ) -> dict[str, tuple[str, str | None, int, str | None]]:
     """Snapshot due watch health so logs count persisted check outcomes only."""
     return {
@@ -344,7 +343,7 @@ def _due_watch_state(
 
 
 def _watch_check_outcomes(
-    store: JobStore,
+    store: PostgresJobStore,
     before: dict[str, tuple[str, str | None, int, str | None]],
 ) -> tuple[int, int]:
     """Return persisted successful/failed checks and newly applied pauses."""
@@ -394,7 +393,7 @@ def generate_cover_letter_on_demand(
     settings: Settings,
     job_id: str,
     *,
-    store: JobStore,
+    store: PostgresJobStore,
     gemini: GeminiClient,
     telegram: TelegramClient,
 ) -> bool:
@@ -449,7 +448,7 @@ def should_run_scheduled(now: datetime, timezone: str, scheduled_hour: int) -> b
 
 def _requeue_pending_delivery(
     job_id: str,
-    store: JobStore,
+    store: PostgresJobStore,
     digest_items: list[DigestItem],
 ) -> None:
     """Re-add a rediscovered job's digest entry if it was never delivered."""
@@ -483,7 +482,7 @@ def _evaluate_and_deliver_job(
     job: Job,
     candidate_context: CandidateContext,
     settings: Settings,
-    store: JobStore,
+    store: PostgresJobStore,
     gemini: GeminiClient,
     digest_items: list[DigestItem],
     summary: RunSummary,
@@ -624,13 +623,12 @@ def run_pipeline(
     settings: Settings,
     *,
     sources=None,
-    store: JobStore | PostgresJobStore | None = None,
+    store: PostgresJobStore,
     gemini: GeminiClient,
     telegram: TelegramClient | None = None,
     http: HttpClient | None = None,
 ) -> RunSummary:
     http = http or HttpClient()
-    store = store or JobStore(settings.db_path)
     try:
         backfilled = store.backfill_ats_identity()
         if backfilled:
@@ -648,10 +646,8 @@ def run_pipeline(
     # budget (see `build_brave_budget`'s docstring). Rather than adding a
     # separate `supabase_client` parameter callers would have to remember to
     # pass, the client is derived from the `PostgresJobStore` this function
-    # is already given -- a non-Postgres store (still used by many tests
-    # until issue #70 task 14b) simply has none, and Brave stays off exactly
-    # as it was before, with no crash.
-    supabase_client = store.client if isinstance(store, PostgresJobStore) else None
+    # is already given.
+    supabase_client = store.client
     brave_budget = build_brave_budget(settings, supabase_client)
     query_date = datetime.now(ZoneInfo(settings.timezone)).date()
     base_sources = (

@@ -5,7 +5,6 @@ import pytest
 from job_hunter.gemini import GeminiClient, GeminiError, GeminiIncompleteResponse
 from job_hunter.gemini_usage import GeminiUsageTracker
 from job_hunter.models import GeminiQuotaSettings
-from job_hunter.store import JobStore
 
 _USAGE_METADATA = {
     "promptTokenCount": 100,
@@ -191,8 +190,7 @@ def test_truncated_candidate_without_content_is_attributed_to_max_tokens(frozen_
     assert tracker.error_calls[0][3]["error_code"] == "MAX_TOKENS"
 
 
-def test_max_tokens_ledger_row_has_error_status(frozen_now):
-    store = JobStore(":memory:")
+def test_max_tokens_ledger_row_has_error_status(store, frozen_now):
     tracker = GeminiUsageTracker(
         store,
         GeminiQuotaSettings(rpm=10, tpm=100000, rpd=100),
@@ -213,8 +211,7 @@ def test_max_tokens_ledger_row_has_error_status(frozen_now):
     assert rows[0]["total_tokens"] == 1920
 
 
-def test_completed_ledger_row_has_success_status(frozen_now):
-    store = JobStore(":memory:")
+def test_completed_ledger_row_has_success_status(store, frozen_now):
     tracker = GeminiUsageTracker(
         store,
         GeminiQuotaSettings(rpm=10, tpm=100000, rpd=100),

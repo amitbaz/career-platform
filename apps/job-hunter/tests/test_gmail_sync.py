@@ -15,7 +15,7 @@ from job_hunter.gmail_matching import JobMatch
 from job_hunter.gmail_models import ExtractedJob, GmailClassification, GmailMessage
 from job_hunter.models import Job
 from job_hunter.gmail_sync import GmailSyncService, build_backfill_query
-from job_hunter.store import JobStore
+
 
 
 NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
@@ -145,13 +145,12 @@ class FakeGmail:
         return result
 
 
-def _service(tmp_path, gmail: FakeGmail) -> tuple[GmailSyncService, JobStore]:
-    store = JobStore(tmp_path / "state.sqlite3")
-    return GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store), store
+def _service(store, gmail: FakeGmail) -> GmailSyncService:
+    return GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
 
 
 def _save_completed_state(
-    store: JobStore,
+    store,
     *,
     history_id: str = "100",
     completed_at: datetime = NOW - timedelta(days=1),
@@ -164,9 +163,9 @@ def _save_completed_state(
     )
 
 
-def test_first_sync_uses_profile_email_as_account_id(tmp_path):
+def test_first_sync_uses_profile_email_as_account_id(store, tmp_path):
     gmail = FakeGmail(profile=("real.account@example.com", "checkpoint-1"))
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     service.sync(NOW)
 
@@ -174,12 +173,12 @@ def test_first_sync_uses_profile_email_as_account_id(tmp_path):
     assert store.get_gmail_sync_state("primary") is None
 
 
-def test_first_sync_scans_120_days_and_marks_backfill_complete(tmp_path):
+def test_first_sync_scans_120_days_and_marks_backfill_complete(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["m1"],
         messages={"m1": _message("m1")},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     summary = service.sync(NOW)
 
@@ -205,7 +204,7 @@ def test_first_sync_scans_120_days_and_marks_backfill_complete(tmp_path):
     assert summary.processed == 1
 
 
-def test_backfill_limits_unprocessed_messages_and_defers_remaining(tmp_path):
+def test_backfill_limits_unprocessed_messages_and_defers_remaining(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["m1", "m2", "m3"],
         messages={
@@ -214,7 +213,6 @@ def test_backfill_limits_unprocessed_messages_and_defers_remaining(tmp_path):
             "m3": _message("m3"),
         },
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(
         gmail=gmail,
         gemini=FakeGemini(),
@@ -233,12 +231,11 @@ def test_backfill_limits_unprocessed_messages_and_defers_remaining(tmp_path):
     assert store.get_gmail_sync_state("candidate@example.com") is None
 
 
-def test_failed_backfill_attempt_consumes_the_sole_batch_slot(tmp_path):
+def test_failed_backfill_attempt_consumes_the_sole_batch_slot(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["broken", "ok"],
         messages={"broken": RuntimeError("decode failed"), "ok": _message("ok")},
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(
         gmail=gmail,
         gemini=FakeGemini(),
@@ -255,13 +252,12 @@ def test_failed_backfill_attempt_consumes_the_sole_batch_slot(tmp_path):
     assert store.get_gmail_sync_state("candidate@example.com") is None
 
 
-def test_default_backfill_processes_only_first_100_unprocessed_messages(tmp_path):
+def test_default_backfill_processes_only_first_100_unprocessed_messages(store, tmp_path):
     message_ids = [f"message-{index}" for index in range(101)]
     gmail = FakeGmail(
         message_ids=message_ids,
         messages={message_id: _message(message_id) for message_id in message_ids},
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
 
     summary = service.sync(NOW)
@@ -274,7 +270,7 @@ def test_default_backfill_processes_only_first_100_unprocessed_messages(tmp_path
     assert store.get_gmail_sync_state("candidate@example.com") is None
 
 
-def test_backfill_resumes_and_marks_complete_after_final_batch(tmp_path):
+def test_backfill_resumes_and_marks_complete_after_final_batch(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["m1", "m2", "m3"],
         messages={
@@ -283,7 +279,6 @@ def test_backfill_resumes_and_marks_complete_after_final_batch(tmp_path):
             "m3": _message("m3"),
         },
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(
         gmail=gmail,
         gemini=FakeGemini(),
@@ -305,7 +300,7 @@ def test_backfill_resumes_and_marks_complete_after_final_batch(tmp_path):
     ).isoformat()
 
 
-def test_processed_ids_do_not_consume_backfill_batch_allowance(tmp_path):
+def test_processed_ids_do_not_consume_backfill_batch_allowance(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["old", "new-1", "new-2"],
         messages={
@@ -313,7 +308,6 @@ def test_processed_ids_do_not_consume_backfill_batch_allowance(tmp_path):
             "new-2": _message("new-2"),
         },
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     store.record_gmail_message(
         message_id="old",
         thread_id="thread-old",
@@ -339,7 +333,7 @@ def test_processed_ids_do_not_consume_backfill_batch_allowance(tmp_path):
     assert store.get_gmail_sync_state("candidate@example.com") is not None
 
 
-def test_incremental_sync_is_not_limited_by_backfill_batch_size(tmp_path):
+def test_incremental_sync_is_not_limited_by_backfill_batch_size(store, tmp_path):
     gmail = FakeGmail(
         messages={
             "m1": _message("m1"),
@@ -350,7 +344,6 @@ def test_incremental_sync_is_not_limited_by_backfill_batch_size(tmp_path):
     gmail.history_pages = {
         None: GmailHistoryPage(["m1", "m2", "m3"], "103", None)
     }
-    store = JobStore(tmp_path / "state.sqlite3")
     _save_completed_state(store, history_id="100")
     service = GmailSyncService(
         gmail=gmail,
@@ -366,7 +359,7 @@ def test_incremental_sync_is_not_limited_by_backfill_batch_size(tmp_path):
     assert store.get_gmail_sync_state("candidate@example.com")["history_id"] == "103"
 
 
-def test_forced_backfill_uses_same_batch_limit(tmp_path):
+def test_forced_backfill_uses_same_batch_limit(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["m1", "m2", "m3"],
         messages={
@@ -375,7 +368,6 @@ def test_forced_backfill_uses_same_batch_limit(tmp_path):
             "m3": _message("m3"),
         },
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     _save_completed_state(store)
     service = GmailSyncService(
         gmail=gmail,
@@ -393,12 +385,12 @@ def test_forced_backfill_uses_same_batch_limit(tmp_path):
     assert state["backfill_completed_at"] is None
 
 
-def test_backfill_rerun_skips_processed_message_ids(tmp_path):
+def test_backfill_rerun_skips_processed_message_ids(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["m1"],
         messages={"m1": _message("m1")},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     service.sync(NOW)
 
     summary = service.sync(NOW, force_backfill=True)
@@ -409,12 +401,12 @@ def test_backfill_rerun_skips_processed_message_ids(tmp_path):
     assert summary.processed == 0
 
 
-def test_backfill_error_prevents_completion_marker(tmp_path):
+def test_backfill_error_prevents_completion_marker(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["broken", "ok"],
         messages={"broken": RuntimeError("decode failed"), "ok": _message("ok")},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     summary = service.sync(NOW)
 
@@ -424,13 +416,13 @@ def test_backfill_error_prevents_completion_marker(tmp_path):
     assert store.get_gmail_sync_state("candidate@example.com") is None
 
 
-def test_failed_forced_backfill_is_retried_by_following_ordinary_sync(tmp_path):
+def test_failed_forced_backfill_is_retried_by_following_ordinary_sync(store, tmp_path):
     gmail = FakeGmail(
         profile=("candidate@example.com", "force-start-checkpoint"),
         message_ids=["historical-message"],
         messages={"historical-message": RuntimeError("decode failed")},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     _save_completed_state(store, history_id="completed-cursor")
 
     failed_summary = service.sync(NOW, force_backfill=True)
@@ -459,13 +451,14 @@ def test_failed_forced_backfill_is_retried_by_following_ordinary_sync(tmp_path):
 
 
 def test_message_arriving_during_backfill_is_not_skipped_by_saved_history_checkpoint(
+    store,
     tmp_path,
 ):
     gmail = FakeGmail(
         profile=("candidate@example.com", "before-scan"),
         messages={"arrived-during-scan": _message("arrived-during-scan")},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     service.sync(NOW)
     gmail.history_pages = {
@@ -482,13 +475,14 @@ def test_message_arriving_during_backfill_is_not_skipped_by_saved_history_checkp
 
 
 def test_related_write_failure_does_not_record_message_or_advance_backfill(
+    store,
     tmp_path, monkeypatch
 ):
     gmail = FakeGmail(
         message_ids=["alert"],
         messages={"alert": _job_alert("alert", sent_at=NOW)},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     def fail_staging(*args, **kwargs):
         raise RuntimeError("staging failed")
@@ -502,44 +496,41 @@ def test_related_write_failure_does_not_record_message_or_advance_backfill(
     assert store.get_gmail_sync_state("candidate@example.com") is None
 
 
-def test_six_month_old_job_alert_is_not_staged(tmp_path):
+def test_six_month_old_job_alert_is_not_staged(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["old-alert"],
         messages={
             "old-alert": _job_alert("old-alert", sent_at=NOW - timedelta(days=180))
         },
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     summary = service.sync(NOW)
 
     assert store.has_processed_gmail_message("old-alert") is True
-    assert (
-        store._conn.execute("SELECT COUNT(*) FROM inbound_job_candidates").fetchone()[0]
-        == 0
-    )
+    assert store.client.select("job_hunter_inbound_job_candidates", params={"select": "id"}) == []
     assert summary.job_alerts == 1
 
 
-def test_three_day_old_job_alert_is_staged(tmp_path):
+def test_three_day_old_job_alert_is_staged(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["recent-alert"],
         messages={
             "recent-alert": _job_alert("recent-alert", sent_at=NOW - timedelta(days=3))
         },
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     service.sync(NOW)
 
-    candidate = store._conn.execute(
-        "SELECT source_message_id FROM inbound_job_candidates"
-    ).fetchone()
-    assert candidate is not None
-    assert candidate["source_message_id"] == "recent-alert"
+    candidates = store.client.select(
+        "job_hunter_inbound_job_candidates", params={"select": "source_message_id"}
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["source_message_id"] == "recent-alert"
 
 
-def test_generic_job_board_alert_is_semantically_extracted_and_staged(tmp_path):
+def test_generic_job_board_alert_is_semantically_extracted_and_staged(store, tmp_path):
     job_url = "https://talentboard.example/jobs/frontend-42"
     alert = GmailMessage(
         message_id="generic-alert",
@@ -552,7 +543,6 @@ def test_generic_job_board_alert_is_semantically_extracted_and_staged(tmp_path):
         links=[job_url],
     )
     gmail = FakeGmail(message_ids=[alert.message_id], messages={alert.message_id: alert})
-    store = JobStore(tmp_path / "state.sqlite3")
     gemini = ResponseGemini(
         {
             "kind": "JOB_ALERT",
@@ -579,15 +569,21 @@ def test_generic_job_board_alert_is_semantically_extracted_and_staged(tmp_path):
 
     summary = GmailSyncService(gmail=gmail, gemini=gemini, store=store).sync(NOW)
 
-    candidate = store._conn.execute(
-        """
-        SELECT source_platform, source_job_id, url
-        FROM inbound_job_candidates
-        WHERE source_message_id = 'generic-alert'
-        """
-    ).fetchone()
+    candidates = store.client.select(
+        "job_hunter_inbound_job_candidates",
+        params={
+            "source_message_id": "eq.generic-alert",
+            "select": "source_platform,source_job_id,url",
+        },
+    )
     assert summary.job_alerts == 1
-    assert tuple(candidate) == ("talentboard", "frontend-42", job_url)
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert (candidate["source_platform"], candidate["source_job_id"], candidate["url"]) == (
+        "talentboard",
+        "frontend-42",
+        job_url,
+    )
 
 
 def _generic_job_alert(message_id: str, *, sent_at: datetime, job_url: str) -> GmailMessage:
@@ -603,7 +599,7 @@ def _generic_job_alert(message_id: str, *, sent_at: datetime, job_url: str) -> G
     )
 
 
-def test_stale_backfill_job_alert_skips_semantic_extraction_and_stages_nothing(tmp_path):
+def test_stale_backfill_job_alert_skips_semantic_extraction_and_stages_nothing(store, tmp_path):
     job_url = "https://talentboard.example/jobs/frontend-42"
     alert = _generic_job_alert(
         "stale-alert", sent_at=NOW - timedelta(days=15), job_url=job_url
@@ -611,25 +607,21 @@ def test_stale_backfill_job_alert_skips_semantic_extraction_and_stages_nothing(t
     gmail = FakeGmail(message_ids=[alert.message_id], messages={alert.message_id: alert})
     # FakeGemini raises if generate_text is ever called: proves zero Gemini
     # calls for a 15+ day backfill job alert.
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     summary = service.sync(NOW)
 
     assert store.has_processed_gmail_message("stale-alert") is True
     assert summary.job_alerts == 1
-    assert (
-        store._conn.execute("SELECT COUNT(*) FROM inbound_job_candidates").fetchone()[0]
-        == 0
-    )
+    assert store.client.select("job_hunter_inbound_job_candidates", params={"select": "id"}) == []
 
 
-def test_fresh_backfill_job_alert_still_uses_semantic_extraction(tmp_path):
+def test_fresh_backfill_job_alert_still_uses_semantic_extraction(store, tmp_path):
     job_url = "https://talentboard.example/jobs/frontend-42"
     alert = _generic_job_alert(
         "fresh-alert", sent_at=NOW - timedelta(days=13), job_url=job_url
     )
     gmail = FakeGmail(message_ids=[alert.message_id], messages={alert.message_id: alert})
-    store = JobStore(tmp_path / "state.sqlite3")
     gemini = ResponseGemini(
         {
             "kind": "JOB_ALERT",
@@ -658,11 +650,11 @@ def test_fresh_backfill_job_alert_still_uses_semantic_extraction(tmp_path):
     summary = service.sync(NOW)
 
     assert summary.job_alerts == 1
-    candidate = store._conn.execute(
-        "SELECT source_message_id FROM inbound_job_candidates"
-    ).fetchone()
-    assert candidate is not None
-    assert candidate["source_message_id"] == "fresh-alert"
+    candidates = store.client.select(
+        "job_hunter_inbound_job_candidates", params={"select": "source_message_id"}
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["source_message_id"] == "fresh-alert"
 
 
 def _semantic_job_alert(message_id: str) -> GmailMessage:
@@ -678,7 +670,7 @@ def _semantic_job_alert(message_id: str) -> GmailMessage:
     )
 
 
-def test_quota_pause_stops_backfill_batch_and_leaves_remainder_unprocessed(tmp_path):
+def test_quota_pause_stops_backfill_batch_and_leaves_remainder_unprocessed(store, tmp_path):
     gmail = FakeGmail(
         message_ids=["m1", "m2", "m3"],
         messages={
@@ -706,7 +698,6 @@ def test_quota_pause_stops_backfill_batch_and_leaves_remainder_unprocessed(tmp_p
             ),
         ]
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
 
     summary = service.sync(NOW)
@@ -724,7 +715,7 @@ def test_quota_pause_stops_backfill_batch_and_leaves_remainder_unprocessed(tmp_p
     assert store.get_gmail_sync_state("candidate@example.com") is None
 
 
-def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(tmp_path):
+def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(store, tmp_path):
     gmail = FakeGmail(
         messages={
             "m1": _semantic_job_alert("m1"),
@@ -753,7 +744,6 @@ def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(tmp
             ),
         ]
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     _save_completed_state(store, history_id="old-cursor")
     service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
 
@@ -767,7 +757,7 @@ def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(tmp
     assert store.has_processed_gmail_message("m2") is False
 
 
-def test_stale_message_does_not_block_incremental_cursor_advance(tmp_path):
+def test_stale_message_does_not_block_incremental_cursor_advance(store, tmp_path):
     gmail = FakeGmail(
         messages={
             "m1": _semantic_job_alert("m1"),
@@ -789,7 +779,6 @@ def test_stale_message_does_not_block_incremental_cursor_advance(tmp_path):
             },
         ]
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     _save_completed_state(store, history_id="old-cursor")
     service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
 
@@ -803,10 +792,9 @@ def test_stale_message_does_not_block_incremental_cursor_advance(tmp_path):
     assert state["last_successful_sync_at"] == NOW.isoformat()
 
 
-def test_non_404_message_failure_still_blocks_cursor_advance(tmp_path):
+def test_non_404_message_failure_still_blocks_cursor_advance(store, tmp_path):
     gmail = FakeGmail(messages={"m1": RuntimeError("HTTP 500")})
     gmail.history_pages = {None: GmailHistoryPage(["m1"], "new-cursor", None)}
-    store = JobStore(tmp_path / "state.sqlite3")
     _save_completed_state(store, history_id="old-cursor")
     service = GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
 
@@ -816,7 +804,7 @@ def test_non_404_message_failure_still_blocks_cursor_advance(tmp_path):
     assert store.get_gmail_sync_state("candidate@example.com")["history_id"] == "old-cursor"
 
 
-def test_semantic_gmail_job_description_is_not_persisted(tmp_path, monkeypatch):
+def test_semantic_gmail_job_description_is_not_persisted(store, tmp_path, monkeypatch):
     private_body = "PRIVATE EMAIL BODY THAT MUST NOT ENTER SQLITE"
     alert = GmailMessage(
         message_id="private-alert",
@@ -844,28 +832,30 @@ def test_semantic_gmail_job_description_is_not_persisted(tmp_path, monkeypatch):
         rationale="Job-board alert with one opening.",
     )
     gmail = FakeGmail(message_ids=[alert.message_id], messages={alert.message_id: alert})
-    database_path = tmp_path / "state.sqlite3"
-    store = JobStore(database_path)
     monkeypatch.setattr("job_hunter.gmail_sync.classify_email", lambda *_, **__: classification)
 
     GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store).sync(NOW)
 
-    persisted_description = store._conn.execute(
-        "SELECT description FROM inbound_job_candidates WHERE source_message_id = ?",
-        (alert.message_id,),
-    ).fetchone()["description"]
-    store.close()
-    assert persisted_description == ""
-    assert private_body.encode() not in database_path.read_bytes()
+    persisted = store.client.select(
+        "job_hunter_inbound_job_candidates",
+        params={
+            "source_message_id": f"eq.{alert.message_id}",
+            "select": "description",
+        },
+    )
+    assert len(persisted) == 1
+    # The privacy invariant this test exists for: the raw email body must
+    # never reach the stored row, not merely be blank by coincidence.
+    assert persisted[0]["description"] == ""
 
 
-def test_second_sync_uses_saved_history_id(tmp_path):
+def test_second_sync_uses_saved_history_id(store, tmp_path):
     gmail = FakeGmail(messages={"m1": _message("m1"), "m2": _message("m2")})
     gmail.history_pages = {
         None: GmailHistoryPage(["m1"], "110", "page-2"),
         "page-2": GmailHistoryPage(["m2"], "112", None),
     }
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     _save_completed_state(store, history_id="100")
 
     summary = service.sync(NOW)
@@ -875,12 +865,12 @@ def test_second_sync_uses_saved_history_id(tmp_path):
     assert summary.processed == 2
 
 
-def test_history_message_ids_are_idempotent(tmp_path):
+def test_history_message_ids_are_idempotent(store, tmp_path):
     gmail = FakeGmail(messages={"new": _message("new")})
     gmail.history_pages = {
         None: GmailHistoryPage(["already-processed", "new"], "101", None)
     }
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     _save_completed_state(store)
     store.record_gmail_message(
         message_id="already-processed",
@@ -898,13 +888,10 @@ def test_history_message_ids_are_idempotent(tmp_path):
     assert gmail.message_calls == ["new"]
     assert summary.fetched == 2
     assert summary.processed == 1
-    assert (
-        store._conn.execute("SELECT COUNT(*) FROM gmail_messages").fetchone()[0]
-        == 2
-    )
+    assert len(store.client.select("job_hunter_gmail_messages", params={"select": "message_id"})) == 2
 
 
-def test_history_hard_error_does_not_advance_cursor(tmp_path):
+def test_history_hard_error_does_not_advance_cursor(store, tmp_path):
     gmail = FakeGmail(
         messages={
             "broken": RuntimeError("decode failed"),
@@ -914,7 +901,7 @@ def test_history_hard_error_does_not_advance_cursor(tmp_path):
     gmail.history_pages = {
         None: GmailHistoryPage(["broken", "ok"], "new-cursor", None)
     }
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     original_sync_at = NOW - timedelta(days=1)
     _save_completed_state(store, history_id="old-cursor", completed_at=original_sync_at)
 
@@ -928,6 +915,7 @@ def test_history_hard_error_does_not_advance_cursor(tmp_path):
 
 
 def test_processed_message_lookup_failure_is_counted_and_continues_batch(
+    store,
     tmp_path, monkeypatch, caplog
 ):
     gmail = FakeGmail(
@@ -936,7 +924,7 @@ def test_processed_message_lookup_failure_is_counted_and_continues_batch(
     gmail.history_pages = {
         None: GmailHistoryPage(["lookup-broken", "ok"], "new-cursor", None)
     }
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     _save_completed_state(store, history_id="old-cursor")
     original_lookup = store.has_processed_gmail_message
 
@@ -962,7 +950,7 @@ def test_processed_message_lookup_failure_is_counted_and_continues_batch(
     )
 
 
-def test_resolved_lifecycle_event_persists_real_event_type(tmp_path):
+def test_resolved_lifecycle_event_persists_real_event_type(store, tmp_path):
     message = GmailMessage(
         message_id="interview-message",
         thread_id="interview-thread",
@@ -974,7 +962,7 @@ def test_resolved_lifecycle_event_persists_real_event_type(tmp_path):
         links=["https://jobs.example.com/frontend"],
     )
     gmail = FakeGmail(message_ids=[message.message_id], messages={message.message_id: message})
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     job_id, _, _ = store.upsert_job(
         Job(
             source="public",
@@ -987,15 +975,20 @@ def test_resolved_lifecycle_event_persists_real_event_type(tmp_path):
 
     summary = service.sync(NOW)
 
-    event = store._conn.execute(
-        "SELECT job_id, event_type FROM application_events WHERE source_message_id = ?",
-        (message.message_id,),
-    ).fetchone()
+    events = store.client.select(
+        "job_hunter_application_events",
+        params={
+            "source_message_id": f"eq.{message.message_id}",
+            "select": "job_id,event_type",
+        },
+    )
+    assert len(events) == 1
+    event = events[0]
     assert summary.application_events == 1
     assert (event["job_id"], event["event_type"]) == (job_id, "INTERVIEW")
 
 
-def test_unresolved_lifecycle_event_is_review_needed_without_job_association(tmp_path):
+def test_unresolved_lifecycle_event_is_review_needed_without_job_association(store, tmp_path):
     message = GmailMessage(
         message_id="unresolved-interview",
         thread_id="unresolved-thread",
@@ -1006,24 +999,30 @@ def test_unresolved_lifecycle_event_is_review_needed_without_job_association(tmp
         body="Interview invitation: choose a time.",
     )
     gmail = FakeGmail(message_ids=[message.message_id], messages={message.message_id: message})
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
 
     summary = service.sync(NOW)
 
-    event = store._conn.execute(
-        "SELECT job_id, event_type FROM application_events WHERE source_message_id = ?",
-        (message.message_id,),
-    ).fetchone()
+    events = store.client.select(
+        "job_hunter_application_events",
+        params={
+            "source_message_id": f"eq.{message.message_id}",
+            "select": "job_id,event_type",
+        },
+    )
+    assert len(events) == 1
+    event = events[0]
     assert summary.review_needed == 1
     assert (event["job_id"], event["event_type"]) == (None, "INTERVIEW")
 
 
 def test_ambiguous_lifecycle_event_is_review_needed_without_job_association(
+    store,
     tmp_path, monkeypatch
 ):
     message = _message("ambiguous-interview")
     gmail = FakeGmail(message_ids=[message.message_id], messages={message.message_id: message})
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     job_id, _, _ = store.upsert_job(
         Job(
             source="public",
@@ -1047,18 +1046,23 @@ def test_ambiguous_lifecycle_event_is_review_needed_without_job_association(
 
     summary = service.sync(NOW)
 
-    event = store._conn.execute(
-        "SELECT job_id, event_type FROM application_events WHERE source_message_id = ?",
-        (message.message_id,),
-    ).fetchone()
+    events = store.client.select(
+        "job_hunter_application_events",
+        params={
+            "source_message_id": f"eq.{message.message_id}",
+            "select": "job_id,event_type",
+        },
+    )
+    assert len(events) == 1
+    event = events[0]
     assert summary.review_needed == 1
     assert (event["job_id"], event["event_type"]) == (None, "INTERVIEW")
 
 
-def test_low_confidence_lifecycle_event_is_review_needed(tmp_path, monkeypatch):
+def test_low_confidence_lifecycle_event_is_review_needed(store, tmp_path, monkeypatch):
     message = _message("low-confidence")
     gmail = FakeGmail(message_ids=[message.message_id], messages={message.message_id: message})
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     job_id, _, _ = store.upsert_job(
         Job(
             source="public",
@@ -1079,16 +1083,22 @@ def test_low_confidence_lifecycle_event_is_review_needed(tmp_path, monkeypatch):
 
     summary = service.sync(NOW)
 
-    event = store._conn.execute(
-        "SELECT job_id, event_type FROM application_events WHERE source_message_id = ?",
-        (message.message_id,),
-    ).fetchone()
+    events = store.client.select(
+        "job_hunter_application_events",
+        params={
+            "source_message_id": f"eq.{message.message_id}",
+            "select": "job_id,event_type",
+        },
+    )
+    assert len(events) == 1
+    event = events[0]
     assert job_id is not None
     assert summary.review_needed == 1
     assert (event["job_id"], event["event_type"]) == (job_id, "INTERVIEW")
 
 
 def test_old_recruiter_mail_without_extracted_job_is_not_staged_but_concrete_role_is(
+    store,
     tmp_path, monkeypatch
 ):
     no_job = _message("old-recruiter-no-job", sent_at=NOW - timedelta(days=180))
@@ -1097,7 +1107,7 @@ def test_old_recruiter_mail_without_extracted_job_is_not_staged_but_concrete_rol
         message_ids=[no_job.message_id, concrete_role.message_id],
         messages={no_job.message_id: no_job, concrete_role.message_id: concrete_role},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     classifications = iter(
         [
             GmailClassification(
@@ -1126,20 +1136,20 @@ def test_old_recruiter_mail_without_extracted_job_is_not_staged_but_concrete_rol
 
     service.sync(NOW)
 
-    rows = store._conn.execute(
-        "SELECT source_message_id FROM inbound_job_candidates ORDER BY source_message_id"
-    ).fetchall()
-    assert [row["source_message_id"] for row in rows] == ["old-recruiter-role"]
+    rows = store.client.select(
+        "job_hunter_inbound_job_candidates", params={"select": "source_message_id"}
+    )
+    assert sorted(row["source_message_id"] for row in rows) == ["old-recruiter-role"]
 
 
-def test_expired_history_uses_one_day_overlap_search(tmp_path):
+def test_expired_history_uses_one_day_overlap_search(store, tmp_path):
     gmail = FakeGmail(
         profile=("candidate@example.com", "recovery-start-checkpoint"),
         message_ids=["overlap-message"],
         messages={"overlap-message": _message("overlap-message")},
     )
     gmail.history_pages = {None: GmailHistoryExpired()}
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     _save_completed_state(
         store,
         history_id="expired-cursor",
@@ -1161,7 +1171,7 @@ def test_expired_history_uses_one_day_overlap_search(tmp_path):
     assert state["last_successful_sync_at"] == NOW.isoformat()
 
 
-def test_dry_run_writes_nothing_and_does_not_advance_state(tmp_path):
+def test_dry_run_writes_nothing_and_does_not_advance_state(store, tmp_path):
     gmail = FakeGmail(
         profile=("candidate@example.com", "dry-run-checkpoint"),
         messages={"dry-alert": _job_alert("dry-alert", sent_at=NOW)},
@@ -1169,7 +1179,7 @@ def test_dry_run_writes_nothing_and_does_not_advance_state(tmp_path):
     gmail.history_pages = {
         None: GmailHistoryPage(["dry-alert"], "dry-run-new-cursor", None)
     }
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     _save_completed_state(store, history_id="dry-run-old-cursor")
     state_before = dict(store.get_gmail_sync_state("candidate@example.com"))
 
@@ -1179,15 +1189,15 @@ def test_dry_run_writes_nothing_and_does_not_advance_state(tmp_path):
     assert summary.processed == 1
     assert dict(state) == state_before
     for table in (
-        "gmail_messages",
-        "inbound_job_candidates",
-        "application_events",
-        "review_deliveries",
+        "job_hunter_gmail_messages",
+        "job_hunter_inbound_job_candidates",
+        "job_hunter_application_events",
+        "job_hunter_review_deliveries",
     ):
-        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert store.client.select(table, params={"select": "*", "limit": "1"}) == []
 
 
-def test_force_backfill_is_idempotent_and_non_destructive(tmp_path):
+def test_force_backfill_is_idempotent_and_non_destructive(store, tmp_path):
     recruiter = GmailMessage(
         message_id="recruiter-message",
         thread_id="recruiter-thread",
@@ -1202,33 +1212,24 @@ def test_force_backfill_is_idempotent_and_non_destructive(tmp_path):
         message_ids=["recruiter-message"],
         messages={"recruiter-message": recruiter},
     )
-    service, store = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     service.sync(NOW)
     gmail.profile = ("candidate@example.com", "fresh-force-checkpoint")
 
     service.sync(NOW + timedelta(hours=1), force_backfill=True)
 
-    assert (
-        store._conn.execute("SELECT COUNT(*) FROM gmail_messages").fetchone()[0]
-        == 1
-    )
-    assert (
-        store._conn.execute("SELECT COUNT(*) FROM inbound_job_candidates").fetchone()[0]
-        == 1
-    )
-    assert (
-        store._conn.execute("SELECT COUNT(*) FROM application_events").fetchone()[0]
-        == 1
-    )
+    assert len(store.client.select("job_hunter_gmail_messages", params={"select": "message_id"})) == 1
+    assert len(store.client.select("job_hunter_inbound_job_candidates", params={"select": "id"})) == 1
+    assert len(store.client.select("job_hunter_application_events", params={"select": "id"})) == 1
     assert (
         store.get_gmail_sync_state("candidate@example.com")["history_id"]
         == "fresh-force-checkpoint"
     )
 
 
-def test_sync_logs_exact_compact_metrics(tmp_path, caplog):
+def test_sync_logs_exact_compact_metrics(store, tmp_path, caplog):
     gmail = FakeGmail(message_ids=["m1"], messages={"m1": _message("m1")})
-    service, _ = _service(tmp_path, gmail)
+    service = _service(store, gmail)
     caplog.set_level(logging.INFO, logger="job_hunter.gmail_sync")
 
     service.sync(NOW)

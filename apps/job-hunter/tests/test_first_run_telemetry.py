@@ -13,7 +13,6 @@ from job_hunter.models import (
 from job_hunter.pipeline import run_pipeline
 from job_hunter.search_backend import SearchHit, SearchResponse
 from job_hunter.sources.targeted_search import TargetedSearchSource
-from job_hunter.store import JobStore
 from tests.market_fixtures import make_market_policy
 
 
@@ -98,9 +97,8 @@ def test_targeted_search_stats_report_attempts_successes_and_results_after_disco
     assert results == {"london": 1}
 
 
-def test_discovery_reports_market_reattribution_from_query_hint_to_real_location():
+def test_discovery_reports_market_reattribution_from_query_hint_to_real_location(store):
     policy = make_market_policy()
-    store = JobStore(":memory:")
     job = Job(
         source="search:fake",
         title="Senior Frontend Engineer",
@@ -119,7 +117,7 @@ def test_discovery_reports_market_reattribution_from_query_hint_to_real_location
 
 
 def test_market_delivered_metric_counts_only_successful_telegram_delivery(
-    tmp_path, monkeypatch, caplog
+    store, monkeypatch, caplog
 ):
     policy = make_market_policy()
     policy.max_jobs_per_run = 1
@@ -134,7 +132,6 @@ def test_market_delivered_metric_counts_only_successful_telegram_delivery(
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",
-        db_path=str(tmp_path / "state.sqlite3"),
     )
     job = Job(
         source="manual",
@@ -169,7 +166,7 @@ def test_market_delivered_metric_counts_only_successful_telegram_delivery(
         run_pipeline(
             settings,
             sources=[_Source([job])],
-            store=JobStore(settings.db_path),
+            store=store,
             gemini=_Gemini(),
             telegram=_FailedNavigator(),
             http=_NoHttp(),

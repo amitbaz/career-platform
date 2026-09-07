@@ -22,7 +22,7 @@ from job_hunter.models import CandidatePreferences, Job, SearchPolicy
 from job_hunter.normalize import canonicalize_url
 from job_hunter.prefilter import prefilter_job
 from job_hunter.ranking import rank_jobs, select_diverse_candidates
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ def _bump(counts: dict[str, int], key: str) -> None:
 
 
 def _harvest_ats_board_safely(
-    store: JobStore,
+    store: PostgresJobStore,
     job: Job,
     market_hint: str | None = None,
     denylist: frozenset[str] = frozenset(),
@@ -282,7 +282,7 @@ def _format_source_contribution(per_source: dict[str, int]) -> str:
 
 def collect_candidates(
     sources: list,
-    store: JobStore,
+    store: PostgresJobStore,
     http: HttpClient,
     policy: SearchPolicy,
     resolver: CanonicalResolver | None = None,

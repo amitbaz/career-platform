@@ -4,7 +4,6 @@ import logging
 from job_hunter.candidate_context import get_candidate_context
 from job_hunter.gemini import GeminiIncompleteResponse
 from job_hunter.models import SearchPolicy
-from job_hunter.store import JobStore
 
 
 class FakeGemini:
@@ -60,8 +59,7 @@ def _valid_json():
     )
 
 
-def test_candidate_context_retries_once_after_provider_truncation_and_caches(caplog):
-    store = JobStore(":memory:")
+def test_candidate_context_retries_once_after_provider_truncation_and_caches(store, caplog):
     gemini = FakeGemini([GeminiIncompleteResponse("MAX_TOKENS"), _valid_json()])
 
     with caplog.at_level(logging.WARNING):
@@ -77,8 +75,7 @@ def test_candidate_context_retries_once_after_provider_truncation_and_caches(cap
     assert "candidate profile" not in caplog.text
 
 
-def test_candidate_context_falls_back_after_second_provider_truncation(caplog):
-    store = JobStore(":memory:")
+def test_candidate_context_falls_back_after_second_provider_truncation(store, caplog):
     gemini = FakeGemini(
         [GeminiIncompleteResponse("MAX_TOKENS"), GeminiIncompleteResponse("MAX_TOKENS")]
     )
@@ -93,8 +90,7 @@ def test_candidate_context_falls_back_after_second_provider_truncation(caplog):
     assert "candidate profile" not in caplog.text
 
 
-def test_candidate_context_malformed_json_is_not_retried_as_truncation(caplog):
-    store = JobStore(":memory:")
+def test_candidate_context_malformed_json_is_not_retried_as_truncation(store, caplog):
     gemini = FakeGemini(['{"preferences":'])
 
     with caplog.at_level(logging.WARNING):

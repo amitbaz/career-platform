@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .job_identity import normalize_company_name
 from .models import CompanyWatchSeed, Evaluation, Job
-from .store import JobStore
+from .postgres_store import PostgresJobStore
 
 
 _AUTO_PROMOTION_DECISIONS = frozenset({"high_priority", "package_match"})
@@ -25,7 +25,7 @@ def should_auto_promote(evaluation: Evaluation) -> bool:
 
 
 def sync_manual_watch_seeds(
-    store: JobStore, seeds: list[CompanyWatchSeed]
+    store: PostgresJobStore, seeds: list[CompanyWatchSeed]
 ) -> None:
     """Idempotently synchronize configured company watch seeds into storage."""
     for seed in seeds:
@@ -41,7 +41,7 @@ def sync_manual_watch_seeds(
 
 
 def promote_company(
-    store: JobStore,
+    store: PostgresJobStore,
     *,
     job_id: str,
     job: Job,

@@ -5,7 +5,6 @@ import pytest
 from job_hunter.gemini import GeminiClient, GeminiError
 from job_hunter.gemini_usage import GeminiQuotaPaused, GeminiUsageTracker
 from job_hunter.models import GeminiQuotaSettings
-from job_hunter.store import JobStore
 
 
 class FakeResponse:
@@ -73,8 +72,7 @@ def _usage_response(text="{}"):
     }
 
 
-def _real_tracker():
-    store = JobStore(":memory:")
+def _real_tracker(store):
     quota = GeminiQuotaSettings(rpm=10, tpm=1000, rpd=100)
     tracker = GeminiUsageTracker(store, quota, "gemini-2.5-flash-lite", run_id="run-1")
     return tracker, store
@@ -276,8 +274,8 @@ def test_generate_text_429_without_tracker_raises_generic_gemini_error():
         client.generate_text("say hi")
 
 
-def test_generate_text_daily_quota_429_pauses_until_pacific_reset(monkeypatch):
-    tracker, store = _real_tracker()
+def test_generate_text_daily_quota_429_pauses_until_pacific_reset(store, monkeypatch):
+    tracker, store = _real_tracker(store)
     http = FakeHttp(
         _quota_error_response(
             "Quota exceeded: quota_exceeded for requests per day.",
@@ -298,8 +296,8 @@ def test_generate_text_daily_quota_429_pauses_until_pacific_reset(monkeypatch):
     assert pause["reason"] == "daily_quota"
 
 
-def test_generate_text_rate_limit_429_pauses_ninety_seconds(monkeypatch):
-    tracker, store = _real_tracker()
+def test_generate_text_rate_limit_429_pauses_ninety_seconds(store, monkeypatch):
+    tracker, store = _real_tracker(store)
     http = FakeHttp(
         _quota_error_response(
             "Resource exhausted: rate_limit_exceeded, too_many_requests.",
@@ -321,8 +319,8 @@ def test_generate_text_rate_limit_429_pauses_ninety_seconds(monkeypatch):
     assert paused_until == now + timedelta(seconds=90)
 
 
-def test_generate_text_unknown_429_pauses_conservatively(monkeypatch):
-    tracker, store = _real_tracker()
+def test_generate_text_unknown_429_pauses_conservatively(store, monkeypatch):
+    tracker, store = _real_tracker(store)
     http = FakeHttp(_quota_error_response("Something went wrong."))
     client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
     now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
@@ -337,8 +335,8 @@ def test_generate_text_unknown_429_pauses_conservatively(monkeypatch):
     assert pause["reason"] == "unknown"
 
 
-def test_generate_text_pause_blocks_subsequent_call_without_new_http_request(monkeypatch):
-    tracker, _store = _real_tracker()
+def test_generate_text_pause_blocks_subsequent_call_without_new_http_request(store, monkeypatch):
+    tracker, _store = _real_tracker(store)
     http = FakeHttp(
         _quota_error_response(
             "quota_exceeded",
@@ -385,7 +383,7 @@ def test_generate_text_429_does_not_reinvoke_preflight_after_record_429(monkeypa
     assert len(tracker.preflight_calls) == 1
 
 
-def test_generate_text_429_raises_quota_paused_despite_tight_daily_ceiling(monkeypatch):
+def test_generate_text_429_raises_quota_paused_despite_tight_daily_ceiling(store, monkeypatch):
     """Regression: the exception type must not depend on how full the daily
     budget is. With a tight rpd ceiling, the old re-preflight-after-record_429
     mechanism counted the just-written quota_429 row, tripped the budget
@@ -393,7 +391,6 @@ def test_generate_text_429_raises_quota_paused_despite_tight_daily_ceiling(monke
     blocked_budget row for a call that indisputably reached Google. It must
     now raise GeminiQuotaPaused and write exactly one quota_429 row.
     """
-    store = JobStore(":memory:")
     quota = GeminiQuotaSettings(rpm=10, tpm=1000, rpd=2, rate_pause_seconds=1)
     tracker = GeminiUsageTracker(store, quota, "gemini-2.5-flash-lite", run_id="run-1")
     http = FakeHttp(_quota_error_response("Something went wrong."))

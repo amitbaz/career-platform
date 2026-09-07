@@ -7,7 +7,7 @@ from job_hunter.normalize import normalize_text
 
 if TYPE_CHECKING:
     from job_hunter.gemini import GeminiClient
-    from job_hunter.store import JobStore
+    from job_hunter.postgres_store import PostgresJobStore
 
 _SENIORITY_WORDS = ("intern", "junior", "mid", "senior", "staff", "lead", "principal", "head")
 _LOCATION_HINT_WORDS = frozenset(
@@ -83,7 +83,7 @@ def extract_candidate_preferences(
     profile: str,
     gemini: "GeminiClient",
     policy: SearchPolicy,
-    store: "JobStore",
+    store: "PostgresJobStore",
 ) -> CandidatePreferences:
     """Compatibility helper: the preferences slice of the cached CandidateContext.
 

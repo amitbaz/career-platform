@@ -13,7 +13,7 @@ from job_hunter.search_budget import (
     SearchUsageLedger,
     split_queries_for_brave,
 )
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.supabase_client import SupabaseClient
 
 from .arbeitnow import ArbeitnowSource
@@ -93,13 +93,12 @@ def build_brave_budget(
 ) -> BraveRequestBudget | None:
     """Build the run's shared persisted Brave budget when Brave is configured.
 
-    `SearchUsageLedger` is Postgres-backed now (issue #70 task 12), so
-    building a budget needs a `SupabaseClient`. `run_pipeline` doesn't wire
-    one through yet -- that lands in issue #70 task 14, which replaces
-    `JobStore` construction wholesale -- so `client` is `None` at every
-    current call site and Brave search is deliberately disabled (as if
-    unconfigured) until then, rather than crashing on a stale
-    `SearchUsageLedger(settings.db_path)` call.
+    `SearchUsageLedger` is Postgres-backed (issue #70 task 12), so building a
+    budget needs a `SupabaseClient`. `run_pipeline` derives one from the
+    `PostgresJobStore` it is given (issue #70 task 14b). `client` stays
+    optional because `build_sources` is also called directly by tests that
+    have no client; passing `None` disables Brave search (as if it were
+    unconfigured) rather than crashing.
     """
     if client is None:
         return None
@@ -140,7 +139,7 @@ def build_sources(
     settings: Settings,
     http,
     *,
-    store: JobStore | None = None,
+    store: PostgresJobStore | None = None,
     search_breaker: CircuitBreaker | None = None,
     query_date: date | None = None,
     brave_budget: BraveRequestBudget | None = None,

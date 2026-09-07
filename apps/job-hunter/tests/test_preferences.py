@@ -5,7 +5,6 @@ import pytest
 from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
 from job_hunter.models import CandidatePreferences, SearchPolicy
 from job_hunter.preferences import extract_candidate_preferences
-from job_hunter.store import JobStore
 
 
 class FakeGemini:
@@ -80,8 +79,7 @@ def full_context_payload(**preference_overrides) -> str:
     )
 
 
-def test_extract_candidate_preferences_returns_valid_json_fields():
-    store = JobStore(":memory:")
+def test_extract_candidate_preferences_returns_valid_json_fields(store):
     gemini = FakeGemini(full_context_payload())
 
     preferences = extract_candidate_preferences("candidate profile text", gemini, make_policy(), store)
@@ -99,8 +97,7 @@ def test_extract_candidate_preferences_returns_valid_json_fields():
     assert "candidate profile text" in gemini.calls[0]["prompt"]
 
 
-def test_extract_candidate_preferences_falls_back_on_malformed_json():
-    store = JobStore(":memory:")
+def test_extract_candidate_preferences_falls_back_on_malformed_json(store):
     policy = make_policy()
     gemini = FakeGemini('{"preferred_roles": "not-a-list"}')
 
@@ -117,8 +114,7 @@ def test_extract_candidate_preferences_falls_back_on_malformed_json():
     )
 
 
-def test_extract_candidate_preferences_empty_profile_uses_policy_fallback():
-    store = JobStore(":memory:")
+def test_extract_candidate_preferences_empty_profile_uses_policy_fallback(store):
     policy = make_policy()
     gemini = FakeGemini("{}")
 
@@ -136,8 +132,7 @@ def test_extract_candidate_preferences_empty_profile_uses_policy_fallback():
     assert gemini.calls == []
 
 
-def test_extract_candidate_preferences_caches_across_calls():
-    store = JobStore(":memory:")
+def test_extract_candidate_preferences_caches_across_calls(store):
     policy = make_policy()
     gemini = FakeGemini(full_context_payload())
 
@@ -148,8 +143,7 @@ def test_extract_candidate_preferences_caches_across_calls():
     assert len(gemini.calls) == 1
 
 
-def test_extract_candidate_preferences_propagates_gemini_budget_exceeded():
-    store = JobStore(":memory:")
+def test_extract_candidate_preferences_propagates_gemini_budget_exceeded(store):
     policy = make_policy()
     gemini = FakeGemini(exception=GeminiBudgetExceeded("over budget"))
 
@@ -157,8 +151,7 @@ def test_extract_candidate_preferences_propagates_gemini_budget_exceeded():
         extract_candidate_preferences("candidate profile text", gemini, policy, store)
 
 
-def test_extract_candidate_preferences_propagates_gemini_quota_paused():
-    store = JobStore(":memory:")
+def test_extract_candidate_preferences_propagates_gemini_quota_paused(store):
     policy = make_policy()
     gemini = FakeGemini(
         exception=GeminiQuotaPaused("paused", paused_until="2026-01-01T00:00:00+00:00", reason="daily_quota")

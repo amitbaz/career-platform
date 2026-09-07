@@ -35,10 +35,7 @@ def _settings():
         telegram_bot_token="bot-token",
         telegram_webhook_secret="webhook-secret",
         github_repository="amitbaz/job-hunter-bot",
-        github_state_token="github-token",
         github_dispatch_token="dispatch-token",
-        github_state_artifact_name="job-hunter-state",
-        github_state_cache_dir="/tmp/job-hunter-state",
     )
 
 

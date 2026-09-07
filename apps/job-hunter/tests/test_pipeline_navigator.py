@@ -2,7 +2,6 @@ import json
 
 from job_hunter.models import GeminiQuotaSettings, Job, SearchPolicy, Settings
 from job_hunter.pipeline import run_pipeline
-from job_hunter.store import JobStore
 from job_hunter.telegram_navigation import parse_callback
 
 
@@ -107,7 +106,7 @@ class NavigatorTelegram:
         return "doc-1"
 
 
-def _settings(tmp_path):
+def _settings():
     return Settings(
         gemini_api_key="key",
         candidate_profile="profile",
@@ -126,7 +125,6 @@ def _settings(tmp_path):
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",
-        db_path=str(tmp_path / "state.sqlite3"),
     )
 
 
@@ -144,7 +142,7 @@ def _job(source_job_id, company, location):
     )
 
 
-def _seed_pending_activity(store: JobStore, message_id="gmail-review-1"):
+def _seed_pending_activity(store, message_id="gmail-review-1"):
     store.record_gmail_message(
         message_id=message_id,
         thread_id=f"thread-{message_id}",
@@ -174,9 +172,8 @@ def _session_id_from_keyboard(keyboard):
     return parsed[1]
 
 
-def test_pipeline_sends_one_sorted_navigator_and_persists_location(tmp_path):
-    settings = _settings(tmp_path)
-    store = JobStore(settings.db_path)
+def test_pipeline_sends_one_sorted_navigator_and_persists_location(store):
+    settings = _settings()
     telegram = NavigatorTelegram()
     jobs = [
         _job("2", "Beta", "Remote EU"),
@@ -209,9 +206,8 @@ def test_pipeline_sends_one_sorted_navigator_and_persists_location(tmp_path):
         assert store.has_delivery(job_id, "telegram_message") is True
 
 
-def test_pipeline_failed_navigator_send_keeps_jobs_pending(tmp_path):
-    settings = _settings(tmp_path)
-    store = JobStore(settings.db_path)
+def test_pipeline_failed_navigator_send_keeps_jobs_pending(store):
+    settings = _settings()
     telegram = NavigatorTelegram(card_result=None)
     job = _job("1", "Acme", "Berlin")
 
@@ -229,9 +225,8 @@ def test_pipeline_failed_navigator_send_keeps_jobs_pending(tmp_path):
     assert job_id in store.pending_delivery_job_ids()
 
 
-def test_pipeline_with_no_deliverable_jobs_sends_nothing(tmp_path):
-    settings = _settings(tmp_path)
-    store = JobStore(settings.db_path)
+def test_pipeline_with_no_deliverable_jobs_sends_nothing(store):
+    settings = _settings()
     telegram = NavigatorTelegram()
     irrelevant = Job(
         source="ashby",
@@ -254,9 +249,8 @@ def test_pipeline_with_no_deliverable_jobs_sends_nothing(tmp_path):
     assert telegram.messages == []
 
 
-def test_pipeline_sends_gmail_activity_before_job_navigator(tmp_path):
-    settings = _settings(tmp_path)
-    store = JobStore(settings.db_path)
+def test_pipeline_sends_gmail_activity_before_job_navigator(store):
+    settings = _settings()
     event_id = _seed_pending_activity(store)
     telegram = NavigatorTelegram()
 
@@ -275,16 +269,16 @@ def test_pipeline_sends_gmail_activity_before_job_navigator(tmp_path):
     assert "deterministic recruiter template" not in telegram.messages[0]
     assert "https://mail.google.com/mail/u/0/#all/thread-gmail-review-1" in telegram.messages[0]
     assert store.pending_review_events() == []
-    delivery = store._conn.execute(
-        "SELECT telegram_message_id FROM review_deliveries WHERE event_id = ?",
-        (event_id,),
-    ).fetchone()
-    assert delivery["telegram_message_id"] == "msg-1"
+    deliveries = store.client.select(
+        "job_hunter_review_deliveries",
+        params={"event_id": f"eq.{event_id}", "select": "telegram_message_id"},
+    )
+    assert len(deliveries) == 1
+    assert deliveries[0]["telegram_message_id"] == "msg-1"
 
 
-def test_pipeline_failed_gmail_activity_send_keeps_review_pending(tmp_path):
-    settings = _settings(tmp_path)
-    store = JobStore(settings.db_path)
+def test_pipeline_failed_gmail_activity_send_keeps_review_pending(store):
+    settings = _settings()
     event_id = _seed_pending_activity(store)
     telegram = NavigatorTelegram(message_result=None)
 
@@ -299,9 +293,7 @@ def test_pipeline_failed_gmail_activity_send_keeps_review_pending(tmp_path):
     assert telegram.events == ["message"]
     pending = store.pending_review_events()
     assert [row["id"] for row in pending] == [event_id]
-    assert (
-        store._conn.execute(
-            "SELECT COUNT(*) FROM review_deliveries WHERE event_id = ?", (event_id,)
-        ).fetchone()[0]
-        == 0
-    )
+    assert store.client.select(
+        "job_hunter_review_deliveries",
+        params={"event_id": f"eq.{event_id}", "select": "event_id"},
+    ) == []

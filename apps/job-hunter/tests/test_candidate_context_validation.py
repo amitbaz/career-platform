@@ -2,7 +2,6 @@ import json
 
 from job_hunter.candidate_context import _MAX_ITEM_LENGTH, get_candidate_context
 from job_hunter.models import SearchPolicy
-from job_hunter.store import JobStore
 
 
 class _Gemini:
@@ -49,7 +48,7 @@ def _payload() -> dict:
     }
 
 
-def test_candidate_context_ignores_unknown_structured_output_fields():
+def test_candidate_context_ignores_unknown_structured_output_fields(store):
     payload = _payload()
     payload["provider_metadata"] = {"ignored": True}
     payload["preferences"]["provider_note"] = "ignored"
@@ -58,14 +57,14 @@ def test_candidate_context_ignores_unknown_structured_output_fields():
         "PRIVATE_PROFILE_MARKER",
         _policy(),
         _Gemini(payload),
-        JobStore(":memory:"),
+        store,
     )
 
     assert context.source == "gemini"
     assert context.technical_skills == ["React", "TypeScript"]
 
 
-def test_candidate_context_accepts_evidence_string_at_max_length_boundary():
+def test_candidate_context_accepts_evidence_string_at_max_length_boundary(store):
     payload = _payload()
     payload["agentic_ai_evidence"] = ["x" * _MAX_ITEM_LENGTH]
 
@@ -73,14 +72,14 @@ def test_candidate_context_accepts_evidence_string_at_max_length_boundary():
         "PRIVATE_PROFILE_MARKER",
         _policy(),
         _Gemini(payload),
-        JobStore(":memory:"),
+        store,
     )
 
     assert context.source == "gemini"
     assert context.agentic_ai_evidence == ["x" * _MAX_ITEM_LENGTH]
 
 
-def test_candidate_context_rejects_evidence_string_over_max_length(caplog):
+def test_candidate_context_rejects_evidence_string_over_max_length(store, caplog):
     payload = _payload()
     payload["agentic_ai_evidence"] = ["x" * (_MAX_ITEM_LENGTH + 1)]
 
@@ -88,7 +87,7 @@ def test_candidate_context_rejects_evidence_string_over_max_length(caplog):
         "PRIVATE_PROFILE_MARKER",
         _policy(),
         _Gemini(payload),
-        JobStore(":memory:"),
+        store,
     )
 
     assert context.source == "fallback_error"
@@ -96,7 +95,7 @@ def test_candidate_context_rejects_evidence_string_over_max_length(caplog):
     assert f"agentic_ai_evidence entries must be <= {_MAX_ITEM_LENGTH} characters" in caplog.text
 
 
-def test_candidate_context_logs_safe_local_validation_reason(caplog):
+def test_candidate_context_logs_safe_local_validation_reason(store, caplog):
     payload = _payload()
     payload["technical_skills"] = "React"
 
@@ -104,7 +103,7 @@ def test_candidate_context_logs_safe_local_validation_reason(caplog):
         "PRIVATE_PROFILE_MARKER",
         _policy(),
         _Gemini(payload),
-        JobStore(":memory:"),
+        store,
     )
 
     assert context.source == "fallback_error"

@@ -5,11 +5,13 @@ import logging
 
 from flask import Flask, jsonify, request
 
-from job_hunter.config import WebhookSettings, load_webhook_settings
+from job_hunter.config import WebhookSettings, load_supabase_settings, load_webhook_settings
 from job_hunter.github_dispatch import trigger_repository_dispatch
-from job_hunter.github_state import GitHubArtifactStateLoader
 from job_hunter.http import HttpClient
-from job_hunter.navigation_repository import GitHubArtifactNavigationRepository
+from job_hunter.navigation_repository import PostgresNavigationRepository
+from job_hunter.postgres_store import PostgresJobStore
+from job_hunter.supabase_auth import AccessTokenMinter
+from job_hunter.supabase_client import SupabaseClient
 from job_hunter.telegram import TelegramClient
 from job_hunter.telegram_navigation import handle_callback_query, parse_callback
 
@@ -25,13 +27,13 @@ def create_app(
     settings = settings or load_webhook_settings()
     http = HttpClient()
     if navigation_repository is None:
-        state_loader = GitHubArtifactStateLoader(
-            settings.github_repository,
-            settings.github_state_token,
-            settings.github_state_artifact_name,
-            settings.github_state_cache_dir,
+        supabase_settings = load_supabase_settings()
+        client = SupabaseClient(
+            http,
+            supabase_settings,
+            AccessTokenMinter(supabase_settings.user_id, supabase_settings.signing_key_jwk),
         )
-        navigation_repository = GitHubArtifactNavigationRepository(state_loader)
+        navigation_repository = PostgresNavigationRepository(PostgresJobStore(client))
     telegram = telegram or TelegramClient(settings.telegram_bot_token, None, http)
 
     def _trigger_cover_letter_generation(job_id: str) -> None:

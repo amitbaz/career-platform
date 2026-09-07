@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 from job_hunter.gmail_client import GmailPage
 from job_hunter.gmail_models import GmailMessage
 from job_hunter.gmail_sync import GmailSyncService
-from job_hunter.store import JobStore
 
 
 NOW = datetime(2026, 9, 1, 8, tzinfo=UTC)
@@ -76,7 +75,7 @@ class OneMessageGmail:
         return self.message
 
 
-def _record_review(store: JobStore, message_id: str, rationale: str) -> int:
+def _record_review(store, message_id: str, rationale: str) -> int:
     store.record_gmail_message(
         message_id=message_id,
         thread_id=f"thread-{message_id}",
@@ -100,7 +99,7 @@ def _record_review(store: JobStore, message_id: str, rationale: str) -> int:
     )
 
 
-def test_semantic_provider_failure_is_error_not_review_and_remains_retryable(tmp_path):
+def test_semantic_provider_failure_is_error_not_review_and_remains_retryable(store, tmp_path):
     message = GmailMessage(
         message_id="m1",
         thread_id="t1",
@@ -110,7 +109,6 @@ def test_semantic_provider_failure_is_error_not_review_and_remains_retryable(tmp
         snippet="Can we discuss an engineering role?",
         body="Can we discuss an engineering role?",
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(
         gmail=OneMessageGmail(message),
         gemini=FailingGemini(),
@@ -125,7 +123,7 @@ def test_semantic_provider_failure_is_error_not_review_and_remains_retryable(tmp
     assert store.pending_review_events() == []
 
 
-def test_invalid_semantic_response_logs_safe_validation_detail_only(tmp_path, caplog):
+def test_invalid_semantic_response_logs_safe_validation_detail_only(store, tmp_path, caplog):
     message = GmailMessage(
         message_id="invalid-semantic",
         thread_id="invalid-thread",
@@ -135,7 +133,6 @@ def test_invalid_semantic_response_logs_safe_validation_detail_only(tmp_path, ca
         snippet="Can we discuss a frontend role?",
         body="Can we discuss a frontend role?",
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     service = GmailSyncService(
         gmail=OneMessageGmail(message),
         gemini=InvalidSemanticGemini(),
@@ -151,8 +148,7 @@ def test_invalid_semantic_response_logs_safe_validation_detail_only(tmp_path, ca
     assert "RAW_MODEL_SENTINEL" not in caplog.text
 
 
-def test_release_legacy_semantic_failures_removes_only_exact_technical_artifacts(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_release_legacy_semantic_failures_removes_only_exact_technical_artifacts(store, tmp_path):
 
     legacy_event = _record_review(store, "legacy", LEGACY_RATIONALE)
     real_event = _record_review(store, "real-review", "ambiguous scheduling language")
@@ -163,16 +159,16 @@ def test_release_legacy_semantic_failures_removes_only_exact_technical_artifacts
     assert released == 1
     assert store.has_processed_gmail_message("legacy") is False
     assert store.has_processed_gmail_message("real-review") is True
-    remaining = store._conn.execute(
-        "SELECT source_message_id, rationale FROM application_events ORDER BY source_message_id"
-    ).fetchall()
+    remaining = store.client.select(
+        "job_hunter_application_events", params={"select": "source_message_id,rationale"}
+    )
     assert [(row["source_message_id"], row["rationale"]) for row in remaining] == [
         ("real-review", "ambiguous scheduling language")
     ]
     assert store.release_legacy_gmail_semantic_failures() == 0
 
 
-def test_writable_sync_reopens_completed_backfill_to_reprocess_legacy_failure(tmp_path):
+def test_writable_sync_reopens_completed_backfill_to_reprocess_legacy_failure(store, tmp_path):
     message = GmailMessage(
         message_id="legacy",
         thread_id="thread-legacy",
@@ -182,7 +178,6 @@ def test_writable_sync_reopens_completed_backfill_to_reprocess_legacy_failure(tm
         snippet="General product news",
         body="General product news",
     )
-    store = JobStore(tmp_path / "state.sqlite3")
     _record_review(store, "legacy", LEGACY_RATIONALE)
     completed_at = NOW - timedelta(days=1)
     store.save_gmail_sync_state(
@@ -199,13 +194,18 @@ def test_writable_sync_reopens_completed_backfill_to_reprocess_legacy_failure(tm
 
     summary = service.sync(NOW)
 
-    row = store._conn.execute(
-        "SELECT classification, rationale FROM gmail_messages WHERE message_id = 'legacy'"
-    ).fetchone()
+    rows = store.client.select(
+        "job_hunter_gmail_messages",
+        params={"message_id": "eq.legacy", "select": "classification,rationale"},
+    )
     state = store.get_gmail_sync_state("candidate@example.com")
     assert summary.processed == 1
     assert summary.review_needed == 0
     assert summary.errors == 0
-    assert tuple(row) == ("IRRELEVANT", "no deterministic job signal")
+    assert len(rows) == 1
+    assert (rows[0]["classification"], rows[0]["rationale"]) == (
+        "IRRELEVANT",
+        "no deterministic job signal",
+    )
     assert store.pending_review_events() == []
     assert state["backfill_completed_at"] == NOW.isoformat()

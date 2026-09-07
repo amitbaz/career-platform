@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from job_hunter.models import GeminiQuotaSettings, GeminiUsageSummary
 
 if TYPE_CHECKING:
-    from job_hunter.store import JobStore
+    from job_hunter.postgres_store import PostgresJobStore
 
 GeminiPurpose = Literal[
     "gmail_semantic", "candidate_context", "job_evaluation", "cover_letter"
@@ -171,7 +171,7 @@ class GeminiUsageTracker:
 
     def __init__(
         self,
-        store: JobStore,
+        store: PostgresJobStore,
         quota: GeminiQuotaSettings,
         model: str,
         *,

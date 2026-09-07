@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from job_hunter.models import Job
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 
 
 class GmailStagedSource:
     """Expose staged Gmail candidates to the normal discovery pipeline."""
 
-    def __init__(self, store: JobStore) -> None:
+    def __init__(self, store: PostgresJobStore) -> None:
         self._store = store
 
     def discover(self) -> list[Job]:

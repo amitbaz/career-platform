@@ -20,7 +20,6 @@ from job_hunter.sources import (
     WellfoundSource,
     build_sources,
 )
-from job_hunter.store import JobStore
 from tests.market_fixtures import make_market, make_market_policy
 
 _REPO_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "search.yml"
@@ -421,7 +420,6 @@ def test_build_sources_uses_only_brave_for_metered_market_discovery(
         scheduled_hour=9,
         policy=make_market_policy(),
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
-        db_path=str(tmp_path / "state.sqlite3"),
     )
 
     sources = build_sources(settings, fake_http, supabase_client=supabase_client)
@@ -432,6 +430,7 @@ def test_build_sources_uses_only_brave_for_metered_market_discovery(
 
 
 def test_build_sources_skips_market_discovery_sources_without_brave_key(
+    store,
     fake_http, policy, monkeypatch, tmp_path
 ):
     monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
@@ -443,9 +442,7 @@ def test_build_sources_skips_market_discovery_sources_without_brave_key(
         scheduled_hour=9,
         policy=policy,
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
-        db_path=str(tmp_path / "state.sqlite3"),
     )
-    store = JobStore(str(tmp_path / "store.sqlite3"))
 
     sources = build_sources(settings, fake_http, store=store)
 
@@ -459,6 +456,7 @@ def test_build_sources_skips_market_discovery_sources_without_brave_key(
 
 
 def test_build_sources_appends_learned_ats_source_when_store_is_given(
+    store,
     fake_http, policy
 ):
     settings = Settings(
@@ -470,7 +468,6 @@ def test_build_sources_appends_learned_ats_source_when_store_is_given(
         policy=policy,
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
-    store = JobStore(":memory:")
 
     sources = build_sources(settings, fake_http, store=store)
 
@@ -481,7 +478,7 @@ def test_build_sources_appends_learned_ats_source_when_store_is_given(
     assert "GreenhouseSource" in kinds
 
 
-def test_build_sources_passes_learned_ats_allowlist_to_source(fake_http, policy):
+def test_build_sources_passes_learned_ats_allowlist_to_source(store, fake_http, policy):
     allowlisted_policy = dataclasses.replace(
         policy, learned_ats_allowlist=["ashby:acme"]
     )
@@ -494,7 +491,6 @@ def test_build_sources_passes_learned_ats_allowlist_to_source(fake_http, policy)
         policy=allowlisted_policy,
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
-    store = JobStore(":memory:")
 
     sources = build_sources(settings, fake_http, store=store)
 
@@ -504,6 +500,7 @@ def test_build_sources_passes_learned_ats_allowlist_to_source(fake_http, policy)
 
 
 def test_build_sources_skips_learned_ats_source_when_limit_is_zero(
+    store,
     fake_http, policy
 ):
     disabled_policy = dataclasses.replace(policy, max_learned_ats_boards_per_run=0)
@@ -516,7 +513,6 @@ def test_build_sources_skips_learned_ats_source_when_limit_is_zero(
         policy=disabled_policy,
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
-    store = JobStore(":memory:")
 
     sources = build_sources(settings, fake_http, store=store)
 
@@ -755,6 +751,7 @@ def test_build_sources_ignores_bad_direct_sources_on_disabled_market(
 
 
 def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg(
+    store,
     fake_http, monkeypatch, tmp_path
 ):
     monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
@@ -769,10 +766,8 @@ def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg
     monkeypatch.setenv("GEMINI_FREE_RPM", "10")
     monkeypatch.setenv("GEMINI_FREE_TPM", "250000")
     monkeypatch.setenv("GEMINI_FREE_RPD", "500")
-    monkeypatch.setenv("JOB_HUNTER_DB_PATH", str(tmp_path / "usage.sqlite3"))
 
     settings = load_settings(_REPO_CONFIG_PATH)
-    store = JobStore(str(tmp_path / "store.sqlite3"))
 
     sources = build_sources(settings, fake_http, store=store)
 

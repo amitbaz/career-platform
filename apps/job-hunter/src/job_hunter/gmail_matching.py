@@ -13,7 +13,7 @@ from job_hunter.gmail_models import (
 from job_hunter.normalize import canonicalize_url, normalize_text
 
 if TYPE_CHECKING:
-    from job_hunter.store import JobStore
+    from job_hunter.postgres_store import PostgresJobStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +62,7 @@ def _is_recent_company_match(row: dict[str, Any], sent_at: datetime) -> bool:
 
 
 def match_job(
-    store: JobStore, classification: GmailClassification, message: GmailMessage
+    store: PostgresJobStore, classification: GmailClassification, message: GmailMessage
 ) -> JobMatch:
     jobs = store.list_jobs_for_matching()
     job_urls = _message_urls(classification, message)

@@ -12,7 +12,6 @@ from job_hunter.gemini_usage import (
     estimate_input_tokens,
 )
 from job_hunter.models import GeminiQuotaSettings
-from job_hunter.store import JobStore
 
 MODEL = "gemini-3.6-flash"
 NOW = datetime(2026, 9, 1, 20, 0, 0, tzinfo=timezone.utc)  # 2026-09-01T20:00 UTC = 13:00 PDT
@@ -25,17 +24,12 @@ def _quota(**overrides) -> GeminiQuotaSettings:
 
 
 @pytest.fixture
-def store() -> JobStore:
-    return JobStore(":memory:")
-
-
-@pytest.fixture
-def tracker(store: JobStore) -> GeminiUsageTracker:
+def tracker(store) -> GeminiUsageTracker:
     return GeminiUsageTracker(store, _quota(), MODEL, run_id="run-1")
 
 
 def _record_attempts(
-    store: JobStore,
+    store,
     count: int,
     *,
     purpose: str = "gmail_semantic",
