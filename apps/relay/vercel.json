@@ -1,0 +1,4 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "ignoreCommand": "sh ../../scripts/vercel-ignore-build.sh . ':/package.json' ':/pnpm-lock.yaml' ':/pnpm-workspace.yaml' ':/supabase' ':/scripts/vercel-ignore-build.sh'"
+}
