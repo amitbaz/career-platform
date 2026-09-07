@@ -251,7 +251,7 @@ class GmailSyncService:
         self,
         message: GmailMessage,
         classification: GmailClassification,
-    ) -> tuple[GmailClassification, int | None]:
+    ) -> tuple[GmailClassification, str | None]:
         match = match_job(self.store, classification, message)
         if match.job_id is None or match.ambiguous:
             return replace(classification, kind="REVIEW_NEEDED"), None
@@ -263,7 +263,7 @@ class GmailSyncService:
         self,
         message: GmailMessage,
         classification: GmailClassification,
-        job_id: int | None,
+        job_id: str | None,
     ) -> None:
         self.store.save_application_event(
             job_id=job_id,

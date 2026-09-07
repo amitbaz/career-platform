@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen_parser = subparsers.add_parser(
         "generate-cover-letter", help="Generate (or resend) a cover letter for one job on demand"
     )
-    gen_parser.add_argument("--job-id", type=int, required=True)
+    gen_parser.add_argument("--job-id", type=str, required=True)
     gen_parser.add_argument("--config", default="config/search.yml", help="Path to search.yml")
 
     return parser

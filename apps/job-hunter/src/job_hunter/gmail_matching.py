@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class JobMatch:
-    job_id: int | None
+    job_id: str | None
     reason: str
     ambiguous: bool
 

@@ -34,7 +34,7 @@ def create_app(
         navigation_repository = GitHubArtifactNavigationRepository(state_loader)
     telegram = telegram or TelegramClient(settings.telegram_bot_token, None, http)
 
-    def _trigger_cover_letter_generation(job_id: int) -> None:
+    def _trigger_cover_letter_generation(job_id: str) -> None:
         try:
             trigger_repository_dispatch(
                 settings.github_repository,

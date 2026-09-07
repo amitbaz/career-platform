@@ -391,7 +391,7 @@ def cover_letter_output_dir(settings: Settings) -> Path:
 
 def generate_cover_letter_on_demand(
     settings: Settings,
-    job_id: int,
+    job_id: str,
     *,
     store: JobStore,
     gemini: GeminiClient,
@@ -447,7 +447,7 @@ def should_run_scheduled(now: datetime, timezone: str, scheduled_hour: int) -> b
 
 
 def _requeue_pending_delivery(
-    job_id: int,
+    job_id: str,
     store: JobStore,
     digest_items: list[DigestItem],
 ) -> None:
@@ -478,7 +478,7 @@ def _requeue_pending_delivery(
 
 
 def _evaluate_and_deliver_job(
-    job_id: int,
+    job_id: str,
     job: Job,
     candidate_context: CandidateContext,
     settings: Settings,
