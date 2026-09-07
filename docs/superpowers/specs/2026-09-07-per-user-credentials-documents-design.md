@@ -43,8 +43,8 @@ credentials, remove the four values from GitHub workflow configuration, and prov
 - Use the existing `source_documents` rows for CV and cover-letter text.
 - Store Gemini and Brave keys per user in Supabase Vault.
 - Add a minimal credential-management section to Relay's existing Profile view.
-- Load documents and provider keys from Supabase for both daily runs and on-demand cover-letter
-  generation.
+- Load documents and provider keys from Supabase for daily runs and on-demand cover-letter
+  generation, and load the same per-user Gemini key for Gmail sync.
 - Add a trusted-run claim to Job Hunter's short-lived per-user JWT.
 - Remove the four legacy variables from Job Hunter runtime loading, workflows, examples, and
   setup documentation.
@@ -183,21 +183,24 @@ The existing Profile view gains a compact Credentials section:
 This is management UI, not the onboarding flow owned by #78. It does not add provider education,
 quota configuration, model selection, or additional navigation.
 
-### Job Hunter runtime bundle
+### Job Hunter runtime configuration
 
 Job Hunter separates platform bootstrap settings from per-user runtime material. Environment
 loading continues to provide the user ID, Supabase URL, publishable key, signing key, Telegram,
 Gmail, and GitHub infrastructure values. After constructing the authenticated Postgres client,
-one runtime loader obtains:
+focused loaders obtain:
 
 - the user's latest `cv` document text;
 - the user's latest `cover_letter` document text;
 - the required Gemini key; and
 - the optional Brave key.
 
-The returned in-memory bundle supplies the existing evaluation, candidate-context,
-cover-letter, and search-source call sites. Daily execution and on-demand cover-letter generation
-must use the same loader so their configuration cannot drift.
+The main-settings loader combines documents and provider credentials for daily execution and
+on-demand cover-letter generation. Gmail sync loads the same Gemini credential without requiring
+CV or cover-letter data, since email classification does not consume those documents. All three
+entry points share one provider-credential loader so their key source and failure behavior cannot
+drift. Gmail client ID, client secret, and refresh token remain environment-backed and outside
+this issue.
 
 `AccessTokenMinter` adds the signed `job_hunter_runner: true` claim to tokens used by Job Hunter.
 All ordinary store requests continue under `role: authenticated` and existing RLS; only the
@@ -234,7 +237,8 @@ Telegram, GitHub dispatch, Supabase URL/publishable key, and signing-key setting
 3. Normal PostgREST reads load that user's search profile and `source_documents` through RLS.
 4. The runner-only RPC validates the signed claim and same-user ownership before decrypting the
    user's Gemini and optional Brave values from Vault.
-5. The runtime bundle is passed in memory to the existing consumers.
+5. The in-memory values are passed only to the consumers required by the selected command. Gmail
+   sync receives Gemini but does not require or receive the user's documents.
 
 At no point does the workflow choose among repository secrets by user. Multi-user selection and
 scheduling remain the responsibility of #76.
@@ -302,7 +306,8 @@ from GitHub or read back through Relay.
 
 - Runtime loading maps the latest CV and cover-letter rows plus Gemini and Brave credentials.
 - Missing required values fail before provider calls; missing Brave preserves fallback behavior.
-- Both daily and cover-letter entry points use the same loader.
+- Daily, Gmail-sync, and cover-letter entry points use the same provider-credential loader;
+  daily and cover-letter entry points also use the shared document loader.
 - Tokens contain the runner claim without changing `sub`, `role`, expiry, or rotation behavior.
 - Logs and raised errors contain no document text, provider keys, or access tokens.
 - Workflow assertions prove the four legacy variables are absent.
