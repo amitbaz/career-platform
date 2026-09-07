@@ -36,6 +36,11 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
+### Marketing and brand
+
+Read `docs/marketing-and-brand.md` before marketing, landing-page, or visual-identity work.
+It records agreed direction, exploratory proposals, and open decisions.
+
 ## Commands
 
 Run from the repository root:
