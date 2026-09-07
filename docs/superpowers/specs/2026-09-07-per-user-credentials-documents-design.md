@@ -101,7 +101,7 @@ Create `private.user_provider_credentials` with:
 
 - `user_id uuid not null references auth.users(id) on delete cascade`;
 - `provider text not null` constrained to `gemini` or `brave`;
-- `vault_secret_id uuid not null unique`;
+- `vault_secret_id uuid not null unique references vault.secrets(id) on delete cascade`;
 - `created_at timestamptz not null` and `updated_at timestamptz not null`; and
 - primary key `(user_id, provider)`.
 
@@ -110,6 +110,11 @@ The table lives outside the exposed `public` schema and receives no direct `anon
 secret names and descriptions must not contain email addresses, document text, key fragments,
 or other personal values.
 
+A private delete trigger removes the referenced Vault secret whenever a registry row is deleted,
+including deletion caused by the `auth.users` cascade. The foreign key handles the inverse
+direction, so deleting a Vault secret also removes its stale registry row. Both directions remain
+inside one database transaction.
+
 ### Public RPC boundary
 
 PostgREST-accessible functions provide the only credential operations:
@@ -117,8 +122,9 @@ PostgREST-accessible functions provide the only credential operations:
 - **Set or replace:** validate `auth.uid()`, the provider allowlist, a non-blank value, and a
   conservative maximum length; create or update the Vault secret and registry row in one
   transaction; return metadata only.
-- **Delete:** validate `auth.uid()`, remove that user's Vault secret and registry row in one
-  transaction, and behave idempotently when the provider is absent.
+- **Delete:** validate `auth.uid()`, remove that user's registry row and let the private cleanup
+  trigger remove its Vault secret in the same transaction; behave idempotently when the provider
+  is absent.
 - **Status:** return provider, configured state, and `updated_at` for the calling user. It must
   never join or query Vault's decrypted view.
 - **Runner retrieval:** require a non-null `auth.uid()` and boolean `job_hunter_runner` claim,
@@ -289,6 +295,7 @@ from GitHub or read back through Relay.
 - Missing, false, malformed, or forged runner claims are rejected.
 - A valid runner token for A returns A's keys and never B's.
 - Set, replace, and delete leave exactly one or zero matching Vault and registry rows as expected.
+- Deleting an owning user removes both registry rows and their referenced Vault secrets.
 - Failed writes leave neither orphaned Vault secrets nor registry rows.
 - Credential status contains no secret or Vault-decrypted field.
 - Existing document RLS continues to isolate A, B, and anonymous callers.
