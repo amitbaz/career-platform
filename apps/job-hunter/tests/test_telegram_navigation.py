@@ -122,9 +122,27 @@ def test_encode_callback_rejects_invalid_or_oversized_payload():
 
 def test_navigation_sort_key_is_score_then_company_title_job_id():
     items = [
-        DigestItem(3, "Beta", "Senior B", 90, "high_priority", "u", [], location="Remote"),
-        DigestItem(2, "Acme", "Senior Z", 90, "high_priority", "u", [], location="Berlin"),
-        DigestItem(1, "Acme", "Senior A", 90, "high_priority", "u", [], location="Berlin"),
-        DigestItem(4, "Acme", "Senior A", 80, "high_priority", "u", [], location="Berlin"),
+        DigestItem("3", "Beta", "Senior B", 90, "high_priority", "u", [], location="Remote"),
+        DigestItem("2", "Acme", "Senior Z", 90, "high_priority", "u", [], location="Berlin"),
+        DigestItem("1", "Acme", "Senior A", 90, "high_priority", "u", [], location="Berlin"),
+        DigestItem("4", "Acme", "Senior A", 80, "high_priority", "u", [], location="Berlin"),
     ]
-    assert [item.job_id for item in sorted(items, key=navigation_sort_key)] == [1, 2, 3, 4]
+    assert [item.job_id for item in sorted(items, key=navigation_sort_key)] == ["1", "2", "3", "4"]
+
+
+def test_navigation_sort_key_orders_deterministically_with_uuid_ids():
+    def _digest_item(job_id: str) -> DigestItem:
+        return DigestItem(
+            job_id,
+            "Acme",
+            "Dev",
+            90,
+            "high_priority",
+            "u",
+            [],
+            location="Berlin",
+        )
+
+    a = _digest_item("00000000-0000-0000-0000-0000000000aa")
+    b = _digest_item("00000000-0000-0000-0000-0000000000bb")
+    assert sorted([b, a], key=navigation_sort_key) == [a, b]

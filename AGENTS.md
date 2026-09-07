@@ -54,5 +54,6 @@ Job Hunter's Python environment is independent of pnpm. Install it with
 - Supabase migrations are platform-owned. Add new migrations under `supabase/migrations`, not
   inside an app.
 - No Turborepo/Nx. pnpm workspaces is deliberately the only monorepo tooling.
-- Paths are load-bearing: GitHub workflows use `defaults.run.working-directory: apps/job-hunter`
-  but `hashFiles`/`upload-artifact` paths stay repo-root relative.
+- Paths are load-bearing: GitHub workflows use `defaults.run.working-directory: apps/job-hunter`.
+  Neither Job Hunter workflow uploads or restores an artifact any more — Job Hunter's persistent
+  state lives in Postgres, not on the runner.

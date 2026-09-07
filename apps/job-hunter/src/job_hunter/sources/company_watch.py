@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 from job_hunter.fetching import extract_job_from_html, extract_job_page_links
 from job_hunter.models import Job
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 
 from .ashby import AshbySource
 from .base import logger
@@ -68,7 +68,7 @@ class CompanyWatchSource:
 
     def __init__(
         self,
-        store: JobStore,
+        store: PostgresJobStore,
         http,
         now: Callable[[], datetime] = utc_now,
     ) -> None:

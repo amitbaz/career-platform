@@ -39,11 +39,6 @@ from job_hunter.models import (
     RunSummary,
     Settings,
 )
-from job_hunter.navigation_store import (
-    attach_navigation_message_id,
-    create_navigation_session,
-    prune_navigation_sessions,
-)
 from job_hunter.pdf import render_cover_letter_pdf
 from job_hunter.ranking import rank_jobs, select_diverse_candidates
 from job_hunter.search_backend import build_search_backend
@@ -56,8 +51,8 @@ from job_hunter.sources import (
     build_brave_budget,
     build_sources,
 )
+from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.sources.learned_ats import LearnedAtsStats
-from job_hunter.store import JobStore
 from job_hunter.telegram import (
     TelegramClient,
     build_digest,
@@ -112,7 +107,7 @@ def _targeted_canonical_candidates(
 
 
 def _persisted_watch_target(
-    store: JobStore, company_name: str
+    store: PostgresJobStore, company_name: str
 ) -> AtsReference | None:
     """Return only a persisted, complete, supported ATS watch target."""
     watch = store.get_company_watch(company_name)
@@ -308,7 +303,7 @@ def _log_source_metrics(
         )
 
 
-def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: LearnedAtsStats) -> None:
+def _log_ats_registry_metrics(store: PostgresJobStore, discovery, learned_stats: LearnedAtsStats) -> None:
     """Log one final ats_registry line summarizing registry health this run."""
     rejected_boards = store.list_rejected_ats_boards()
     logger.info(
@@ -333,8 +328,8 @@ def _log_ats_registry_metrics(store: JobStore, discovery, learned_stats: Learned
 
 
 def _due_watch_state(
-    store: JobStore,
-) -> dict[int, tuple[str, str | None, int, str | None]]:
+    store: PostgresJobStore,
+) -> dict[str, tuple[str, str | None, int, str | None]]:
     """Snapshot due watch health so logs count persisted check outcomes only."""
     return {
         watch["id"]: (
@@ -348,8 +343,8 @@ def _due_watch_state(
 
 
 def _watch_check_outcomes(
-    store: JobStore,
-    before: dict[int, tuple[str, str | None, int, str | None]],
+    store: PostgresJobStore,
+    before: dict[str, tuple[str, str | None, int, str | None]],
 ) -> tuple[int, int]:
     """Return persisted successful/failed checks and newly applied pauses."""
     checks = 0
@@ -391,14 +386,14 @@ def _watch_promotion_state(watch) -> tuple[object, ...] | None:
 
 
 def cover_letter_output_dir(settings: Settings) -> Path:
-    return Path(settings.db_path).parent / "cover_letters"
+    return Path(settings.output_dir) / "cover_letters"
 
 
 def generate_cover_letter_on_demand(
     settings: Settings,
-    job_id: int,
+    job_id: str,
     *,
-    store: JobStore,
+    store: PostgresJobStore,
     gemini: GeminiClient,
     telegram: TelegramClient,
 ) -> bool:
@@ -452,8 +447,8 @@ def should_run_scheduled(now: datetime, timezone: str, scheduled_hour: int) -> b
 
 
 def _requeue_pending_delivery(
-    job_id: int,
-    store: JobStore,
+    job_id: str,
+    store: PostgresJobStore,
     digest_items: list[DigestItem],
 ) -> None:
     """Re-add a rediscovered job's digest entry if it was never delivered."""
@@ -483,11 +478,11 @@ def _requeue_pending_delivery(
 
 
 def _evaluate_and_deliver_job(
-    job_id: int,
+    job_id: str,
     job: Job,
     candidate_context: CandidateContext,
     settings: Settings,
-    store: JobStore,
+    store: PostgresJobStore,
     gemini: GeminiClient,
     digest_items: list[DigestItem],
     summary: RunSummary,
@@ -628,13 +623,12 @@ def run_pipeline(
     settings: Settings,
     *,
     sources=None,
-    store: JobStore | None = None,
+    store: PostgresJobStore,
     gemini: GeminiClient,
     telegram: TelegramClient | None = None,
     http: HttpClient | None = None,
 ) -> RunSummary:
     http = http or HttpClient()
-    store = store or JobStore(settings.db_path)
     try:
         backfilled = store.backfill_ats_identity()
         if backfilled:
@@ -648,7 +642,13 @@ def run_pipeline(
         logger.exception("manual company watch sync failed")
 
     search_breaker = CircuitBreaker(_SEARCH_FAILURE_THRESHOLD)
-    brave_budget = build_brave_budget(settings)
+    # Brave source-discovery needs a `SupabaseClient` to build its persisted
+    # budget (see `build_brave_budget`'s docstring). Rather than adding a
+    # separate `supabase_client` parameter callers would have to remember to
+    # pass, the client is derived from the `PostgresJobStore` this function
+    # is already given.
+    supabase_client = store.client
+    brave_budget = build_brave_budget(settings, supabase_client)
     query_date = datetime.now(ZoneInfo(settings.timezone)).date()
     base_sources = (
         sources
@@ -659,6 +659,8 @@ def run_pipeline(
             store=store,
             search_breaker=search_breaker,
             query_date=query_date,
+            brave_budget=brave_budget,
+            supabase_client=supabase_client,
         )
     )
     sources = [
@@ -861,9 +863,9 @@ def run_pipeline(
 
         if deliverable_items and supports_navigation:
             now = datetime.now(timezone.utc)
-            prune_navigation_sessions(store, now.isoformat())
+            store.prune_navigation_sessions(now.isoformat())
             session = _build_navigation_session(deliverable_items, now)
-            create_navigation_session(store, session)
+            store.create_navigation_session(session)
             text, keyboard = build_navigation_card(
                 session.cards[0],
                 session.session_id,
@@ -872,7 +874,7 @@ def run_pipeline(
             )
             message_id = interactive_sender(text, keyboard)
             if message_id is not None:
-                attach_navigation_message_id(store, session.session_id, str(message_id))
+                store.attach_navigation_message_id(session.session_id, str(message_id))
                 for card in session.cards:
                     store.mark_delivered(card.job_id, "telegram_message", str(message_id))
                     _bump_market_count(delivered_by_market, card.market_id)

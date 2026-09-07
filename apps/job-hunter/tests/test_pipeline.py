@@ -30,7 +30,6 @@ from job_hunter.models import (
 from job_hunter.pipeline import run_pipeline, should_run_scheduled
 from job_hunter.sources import GmailStagedSource, LearnedAtsSource
 from job_hunter.sources.company_watch import CompanyWatchSource
-from job_hunter.store import JobStore
 from job_hunter.telegram import build_digest, build_gemini_pause_warning, select_deliverable_items
 from job_hunter.watchlist import promote_company as persist_promoted_company
 from tests.market_fixtures import make_market_policy
@@ -109,6 +108,32 @@ class FakeGemini:
             return json.dumps(payload)
         self.cover_letter_calls += 1
         return "Dear Hiring Team,\n\nI would love to join Acme as Senior Product Engineer.\n\nBest,\nAmit"
+
+
+class _NetworkFreeHttp:
+    """An `HttpClient` stand-in that answers every request with "nothing found".
+
+    Used only to keep `test_run_pipeline_builds_brave_backed_source_when_configured`
+    from making real requests to Ashby/Greenhouse/DuckDuckGo/etc. That test's
+    assertion is about what `build_sources` constructs -- a `TargetedSearchSource`
+    -- not about what any of those sources actually discover, and
+    `discovery.collect_candidates` already treats a source that raises during
+    `discover()` as "no jobs from that source" (`except Exception: ... continue`),
+    so failing every real call here is equivalent to those sources finding
+    nothing, without depending on live external services or the real job data
+    that made `test_run_pipeline_builds_brave_backed_source_when_configured`
+    hit a `job_hunter_upsert_job` conflict when this test exercised the
+    Postgres store instead of the SQLite one it used to.
+    """
+
+    def get_json(self, url, **kwargs):
+        raise RuntimeError("network disabled in this test")
+
+    def get(self, url, **kwargs):
+        raise RuntimeError("network disabled in this test")
+
+    def post(self, url, **kwargs):
+        raise RuntimeError("network disabled in this test")
 
 
 class FakeTelegram:
@@ -392,7 +417,7 @@ def policy():
 
 
 @pytest.fixture
-def settings(tmp_path, policy):
+def settings(policy):
     return Settings(
         gemini_api_key="key",
         candidate_profile="profile",
@@ -404,7 +429,6 @@ def settings(tmp_path, policy):
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",
-        db_path=str(tmp_path / "state.sqlite3"),
     )
 
 
@@ -421,11 +445,10 @@ def test_canonical_search_sites_keeps_original_filter_order():
     assert sites.endswith(" OR careers")
 
 
-def test_pipeline_delivers_strong_match_and_dedupes_within_run(settings):
+def test_pipeline_delivers_strong_match_and_dedupes_within_run(store, settings):
     strong_job = _job()
     duplicate_job = _job()
     source = FakeSource([strong_job, duplicate_job])
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -445,9 +468,9 @@ def test_pipeline_delivers_strong_match_and_dedupes_within_run(settings):
 
 
 def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
+    store,
     settings, monkeypatch, caplog
 ):
-    store = JobStore(settings.db_path)
     gemini = FakeGemini(
         evaluation_payload=_evaluation_payload(
             {
@@ -533,7 +556,10 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
     row = store.get_company_watch("Acme")
     assert row is not None
     assert row["promotion_source"] == "automatic"
-    assert promotion_calls == [(1, 75)]
+    assert len(promotion_calls) == 1
+    promoted_job_id, promoted_threshold = promotion_calls[0]
+    assert promoted_threshold == 75
+    assert promoted_job_id == store.upsert_job(job)[0]
     assert summary.ready_to_apply == 1
     assert store.get_company_watch("Healthy Watch")["consecutive_failures"] == 0
     failing_watch = store.get_company_watch("Failing Watch")
@@ -546,9 +572,8 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
     assert "PRIVATE_GMAIL_BODY" not in caplog.text
 
 
-def test_pipeline_logs_when_match_score_is_capped(settings, caplog):
+def test_pipeline_logs_when_match_score_is_capped(store, settings, caplog):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini(
         evaluation_payload={
             "scores": {
@@ -589,12 +614,15 @@ def test_pipeline_logs_when_match_score_is_capped(settings, caplog):
             telegram=FakeTelegram(),
         )
 
-    assert "capped match score job_id=1 raw=80 effective=64 decision=skip" in caplog.text
+    job_id, _, _ = store.upsert_job(job)
+    assert (
+        f"capped match score job_id={job_id} raw=80 effective=64 decision=skip"
+        in caplog.text
+    )
 
 
-def test_pipeline_aggregates_untrusted_gmail_source_labels_in_logs(settings, caplog):
+def test_pipeline_aggregates_untrusted_gmail_source_labels_in_logs(store, settings, caplog):
     settings.dry_run = True
-    store = JobStore(settings.db_path)
     platform = "MODEL_PLATFORM\nPRIVATE_PLATFORM_SECRET"
     store.stage_inbound_job(
         "message-1",
@@ -628,9 +656,8 @@ def test_pipeline_aggregates_untrusted_gmail_source_labels_in_logs(settings, cap
     assert "PRIVATE_PLATFORM_SECRET" not in caplog.text
 
 
-def test_pipeline_counts_only_meaningful_company_watch_promotions(settings, caplog):
+def test_pipeline_counts_only_meaningful_company_watch_promotions(store, settings, caplog):
     settings.dry_run = True
-    store = JobStore(settings.db_path)
     watch_seeds = (
         ("Repeat", "automatic"),
         ("Manual", "manual"),
@@ -673,9 +700,8 @@ def test_pipeline_counts_only_meaningful_company_watch_promotions(settings, capl
     assert "companies_promoted=2" in caplog.text
 
 
-def test_pipeline_counts_a_failed_expired_watch_retry_as_a_new_pause(settings, caplog):
+def test_pipeline_counts_a_failed_expired_watch_retry_as_a_new_pause(store, settings, caplog):
     settings.dry_run = True
-    store = JobStore(settings.db_path)
     watch_id = store.upsert_company_watch(
         company_name="Retry Watch",
         careers_url="https://retry.test/careers",
@@ -711,8 +737,7 @@ def test_pipeline_counts_a_failed_expired_watch_retry_as_a_new_pause(settings, c
     assert "watch_paused=1" in caplog.text
 
 
-def test_pipeline_does_not_promote_possible_match(settings, monkeypatch):
-    store = JobStore(settings.db_path)
+def test_pipeline_does_not_promote_possible_match(store, settings, monkeypatch):
     gemini = FakeGemini(
         evaluation_payload=_evaluation_payload(
             {
@@ -755,15 +780,18 @@ def test_pipeline_does_not_promote_possible_match(settings, monkeypatch):
     )
 
     assert store.get_company_watch("Acme") is None
-    assert promotion_calls == [(1, 75)]
+    assert len(promotion_calls) == 1
+    promoted_job_id, promoted_threshold = promotion_calls[0]
+    assert promoted_threshold == 75
+    assert promoted_job_id == store.upsert_job(_job())[0]
     assert summary.possible_matches == 1
 
 
 def test_pipeline_passes_configured_package_threshold_to_promotion(
+    store,
     settings, monkeypatch
 ):
     settings.policy.thresholds["package"] = 95
-    store = JobStore(settings.db_path)
     promotion_calls = []
 
     def record_threshold(
@@ -798,9 +826,9 @@ def test_pipeline_passes_configured_package_threshold_to_promotion(
 
 
 def test_pipeline_isolates_company_watch_source_failure(
+    store,
     settings, monkeypatch
 ):
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     attempts = []
 
@@ -824,11 +852,10 @@ def test_pipeline_isolates_company_watch_source_failure(
     assert summary.errors == 0
 
 
-def test_pipeline_syncs_structured_manual_watch_seeds(settings):
+def test_pipeline_syncs_structured_manual_watch_seeds(store, settings):
     settings.policy.manual_company_watch = [
         CompanyWatchSeed(company_name="Manual Co")
     ]
-    store = JobStore(settings.db_path)
 
     run_pipeline(
         settings,
@@ -843,12 +870,11 @@ def test_pipeline_syncs_structured_manual_watch_seeds(settings):
     assert row["promotion_source"] == "manual"
 
 
-def test_pipeline_injects_resolver_for_direct_ats_canonical_metadata(settings):
+def test_pipeline_injects_resolver_for_direct_ats_canonical_metadata(store, settings):
     job = _job(
         source="remotive",
         url="https://jobs.lever.co/acme/job-1",
     )
-    store = JobStore(settings.db_path)
 
     run_pipeline(
         settings,
@@ -859,10 +885,10 @@ def test_pipeline_injects_resolver_for_direct_ats_canonical_metadata(settings):
         http=ExplodingHttp(),
     )
 
-    persisted = store._conn.execute(
-        "SELECT canonical_url, ats_provider, ats_board, ats_job_id "
-        "FROM jobs WHERE id = 1"
-    ).fetchone()
+    persisted = store.client.select(
+        "job_hunter_jobs",
+        params={"select": "canonical_url,ats_provider,ats_board,ats_job_id"},
+    )[0]
     assert persisted is not None
     assert persisted["canonical_url"] == "https://jobs.lever.co/acme/job-1"
     assert persisted["ats_provider"] == "lever"
@@ -871,6 +897,7 @@ def test_pipeline_injects_resolver_for_direct_ats_canonical_metadata(settings):
 
 
 def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
+    store,
     settings
 ):
     class Response:
@@ -901,7 +928,6 @@ def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
             raise AssertionError(f"unexpected GET {url}")
 
     http = TargetedSearchHttp()
-    store = JobStore(settings.db_path)
 
     run_pipeline(
         settings,
@@ -921,10 +947,11 @@ def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
         http=http,
     )
 
-    persisted = store._conn.execute(
-        "SELECT canonical_url FROM jobs WHERE id = 1"
-    ).fetchone()
-    assert persisted is not None
+    rows = store.client.select(
+        "job_hunter_jobs", params={"select": "canonical_url"}
+    )
+    assert len(rows) == 1
+    persisted = rows[0]
     assert persisted["canonical_url"] == "https://jobs.ashbyhq.com/acme/ats-1"
     search_calls = [
         kwargs["params"]["q"]
@@ -937,7 +964,7 @@ def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
     assert "site:jobs.ashbyhq.com" in search_calls[0]
 
 
-def test_pipeline_rejects_targeted_ats_result_for_wrong_company(settings):
+def test_pipeline_rejects_targeted_ats_result_for_wrong_company(store, settings):
     class Response:
         def __init__(self, *, url, text):
             self.url = url
@@ -961,7 +988,6 @@ def test_pipeline_rejects_targeted_ats_result_for_wrong_company(settings):
                 )
             raise AssertionError(f"unexpected GET {url}")
 
-    store = JobStore(settings.db_path)
 
     run_pipeline(
         settings,
@@ -981,10 +1007,10 @@ def test_pipeline_rejects_targeted_ats_result_for_wrong_company(settings):
         http=WrongCompanySearchHttp(),
     )
 
-    persisted = store._conn.execute(
-        "SELECT url, canonical_url, ats_provider, ats_board, ats_job_id "
-        "FROM jobs WHERE id = 1"
-    ).fetchone()
+    persisted = store.client.select(
+        "job_hunter_jobs",
+        params={"select": "url,canonical_url,ats_provider,ats_board,ats_job_id"},
+    )[0]
     assert persisted is not None
     assert persisted["url"] == "https://aggregator.test/jobs/1"
     assert persisted["canonical_url"] == "https://aggregator.test/jobs/1"
@@ -994,9 +1020,9 @@ def test_pipeline_rejects_targeted_ats_result_for_wrong_company(settings):
 
 
 def test_pipeline_counts_promotion_failure_but_continues_delivery(
+    store,
     settings, monkeypatch
 ):
-    store = JobStore(settings.db_path)
     telegram = FakeTelegram()
 
     def raise_promotion_failure(*args, **kwargs):
@@ -1027,9 +1053,9 @@ def test_pipeline_counts_promotion_failure_but_continues_delivery(
 
 
 def test_pipeline_marks_evaluation_attempted_but_not_evaluated_on_failure(
+    store,
     settings, monkeypatch
 ):
-    store = JobStore(settings.db_path)
 
     def raise_evaluation_failure(*args, **kwargs):
         raise RuntimeError("gemini evaluation exploded")
@@ -1053,9 +1079,8 @@ def test_pipeline_marks_evaluation_attempted_but_not_evaluated_on_failure(
     assert summary.evaluated == 0
 
 
-def test_pipeline_isolates_broken_source(settings):
+def test_pipeline_isolates_broken_source(store, settings):
     good_job = _job(source_job_id="job-2", company="Beta")
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1071,7 +1096,7 @@ def test_pipeline_isolates_broken_source(settings):
     assert store.count_jobs() == 1
 
 
-def test_pipeline_dry_run_persists_but_does_not_deliver(settings, policy):
+def test_pipeline_dry_run_persists_but_does_not_deliver(store, settings, policy):
     dry_settings = Settings(
         gemini_api_key=settings.gemini_api_key,
         candidate_profile=settings.candidate_profile,
@@ -1081,10 +1106,8 @@ def test_pipeline_dry_run_persists_but_does_not_deliver(settings, policy):
         policy=policy,
         gemini_quota=settings.gemini_quota,
         dry_run=True,
-        db_path=settings.db_path,
     )
     job = _job()
-    store = JobStore(dry_settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1097,8 +1120,7 @@ def test_pipeline_dry_run_persists_but_does_not_deliver(settings, policy):
     assert store.has_delivery(job_id) is False
 
 
-def test_pipeline_delivers_all_pending_gmail_reviews_in_one_message(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_delivers_all_pending_gmail_reviews_in_one_message(store, settings):
     first_event_id = _record_review_event(
         store,
         message_id="review-2",
@@ -1124,17 +1146,17 @@ def test_pipeline_delivers_all_pending_gmail_reviews_in_one_message(settings):
         "Open email: https://mail.google.com/mail/u/0/#all/thread-review-2"
     ]
     assert store.pending_review_events() == []
-    delivered = store._conn.execute(
-        "SELECT event_id, telegram_message_id FROM review_deliveries ORDER BY event_id"
-    ).fetchall()
-    assert [(row["event_id"], row["telegram_message_id"]) for row in delivered] == [
-        (first_event_id, "msg-1"),
-        (second_event_id, "msg-1"),
-    ]
+    delivered = store.client.select(
+        "job_hunter_review_deliveries",
+        params={"select": "event_id,telegram_message_id"},
+    )
+    assert {row["event_id"]: row["telegram_message_id"] for row in delivered} == {
+        first_event_id: "msg-1",
+        second_event_id: "msg-1",
+    }
 
 
-def test_pipeline_retries_gmail_reviews_after_a_failed_telegram_send(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_retries_gmail_reviews_after_a_failed_telegram_send(store, settings):
     event_id = _record_review_event(
         store,
         message_id="review-1",
@@ -1158,8 +1180,7 @@ def test_pipeline_retries_gmail_reviews_after_a_failed_telegram_send(settings):
     ]
 
 
-def test_pipeline_marks_each_review_chunk_before_retrying_partial_failure(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_marks_each_review_chunk_before_retrying_partial_failure(store, settings):
     first_event_id = _record_review_event(
         store,
         message_id="review-1",
@@ -1179,10 +1200,10 @@ def test_pipeline_marks_each_review_chunk_before_retrying_partial_failure(settin
     assert len(telegram.attempts) == 2
     assert all(len(message) <= 3900 for message in telegram.attempts)
     assert [row["id"] for row in store.pending_review_events()] == [second_event_id]
-    delivered = store._conn.execute(
-        "SELECT event_id FROM review_deliveries ORDER BY event_id"
-    ).fetchall()
-    assert [row["event_id"] for row in delivered] == [first_event_id]
+    delivered = store.client.select(
+        "job_hunter_review_deliveries", params={"select": "event_id"}
+    )
+    assert {row["event_id"] for row in delivered} == {first_event_id}
 
     run_pipeline(settings, sources=[], store=store, gemini=FakeGemini(), telegram=telegram)
 
@@ -1192,8 +1213,7 @@ def test_pipeline_marks_each_review_chunk_before_retrying_partial_failure(settin
     assert store.pending_review_events() == []
 
 
-def test_pipeline_sends_gmail_reviews_after_normal_job_delivery_without_scoring_them(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_sends_gmail_reviews_after_normal_job_delivery_without_scoring_them(store, settings):
     _record_review_event(
         store,
         message_id="review-1",
@@ -1222,8 +1242,7 @@ def test_pipeline_sends_gmail_reviews_after_normal_job_delivery_without_scoring_
     )
 
 
-def test_pipeline_evaluates_staged_gmail_job_through_normal_discovery(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_evaluates_staged_gmail_job_through_normal_discovery(store, settings):
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-1",
@@ -1256,14 +1275,16 @@ def test_pipeline_evaluates_staged_gmail_job_through_normal_discovery(settings):
     assert summary.possible_matches == 1
     assert gemini.eval_calls == 1
     assert store.count_jobs() == 1
-    job = store.get_job(1)
+    rows = store.client.select("job_hunter_jobs", params={"select": "id"})
+    assert len(rows) == 1
+    only_job_id = rows[0]["id"]
+    job = store.get_job(only_job_id)
     assert job is not None
     assert job.source == "gmail:linkedin"
     assert job.source_job_id == "linkedin:job-1"
 
 
-def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(store, settings):
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-1",
@@ -1292,7 +1313,10 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(set
         telegram=telegram,
     )
 
-    persisted_job = store.get_job(1)
+    rows = store.client.select("job_hunter_jobs", params={"select": "id"})
+    assert len(rows) == 1
+    only_job_id = rows[0]["id"]
+    persisted_job = store.get_job(only_job_id)
     assert persisted_job is not None
     assert persisted_job.source == "ashby"
     assert GmailStagedSource(store).discover() == []
@@ -1309,13 +1333,12 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(set
     assert store.count_jobs() == 1
 
 
-def test_pipeline_prefilters_non_matching_jobs(settings):
+def test_pipeline_prefilters_non_matching_jobs(store, settings):
     irrelevant_job = _job(
         source_job_id="job-3",
         title="Junior QA Tester",
         description="manual testing",
     )
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1334,9 +1357,8 @@ class ExplodingHttp:
         raise AssertionError(f"unexpected post to {url!r}")
 
 
-def test_pipeline_does_not_reenrich_job_with_existing_description(settings):
+def test_pipeline_does_not_reenrich_job_with_existing_description(store, settings):
     job = _job(url="https://acme.example/jobs/1")
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1352,9 +1374,8 @@ def test_pipeline_does_not_reenrich_job_with_existing_description(settings):
     assert summary.ready_to_apply == 1
 
 
-def test_pipeline_retries_failed_telegram_delivery_on_next_run(settings):
+def test_pipeline_retries_failed_telegram_delivery_on_next_run(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FlakyTelegram(fail_message_times=1)
 
@@ -1372,9 +1393,8 @@ def test_pipeline_retries_failed_telegram_delivery_on_next_run(settings):
     assert store.has_delivery(job_id, "telegram_message") is True
 
 
-def test_pipeline_retry_does_not_call_gemini_again(settings):
+def test_pipeline_retry_does_not_call_gemini_again(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FlakyTelegram(fail_message_times=1)
 
@@ -1389,9 +1409,8 @@ def test_pipeline_retry_does_not_call_gemini_again(settings):
     assert gemini.cover_letter_calls == 0
 
 
-def test_pipeline_no_duplicate_sends_after_successful_delivery(settings):
+def test_pipeline_no_duplicate_sends_after_successful_delivery(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1408,10 +1427,9 @@ def test_pipeline_no_duplicate_sends_after_successful_delivery(settings):
     assert gemini.cover_letter_calls == 0
 
 
-def test_pipeline_loads_candidate_context_once_without_logging_profile(settings, monkeypatch, caplog):
+def test_pipeline_loads_candidate_context_once_without_logging_profile(store, settings, monkeypatch, caplog):
     settings.candidate_profile = "SENSITIVE_PROFILE_TEXT"
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
     loaded = []
@@ -1434,9 +1452,8 @@ def test_pipeline_loads_candidate_context_once_without_logging_profile(settings,
     assert gemini.eval_calls == 1
 
 
-def test_pipeline_passes_loaded_preferences_into_discovery(settings, monkeypatch):
+def test_pipeline_passes_loaded_preferences_into_discovery(store, settings, monkeypatch):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
     captured = {}
@@ -1457,9 +1474,8 @@ def test_pipeline_passes_loaded_preferences_into_discovery(settings, monkeypatch
     assert captured["preferences"] == _candidate_context().preferences
 
 
-def test_pipeline_defers_evaluation_when_budget_exceeded(settings):
+def test_pipeline_defers_evaluation_when_budget_exceeded(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded())
     telegram = FakeTelegram()
 
@@ -1475,9 +1491,8 @@ def test_pipeline_defers_evaluation_when_budget_exceeded(settings):
     assert telegram.messages == []
 
 
-def test_pipeline_defers_evaluation_when_quota_paused(settings):
+def test_pipeline_defers_evaluation_when_quota_paused(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_quota_paused())
     telegram = FakeTelegram()
 
@@ -1490,10 +1505,10 @@ def test_pipeline_defers_evaluation_when_quota_paused(settings):
     assert summary.skipped == 0
 
 def test_pipeline_waits_and_retries_when_gemini_capacity_is_temporary(
+    store,
     settings, monkeypatch
 ):
     job = _job()
-    store = JobStore(settings.db_path)
     telegram = FakeTelegram()
 
     class TemporarilyLimitedGemini(FakeGemini):
@@ -1540,9 +1555,8 @@ def test_pipeline_waits_and_retries_when_gemini_capacity_is_temporary(
     assert gemini.eval_calls == 1
 
 
-def test_pipeline_defers_remaining_candidates_after_first_quota_exception(settings):
+def test_pipeline_defers_remaining_candidates_after_first_quota_exception(store, settings):
     jobs = _jobs_for_source("ashby", 3)
-    store = JobStore(settings.db_path)
     # Only the first job_evaluation call succeeds; every later one is blocked.
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded(), allow=1)
     telegram = FakeTelegram()
@@ -1559,8 +1573,7 @@ def test_pipeline_defers_remaining_candidates_after_first_quota_exception(settin
     assert gemini.eval_calls == 1
 
 
-def test_pipeline_retries_pending_evaluation_before_new_candidates(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_retries_pending_evaluation_before_new_candidates(store, settings):
     old_job = _job(source_job_id="deferred-job", company="Deferred Co")
     old_job_id, _, _ = store.upsert_job(old_job)
     store.enqueue_ai_work("job_evaluation", old_job_id)
@@ -1583,13 +1596,12 @@ def test_pipeline_retries_pending_evaluation_before_new_candidates(settings):
     assert gemini.eval_calls == 1
 
 
-def test_pipeline_delivered_card_warns_when_availability_check_fails(settings):
+def test_pipeline_delivered_card_warns_when_availability_check_fails(store, settings):
     class TimingOutHttp:
         def get(self, url, **kwargs):
             raise RuntimeError("timeout")
 
     job = _job(description="", url="https://example.test/jobs/1")
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = OrderedNavigatorTelegram()
 
@@ -1607,9 +1619,8 @@ def test_pipeline_delivered_card_warns_when_availability_check_fails(settings):
     assert "⚠️ Availability not verified - check the posting before applying" in cards[0]
 
 
-def test_pipeline_delivered_card_has_no_warning_for_a_normal_posting(settings):
+def test_pipeline_delivered_card_has_no_warning_for_a_normal_posting(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = OrderedNavigatorTelegram()
 
@@ -1620,8 +1631,7 @@ def test_pipeline_delivered_card_has_no_warning_for_a_normal_posting(settings):
     assert "⚠️" not in cards[0]
 
 
-def test_pipeline_retries_pending_evaluation_and_delivers_it(settings):
-    store = JobStore(settings.db_path)
+def test_pipeline_retries_pending_evaluation_and_delivers_it(store, settings):
     job = _job()
     job_id, _, _ = store.upsert_job(job)
     store.enqueue_ai_work("job_evaluation", job_id)
@@ -1638,7 +1648,7 @@ def test_pipeline_retries_pending_evaluation_and_delivers_it(settings):
     assert len(telegram.documents) == 0
 
 
-def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(settings):
+def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(store, settings):
     """A crash between save_evaluation and complete_ai_work can leave an
 
     already-evaluated-and-delivered job's `job_evaluation` row stuck pending.
@@ -1646,7 +1656,6 @@ def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(set
     it should just clear the stale row.
     """
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1691,9 +1700,8 @@ def _evaluation(job_id, *, decision="high_priority", total_score=90):
     )
 
 
-def test_generate_cover_letter_on_demand_calls_gemini_when_no_material(settings):
+def test_generate_cover_letter_on_demand_calls_gemini_when_no_material(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
     gemini = FakeGemini()
@@ -1710,9 +1718,8 @@ def test_generate_cover_letter_on_demand_calls_gemini_when_no_material(settings)
     assert store.has_delivery(job_id, "telegram_document")
 
 
-def test_generate_cover_letter_on_demand_resends_without_regenerating(settings):
+def test_generate_cover_letter_on_demand_resends_without_regenerating(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
     store.save_material(job_id, Material(job_id=job_id, cover_letter_text="Existing letter text"))
@@ -1728,22 +1735,24 @@ def test_generate_cover_letter_on_demand_resends_without_regenerating(settings):
     assert len(telegram.documents) == 1
 
 
-def test_generate_cover_letter_on_demand_missing_job_returns_false(settings):
-    store = JobStore(settings.db_path)
+def test_generate_cover_letter_on_demand_missing_job_returns_false(store, settings):
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
     delivered = job_hunter.pipeline.generate_cover_letter_on_demand(
-        settings, 999, store=store, gemini=gemini, telegram=telegram
+        settings,
+        "00000000-0000-0000-0000-000000000999",
+        store=store,
+        gemini=gemini,
+        telegram=telegram,
     )
 
     assert delivered is False
     assert len(telegram.documents) == 0
 
 
-def test_generate_cover_letter_on_demand_notifies_on_quota_block(settings):
+def test_generate_cover_letter_on_demand_notifies_on_quota_block(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
     gemini = RaisingGemini(raise_on_purpose="cover_letter", exception=_budget_exceeded())
@@ -1759,9 +1768,8 @@ def test_generate_cover_letter_on_demand_notifies_on_quota_block(settings):
     assert "quota" in telegram.messages[0].lower()
 
 
-def test_pipeline_defers_all_evaluations_when_context_load_is_quota_blocked(settings):
+def test_pipeline_defers_all_evaluations_when_context_load_is_quota_blocked(store, settings):
     jobs = _jobs_for_source("ashby", 2)
-    store = JobStore(settings.db_path)
     gemini = RaisingGemini(raise_on_purpose="candidate_context", exception=_budget_exceeded())
     telegram = FakeTelegram()
 
@@ -1778,9 +1786,8 @@ def test_pipeline_defers_all_evaluations_when_context_load_is_quota_blocked(sett
     assert gemini.eval_calls == 0
 
 
-def test_pipeline_evaluates_all_eligible_jobs_when_under_budget(settings):
+def test_pipeline_evaluates_all_eligible_jobs_when_under_budget(store, settings):
     jobs = _jobs_for_source("ashby", 18)
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1790,10 +1797,9 @@ def test_pipeline_evaluates_all_eligible_jobs_when_under_budget(settings):
     assert gemini.eval_calls == 18
 
 
-def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(settings, caplog):
+def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(store, settings, caplog):
     ashby_jobs = _jobs_for_source("ashby", 160)
     remotive_jobs = _jobs_for_source("remotive", 40)
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
@@ -1817,10 +1823,9 @@ def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(settings, caplog)
         "deferred_by_budget=100 quota_deferred=0"
     ) in caplog.text
 
-def test_pipeline_logs_profile_fallback_without_private_content(settings, caplog):
+def test_pipeline_logs_profile_fallback_without_private_content(store, settings, caplog):
     settings.candidate_profile = "PRIVATE_RESUME_TEXT"
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini(preference_payload="{not-json")
     telegram = FakeTelegram()
 
@@ -1834,11 +1839,10 @@ def test_pipeline_logs_profile_fallback_without_private_content(settings, caplog
     assert job.description not in caplog.text
 
 
-def test_pipeline_logs_per_market_metrics_and_bounds_fresh_gemini_calls(settings, caplog):
+def test_pipeline_logs_per_market_metrics_and_bounds_fresh_gemini_calls(store, settings, caplog):
     market_policy = make_market_policy()
     market_policy.max_jobs_per_run = 5
     settings.policy = market_policy
-    store = JobStore(settings.db_path)
     jobs = [
         _job(
             source_job_id=f"london-{index}",
@@ -1889,8 +1893,7 @@ class RoutingAtsHttp:
         raise RuntimeError(f"no fake response configured for {url}")
 
 
-def test_pipeline_logs_source_quality_and_ats_registry_metrics(settings, caplog):
-    store = JobStore(settings.db_path)
+def test_pipeline_logs_source_quality_and_ats_registry_metrics(store, settings, caplog):
     store.upsert_ats_board(
         provider="ashby",
         board_identifier="acme-ashby",
@@ -1987,9 +1990,8 @@ def test_targeted_canonical_search_stops_after_shared_breaker_opens():
     assert http.calls == 1
 
 
-def test_pipeline_sends_no_message_events_when_navigator_supported(settings):
+def test_pipeline_sends_no_message_events_when_navigator_supported(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     summary = _usage_summary()
     gemini = FakeGemini()
     gemini._tracker = FakeUsageTracker(summary)
@@ -2005,9 +2007,8 @@ def test_pipeline_sends_no_message_events_when_navigator_supported(settings):
     assert gemini._tracker.snapshot_calls == 1
 
 
-def test_pipeline_surfaces_evaluation_location_note_in_navigator_card(settings):
+def test_pipeline_surfaces_evaluation_location_note_in_navigator_card(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = OrderedNavigatorTelegram()
 
@@ -2018,9 +2019,8 @@ def test_pipeline_surfaces_evaluation_location_note_in_navigator_card(settings):
     assert "Note: Remote EU friendly" in card_events[-1]
 
 
-def test_pipeline_sends_gemini_pause_warning_as_last_message(settings):
+def test_pipeline_sends_gemini_pause_warning_as_last_message(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     summary = _usage_summary(provider_paused=True)
     gemini = FakeGemini()
     gemini._tracker = FakeUsageTracker(summary)
@@ -2033,9 +2033,8 @@ def test_pipeline_sends_gemini_pause_warning_as_last_message(settings):
     assert telegram.messages[-1] == expected_warning
 
 
-def test_pipeline_sends_no_warning_when_usage_is_healthy(settings):
+def test_pipeline_sends_no_warning_when_usage_is_healthy(store, settings):
     job = _job()
-    store = JobStore(settings.db_path)
     summary = _usage_summary()
     gemini = FakeGemini()
     gemini._tracker = FakeUsageTracker(summary)
@@ -2048,10 +2047,9 @@ def test_pipeline_sends_no_warning_when_usage_is_healthy(settings):
     assert len(telegram.messages) == 1
 
 
-def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(settings):
+def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(store, settings):
     """Many candidates deferred by quota this run must still yield one warning."""
     jobs = _jobs_for_source("ashby", 5)
-    store = JobStore(settings.db_path)
     # Only the first job_evaluation call succeeds; the other four are blocked
     # without a second wasted Gemini attempt (Task 8's short-circuit) — but
     # the run-completion summary still reports the day as budget-exhausted.
@@ -2071,9 +2069,8 @@ def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(s
     assert gemini._tracker.snapshot_calls == 1
 
 
-def test_pipeline_logs_structured_gemini_usage_line(settings, caplog):
+def test_pipeline_logs_structured_gemini_usage_line(store, settings, caplog):
     job = _job()
-    store = JobStore(settings.db_path)
     summary = _usage_summary(
         requests_today=21,
         rpd_percent=34.0,
@@ -2109,7 +2106,7 @@ def test_pipeline_logs_structured_gemini_usage_line(settings, caplog):
     assert "candidate_context:1" in caplog.text
 
 
-def test_pipeline_log_total_does_not_double_count_cached_tokens(settings, caplog):
+def test_pipeline_log_total_does_not_double_count_cached_tokens(store, settings, caplog):
     """Regression: cachedContentTokenCount is a subset of promptTokenCount.
 
     One real Gemini call: promptTokenCount=1000 (400 cached),
@@ -2119,7 +2116,6 @@ def test_pipeline_log_total_does_not_double_count_cached_tokens(settings, caplog
     cached portion would overcount by 32%.
     """
     job = _job()
-    store = JobStore(settings.db_path)
     summary = _usage_summary(
         requests_today=1,
         input_tokens_today=1000,
@@ -2142,10 +2138,9 @@ def test_pipeline_log_total_does_not_double_count_cached_tokens(settings, caplog
     assert log_total == summary.total_tokens_today == 1250
 
 
-def test_pipeline_logs_gemini_usage_even_in_dry_run(settings, caplog):
+def test_pipeline_logs_gemini_usage_even_in_dry_run(store, settings, caplog):
     dry_settings = dataclasses.replace(settings, dry_run=True)
     job = _job()
-    store = JobStore(dry_settings.db_path)
     summary = _usage_summary()
     gemini = FakeGemini()
     gemini._tracker = FakeUsageTracker(summary)
@@ -2157,10 +2152,9 @@ def test_pipeline_logs_gemini_usage_even_in_dry_run(settings, caplog):
     assert gemini._tracker.snapshot_calls == 1
 
 
-def test_pipeline_without_gemini_tracker_sends_no_usage_status(settings):
+def test_pipeline_without_gemini_tracker_sends_no_usage_status(store, settings):
     """Legacy/test gemini fakes without a tracker must not break or send usage."""
     job = _job()
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()  # no `_tracker` attribute at all
     telegram = FakeTelegram()
 
@@ -2171,16 +2165,25 @@ def test_pipeline_without_gemini_tracker_sends_no_usage_status(settings):
 
 
 def test_run_pipeline_forwards_store_to_build_sources_when_sources_not_given(
+    store,
     settings, monkeypatch
 ):
     import job_hunter.pipeline as pipeline_module
 
-    store = JobStore(settings.db_path)
     gemini = FakeGemini()
     telegram = FakeTelegram()
     captured = {}
 
-    def fake_build_sources(passed_settings, http, *, store=None, search_breaker=None, query_date=None):
+    def fake_build_sources(
+        passed_settings,
+        http,
+        *,
+        store=None,
+        search_breaker=None,
+        query_date=None,
+        brave_budget=None,
+        supabase_client=None,
+    ):
         captured["store"] = store
         return []
 
@@ -2189,6 +2192,66 @@ def test_run_pipeline_forwards_store_to_build_sources_when_sources_not_given(
     run_pipeline(settings, store=store, gemini=gemini, telegram=telegram)
 
     assert captured["store"] is store
+
+
+def test_run_pipeline_builds_brave_backed_source_when_configured(
+    store, tmp_path, monkeypatch
+):
+    """`run_pipeline` itself -- not `build_sources` called directly with a
+    client -- must produce a Brave-backed source when Brave is configured.
+
+    `test_sources.py::test_build_sources_uses_only_brave_for_metered_market_discovery`
+    already proves `build_sources` does the right thing given a client; it
+    would keep passing even if `run_pipeline` never threaded one through.
+    This test wraps the real `build_sources` to observe what `run_pipeline`
+    actually calls it with. It exercises the real Postgres-backed `store`
+    fixture (not a SQLite `JobStore`), because `run_pipeline` derives its
+    Supabase client from `store.client` when `store` is a
+    `PostgresJobStore` -- see issue #70 task 14a.
+
+    Uses `make_market_policy()` (not the module's plain `policy`/`settings`
+    fixtures) because `build_sources` only ever builds a `TargetedSearchSource`
+    when `generate_search_queries` has something to give it, which needs a
+    configured market with query templates -- the module's default `policy`
+    fixture has neither.
+    """
+    import job_hunter.pipeline as pipeline_module
+    from job_hunter.sources import build_sources as real_build_sources
+
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    settings = Settings(
+        gemini_api_key="key",
+        candidate_profile="profile",
+        cover_letter_template="template",
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        policy=make_market_policy(),
+        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        dry_run=False,
+        telegram_bot_token="token",
+        telegram_chat_id="chat",
+        output_dir=str(tmp_path),
+    )
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+    captured = {}
+
+    def capturing_build_sources(*args, **kwargs):
+        result = real_build_sources(*args, **kwargs)
+        captured["kinds"] = [type(s).__name__ for s in result]
+        return result
+
+    monkeypatch.setattr(pipeline_module, "build_sources", capturing_build_sources)
+
+    run_pipeline(
+        settings,
+        store=store,
+        gemini=gemini,
+        telegram=telegram,
+        http=_NetworkFreeHttp(),
+    )
+
+    assert "TargetedSearchSource" in captured.get("kinds", [])
 
 
 def test_capped_job_is_excluded_from_delivery():

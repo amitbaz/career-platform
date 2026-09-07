@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from job_hunter.canonical import parse_supported_ats_url
 from job_hunter.models import AtsReference, AtsRegistryEntry, Job
 from job_hunter.normalize import ats_board_key
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 
 _RECENTLY_ELIGIBLE_WINDOW = timedelta(days=30)
 
@@ -32,7 +32,7 @@ def extract_ats_reference(job: Job) -> AtsReference | None:
 
 
 def harvest_ats_board(
-    store: JobStore,
+    store: PostgresJobStore,
     job: Job,
     market_hint: str | None = None,
     denylist: frozenset[str] = frozenset(),

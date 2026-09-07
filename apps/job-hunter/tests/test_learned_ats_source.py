@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from job_hunter.sources.learned_ats import LearnedAtsSource, LearnedAtsStats
-from job_hunter.store import JobStore
 
 
 class _Response:
@@ -66,8 +65,7 @@ def _seed_board(store, provider, board_identifier, market_hint="berlin"):
     )
 
 
-def test_learned_ats_source_scans_due_boards_through_native_adapters():
-    store = JobStore(":memory:")
+def test_learned_ats_source_scans_due_boards_through_native_adapters(store):
     _seed_board(store, "ashby", "acme-ashby")
     _seed_board(store, "lever", "acme-lever")
     _seed_board(store, "greenhouse", "acme-greenhouse")
@@ -122,8 +120,7 @@ def test_learned_ats_source_scans_due_boards_through_native_adapters():
     )
 
 
-def test_learned_ats_source_isolates_a_failing_board_from_a_healthy_one():
-    store = JobStore(":memory:")
+def test_learned_ats_source_isolates_a_failing_board_from_a_healthy_one(store):
     _seed_board(store, "ashby", "broken-ashby")
     _seed_board(store, "lever", "healthy-lever")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -165,8 +162,7 @@ def test_learned_ats_source_isolates_a_failing_board_from_a_healthy_one():
     assert entries["healthy-lever"].last_job_count == 1
 
 
-def test_learned_ats_source_404_logs_compact_and_marks_board_permanent(caplog):
-    store = JobStore(":memory:")
+def test_learned_ats_source_404_logs_compact_and_marks_board_permanent(store, caplog):
     _seed_board(store, "lever", "dead-co")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(not_found_urls={"lever.co"})
@@ -190,8 +186,7 @@ def test_learned_ats_source_404_logs_compact_and_marks_board_permanent(caplog):
     assert entries["dead-co"].consecutive_failures == 1
 
 
-def test_learned_ats_source_unexpected_error_logs_exactly_one_full_traceback(caplog):
-    store = JobStore(":memory:")
+def test_learned_ats_source_unexpected_error_logs_exactly_one_full_traceback(store, caplog):
     _seed_board(store, "greenhouse", "flaky-co")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(fail_urls={"greenhouse.io"})
@@ -208,8 +203,7 @@ def test_learned_ats_source_unexpected_error_logs_exactly_one_full_traceback(cap
     assert len(traceback_records) == 1
 
 
-def test_learned_ats_source_deactivates_board_after_repeated_404s():
-    store = JobStore(":memory:")
+def test_learned_ats_source_deactivates_board_after_repeated_404s(store):
     _seed_board(store, "lever", "dead-co")
     _seed_board(store, "lever", "healthy-co")
     base = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -243,13 +237,12 @@ def test_learned_ats_source_deactivates_board_after_repeated_404s():
     assert due_identifiers == {"healthy-co"}
 
 
-def test_learned_ats_source_never_deactivates_board_after_repeated_transient_errors():
+def test_learned_ats_source_never_deactivates_board_after_repeated_transient_errors(store):
     # Mirror image of test_learned_ats_source_deactivates_board_after_repeated_404s:
     # repeated *transient* (non-404) errors must never deactivate a board.
     # This is the test that would fail if `permanent` were ever hardcoded or
     # inverted for the unexpected-error path instead of being threaded
     # through as `is_stale_board_error(exc)`.
-    store = JobStore(":memory:")
     _seed_board(store, "greenhouse", "flaky-co")
     base = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(fail_urls={"flaky-co"})
@@ -268,8 +261,7 @@ def test_learned_ats_source_never_deactivates_board_after_repeated_transient_err
     assert due_identifiers == {"flaky-co"}
 
 
-def test_learned_ats_source_rejects_jobgether_shaped_board_and_drops_its_jobs():
-    store = JobStore(":memory:")
+def test_learned_ats_source_rejects_jobgether_shaped_board_and_drops_its_jobs(store):
     _seed_board(store, "lever", "jobgether")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     postings = _lever_postings(2, "jobgether") + _lever_postings(
@@ -291,8 +283,7 @@ def test_learned_ats_source_rejects_jobgether_shaped_board_and_drops_its_jobs():
     assert store.list_due_ats_boards(later) == []
 
 
-def test_learned_ats_source_keeps_scanning_veeva_shaped_board_with_no_markers():
-    store = JobStore(":memory:")
+def test_learned_ats_source_keeps_scanning_veeva_shaped_board_with_no_markers(store):
     _seed_board(store, "lever", "veeva")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     postings = _lever_postings(21, "veeva")
@@ -311,8 +302,7 @@ def test_learned_ats_source_keeps_scanning_veeva_shaped_board_with_no_markers():
     assert due == {"veeva"}
 
 
-def test_learned_ats_source_survives_one_stray_third_party_posting():
-    store = JobStore(":memory:")
+def test_learned_ats_source_survives_one_stray_third_party_posting(store):
     _seed_board(store, "lever", "mostly-clean")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     postings = _lever_postings(19, "mostly-clean") + _lever_postings(
@@ -331,8 +321,7 @@ def test_learned_ats_source_survives_one_stray_third_party_posting():
     assert due == {"mostly-clean"}
 
 
-def test_learned_ats_source_refuses_denylisted_board_without_scanning():
-    store = JobStore(":memory:")
+def test_learned_ats_source_refuses_denylisted_board_without_scanning(store):
     _seed_board(store, "lever", "jobgether")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(responses={"lever.co": _lever_postings(10, "jobgether")})
@@ -355,8 +344,7 @@ def test_learned_ats_source_refuses_denylisted_board_without_scanning():
     assert store.list_due_ats_boards(now) == []
 
 
-def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run():
-    store = JobStore(":memory:")
+def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run(store):
     _seed_board(store, "lever", "jobgether")
     base = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     postings = _lever_postings(8, "jobgether", _JOBGETHER_PHRASING)
@@ -384,10 +372,9 @@ def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run(
     assert http.calls[calls_after_first_run:] == []
 
 
-def test_learned_ats_source_survives_a_posting_with_no_description():
+def test_learned_ats_source_survives_a_posting_with_no_description(store):
     # An ATS returning an explicit null body yields Job.description None;
     # detection must not turn that into a source-wide crash.
-    store = JobStore(":memory:")
     _seed_board(store, "greenhouse", "null-body-co")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(
@@ -417,8 +404,7 @@ def test_learned_ats_source_survives_a_posting_with_no_description():
     assert source.stats.boards_successful == 1
 
 
-def test_learned_ats_source_matches_denylist_entry_case_insensitively():
-    store = JobStore(":memory:")
+def test_learned_ats_source_matches_denylist_entry_case_insensitively(store):
     _seed_board(store, "lever", "JobGether")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(responses={"lever.co": _lever_postings(10, "JobGether")})
@@ -438,10 +424,9 @@ def test_learned_ats_source_matches_denylist_entry_case_insensitively():
     assert source.stats.boards_rejected == 1
 
 
-def test_learned_ats_source_denylisted_board_does_not_consume_a_scan_slot():
+def test_learned_ats_source_denylisted_board_does_not_consume_a_scan_slot(store):
     # With limit=1, a denylisted board must not be the one board the run
     # spends its single slot on -- the legitimate board still gets scanned.
-    store = JobStore(":memory:")
     _seed_board(store, "lever", "aaa-denylisted")
     _seed_board(store, "lever", "zzz-legit")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -462,8 +447,7 @@ def test_learned_ats_source_denylisted_board_does_not_consume_a_scan_slot():
     assert source.stats.boards_rejected == 1
 
 
-def test_learned_ats_source_keeps_an_allowlisted_board_detection_would_reject():
-    store = JobStore(":memory:")
+def test_learned_ats_source_keeps_an_allowlisted_board_detection_would_reject(store):
     _seed_board(store, "lever", "clientco")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(
@@ -486,10 +470,9 @@ def test_learned_ats_source_keeps_an_allowlisted_board_detection_would_reject():
     assert store.list_rejected_ats_boards() == []
 
 
-def test_learned_ats_source_logs_the_verdict_it_overrode(caplog):
+def test_learned_ats_source_logs_the_verdict_it_overrode(store, caplog):
     # The operator overrode a verdict, so the verdict must stay visible --
     # otherwise the allowlist entry can never be shown to be unnecessary.
-    store = JobStore(":memory:")
     _seed_board(store, "lever", "clientco")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(
@@ -513,8 +496,7 @@ def test_learned_ats_source_logs_the_verdict_it_overrode(caplog):
     assert "third_party_listing" in kept[0]
 
 
-def test_learned_ats_source_heals_an_already_rejected_allowlisted_board():
-    store = JobStore(":memory:")
+def test_learned_ats_source_heals_an_already_rejected_allowlisted_board(store):
     _seed_board(store, "lever", "clientco")
     rejected_at = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     store.reject_ats_board(
@@ -544,8 +526,7 @@ def test_learned_ats_source_heals_an_already_rejected_allowlisted_board():
     assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["clientco"]
 
 
-def test_learned_ats_source_logs_the_reason_it_cleared_when_healing(caplog):
-    store = JobStore(":memory:")
+def test_learned_ats_source_logs_the_reason_it_cleared_when_healing(store, caplog):
     _seed_board(store, "lever", "clientco")
     rejected_at = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     store.reject_ats_board(
@@ -573,8 +554,7 @@ def test_learned_ats_source_logs_the_reason_it_cleared_when_healing(caplog):
     assert "9/10 postings (90%)" in recovered[0]
 
 
-def test_learned_ats_source_healing_ignores_a_board_that_is_not_allowlisted():
-    store = JobStore(":memory:")
+def test_learned_ats_source_healing_ignores_a_board_that_is_not_allowlisted(store):
     _seed_board(store, "lever", "jobgether")
     rejected_at = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     store.reject_ats_board(
@@ -599,8 +579,7 @@ def test_learned_ats_source_healing_ignores_a_board_that_is_not_allowlisted():
     assert [e.board_identifier for e in store.list_rejected_ats_boards()] == ["jobgether"]
 
 
-def test_learned_ats_source_allowlist_matches_the_board_key_case_insensitively():
-    store = JobStore(":memory:")
+def test_learned_ats_source_allowlist_matches_the_board_key_case_insensitively(store):
     _seed_board(store, "lever", "ClientCo")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(
@@ -621,11 +600,10 @@ def test_learned_ats_source_allowlist_matches_the_board_key_case_insensitively()
     assert source.stats.boards_rejected == 0
 
 
-def test_learned_ats_source_allowlist_wins_over_the_denylist_branch():
+def test_learned_ats_source_allowlist_wins_over_the_denylist_branch(store):
     # The config load refuses a board named by both lists, so this can only
     # be reached by constructing the source directly -- the guard keeps the
     # invariant local to the code that depends on it.
-    store = JobStore(":memory:")
     _seed_board(store, "lever", "clientco")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(responses={"lever.co": _lever_postings(10, "clientco")})
@@ -645,9 +623,8 @@ def test_learned_ats_source_allowlist_wins_over_the_denylist_branch():
     assert source.stats.boards_rejected == 0
 
 
-def test_learned_ats_source_still_rejects_an_aggregator_that_is_not_allowlisted():
+def test_learned_ats_source_still_rejects_an_aggregator_that_is_not_allowlisted(store):
     # Regression on #17: an empty or unrelated allowlist changes nothing.
-    store = JobStore(":memory:")
     _seed_board(store, "lever", "jobgether")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(
@@ -669,12 +646,11 @@ def test_learned_ats_source_still_rejects_an_aggregator_that_is_not_allowlisted(
     assert [e.board_identifier for e in store.list_rejected_ats_boards()] == ["jobgether"]
 
 
-def test_learned_ats_source_allowlist_does_not_override_health_backoff():
+def test_learned_ats_source_allowlist_does_not_override_health_backoff(store):
     # An allowlisted board that 404s is paused by health backoff, not
     # rejected as an aggregator: a single permanent failure below the
     # strike threshold pauses the board for 24h rather than deactivating
     # it, and health backoff is not a verdict the allowlist may reverse.
-    store = JobStore(":memory:")
     _seed_board(store, "lever", "clientco")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     http = RoutingHttp(not_found_urls={"lever.co"})

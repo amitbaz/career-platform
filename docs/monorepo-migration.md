@@ -143,7 +143,14 @@ Check: push to `main`, then confirm one successful deployment per project.
 
 ---
 
-## 5. Job Hunter state artifact — one-shot
+## 5. Job Hunter state artifact — one-shot (SUPERSEDED)
+
+> **Superseded by issue #70.** Job Hunter's state is in Postgres now; `scripts/restore_state.py`
+> and the `job-hunter-state` artifact are both deleted, so there is nothing to seed and this
+> step cannot be performed. The one-time carry-over of existing history is the data migration
+> in `apps/job-hunter/scripts/migrate_sqlite_to_postgres.py` — see the cutover runbook in
+> `apps/job-hunter/README.md`. The rest of this section is kept as a record of what was
+> planned.
 
 `scripts/restore_state.py` restores `var/job_hunter.sqlite3` from the *current* repository's
 latest `job-hunter-state` artifact. That artifact history lives on `amitbaz/job-hunter-bot`,

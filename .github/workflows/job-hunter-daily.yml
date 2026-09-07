@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: job-hunter-state
   cancel-in-progress: false
@@ -25,12 +24,6 @@ jobs:
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
       - run: pip install -e .
-      - name: Restore prior state
-        continue-on-error: true
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/restore_state.py --repo "$GH_REPO" --token "$GH_TOKEN" --dest var/job_hunter.sqlite3
       - name: Sync Gmail intelligence
         continue-on-error: true
         timeout-minutes: 20
@@ -44,6 +37,10 @@ jobs:
           GEMINI_FREE_TPM: ${{ vars.GEMINI_FREE_TPM }}
           GEMINI_FREE_RPD: ${{ vars.GEMINI_FREE_RPD }}
           GEMINI_RUN_ID: ${{ github.run_id }}
+          JOB_HUNTER_USER_ID: ${{ secrets.JOB_HUNTER_USER_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SIGNING_KEY_B64: ${{ secrets.SUPABASE_SIGNING_KEY_B64 }}
         run: python -m job_hunter sync-gmail
       - name: Run job hunter
         env:
@@ -59,11 +56,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CANDIDATE_PROFILE_B64: ${{ secrets.CANDIDATE_PROFILE_B64 }}
           COVER_LETTER_TEMPLATE_B64: ${{ secrets.COVER_LETTER_TEMPLATE_B64 }}
+          JOB_HUNTER_USER_ID: ${{ secrets.JOB_HUNTER_USER_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SIGNING_KEY_B64: ${{ secrets.SUPABASE_SIGNING_KEY_B64 }}
         run: python -m job_hunter run
-      - name: Upload state artifact
-        if: always() && hashFiles('apps/job-hunter/var/job_hunter.sqlite3') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: job-hunter-state
-          path: apps/job-hunter/var/job_hunter.sqlite3
-          retention-days: 90

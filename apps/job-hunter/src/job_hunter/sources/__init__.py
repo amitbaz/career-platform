@@ -11,10 +11,10 @@ from job_hunter.search_backend import BraveSearchBackend
 from job_hunter.search_budget import (
     BraveRequestBudget,
     SearchUsageLedger,
-    brave_queries_available_today,
     split_queries_for_brave,
 )
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
+from job_hunter.supabase_client import SupabaseClient
 
 from .arbeitnow import ArbeitnowSource
 from .ashby import AshbySource
@@ -88,12 +88,24 @@ def _brave_monthly_query_limit() -> int:
     return value
 
 
-def build_brave_budget(settings: Settings) -> BraveRequestBudget | None:
-    """Build the run's shared persisted Brave budget when Brave is configured."""
+def build_brave_budget(
+    settings: Settings, client: SupabaseClient | None
+) -> BraveRequestBudget | None:
+    """Build the run's shared persisted Brave budget when Brave is configured.
+
+    `SearchUsageLedger` is Postgres-backed (issue #70 task 12), so building a
+    budget needs a `SupabaseClient`. `run_pipeline` derives one from the
+    `PostgresJobStore` it is given (issue #70 task 14b). `client` stays
+    optional because `build_sources` is also called directly by tests that
+    have no client; passing `None` disables Brave search (as if it were
+    unconfigured) rather than crashing.
+    """
+    if client is None:
+        return None
     if not os.environ.get("BRAVE_SEARCH_API_KEY"):
         return None
     return BraveRequestBudget(
-        SearchUsageLedger(settings.db_path),
+        SearchUsageLedger(client),
         monthly_limit=_brave_monthly_query_limit(),
     )
 
@@ -127,10 +139,11 @@ def build_sources(
     settings: Settings,
     http,
     *,
-    store: JobStore | None = None,
+    store: PostgresJobStore | None = None,
     search_breaker: CircuitBreaker | None = None,
     query_date: date | None = None,
     brave_budget: BraveRequestBudget | None = None,
+    supabase_client: SupabaseClient | None = None,
 ) -> list[JobSource]:
     _validate_direct_sources(settings.policy.markets)
     queries = generate_search_queries(settings.policy, query_date)
@@ -138,7 +151,7 @@ def build_sources(
     targeted_sources: list[JobSource] = []
 
     if brave_api_key:
-        budget = brave_budget or build_brave_budget(settings)
+        budget = brave_budget or build_brave_budget(settings, supabase_client)
         if budget is not None:
             available_today = budget.available_today()
             discovery_allowance = budget.discovery_allowance()

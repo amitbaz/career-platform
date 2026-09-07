@@ -48,7 +48,7 @@ def parse_callback(data: str) -> tuple[str, str, int] | None:
     return parts[0], parts[1], index
 
 
-def navigation_sort_key(item: DigestItem) -> tuple[int, str, str, int]:
+def navigation_sort_key(item: DigestItem) -> tuple[int, str, str, str]:
     return (-item.score, (item.company or "").lower(), (item.title or "").lower(), item.job_id)
 
 

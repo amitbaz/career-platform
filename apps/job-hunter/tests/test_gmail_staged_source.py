@@ -1,11 +1,9 @@
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.models import Job
 from job_hunter.sources import GmailStagedSource
-from job_hunter.store import JobStore
 
 
-def test_staged_source_returns_stable_gmail_job_identity(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_staged_source_returns_stable_gmail_job_identity(store, tmp_path):
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-123",
@@ -35,8 +33,7 @@ def test_staged_source_returns_stable_gmail_job_identity(tmp_path):
     assert job.remote is True
 
 
-def test_same_canonical_url_already_materialized_by_public_source_is_not_emitted(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_same_canonical_url_already_materialized_by_public_source_is_not_emitted(store, tmp_path):
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-123",
@@ -60,8 +57,7 @@ def test_same_canonical_url_already_materialized_by_public_source_is_not_emitted
     assert GmailStagedSource(store).discover() == []
 
 
-def test_same_identity_already_materialized_by_public_source_is_not_emitted(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_same_identity_already_materialized_by_public_source_is_not_emitted(store, tmp_path):
     store.stage_inbound_job(
         "message-1",
         "linkedin:job-123",

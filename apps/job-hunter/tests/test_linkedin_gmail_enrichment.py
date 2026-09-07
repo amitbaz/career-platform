@@ -9,7 +9,6 @@ from job_hunter.gmail_linkedin_cleanup import release_legacy_blank_linkedin_jobs
 from job_hunter.gmail_models import ExtractedJob, GmailMessage
 from job_hunter.gmail_sync import GmailSyncService
 from job_hunter.models import Evaluation, Job
-from job_hunter.store import JobStore
 
 
 NOW = datetime(2026, 9, 1, 10, tzinfo=UTC)
@@ -133,7 +132,7 @@ def test_linkedin_candidate_key_uses_job_id_from_tracking_url_without_semantic_i
     assert source_candidate_key(job) == "id:linkedin:4461012343"
 
 
-def _record_alert(store: JobStore, message_id: str) -> None:
+def _record_alert(store, message_id: str) -> None:
     store.record_gmail_message(
         message_id=message_id,
         thread_id=f"thread-{message_id}",
@@ -147,7 +146,7 @@ def _record_alert(store: JobStore, message_id: str) -> None:
 
 
 def _seed_linkedin_candidate(
-    store: JobStore,
+    store,
     *,
     message_id: str,
     key: str,
@@ -200,8 +199,7 @@ def _seed_linkedin_candidate(
     return job_id
 
 
-def test_legacy_blank_linkedin_cleanup_releases_only_safe_blank_artifacts(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_legacy_blank_linkedin_cleanup_releases_only_safe_blank_artifacts(store, tmp_path):
     legacy_job_id = _seed_linkedin_candidate(
         store,
         message_id="4461012343",
@@ -236,15 +234,14 @@ def test_legacy_blank_linkedin_cleanup_releases_only_safe_blank_artifacts(tmp_pa
     assert store.get_job(dependent_job_id) is not None
     remaining_messages = {
         row["source_message_id"]
-        for row in store._conn.execute(
-            "SELECT source_message_id FROM inbound_job_candidates"
+        for row in store.client.select(
+            "job_hunter_inbound_job_candidates", params={"select": "source_message_id"}
         )
     }
     assert remaining_messages == {"4461012344", "4461012345"}
 
 
-def test_legacy_sign_in_linkedin_cleanup_releases_safe_poisoned_artifact(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_legacy_sign_in_linkedin_cleanup_releases_safe_poisoned_artifact(store, tmp_path):
     job_id = _seed_linkedin_candidate(
         store,
         message_id="4461012350",
@@ -262,8 +259,7 @@ def test_legacy_sign_in_linkedin_cleanup_releases_safe_poisoned_artifact(tmp_pat
     assert store.get_job(job_id) is None
 
 
-def test_legacy_sign_in_linkedin_cleanup_preserves_dependent_artifact(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_legacy_sign_in_linkedin_cleanup_preserves_dependent_artifact(store, tmp_path):
     job_id = _seed_linkedin_candidate(
         store,
         message_id="4461012351",
@@ -282,8 +278,7 @@ def test_legacy_sign_in_linkedin_cleanup_preserves_dependent_artifact(tmp_path):
     assert store.get_job(job_id) is not None
 
 
-def test_legacy_sign_in_linkedin_cleanup_preserves_nonempty_company(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_legacy_sign_in_linkedin_cleanup_preserves_nonempty_company(store, tmp_path):
     job_id = _seed_linkedin_candidate(
         store,
         message_id="4461012352",
@@ -301,8 +296,7 @@ def test_legacy_sign_in_linkedin_cleanup_preserves_nonempty_company(tmp_path):
     assert store.get_job(job_id) is not None
 
 
-def test_writable_sync_reopens_completed_backfill_after_blank_linkedin_cleanup(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_writable_sync_reopens_completed_backfill_after_blank_linkedin_cleanup(store, tmp_path):
     _seed_linkedin_candidate(
         store,
         message_id="4461012343",
@@ -331,8 +325,7 @@ def test_writable_sync_reopens_completed_backfill_after_blank_linkedin_cleanup(t
     assert store.has_processed_gmail_message("4461012343") is False
 
 
-def test_dry_run_does_not_release_legacy_blank_linkedin_state(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_dry_run_does_not_release_legacy_blank_linkedin_state(store, tmp_path):
     _seed_linkedin_candidate(
         store,
         message_id="4461012343",

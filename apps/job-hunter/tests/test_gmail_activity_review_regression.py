@@ -9,7 +9,6 @@ from job_hunter.gmail_models import (
 )
 from job_hunter.gmail_sync import GmailSyncService, build_backfill_query
 from job_hunter.models import Job
-from job_hunter.store import JobStore
 
 
 NOW = datetime(2026, 9, 1, 12, tzinfo=UTC)
@@ -81,8 +80,7 @@ def test_backfill_query_uses_only_employment_specific_offer_terms():
     assert " coding challenge\" offer}" not in query
 
 
-def test_unresolved_lifecycle_persists_original_event_type(tmp_path, monkeypatch):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_unresolved_lifecycle_persists_original_event_type(store, tmp_path, monkeypatch):
     message = GmailMessage(
         message_id="unresolved-interview",
         thread_id="thread-unresolved-interview",
@@ -110,16 +108,20 @@ def test_unresolved_lifecycle_persists_original_event_type(tmp_path, monkeypatch
         message, dry_run=False
     )
 
-    event = store._conn.execute(
-        "SELECT job_id, event_type FROM application_events WHERE source_message_id = ?",
-        (message.message_id,),
-    ).fetchone()
+    events = store.client.select(
+        "job_hunter_application_events",
+        params={
+            "source_message_id": f"eq.{message.message_id}",
+            "select": "job_id,event_type",
+        },
+    )
+    assert len(events) == 1
+    event = events[0]
     assert result.kind == "REVIEW_NEEDED"
     assert (event["job_id"], event["event_type"]) == (None, "INTERVIEW")
 
 
-def test_low_confidence_lifecycle_persists_original_event_type(tmp_path, monkeypatch):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_low_confidence_lifecycle_persists_original_event_type(store, tmp_path, monkeypatch):
     job_id, _, _ = store.upsert_job(
         Job(source="test", title="Frontend Engineer", company="Acme")
     )
@@ -150,16 +152,20 @@ def test_low_confidence_lifecycle_persists_original_event_type(tmp_path, monkeyp
         message, dry_run=False
     )
 
-    event = store._conn.execute(
-        "SELECT job_id, event_type FROM application_events WHERE source_message_id = ?",
-        (message.message_id,),
-    ).fetchone()
+    events = store.client.select(
+        "job_hunter_application_events",
+        params={
+            "source_message_id": f"eq.{message.message_id}",
+            "select": "job_id,event_type",
+        },
+    )
+    assert len(events) == 1
+    event = events[0]
     assert result.kind == "REVIEW_NEEDED"
     assert (event["job_id"], event["event_type"]) == (job_id, "INTERVIEW")
 
 
-def test_pending_review_events_are_derived_from_linkage_and_confidence(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_pending_review_events_are_derived_from_linkage_and_confidence(store, tmp_path):
     job_id, _, _ = store.upsert_job(
         Job(source="test", title="Frontend Engineer", company="Acme")
     )

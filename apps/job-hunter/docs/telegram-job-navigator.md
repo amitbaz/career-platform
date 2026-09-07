@@ -4,20 +4,21 @@ The bot delivers matching jobs as one interactive Telegram card instead of one l
 
 ## Current architecture
 
-The scheduled job-search pipeline still runs in GitHub Actions and SQLite remains the source of truth.
+The scheduled job-search pipeline runs in GitHub Actions and Postgres (the shared Supabase
+project) is the source of truth. The webhook reads live Postgres through
+`PostgresNavigationRepository`, whose store is wrapped in `DryRunStore` so the internet-facing
+webhook process cannot write — reads pass through, writes are silently discarded. That guards
+against a future webhook edit corrupting state, not against cross-user exposure: row-level
+security, scoped by a per-user token, already prevents that.
 
 ```text
 GitHub Actions cron
         |
         | discover / evaluate
         v
-SQLite: var/job_hunter.sqlite3
-        |
-        | uploaded after each run
-        v
-GitHub Actions artifact: job-hunter-state
+Postgres: shared Supabase project (job_hunter_* tables)
         ^
-        | restored, mutated, re-uploaded
+        | PostgresJobStore, per-user ES256 token, RLS-scoped
         |
 Telegram "Gen CL" tap
         |
@@ -42,10 +43,10 @@ Vercel Python/Flask Function
 NavigationSessionRepository
         |
         v
-GitHubArtifactNavigationRepository
+PostgresNavigationRepository
         |
         v
-latest SQLite artifact (read-only)
+DryRunStore(PostgresJobStore)  -- reads live, writes discarded
         |
         v
 Telegram editMessageText
@@ -64,9 +65,9 @@ class NavigationSessionRepository(Protocol):
     def get_session(self, session_id: str) -> NavigationSession | None: ...
 ```
 
-Today the concrete repository is `GitHubArtifactNavigationRepository`, which downloads the latest `job-hunter-state` artifact and reads the SQLite snapshot read-only.
-
-This boundary is intentional: when the bot moves navigation state to Supabase, the webhook can switch to `SupabaseNavigationRepository` without changing Telegram callback payloads, job-card rendering, or Previous/Next behavior.
+Today the concrete repository is `PostgresNavigationRepository`, which reads live Postgres
+through a `PostgresJobStore` wrapped in `DryRunStore` (built lazily, at most once, on first real
+use — so a missing Supabase env var surfaces at `/health` rather than at import time).
 
 ## Vercel deployment
 
@@ -119,13 +120,17 @@ Set these as **server-side Vercel environment variables**:
 TELEGRAM_BOT_TOKEN=<same bot token used by the daily runner>
 TELEGRAM_WEBHOOK_SECRET=<random URL-safe secret>
 GITHUB_REPOSITORY=amitbaz/career-platform
-GITHUB_STATE_TOKEN=<repository-scoped token with Actions read access>
 GITHUB_DISPATCH_TOKEN=<repository-scoped token with permission to trigger repository_dispatch>
-GITHUB_STATE_ARTIFACT_NAME=job-hunter-state
-GITHUB_STATE_CACHE_DIR=/tmp/job-hunter-state
+JOB_HUNTER_USER_ID=<UUID of the platform user the webhook acts for>
+SUPABASE_URL=<base URL of the Supabase project>
+SUPABASE_PUBLISHABLE_KEY=<Supabase project's publishable API key>
+SUPABASE_SIGNING_KEY_B64=<base64-encoded private ES256 JWK>
 ```
 
-The last two have defaults in code and may be omitted unless the artifact name/cache path is customized.
+All eight are required. `create_app()` builds its Supabase client lazily so a missing variable
+does not fail the whole app at import time — `/health` reports HTTP 503 with the exact names of
+whichever variables are missing, never their values. `/telegram/webhook` itself still fails fast
+on a missing variable, since accepting a callback it cannot serve is worse than refusing it.
 
 The webhook does **not** need:
 
@@ -139,7 +144,10 @@ GMAIL_CLIENT_SECRET
 GMAIL_REFRESH_TOKEN
 ```
 
-`GITHUB_STATE_TOKEN` must remain server-side. Do not put it in Telegram callback data, URLs, logs, or browser-exposed environment variables.
+`GITHUB_DISPATCH_TOKEN` and `SUPABASE_SIGNING_KEY_B64` must remain server-side. Do not put either
+in Telegram callback data, URLs, logs, or browser-exposed environment variables.
+`SUPABASE_SIGNING_KEY_B64` in particular can mint a token for any user — it is the platform's
+most sensitive secret.
 
 Generate a webhook secret locally, for example:
 
@@ -211,27 +219,27 @@ Jobs are ordered by:
 
 Navigation does not wrap at the first or last job.
 
-## Artifact synchronization window
+## Session lookup
 
-The daily pipeline stores the navigation session in SQLite before sending the Telegram card, but `job-hunter-state` is uploaded only when the GitHub Actions workflow reaches its artifact-upload step.
-
-A user can therefore press Next immediately after receiving the card while the newest session is not yet in the latest downloadable artifact. In that case the webhook responds:
+The webhook reads the navigation session directly from Postgres on every callback — there is no
+artifact to wait for, so a session written by the daily pipeline is visible to the webhook
+immediately. The "still syncing" response is now only a defensive path for a genuinely missing or
+not-yet-visible session (a `None` result from `get_session`), not the routine race it used to be
+against a slow artifact upload:
 
 ```text
 Job list is still syncing. Try again shortly.
 ```
 
-Retrying after the workflow finishes reads the new session. No stale session is silently substituted.
-
-Navigation sessions remain in SQLite for 30 days and are pruned by later pipeline runs.
+Navigation sessions remain in Postgres for 30 days and are pruned by later pipeline runs.
 
 ## Failure behavior
 
 - Wrong Telegram secret: HTTP 403 before storage access.
 - Invalid JSON: HTTP 400.
 - Non-callback Telegram updates: ignored with HTTP 200.
-- GitHub/artifact failure: callback says `Could not load this job list right now.`.
-- Missing new session: callback says `Job list is still syncing. Try again shortly.`.
+- Postgres/lookup failure: callback says `Could not load this job list right now.`.
+- Missing session: callback says `Job list is still syncing. Try again shortly.`.
 - Expired session: callback says `This job list has expired.`.
 - Telegram edit failure: callback says `Could not update this job right now.`.
 
@@ -240,7 +248,7 @@ Valid Telegram requests are acknowledged with HTTP 200 after application-level f
 ## Existing bot behavior preserved
 
 - GitHub Actions remains the scheduler.
-- SQLite remains the source of truth.
+- Postgres remains the source of truth.
 - Deliverability remains score `> 60` plus the current decision allowlist.
 - Cover letters are no longer generated automatically; tapping Gen CL on a job's card
   triggers generation (or resends an already-generated letter) for that job only.
@@ -248,98 +256,20 @@ Valid Telegram requests are acknowledged with HTTP 200 after application-level f
 - A successful card marks all represented jobs as `telegram_message` delivered.
 - The bot still sends nothing when a run has no new/pending deliverable jobs.
 - `Apply` does not submit or mark an application.
-- No Supabase runtime dependency is introduced by this deployment.
 
-# Planned Supabase migration
+## Supabase migration (completed)
 
-This section is the durable migration record. Do not skip directly to the final architecture; migrate one boundary at a time so current feature work remains unblocked.
+The webhook originally read navigation state from the `job-hunter-state` GitHub Actions artifact
+via `GitHubArtifactNavigationRepository`. That migration is done: the concrete repository is now
+`PostgresNavigationRepository`, reading live Postgres (the shared Supabase project) through a
+`DryRunStore`-wrapped `PostgresJobStore`, as described in "Current architecture" and "Storage
+boundary" above. `GITHUB_STATE_TOKEN`, `GITHUB_STATE_ARTIFACT_NAME`, and
+`GITHUB_STATE_CACHE_DIR` no longer exist as webhook configuration; see "Configure production
+environment variables" for the current required set.
 
-## Phase A — now: Vercel + GitHub artifact + SQLite
-
-```text
-GitHub Actions -> SQLite -> job-hunter-state
-                           ^
-                           |
-Telegram -> Vercel -> GitHubArtifactNavigationRepository
-```
-
-This is the current supported design.
-
-## Phase B — bot begins writing shared state to Supabase
-
-Migrate bot persistence incrementally. Jobs, evaluations, application events, and navigation sessions do not all need to move in one release.
-
-When Telegram navigation sessions are reliably written to Supabase, add:
-
-```text
-SupabaseNavigationRepository.get_session(session_id)
-```
-
-It must satisfy the existing `NavigationSessionRepository` contract.
-
-A temporary dual-write period is acceptable during migration if needed, but the webhook should have one explicitly configured read source at a time. Avoid a permanent SQLite-then-Supabase fallback because it can hide failed migrations and stale state.
-
-## Phase C — Supabase becomes navigation source of truth
-
-Switch the Vercel webhook from:
-
-```text
-GitHubArtifactNavigationRepository
-```
-
-to:
-
-```text
-SupabaseNavigationRepository
-```
-
-At that point:
-
-- remove GitHub artifact reads from the webhook;
-- remove `GITHUB_STATE_TOKEN`, `GITHUB_STATE_ARTIFACT_NAME`, and `GITHUB_STATE_CACHE_DIR` from the Vercel deployment;
-- keep Telegram callback data unchanged;
-- keep `telegram_navigation.py` unchanged;
-- keep card rendering and Previous/Next behavior unchanged.
-
-This is why the repository interface exists now.
-
-## Phase D — optional move to Supabase Edge Functions
-
-Once the callback runtime no longer needs Python/SQLite artifact access, evaluate whether the thin Telegram HTTP adapter should move from Vercel to a Supabase Edge Function.
-
-That move is **optional**, not a requirement of using Supabase. Keeping the webhook on Vercel is valid if it remains simpler operationally.
-
-If the adapter moves later, the conceptual flow becomes:
-
-```text
-Telegram
-   |
-   v
-Supabase Edge Function
-   |
-   v
-Supabase Postgres
-   ^
-   |
-Job Hunter Bot + Interviewer App
-```
-
-Make that decision based on deployment ownership, observability, latency and cost—not merely because the data is in Supabase.
-
-## Future migration checklist
-
-Before switching the webhook to Supabase:
-
-1. Define the canonical Supabase navigation-session schema.
-2. Decide whether session cards are normalized rows or a JSON snapshot.
-3. Add migration/dual-write tests from SQLite to Supabase.
-4. Implement `SupabaseNavigationRepository` behind the existing protocol.
-5. Verify read consistency and session expiry semantics.
-6. Cut the Vercel webhook to the Supabase repository explicitly.
-7. Remove artifact credentials only after production verification.
-8. Separately decide whether Vercel remains the HTTP runtime or an Edge Function is preferable.
-
-The Interviewer App can share the same Supabase ecosystem without sharing deployment/runtime code with the Telegram webhook.
+A future move of the thin Telegram HTTP adapter from Vercel to a Supabase Edge Function remains
+possible but is not planned work — evaluate it on deployment ownership, observability, latency,
+and cost if it comes up, not merely because the data already lives in Supabase.
 
 ## Troubleshooting
 
@@ -377,11 +307,16 @@ and `pyproject.toml` still defines Flask in the `webhook` optional dependency.
 
 ### `/health` works but navigation fails
 
-Check the Vercel runtime logs and verify `GITHUB_STATE_TOKEN` has access to Actions artifacts in the private repository.
+Check the Vercel runtime logs and confirm all four Supabase variables (`JOB_HUNTER_USER_ID`,
+`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`) are set correctly on the
+Vercel project — `/health` reports 503 with the exact missing names if any are absent, but a
+wrong (not merely missing) value will pass that check and still fail navigation.
 
 ### New card says it is still syncing
 
-Wait until the daily GitHub Actions run has uploaded `job-hunter-state`, then press the button again. This is expected only during the short artifact synchronization window.
+This should be rare now that the webhook reads Postgres directly rather than a periodically
+uploaded artifact. Retrying the button should succeed within moments; if it persists, check
+Postgres connectivity and Supabase project status rather than waiting on a GitHub Actions run.
 
 ### Telegram sends 403
 

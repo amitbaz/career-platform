@@ -22,7 +22,7 @@ from job_hunter.models import CandidatePreferences, Job, SearchPolicy
 from job_hunter.normalize import canonicalize_url
 from job_hunter.prefilter import prefilter_job
 from job_hunter.ranking import rank_jobs, select_diverse_candidates
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ class DiscoveryStats:
 
 @dataclass(slots=True)
 class DiscoveryResult:
-    eligible: list[tuple[int, Job]]
-    rediscovered_job_ids: list[int]
+    eligible: list[tuple[str, Job]]
+    rediscovered_job_ids: list[str]
     stats: DiscoveryStats
 
 
@@ -225,7 +225,7 @@ def _bump(counts: dict[str, int], key: str) -> None:
 
 
 def _harvest_ats_board_safely(
-    store: JobStore,
+    store: PostgresJobStore,
     job: Job,
     market_hint: str | None = None,
     denylist: frozenset[str] = frozenset(),
@@ -282,7 +282,7 @@ def _format_source_contribution(per_source: dict[str, int]) -> str:
 
 def collect_candidates(
     sources: list,
-    store: JobStore,
+    store: PostgresJobStore,
     http: HttpClient,
     policy: SearchPolicy,
     resolver: CanonicalResolver | None = None,
@@ -330,8 +330,8 @@ def collect_candidates(
     unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
     stats.unique = len(unique_jobs)
 
-    prefiltered: list[tuple[int, Job]] = []
-    rediscovered_job_ids: list[int] = []
+    prefiltered: list[tuple[str, Job]] = []
+    rediscovered_job_ids: list[str] = []
 
     for job in unique_jobs:
         observed_market_id = _cheap_market_attribution(job, policy)
@@ -385,7 +385,7 @@ def collect_candidates(
     # at zero network cost, so they are never gated by this shortlist -- and
     # never consume a shortlist slot either, since they're filtered out
     # before the slot count is applied below.
-    shortlisted_ids: set[int] = set()
+    shortlisted_ids: set[str] = set()
     if resolver is not None and prefiltered:
         shortlist_limit = max(
             0,
@@ -425,8 +425,8 @@ def collect_candidates(
             shortlist = needing_resolution_ranked[:shortlist_limit]
         shortlisted_ids = {item[0] for item in shortlist}
 
-    eligible: list[tuple[int, Job]] = []
-    eligible_job_ids: set[int] = set()
+    eligible: list[tuple[str, Job]] = []
+    eligible_job_ids: set[str] = set()
 
     for job_id, job in prefiltered:
         if resolver is not None and job.url:

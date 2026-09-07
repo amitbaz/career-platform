@@ -6,7 +6,6 @@ import pytest
 from job_hunter.candidate_context import get_candidate_context
 from job_hunter.gemini_usage import GeminiUsageTracker
 from job_hunter.models import GeminiQuotaSettings, SearchPolicy
-from job_hunter.store import JobStore
 
 
 def _policy() -> SearchPolicy:
@@ -51,9 +50,9 @@ class _InvalidContextGemini:
         return "not-json"
 
 
-def test_candidate_context_fallback_exposes_source_and_sanitized_error(caplog):
+def test_candidate_context_fallback_exposes_source_and_sanitized_error(store, caplog):
     profile = "VERY_PRIVATE_PROFILE_MARKER"
-    context = get_candidate_context(profile, _policy(), _InvalidContextGemini(), JobStore(":memory:"))
+    context = get_candidate_context(profile, _policy(), _InvalidContextGemini(), store)
 
     assert context.source == "fallback_error"
     assert context.load_error == "ValueError"
@@ -62,12 +61,11 @@ def test_candidate_context_fallback_exposes_source_and_sanitized_error(caplog):
     assert "not-json" not in caplog.text
 
 
-def test_rolling_rpm_pressure_is_temporary_capacity_not_daily_exhaustion():
+def test_rolling_rpm_pressure_is_temporary_capacity_not_daily_exhaustion(store):
     gemini_usage = importlib.import_module("job_hunter.gemini_usage")
     temporary_capacity = getattr(gemini_usage, "GeminiTemporaryCapacity", None)
     assert temporary_capacity is not None
 
-    store = JobStore(":memory:")
     quota = GeminiQuotaSettings(rpm=15, tpm=250000, rpd=500)
     tracker = GeminiUsageTracker(store, quota, "gemini-test", run_id="run-1")
     now = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)

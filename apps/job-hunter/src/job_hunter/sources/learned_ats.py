@@ -10,7 +10,7 @@ from job_hunter.aggregator_detection import evaluate_board
 from job_hunter.ats_registry import select_ats_boards
 from job_hunter.models import Job
 from job_hunter.normalize import ats_board_key
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import PostgresJobStore
 
 from .ashby import AshbySource
 from .base import is_stale_board_error, logger
@@ -60,7 +60,7 @@ class LearnedAtsSource:
 
     def __init__(
         self,
-        store: JobStore,
+        store: PostgresJobStore,
         http,
         *,
         limit: int,

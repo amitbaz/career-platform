@@ -23,8 +23,26 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Generate a throwaway signing key
+        working-directory: .
+        run: bash supabase/local-signing-key.sh
+      - name: Start Supabase
+        working-directory: .
+        run: supabase start
       - run: pip install -e '.[test,webhook]'
-      - run: pytest -q
+      - name: Run the test suite
+        working-directory: .
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          export SUPABASE_TEST_URL="$API_URL"
+          export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+          # The keys file is an array; the minter wants the single JWK object.
+          export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
+          cd apps/job-hunter
+          pytest -q
 
   isolation:
     # Proves a per-user token cannot cross users, against real policies on a

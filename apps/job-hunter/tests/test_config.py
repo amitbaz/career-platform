@@ -111,7 +111,6 @@ def test_load_gmail_settings_does_not_require_candidate_profile(monkeypatch):
     monkeypatch.delenv("CANDIDATE_PROFILE_B64", raising=False)
     settings = load_gmail_settings()
     assert settings.client_id == "client"
-    assert settings.db_path == "var/job_hunter.sqlite3"
 
 
 def test_load_gmail_settings_requires_refresh_token(monkeypatch):

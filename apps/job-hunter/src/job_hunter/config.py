@@ -34,10 +34,7 @@ class WebhookSettings:
     telegram_bot_token: str
     telegram_webhook_secret: str
     github_repository: str
-    github_state_token: str
     github_dispatch_token: str
-    github_state_artifact_name: str = "job-hunter-state"
-    github_state_cache_dir: str = "/tmp/job-hunter-state"
 
 
 @dataclass(slots=True, frozen=True)
@@ -70,7 +67,6 @@ def load_gmail_settings() -> GmailSettings:
             rpd=_require_positive_int_env("GEMINI_FREE_RPD"),
         ),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
-        db_path=os.environ.get("JOB_HUNTER_DB_PATH", "var/job_hunter.sqlite3"),
     )
 
 
@@ -148,7 +144,7 @@ def load_settings(config_path: Path) -> Settings:
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
-        db_path=os.environ.get("JOB_HUNTER_DB_PATH", "var/job_hunter.sqlite3"),
+        output_dir=os.environ.get("JOB_HUNTER_OUTPUT_DIR", "var"),
     )
 
 
@@ -157,14 +153,7 @@ def load_webhook_settings() -> WebhookSettings:
         telegram_bot_token=_require_env("TELEGRAM_BOT_TOKEN"),
         telegram_webhook_secret=_require_env("TELEGRAM_WEBHOOK_SECRET"),
         github_repository=_require_env("GITHUB_REPOSITORY"),
-        github_state_token=_require_env("GITHUB_STATE_TOKEN"),
         github_dispatch_token=_require_env("GITHUB_DISPATCH_TOKEN"),
-        github_state_artifact_name=os.environ.get(
-            "GITHUB_STATE_ARTIFACT_NAME", "job-hunter-state"
-        ),
-        github_state_cache_dir=os.environ.get(
-            "GITHUB_STATE_CACHE_DIR", "/tmp/job-hunter-state"
-        ),
     )
 
 

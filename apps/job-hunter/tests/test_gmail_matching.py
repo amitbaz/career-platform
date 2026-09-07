@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 from job_hunter.gmail_matching import derive_application_state, match_job
 from job_hunter.gmail_models import GmailClassification, GmailMessage
 from job_hunter.models import Job
-from job_hunter.store import JobStore
 
 
 _SENT_AT = datetime(2026, 8, 31, 12, tzinfo=timezone.utc)
@@ -35,7 +34,7 @@ def _classification(**overrides) -> GmailClassification:
     return GmailClassification(**values)
 
 
-def _job(store: JobStore, **overrides) -> int:
+def _job(store, **overrides) -> int:
     values = {
         "source": "lever",
         "source_job_id": None,
@@ -48,8 +47,7 @@ def _job(store: JobStore, **overrides) -> int:
     return job_id
 
 
-def test_exact_canonical_url_beats_company_title(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_exact_canonical_url_beats_company_title(store, tmp_path):
     url_job_id = _job(
         store,
         source_job_id="url-job",
@@ -81,8 +79,7 @@ def test_exact_canonical_url_beats_company_title(tmp_path):
     )
 
 
-def test_source_job_id_is_second_priority(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_source_job_id_is_second_priority(store, tmp_path):
     source_id_job_id = _job(
         store,
         source_job_id="job-42",
@@ -113,8 +110,7 @@ def test_source_job_id_is_second_priority(tmp_path):
     )
 
 
-def test_company_and_normalized_title_matches_when_unique(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_company_and_normalized_title_matches_when_unique(store, tmp_path):
     job_id = _job(
         store,
         source_job_id="job-1",
@@ -135,15 +131,14 @@ def test_company_and_normalized_title_matches_when_unique(tmp_path):
     )
 
 
-def test_company_only_recent_match_requires_single_candidate(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_company_only_recent_match_requires_single_candidate(store, tmp_path):
     job_id = _job(store, source_job_id="job-1", company="Acme")
     first_seen_at = (_SENT_AT - timedelta(days=120)).isoformat()
-    store._conn.execute(
-        "UPDATE jobs SET first_seen_at = ?, last_seen_at = ? WHERE id = ?",
-        (first_seen_at, first_seen_at, job_id),
+    store.client.update(
+        "job_hunter_jobs",
+        {"first_seen_at": first_seen_at, "last_seen_at": first_seen_at},
+        params={"id": f"eq.{job_id}"},
     )
-    store._conn.commit()
 
     result = match_job(store, _classification(company="  acme "), _message())
 
@@ -154,8 +149,7 @@ def test_company_only_recent_match_requires_single_candidate(tmp_path):
     )
 
 
-def test_ambiguous_company_match_returns_no_job(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_ambiguous_company_match_returns_no_job(store, tmp_path):
     _job(store, source_job_id="job-1", company="Acme")
     _job(store, source_job_id="job-2", company="Acme")
 

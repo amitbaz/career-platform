@@ -1,115 +1,64 @@
-from pathlib import Path
-
-import pytest
-
-from job_hunter.github_state import ArtifactStateSnapshot
-from job_hunter.models import NavigationCard, NavigationSession
-from job_hunter.navigation_store import create_navigation_session
-from job_hunter.store import JobStore
+from job_hunter.navigation_repository import PostgresNavigationRepository
 
 
-class FakeStateLoader:
-    def __init__(self, snapshot=None, error=None):
-        self.snapshot = snapshot
+class FakeStore:
+    def __init__(self, session=None, error=None):
+        self.session = session
         self.error = error
-        self.calls = 0
+        self.calls = []
 
-    def load_latest(self):
-        self.calls += 1
+    def get_navigation_session(self, session_id):
+        self.calls.append(session_id)
         if self.error is not None:
             raise self.error
-        return self.snapshot
+        return self.session
 
 
-def _snapshot_with_session(tmp_path: Path):
-    db = tmp_path / "job_hunter.sqlite3"
-    with JobStore(db) as store:
-        create_navigation_session(
-            store,
-            NavigationSession(
-                session_id="session-1",
-                cards=[
-                    NavigationCard(
-                        1,
-                        "Senior Frontend Developer",
-                        "Example GmbH",
-                        "Berlin",
-                        87,
-                        "https://example.test/job/1",
-                    )
-                ],
-                telegram_message_id="42",
-                created_at="2026-09-01T10:00:00+00:00",
-                expires_at="2099-01-01T00:00:00+00:00",
-            ),
-        )
-    return ArtifactStateSnapshot(7, db, "2026-09-01T10:00:00Z")
+def test_repository_delegates_to_the_store():
+    fake = FakeStore(session="a-session")
+    repository = PostgresNavigationRepository(lambda: fake)
+
+    result = repository.get_session("session-1")
+
+    assert result == "a-session"
+    assert fake.calls == ["session-1"]
 
 
-def test_repository_reads_session_from_latest_artifact(tmp_path):
-    from job_hunter.navigation_repository import GitHubArtifactNavigationRepository
-
-    loader = FakeStateLoader(_snapshot_with_session(tmp_path))
-    repository = GitHubArtifactNavigationRepository(loader)
-
-    session = repository.get_session("session-1")
-
-    assert session is not None
-    assert session.telegram_message_id == "42"
-    assert session.cards[0].company == "Example GmbH"
-    assert loader.calls == 1
-
-
-def test_repository_returns_none_when_snapshot_is_missing():
-    from job_hunter.navigation_repository import GitHubArtifactNavigationRepository
-
-    repository = GitHubArtifactNavigationRepository(FakeStateLoader())
-    assert repository.get_session("session-1") is None
-
-
-def test_repository_returns_none_when_session_is_missing(tmp_path):
-    from job_hunter.navigation_repository import GitHubArtifactNavigationRepository
-
-    db = tmp_path / "job_hunter.sqlite3"
-    with JobStore(db):
-        pass
-    snapshot = ArtifactStateSnapshot(8, db, "2026-09-01T10:00:00Z")
-    repository = GitHubArtifactNavigationRepository(FakeStateLoader(snapshot))
+def test_repository_returns_none_when_session_is_missing():
+    fake = FakeStore(session=None)
+    repository = PostgresNavigationRepository(lambda: fake)
 
     assert repository.get_session("missing") is None
 
 
-def test_repository_opens_snapshot_read_only(monkeypatch, tmp_path):
-    import job_hunter.navigation_repository as module
+def test_repository_propagates_store_failure():
+    import pytest
 
+    fake = FakeStore(error=RuntimeError("supabase unavailable"))
+    repository = PostgresNavigationRepository(lambda: fake)
+
+    with pytest.raises(RuntimeError, match="supabase unavailable"):
+        repository.get_session("session-1")
+
+
+def test_repository_calls_the_factory_at_most_once():
+    """The factory builds a real store lazily on first use, then is cached.
+
+    Building a `PostgresJobStore` means minting a fresh `SupabaseClient`;
+    calling the factory again on every `get_session` would rebuild that
+    unnecessarily on every webhook callback.
+    """
+    fake = FakeStore(session="a-session")
     calls = []
 
-    class FakeStore:
-        def __init__(self, path, *, read_only=False):
-            calls.append((Path(path), read_only))
+    def factory():
+        calls.append(1)
+        return fake
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-    monkeypatch.setattr(module, "JobStore", FakeStore)
-    monkeypatch.setattr(module, "get_navigation_session", lambda store, session_id: None)
-    snapshot = ArtifactStateSnapshot(9, tmp_path / "state.sqlite3", "2026-09-01T10:00:00Z")
-    repository = module.GitHubArtifactNavigationRepository(FakeStateLoader(snapshot))
+    repository = PostgresNavigationRepository(factory)
 
     repository.get_session("session-1")
+    repository.get_session("session-2")
 
-    assert calls == [(snapshot.path, True)]
-
-
-def test_repository_propagates_artifact_loader_failure():
-    from job_hunter.navigation_repository import GitHubArtifactNavigationRepository
-
-    repository = GitHubArtifactNavigationRepository(
-        FakeStateLoader(error=RuntimeError("github unavailable"))
-    )
-
-    with pytest.raises(RuntimeError, match="github unavailable"):
-        repository.get_session("session-1")
+    assert len(calls) == 1
+    assert fake.calls == ["session-1", "session-2"]

@@ -1,10 +1,26 @@
-import sqlite3
 from pathlib import Path
 
 from job_hunter.gmail_models import GmailSettings, GmailSyncSummary
 from job_hunter.models import GeminiQuotaSettings, RunSummary, SearchPolicy, Settings
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import DryRunStore
 from job_hunter import cli
+
+
+class _FakeSupabaseClient:
+    """Stands in for a real `SupabaseClient` so cli tests never touch the network.
+
+    `cli._build_client` is the single seam every construction site in
+    `cli.py` goes through to reach Postgres (issue #70 task 14b), so
+    patching it here is enough to keep every `cli.main([...])` test
+    fully offline, the same way the old suite patched `cli.JobStore`.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+
+def _patch_build_client(monkeypatch):
+    monkeypatch.setattr(cli, "_build_client", lambda http: _FakeSupabaseClient())
 
 
 def _settings(tmp_path, **overrides):
@@ -24,7 +40,7 @@ def _settings(tmp_path, **overrides):
         policy=policy,
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
         dry_run=True,
-        db_path=str(tmp_path / "var" / "state.sqlite3"),
+        output_dir=str(tmp_path / "var"),
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -50,6 +66,7 @@ def test_run_scheduled_proceeds_at_target_hour(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
     monkeypatch.setattr(cli, "should_run_scheduled", lambda now, tz, hour: True)
+    _patch_build_client(monkeypatch)
 
     called = []
     monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: called.append(s) or RunSummary(ready_to_apply=1))
@@ -63,6 +80,7 @@ def test_run_scheduled_proceeds_at_target_hour(monkeypatch, tmp_path):
 def test_run_manual_always_proceeds_without_time_guard(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    _patch_build_client(monkeypatch)
 
     def _boom(*args, **kwargs):
         raise AssertionError("should_run_scheduled must not be called for manual runs")
@@ -78,17 +96,17 @@ def test_run_manual_always_proceeds_without_time_guard(monkeypatch, tmp_path):
     assert called == [settings]
 
 
-def test_run_creates_db_and_output_parent_directories(monkeypatch, tmp_path):
+def test_run_creates_output_parent_directory(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
     monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: RunSummary())
+    _patch_build_client(monkeypatch)
 
-    assert not Path(settings.db_path).parent.exists()
+    assert not (Path(settings.output_dir) / "cover_letters").exists()
 
     cli.main(["run"])
 
-    assert Path(settings.db_path).parent.exists()
-    assert (Path(settings.db_path).parent / "cover_letters").exists()
+    assert (Path(settings.output_dir) / "cover_letters").exists()
 
 
 def test_run_unhandled_exception_returns_nonzero(monkeypatch, tmp_path):
@@ -105,6 +123,7 @@ def test_run_unhandled_exception_returns_nonzero(monkeypatch, tmp_path):
 def test_run_fails_when_every_evaluation_this_run_failed(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(
         cli,
         "run_pipeline",
@@ -119,6 +138,7 @@ def test_run_fails_when_every_evaluation_this_run_failed(monkeypatch, tmp_path):
 def test_run_succeeds_when_some_evaluations_this_run_succeeded(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(
         cli,
         "run_pipeline",
@@ -133,6 +153,7 @@ def test_run_succeeds_when_some_evaluations_this_run_succeeded(monkeypatch, tmp_
 def test_run_succeeds_when_no_evaluation_was_needed(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(
         cli, "run_pipeline", lambda s, **kwargs: RunSummary(evaluation_attempted=0, evaluated=0)
     )
@@ -175,18 +196,17 @@ def test_force_backfill_help_mentions_120_day_window():
     assert "12-month" not in force_backfill_action.help
 
 
-def _gmail_settings(tmp_path):
+def _gmail_settings():
     return GmailSettings(
         client_id="client",
         client_secret="secret",
         refresh_token="refresh",
         gemini_api_key="gemini",
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
-        db_path=str(tmp_path / "gmail.sqlite3"),
     )
 
 
-def _patch_gmail_sync_dependencies(monkeypatch, tmp_path, run):
+def _patch_gmail_sync_dependencies(monkeypatch, run):
     class SyncService:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -194,12 +214,12 @@ def _patch_gmail_sync_dependencies(monkeypatch, tmp_path, run):
         def sync(self, now, *, dry_run, force_backfill):
             return run(now=now, dry_run=dry_run, force_backfill=force_backfill)
 
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: _gmail_settings(tmp_path), raising=False)
+    monkeypatch.setattr(cli, "load_gmail_settings", lambda: _gmail_settings(), raising=False)
     monkeypatch.setattr(cli, "HttpClient", object, raising=False)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda settings: object(), raising=False)
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object(), raising=False)
     monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object(), raising=False)
-    monkeypatch.setattr(cli, "JobStore", lambda path: object(), raising=False)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", SyncService, raising=False)
 
 
@@ -209,9 +229,7 @@ def test_sync_gmail_does_not_load_candidate_profile_settings(monkeypatch, tmp_pa
         "load_settings",
         lambda path: (_ for _ in ()).throw(AssertionError("must not load candidate profile settings")),
     )
-    _patch_gmail_sync_dependencies(
-        monkeypatch, tmp_path, lambda **kwargs: GmailSyncSummary()
-    )
+    _patch_gmail_sync_dependencies(monkeypatch, lambda **kwargs: GmailSyncSummary())
 
     assert cli.main(["sync-gmail"]) == 0
 
@@ -219,7 +237,6 @@ def test_sync_gmail_does_not_load_candidate_profile_settings(monkeypatch, tmp_pa
 def test_sync_gmail_returns_nonzero_on_fatal_auth_error(monkeypatch, tmp_path):
     _patch_gmail_sync_dependencies(
         monkeypatch,
-        tmp_path,
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("Gmail authorization failed")),
     )
 
@@ -229,149 +246,48 @@ def test_sync_gmail_returns_nonzero_on_fatal_auth_error(monkeypatch, tmp_path):
 def test_sync_gmail_returns_zero_when_service_completes_with_message_errors(
     monkeypatch, tmp_path, caplog
 ):
-    _patch_gmail_sync_dependencies(
-        monkeypatch, tmp_path, lambda **kwargs: GmailSyncSummary(errors=2)
-    )
+    _patch_gmail_sync_dependencies(monkeypatch, lambda **kwargs: GmailSyncSummary(errors=2))
 
     assert cli.main(["sync-gmail"]) == 0
     assert any("will retry" in record.message for record in caplog.records)
 
 
-def test_sync_gmail_dry_run_does_not_create_missing_database_path(
-    monkeypatch, tmp_path
-):
-    settings = _gmail_settings(tmp_path)
-    settings = GmailSettings(
-        client_id=settings.client_id,
-        client_secret=settings.client_secret,
-        refresh_token=settings.refresh_token,
-        gemini_api_key=settings.gemini_api_key,
-        gemini_quota=settings.gemini_quota,
-        db_path=str(tmp_path / "missing" / "state.sqlite3"),
-    )
+def test_sync_gmail_dry_run_wraps_the_store_in_a_dry_run_store(monkeypatch, tmp_path):
+    """`--dry-run` must hand the sync service (and its Gemini tracker) a
+    `DryRunStore`, never the real `PostgresJobStore` -- the mechanism that
+    replaces the old SQLite read-only-open/`:memory:` construction (see
+    `postgres_store.DryRunStore` and `tests/test_postgres_store_dry_run.py`
+    for the "never touches the client on a write" proof at the unit level).
+    This test only proves cli.py wires the wrapper in; it doesn't re-prove
+    DryRunStore's own guarantees.
+    """
+    settings = _gmail_settings()
+    captured = {}
 
     class InspectingService:
-        def __init__(self, *, store, **kwargs):
-            self.store = store
+        def __init__(self, *, store, gemini, **kwargs):
+            captured["store"] = store
 
         def sync(self, now, *, dry_run, force_backfill):
             assert dry_run is True
-            self.store.save_gmail_sync_state(
-                account_id="dry-run@example.com",
-                history_id="100",
-                last_successful_sync_at=now.isoformat(),
-                backfill_completed_at=now.isoformat(),
-            )
             return GmailSyncSummary()
+
+    class InspectingTracker:
+        def __init__(self, store, quota, model, *, run_id=None):
+            captured["tracker_store"] = store
 
     monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
     monkeypatch.setattr(cli, "HttpClient", object)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
     monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object())
+    monkeypatch.setattr(cli, "GeminiUsageTracker", InspectingTracker)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", InspectingService)
 
     assert cli.main(["sync-gmail", "--dry-run"]) == 0
-    assert not Path(settings.db_path).parent.exists()
-    assert not Path(settings.db_path).exists()
-
-
-def test_sync_gmail_dry_run_opens_existing_database_read_only(
-    monkeypatch, tmp_path
-):
-    settings = _gmail_settings(tmp_path)
-    store = JobStore(settings.db_path)
-    store.save_gmail_sync_state(
-        account_id="candidate@example.com",
-        history_id="before",
-        last_successful_sync_at="2026-08-30T12:00:00+00:00",
-        backfill_completed_at="2026-08-30T12:00:00+00:00",
-    )
-    store.close()
-
-    with sqlite3.connect(settings.db_path) as connection:
-        schema_before = connection.execute(
-            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
-        ).fetchall()
-        rows_before = connection.execute(
-            "SELECT * FROM gmail_sync_state ORDER BY account_id"
-        ).fetchall()
-
-    class InspectingService:
-        write_was_blocked = False
-
-        def __init__(self, *, store, **kwargs):
-            self.store = store
-
-        def sync(self, now, *, dry_run, force_backfill):
-            assert dry_run is True
-            try:
-                self.store.save_gmail_sync_state(
-                    account_id="candidate@example.com",
-                    history_id="after",
-                    last_successful_sync_at=now.isoformat(),
-                    backfill_completed_at=now.isoformat(),
-                )
-            except sqlite3.OperationalError:
-                type(self).write_was_blocked = True
-            return GmailSyncSummary()
-
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
-    monkeypatch.setattr(cli, "HttpClient", object)
-    monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
-    monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
-    monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object())
-    monkeypatch.setattr(cli, "GmailSyncService", InspectingService)
-
-    assert cli.main(["sync-gmail", "--dry-run"]) == 0
-    assert InspectingService.write_was_blocked is True
-    with sqlite3.connect(settings.db_path) as connection:
-        assert connection.execute(
-            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
-        ).fetchall() == schema_before
-        assert connection.execute(
-            "SELECT * FROM gmail_sync_state ORDER BY account_id"
-        ).fetchall() == rows_before
-
-
-def test_sync_gmail_dry_run_reads_legacy_database_without_gmail_schema(
-    monkeypatch, tmp_path
-):
-    settings = _gmail_settings(tmp_path)
-    with sqlite3.connect(settings.db_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE jobs (
-                id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL
-            )
-            """
-        )
-        schema_before = connection.execute(
-            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
-        ).fetchall()
-
-    class InspectingService:
-        def __init__(self, *, store, **kwargs):
-            self.store = store
-
-        def sync(self, now, *, dry_run, force_backfill):
-            assert dry_run is True
-            assert self.store.get_gmail_sync_state("candidate@example.com") is None
-            return GmailSyncSummary()
-
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
-    monkeypatch.setattr(cli, "HttpClient", object)
-    monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
-    monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
-    monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object())
-    monkeypatch.setattr(cli, "GmailSyncService", InspectingService)
-
-    assert cli.main(["sync-gmail", "--dry-run"]) == 0
-    with sqlite3.connect(settings.db_path) as connection:
-        assert connection.execute(
-            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
-        ).fetchall() == schema_before
+    assert isinstance(captured["store"], DryRunStore)
+    assert isinstance(captured["tracker_store"], DryRunStore)
 
 
 class _CapturingTracker:
@@ -401,6 +317,7 @@ def test_run_constructs_one_tracked_gemini_client_sharing_run_id(monkeypatch, tm
     monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: RunSummary())
     monkeypatch.setattr(cli, "GeminiUsageTracker", _CapturingTracker)
     monkeypatch.setattr(cli, "GeminiClient", _CapturingGemini)
+    _patch_build_client(monkeypatch)
     monkeypatch.setenv("GEMINI_RUN_ID", "run-123")
     _CapturingTracker.instances.clear()
     _CapturingGemini.instances.clear()
@@ -418,7 +335,7 @@ def test_run_constructs_one_tracked_gemini_client_sharing_run_id(monkeypatch, tm
 
 
 def test_sync_gmail_constructs_one_tracked_gemini_client_sharing_run_id(monkeypatch, tmp_path):
-    settings = _gmail_settings(tmp_path)
+    settings = _gmail_settings()
 
     class SyncService:
         def __init__(self, **kwargs):
@@ -433,6 +350,7 @@ def test_sync_gmail_constructs_one_tracked_gemini_client_sharing_run_id(monkeypa
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
     monkeypatch.setattr(cli, "GeminiUsageTracker", _CapturingTracker)
     monkeypatch.setattr(cli, "GeminiClient", _CapturingGemini)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", SyncService)
     monkeypatch.setenv("GEMINI_RUN_ID", "run-123")
     _CapturingTracker.instances.clear()
@@ -450,53 +368,17 @@ def test_sync_gmail_constructs_one_tracked_gemini_client_sharing_run_id(monkeypa
     assert gemini.tracker is tracker
 
 
-def test_sync_gmail_dry_run_tracks_gemini_usage_without_touching_readonly_store(
-    monkeypatch, tmp_path
-):
-    """--dry-run still makes real Gemini calls, so the tracker must stay active --
-
-    but it must record against its own ephemeral ledger, never the read-only
-    handle onto the real database.
-    """
-    settings = _gmail_settings(tmp_path)
-    store = JobStore(settings.db_path)
-    store.close()
-
-    class RecordingService:
-        def __init__(self, *, gemini, **kwargs):
-            self.gemini = gemini
-
-        def sync(self, now, *, dry_run, force_backfill):
-            assert dry_run is True
-            # Exercise a real preflight + record cycle through the real,
-            # non-mocked GeminiClient/GeminiUsageTracker constructed by cli.py.
-            self.gemini._tracker.preflight("job_evaluation", "prompt", now)
-            self.gemini._tracker.record_success("job_evaluation", "prompt", now)
-            return GmailSyncSummary()
-
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
-    monkeypatch.setattr(cli, "HttpClient", object)
-    monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
-    monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
-    monkeypatch.setattr(cli, "GmailSyncService", RecordingService)
-
-    assert cli.main(["sync-gmail", "--dry-run"]) == 0
-
-    with sqlite3.connect(settings.db_path) as connection:
-        rows = connection.execute("SELECT * FROM gemini_usage").fetchall()
-    assert rows == []
-
-
 def test_parser_accepts_generate_cover_letter_job_id():
     args = cli.build_parser().parse_args(["generate-cover-letter", "--job-id", "7"])
     assert args.command == "generate-cover-letter"
-    assert args.job_id == 7
+    assert args.job_id == "7"
     assert args.config == "config/search.yml"
 
 
 def test_generate_cover_letter_delegates_with_job_id(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    _patch_build_client(monkeypatch)
 
     calls = []
     monkeypatch.setattr(
@@ -508,12 +390,13 @@ def test_generate_cover_letter_delegates_with_job_id(monkeypatch, tmp_path):
     exit_code = cli.main(["generate-cover-letter", "--job-id", "42"])
 
     assert exit_code == 0
-    assert calls == [(settings, 42)]
+    assert calls == [(settings, "42")]
 
 
 def test_generate_cover_letter_returns_nonzero_when_not_delivered(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "generate_cover_letter_on_demand", lambda s, job_id, **kwargs: False)
 
     exit_code = cli.main(["generate-cover-letter", "--job-id", "42"])

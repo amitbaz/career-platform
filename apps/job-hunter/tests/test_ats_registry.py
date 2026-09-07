@@ -8,7 +8,6 @@ from job_hunter.ats_registry import (
     select_ats_boards,
 )
 from job_hunter.models import AtsRegistryEntry, Job
-from job_hunter.store import JobStore
 
 
 @pytest.mark.parametrize(
@@ -79,8 +78,7 @@ def test_extract_ats_reference_falls_back_to_original_url_last():
     assert (ref.provider, ref.board, ref.job_id) == ("lever", "acme", "abc")
 
 
-def test_harvest_ats_board_persists_supported_reference():
-    store = JobStore(":memory:")
+def test_harvest_ats_board_persists_supported_reference(store):
     job = Job(
         source="feed",
         title="x",
@@ -95,8 +93,7 @@ def test_harvest_ats_board_persists_supported_reference():
     assert store.count_ats_boards() == 1
 
 
-def test_harvest_ats_board_returns_false_for_unsupported_url():
-    store = JobStore(":memory:")
+def test_harvest_ats_board_returns_false_for_unsupported_url(store):
     job = Job(source="feed", title="x", url="https://example.com/jobs/1")
 
     created = harvest_ats_board(store, job)
@@ -105,8 +102,7 @@ def test_harvest_ats_board_returns_false_for_unsupported_url():
     assert store.count_ats_boards() == 0
 
 
-def test_harvest_ats_board_refuses_denylisted_board():
-    store = JobStore(":memory:")
+def test_harvest_ats_board_refuses_denylisted_board(store):
     job = Job(
         source="feed",
         title="x",
@@ -120,11 +116,10 @@ def test_harvest_ats_board_refuses_denylisted_board():
     assert store.count_ats_boards() == 0
 
 
-def test_harvest_ats_board_denylist_match_is_case_insensitive():
+def test_harvest_ats_board_denylist_match_is_case_insensitive(store):
     # A manual_company_watch seed can carry an unnormalized provider, and
     # upsert_ats_board would store it lowercased -- creating the very row
     # the denylist exists to prevent.
-    store = JobStore(":memory:")
     job = Job(
         source="feed",
         title="x",
@@ -140,8 +135,7 @@ def test_harvest_ats_board_denylist_match_is_case_insensitive():
     assert store.count_ats_boards() == 0
 
 
-def test_harvest_ats_board_admits_board_not_on_denylist():
-    store = JobStore(":memory:")
+def test_harvest_ats_board_admits_board_not_on_denylist(store):
     job = Job(
         source="feed",
         title="x",
@@ -155,8 +149,7 @@ def test_harvest_ats_board_admits_board_not_on_denylist():
     assert store.count_ats_boards() == 1
 
 
-def test_harvest_ats_board_uses_market_hint_precedence():
-    store = JobStore(":memory:")
+def test_harvest_ats_board_uses_market_hint_precedence(store):
     job = Job(
         source="feed",
         title="x",

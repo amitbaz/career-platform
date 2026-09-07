@@ -288,10 +288,10 @@ def priority_score(job: Job, policy: SearchPolicy) -> int:
 
 
 def rank_jobs(
-    jobs: list[tuple[int, Job]],
+    jobs: list[tuple[str, Job]],
     policy: SearchPolicy,
     preferences: CandidatePreferences | None = None,
-) -> list[tuple[int, Job, int]]:
+) -> list[tuple[str, Job, int]]:
     scorer = priority_score if preferences is None else lambda job, current_policy: profile_priority_score(job, preferences, current_policy)
     scored = [(job_id, job, scorer(job, policy)) for job_id, job in jobs]
     return sorted(
@@ -316,16 +316,16 @@ def _source_share_cap(limit: int, minimum_per_source: int, max_share: float) -> 
 
 
 def select_diverse_candidates(
-    ranked: list[tuple[int, Job, int]],
+    ranked: list[tuple[str, Job, int]],
     limit: int,
     minimum_per_source: int,
     max_share: float,
-) -> list[tuple[int, Job, int]]:
+) -> list[tuple[str, Job, int]]:
     if limit <= 0 or not ranked:
         return []
 
     per_source_limit = _source_share_cap(limit, max(0, minimum_per_source), max_share)
-    grouped: dict[str, list[tuple[int, Job, int]]] = defaultdict(list)
+    grouped: dict[str, list[tuple[str, Job, int]]] = defaultdict(list)
     source_order: list[str] = []
     for item in ranked:
         source = item[1].source
@@ -333,8 +333,8 @@ def select_diverse_candidates(
             source_order.append(source)
         grouped[source].append(item)
 
-    selected: list[tuple[int, Job, int]] = []
-    selected_ids: set[int] = set()
+    selected: list[tuple[str, Job, int]] = []
+    selected_ids: set[str] = set()
     source_counts: dict[str, int] = defaultdict(int)
 
     for source in source_order:

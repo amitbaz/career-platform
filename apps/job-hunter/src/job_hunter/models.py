@@ -146,7 +146,7 @@ class CompanyWatchSeed:
 
 @dataclass(slots=True)
 class Evaluation:
-    job_id: int
+    job_id: str
     total_score: int
     scores: dict
     decision: str
@@ -168,7 +168,7 @@ class Evaluation:
 
 @dataclass(slots=True)
 class Material:
-    job_id: int
+    job_id: str
     cover_letter_text: str
 
 
@@ -337,12 +337,12 @@ class Settings:
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     gemini_model: str = "gemini-3.6-flash"
-    db_path: str = "var/job_hunter.sqlite3"
+    output_dir: str = "var"
 
 
 @dataclass(slots=True)
 class DigestItem:
-    job_id: int
+    job_id: str
     company: str
     title: str
     score: int
@@ -357,7 +357,7 @@ class DigestItem:
 
 @dataclass(slots=True, frozen=True)
 class NavigationCard:
-    job_id: int
+    job_id: str
     title: str
     company: str
     location: str

@@ -14,7 +14,7 @@ from job_hunter.preferences import _build_fallback_preferences
 
 if TYPE_CHECKING:
     from job_hunter.gemini import GeminiClient
-    from job_hunter.store import JobStore
+    from job_hunter.postgres_store import PostgresJobStore
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +274,7 @@ def get_candidate_context(
     profile: str,
     policy: SearchPolicy,
     gemini: "GeminiClient",
-    store: "JobStore",
+    store: "PostgresJobStore",
 ) -> CandidateContext:
     """Return the cached candidate context, extracting and caching it once if needed."""
     if not profile.strip():

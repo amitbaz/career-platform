@@ -5,7 +5,6 @@ import pytest
 
 from job_hunter.models import Job
 from job_hunter.sources.company_watch import CompanyWatchSource
-from job_hunter.store import JobStore
 
 
 class FakeHttp:
@@ -30,8 +29,7 @@ def _watch(store, company_name, ats_identifier):
     )
 
 
-def test_greenhouse_watch_rewrites_only_source_and_records_success(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_greenhouse_watch_rewrites_only_source_and_records_success(store, tmp_path):
     _watch(store, "Acme", "acme")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     employer_url = "https://boards.greenhouse.io/acme/jobs/555"
@@ -64,11 +62,11 @@ def test_greenhouse_watch_rewrites_only_source_and_records_success(tmp_path):
 
 
 def test_company_failure_is_recorded_without_skipping_later_watch(
+    store,
     tmp_path, monkeypatch
 ):
     import job_hunter.sources.company_watch as company_watch
 
-    store = JobStore(tmp_path / "state.sqlite3")
     failed_id = _watch(store, "Broken", "broken")
     healthy_id = _watch(store, "Healthy", "healthy")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -110,8 +108,7 @@ def test_company_failure_is_recorded_without_skipping_later_watch(
     assert healthy["last_successful_check_at"] == "2026-08-31T12:00:00+00:00"
 
 
-def test_swallowed_ats_http_failure_updates_health_and_later_watch_runs(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_swallowed_ats_http_failure_updates_health_and_later_watch_runs(store, tmp_path):
     _watch(store, "Broken", "broken")
     _watch(store, "Healthy", "healthy")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -151,11 +148,11 @@ def test_swallowed_ats_http_failure_updates_health_and_later_watch_runs(tmp_path
 
 
 def test_failure_health_write_error_does_not_abort_later_watch(
+    store,
     tmp_path, monkeypatch
 ):
     import job_hunter.sources.company_watch as company_watch
 
-    store = JobStore(tmp_path / "state.sqlite3")
     failed_id = _watch(store, "Broken", "broken")
     _watch(store, "Healthy", "healthy")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -200,11 +197,11 @@ def test_failure_health_write_error_does_not_abort_later_watch(
 
 
 def test_success_health_write_error_keeps_jobs_and_does_not_record_failure(
+    store,
     tmp_path, monkeypatch
 ):
     import job_hunter.sources.company_watch as company_watch
 
-    store = JobStore(tmp_path / "state.sqlite3")
     first_id = _watch(store, "First", "first")
     _watch(store, "Second", "second")
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -247,8 +244,7 @@ def test_success_health_write_error_keeps_jobs_and_does_not_record_failure(
     assert second["last_successful_check_at"] == "2026-08-31T12:00:00+00:00"
 
 
-def test_generic_watch_parses_postings_and_links_from_one_page_only(tmp_path):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_generic_watch_parses_postings_and_links_from_one_page_only(store, tmp_path):
     careers_url = "https://acme.test/careers"
     store.upsert_company_watch(
         company_name="Acme",
@@ -329,8 +325,7 @@ def test_generic_watch_parses_postings_and_links_from_one_page_only(tmp_path):
         ["Thing", "https://schema.org/JobPosting"],
     ],
 )
-def test_generic_watch_accepts_compatible_json_ld_job_types(tmp_path, job_type):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_generic_watch_accepts_compatible_json_ld_job_types(store, tmp_path, job_type):
     careers_url = "https://acme.test/careers"
     store.upsert_company_watch(
         company_name="Acme",
@@ -378,8 +373,7 @@ def test_generic_watch_accepts_compatible_json_ld_job_types(tmp_path, job_type):
     ]
 
 
-def test_company_only_watch_is_skipped_without_recording_failure(tmp_path, caplog):
-    store = JobStore(tmp_path / "state.sqlite3")
+def test_company_only_watch_is_skipped_without_recording_failure(store, tmp_path, caplog):
     placeholder_id = store.upsert_company_watch(
         company_name="Distribusion Technologies",
         careers_url="",

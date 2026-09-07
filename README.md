@@ -80,5 +80,7 @@ The Telegram webhook dispatches GitHub workflows through `GITHUB_REPOSITORY`, wh
 be set to `amitbaz/career-platform`.
 
 The configuration steps still outstanding from the repository consolidation — Actions secrets,
-Vercel project settings, the Job Hunter state artifact, the Telegram webhook — are tracked in
-[docs/monorepo-migration.md](docs/monorepo-migration.md).
+Vercel project settings, the Telegram webhook — are tracked in
+[docs/monorepo-migration.md](docs/monorepo-migration.md). The Job Hunter state artifact is no
+longer among them: Job Hunter's state lives in Postgres, and both workflows stopped uploading
+that artifact. See the cutover runbook in [apps/job-hunter/README.md](apps/job-hunter/README.md).

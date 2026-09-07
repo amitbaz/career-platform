@@ -4,7 +4,6 @@ on:
     types: [generate_cover_letter]
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: job-hunter-state
   cancel-in-progress: false
@@ -23,11 +22,6 @@ jobs:
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
       - run: pip install -e .
-      - name: Restore prior state
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/restore_state.py --repo "$GH_REPO" --token "$GH_TOKEN" --dest var/job_hunter.sqlite3
       - name: Generate cover letter
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -41,11 +35,8 @@ jobs:
           CANDIDATE_PROFILE_B64: ${{ secrets.CANDIDATE_PROFILE_B64 }}
           COVER_LETTER_TEMPLATE_B64: ${{ secrets.COVER_LETTER_TEMPLATE_B64 }}
           JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_HUNTER_USER_ID: ${{ secrets.JOB_HUNTER_USER_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SIGNING_KEY_B64: ${{ secrets.SUPABASE_SIGNING_KEY_B64 }}
         run: python -m job_hunter generate-cover-letter --job-id "$JOB_ID"
-      - name: Upload state artifact
-        if: always() && hashFiles('apps/job-hunter/var/job_hunter.sqlite3') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: job-hunter-state
-          path: apps/job-hunter/var/job_hunter.sqlite3
-          retention-days: 90

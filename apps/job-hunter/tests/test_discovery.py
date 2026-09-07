@@ -14,7 +14,6 @@ from job_hunter.models import (
     Job,
     SearchPolicy,
 )
-from job_hunter.store import JobStore
 from tests.market_fixtures import make_market_policy
 
 
@@ -98,11 +97,6 @@ def policy():
         thresholds={"package": 75, "possible": 65},
         max_jobs_per_run=25,
     )
-
-
-@pytest.fixture
-def store(tmp_path):
-    return JobStore(tmp_path / "state.sqlite3")
 
 
 @pytest.fixture
@@ -868,7 +862,7 @@ def test_resolver_exception_preserves_candidate_and_continues_collection(store, 
     assert store.count_jobs() == 2
     stored_urls = {
         row["source"]: row["url"]
-        for row in store._conn.execute("SELECT source, url FROM jobs")
+        for row in store.client.select("job_hunter_jobs", params={"select": "source,url"})
     }
     assert stored_urls == {
         "first": "https://first.test/jobs/1",

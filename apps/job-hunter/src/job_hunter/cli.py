@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from job_hunter.config import load_gmail_settings, load_settings
+from job_hunter.config import load_gmail_settings, load_settings, load_supabase_settings
 from job_hunter.gemini import GeminiClient
 from job_hunter.gemini_usage import GeminiUsageTracker
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
@@ -19,7 +19,9 @@ from job_hunter.pipeline import (
     run_pipeline,
     should_run_scheduled,
 )
-from job_hunter.store import JobStore
+from job_hunter.postgres_store import DryRunStore, PostgresJobStore
+from job_hunter.supabase_auth import AccessTokenMinter
+from job_hunter.supabase_client import SupabaseClient
 from job_hunter.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,13 @@ logger = logging.getLogger(__name__)
 
 def _configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def _build_client(http: HttpClient) -> SupabaseClient:
+    settings = load_supabase_settings()
+    return SupabaseClient(
+        http, settings, AccessTokenMinter(settings.user_id, settings.signing_key_jwk)
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen_parser = subparsers.add_parser(
         "generate-cover-letter", help="Generate (or resend) a cover letter for one job on demand"
     )
-    gen_parser.add_argument("--job-id", type=int, required=True)
+    gen_parser.add_argument("--job-id", type=str, required=True)
     gen_parser.add_argument("--config", default="config/search.yml", help="Path to search.yml")
 
     return parser
@@ -88,11 +97,10 @@ def _run(args: argparse.Namespace) -> int:
             )
             return 0
 
-    Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
 
-    store = JobStore(settings.db_path)
     http = HttpClient()
+    store = PostgresJobStore(_build_client(http))
     tracker = GeminiUsageTracker(
         store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
     )
@@ -124,11 +132,10 @@ def _run(args: argparse.Namespace) -> int:
 
 def _generate_cover_letter(args: argparse.Namespace) -> int:
     settings = load_settings(Path(args.config))
-    Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
 
-    store = JobStore(settings.db_path)
     http = HttpClient()
+    store = PostgresJobStore(_build_client(http))
     tracker = GeminiUsageTracker(
         store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
     )
@@ -144,28 +151,23 @@ def _generate_cover_letter(args: argparse.Namespace) -> int:
 
 def _sync_gmail(args: argparse.Namespace) -> int:
     settings = load_gmail_settings()
-    db_path = Path(settings.db_path)
+    http = HttpClient()
+    real_store = PostgresJobStore(_build_client(http))
     if args.dry_run:
-        store = (
-            JobStore(db_path, read_only=True)
-            if db_path.exists()
-            else JobStore(":memory:")
-        )
-        # A GeminiUsageTracker WRITES usage/pause rows, and `store` above is
-        # opened read-only against the real db precisely so --dry-run can
-        # never persist anything there. A dry run still makes real Gemini
-        # calls (see GmailSyncService.process_message), so the guardrails
-        # must still be active for it -- just against a dedicated, ephemeral
-        # in-memory ledger rather than the real one, so the "never persists"
-        # guarantee for --dry-run holds regardless of how much quota history
-        # a real (non-dry-run) process has already written today.
-        tracker_store = JobStore(":memory:")
+        # A GeminiUsageTracker WRITES usage/pause rows, and `store` below is
+        # a DryRunStore precisely so --dry-run can never persist anything
+        # live. A dry run still makes real Gemini calls (see
+        # GmailSyncService.process_message), so the guardrails must still be
+        # active for it -- just against a store that discards every write,
+        # so the "never persists" guarantee for --dry-run holds regardless
+        # of how much quota history a real (non-dry-run) process has
+        # already written today.
+        store = DryRunStore(real_store)
+        tracker_store = DryRunStore(real_store)
     else:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        store = JobStore(db_path)
+        store = real_store
         tracker_store = store
 
-    http = HttpClient()
     gmail = GmailClient(http, GoogleOAuthTokenProvider(settings))
     tracker = GeminiUsageTracker(
         tracker_store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")

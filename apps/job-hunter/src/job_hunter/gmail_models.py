@@ -32,7 +32,6 @@ class GmailSettings:
     gemini_api_key: str
     gemini_quota: GeminiQuotaSettings
     gemini_model: str = "gemini-3.6-flash"
-    db_path: str = "var/job_hunter.sqlite3"
 
 
 @dataclass(frozen=True, slots=True)

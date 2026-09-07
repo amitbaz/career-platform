@@ -91,7 +91,26 @@ def test_select_builds_the_url_and_passes_filters():
     call = http.calls[0]
     assert call["method"] == "GET"
     assert call["url"] == "https://example.supabase.co/rest/v1/job_hunter_jobs"
-    assert call["params"] == {"select": "id", "status": "eq.new"}
+    # order=id.asc is injected on the paging path (no limit/offset supplied):
+    # select() stitches together independent page requests, and without a
+    # total order two pages could skip or duplicate a row if a write lands
+    # between them. This is not incidental noise -- do not delete it.
+    assert call["params"] == {"select": "id", "status": "eq.new", "order": "id.asc"}
+
+
+def test_select_with_a_caller_supplied_limit_does_not_page_or_inject_order():
+    client, http = _client(FakeResponse(200, [{"id": "1"}]))
+
+    rows = client.select("job_hunter_jobs", params={"status": "eq.new", "limit": "5"})
+
+    assert rows == [{"id": "1"}]
+    assert len(http.calls) == 1, "a caller-supplied limit must short-circuit to one request"
+    call = http.calls[0]
+    assert call["method"] == "GET"
+    # A caller that passes its own limit means it, and gets exactly what it
+    # asked for -- no injected order, no Range paging.
+    assert call["params"] == {"status": "eq.new", "limit": "5"}
+    assert "Range" not in call["headers"]
 
 
 def test_every_request_carries_both_auth_headers():
