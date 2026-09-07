@@ -74,6 +74,10 @@ _RELEASE_LEGACY_CHUNK_SIZE = 200
 # used to spend 19,000.
 _JOB_UPSERT_CHUNK_SIZE = 500
 
+# Bulk id arrays go in the request body, not the query string, so the 200-id
+# URL-length limit that constrains _RELEASE_LEGACY_CHUNK_SIZE does not apply.
+_ID_ARRAY_CHUNK_SIZE = 1000
+
 _T = TypeVar("_T")
 
 
@@ -585,6 +589,25 @@ class PostgresJobStore:
         if evaluation["content_confidence_at_eval"] != (job_row.get("content_confidence") or ""):
             return True
         return False
+
+    def needs_evaluation_bulk(self, job_ids: list[str]) -> dict[str, bool]:
+        """Answer `needs_evaluation` for many jobs in one request per chunk.
+
+        Duplicate ids are asked once and answered for every occurrence. An id
+        the caller cannot read comes back from Postgres as no row at all --
+        row-level security filters it before the function sees it -- and is
+        reported as ``True`` here, matching what the per-job method does with
+        a job whose evaluations it cannot see.
+        """
+        unique_ids = list(dict.fromkeys(job_ids))
+        if not unique_ids:
+            return {}
+        answered: dict[str, bool] = {}
+        for chunk in _chunked(unique_ids, _ID_ARRAY_CHUNK_SIZE):
+            rows = self._client.rpc("job_hunter_needs_evaluation", {"p_job_ids": chunk})
+            for row in rows:
+                answered[row["job_id"]] = row["needs"]
+        return {job_id: answered.get(job_id, True) for job_id in unique_ids}
 
     def save_evaluation(self, job_id: str, evaluation: Evaluation) -> None:
         """Translates store.py:2036-2075.

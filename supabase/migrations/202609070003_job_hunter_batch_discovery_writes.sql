@@ -54,3 +54,42 @@ comment on function public.job_hunter_upsert_jobs(jsonb) is
   'may resolve to the same job. No exception handling: a failure aborts the '
   'whole call, and the caller replays the batch one job at a time to isolate '
   'the bad element.';
+
+create or replace function public.job_hunter_needs_evaluation(p_job_ids uuid[])
+returns table (job_id uuid, needs boolean)
+language sql
+security invoker
+set search_path = ''
+as $$
+  select
+    j.id,
+    case
+      when e.evaluated_at is null then true
+      when e.status = 'failed' then true
+      -- Deliberately asymmetric: the job side is coalesced, the evaluation
+      -- side is not. PostgresJobStore.needs_evaluation compares
+      -- `evaluation[...] != (job_row.get(...) or "")`, so a null recorded at
+      -- evaluation time counts as changed against an empty stored value.
+      -- Reproduced, not corrected: correcting it here would quietly change
+      -- which jobs get re-evaluated.
+      when e.description_hash_at_eval is distinct from coalesce(j.description_hash, '') then true
+      when e.content_confidence_at_eval is distinct from coalesce(j.content_confidence, '') then true
+      else false
+    end
+  from public.job_hunter_jobs j
+  left join lateral (
+    select ev.status, ev.evaluated_at,
+           ev.description_hash_at_eval, ev.content_confidence_at_eval
+      from public.job_hunter_evaluations ev
+     where ev.job_id = j.id
+     order by ev.evaluated_at desc, ev.created_at desc, ev.id desc
+     limit 1
+  ) e on true
+  where j.id = any(p_job_ids);
+$$;
+
+comment on function public.job_hunter_needs_evaluation(uuid[]) is
+  'Bulk form of PostgresJobStore.needs_evaluation: two requests per job '
+  'become one request per id array. An id the caller cannot read returns no '
+  'row, and the caller treats a missing id as needing evaluation -- which is '
+  'what the per-job method does with a job whose evaluations it cannot see.';

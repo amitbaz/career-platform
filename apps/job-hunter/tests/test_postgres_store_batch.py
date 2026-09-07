@@ -131,3 +131,63 @@ def test_upsert_logical_jobs_on_empty_input_makes_no_request(store, monkeypatch)
     monkeypatch.setattr(store._client, "rpc", exploding_rpc)
 
     assert store.upsert_logical_jobs([]) == []
+
+
+def test_needs_evaluation_bulk_agrees_with_the_single_job_method(store):
+    job_ids = [
+        result[0]
+        for result in store.upsert_logical_jobs(
+            [
+                _make_job("bulk-eval-1", "Frontend Engineer", "https://example.test/e1"),
+                _make_job("bulk-eval-2", "Backend Engineer", "https://example.test/e2"),
+            ]
+        )
+    ]
+
+    bulk = store.needs_evaluation_bulk(job_ids)
+
+    assert bulk == {job_id: store.needs_evaluation(job_id) for job_id in job_ids}
+    assert all(bulk.values())  # nothing evaluated yet
+
+
+def test_needs_evaluation_bulk_defaults_an_unreadable_id_to_true(store):
+    unknown = "99999999-0000-0000-0000-000000000009"
+
+    assert store.needs_evaluation_bulk([unknown]) == {unknown: True}
+
+
+def test_needs_evaluation_bulk_makes_one_request_per_chunk(store, monkeypatch):
+    from job_hunter import postgres_store as module
+
+    monkeypatch.setattr(module, "_ID_ARRAY_CHUNK_SIZE", 2)
+    calls: list[int] = []
+    original = store._client.rpc
+
+    def counting_rpc(function, payload=None, **kwargs):
+        if function == "job_hunter_needs_evaluation":
+            calls.append(len(payload["p_job_ids"]))
+        return original(function, payload, **kwargs)
+
+    monkeypatch.setattr(store._client, "rpc", counting_rpc)
+
+    job_ids = [
+        result[0]
+        for result in store.upsert_logical_jobs(
+            [
+                _make_job(f"bulk-chunk-{i}", f"Engineer {i}", f"https://example.test/bc{i}")
+                for i in range(3)
+            ]
+        )
+    ]
+    store.needs_evaluation_bulk(job_ids)
+
+    assert calls == [2, 1]
+
+
+def test_needs_evaluation_bulk_on_empty_input_makes_no_request(store, monkeypatch):
+    def exploding_rpc(*args, **kwargs):
+        raise AssertionError("no request should be made for an empty id list")
+
+    monkeypatch.setattr(store._client, "rpc", exploding_rpc)
+
+    assert store.needs_evaluation_bulk([]) == {}

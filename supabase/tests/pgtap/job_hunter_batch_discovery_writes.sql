@@ -198,5 +198,35 @@ select is(
   1,
   'user A can still see her own job after user B''s batch call');
 
+-- needs_evaluation ----------------------------------------------------------
+
+-- A job with no evaluation needs one.
+with created as (
+  select id from public.job_hunter_upsert_jobs(
+    jsonb_build_array(jsonb_build_object(
+      'fingerprint', 'needs-fp-1', 'source', 'test', 'company', 'Acme',
+      'title', 'Engineer', 'location', 'Remote', 'remote', true,
+      'description', 'unevaluated', 'url', 'https://example.test/n1')))
+)
+select is(
+  (select needs from public.job_hunter_needs_evaluation(
+     array(select id from created))),
+  true,
+  'a job with no evaluation needs evaluation');
+
+-- An id belonging to another user returns no row at all.
+select is(
+  (select count(*)::int from public.job_hunter_needs_evaluation(
+     array['99999999-0000-0000-0000-000000000009'::uuid])),
+  0,
+  'an unreadable id returns no row rather than a verdict');
+
+select is(
+  (select p.prosecdef from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'job_hunter_needs_evaluation'),
+  false,
+  'job_hunter_needs_evaluation is security invoker');
+
 select * from finish();
 rollback;
