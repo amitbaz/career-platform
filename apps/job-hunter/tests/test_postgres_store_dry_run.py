@@ -70,7 +70,7 @@ def test_every_public_method_is_classified():
     overlap = write_names & read_names
     assert overlap == set(), f"methods classified as both read and write: {overlap}"
 
-    classified = write_names | read_names | {"client"}
+    classified = write_names | read_names
     unclassified = all_public - classified
     assert unclassified == set(), (
         f"PostgresJobStore has public methods not classified as a read or "
@@ -79,7 +79,7 @@ def test_every_public_method_is_classified():
         f"shape) or _POSTGRES_JOB_STORE_READ_METHODS in postgres_store.py."
     )
 
-    stale = classified - all_public - {"client"}
+    stale = classified - all_public
     assert stale == set(), (
         f"DryRunStore registries name methods PostgresJobStore no longer "
         f"has: {stale}"
@@ -209,8 +209,22 @@ def test_read_methods_delegate_to_the_wrapped_store():
 
     assert dry_run.get_job("abc") == "job:abc"
     assert dry_run.count_jobs() == 42
-    assert dry_run.client == "sentinel-client"
     assert fake.calls == [("get_job", "abc"), ("count_jobs",)]
+
+
+def test_client_raises_instead_of_reaching_the_wrapped_store():
+    """`.client` is the one member DryRunStore must never delegate for real.
+
+    Handing back the wrapped store's `.client` would return the live,
+    fully write-capable `SupabaseClient`, bypassing every write wrapper
+    above. `DryRunStore` defines `client` itself (not via `__getattr__`)
+    so it raises before ever touching `self._store.client`.
+    """
+    fake = _FakeReadOnlyStore()
+    dry_run = DryRunStore(fake)
+
+    with pytest.raises(AssertionError, match="a dry run must not reach the client"):
+        dry_run.client
 
 
 def test_dry_run_store_is_a_context_manager_that_closes_nothing():

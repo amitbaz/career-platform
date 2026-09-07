@@ -947,10 +947,11 @@ def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
         http=http,
     )
 
-    persisted = store.client.select(
+    rows = store.client.select(
         "job_hunter_jobs", params={"select": "canonical_url"}
-    )[0]
-    assert persisted is not None
+    )
+    assert len(rows) == 1
+    persisted = rows[0]
     assert persisted["canonical_url"] == "https://jobs.ashbyhq.com/acme/ats-1"
     search_calls = [
         kwargs["params"]["q"]
@@ -1274,7 +1275,9 @@ def test_pipeline_evaluates_staged_gmail_job_through_normal_discovery(store, set
     assert summary.possible_matches == 1
     assert gemini.eval_calls == 1
     assert store.count_jobs() == 1
-    only_job_id = store.client.select("job_hunter_jobs", params={"select": "id"})[0]["id"]
+    rows = store.client.select("job_hunter_jobs", params={"select": "id"})
+    assert len(rows) == 1
+    only_job_id = rows[0]["id"]
     job = store.get_job(only_job_id)
     assert job is not None
     assert job.source == "gmail:linkedin"
@@ -1310,7 +1313,9 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(sto
         telegram=telegram,
     )
 
-    only_job_id = store.client.select("job_hunter_jobs", params={"select": "id"})[0]["id"]
+    rows = store.client.select("job_hunter_jobs", params={"select": "id"})
+    assert len(rows) == 1
+    only_job_id = rows[0]["id"]
     persisted_job = store.get_job(only_job_id)
     assert persisted_job is not None
     assert persisted_job.source == "ashby"

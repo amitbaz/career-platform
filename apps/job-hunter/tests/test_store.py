@@ -2448,12 +2448,22 @@ def test_save_evaluation_persists_evaluation_confidence_not_jobs_row(store):
     assert saved.content_confidence == AGGREGATOR_TEXT
 
 
-def test_evaluation_raw_model_score_round_trip(store):
+@pytest.mark.parametrize("total_score,raw_model_score", [(64, 89), (64, 0)])
+def test_evaluation_raw_model_score_round_trip(store, total_score, raw_model_score):
+    """The (64, 0) case guards against `row.get("raw_model_score") or
+    row["total_score"]` in `store_mapping.py`, which would silently turn a
+    genuinely-zero `raw_model_score` into `total_score` (64) -- a mutation
+    the (64, 89) case alone cannot catch, since `or` only misbehaves on a
+    falsy left-hand value, and would pass unnoticed if `total_score` were
+    also 0.
+    """
     job_id, _, _ = store.upsert_job(Job(source="x", source_job_id="1", title="Analyst", company="Acme"))
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=64, raw_model_score=89))
+    store.save_evaluation(
+        job_id, _evaluation(job_id, total_score=total_score, raw_model_score=raw_model_score)
+    )
     loaded = store.get_evaluation(job_id)
-    assert loaded.total_score == 64
-    assert loaded.raw_model_score == 89
+    assert loaded.total_score == total_score
+    assert loaded.raw_model_score == raw_model_score
 
 
 def test_evaluations_with_identical_evaluated_at_converge_on_one_deterministic_row(

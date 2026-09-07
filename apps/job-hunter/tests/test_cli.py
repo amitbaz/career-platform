@@ -272,16 +272,22 @@ def test_sync_gmail_dry_run_wraps_the_store_in_a_dry_run_store(monkeypatch, tmp_
             assert dry_run is True
             return GmailSyncSummary()
 
+    class InspectingTracker:
+        def __init__(self, store, quota, model, *, run_id=None):
+            captured["tracker_store"] = store
+
     monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
     monkeypatch.setattr(cli, "HttpClient", object)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
     monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object())
+    monkeypatch.setattr(cli, "GeminiUsageTracker", InspectingTracker)
     _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", InspectingService)
 
     assert cli.main(["sync-gmail", "--dry-run"]) == 0
     assert isinstance(captured["store"], DryRunStore)
+    assert isinstance(captured["tracker_store"], DryRunStore)
 
 
 class _CapturingTracker:

@@ -840,13 +840,16 @@ def test_semantic_gmail_job_description_is_not_persisted(store, tmp_path, monkey
         "job_hunter_inbound_job_candidates",
         params={
             "source_message_id": f"eq.{alert.message_id}",
-            "select": "description",
+            "select": "*",
         },
     )
     assert len(persisted) == 1
     # The privacy invariant this test exists for: the raw email body must
-    # never reach the stored row, not merely be blank by coincidence.
+    # never reach the stored row -- in *any* column, not merely be blank by
+    # coincidence in the one column we thought to check. A whole-row scan
+    # catches the body leaking into some other column entirely.
     assert persisted[0]["description"] == ""
+    assert not any(private_body in str(value) for value in persisted[0].values())
 
 
 def test_second_sync_uses_saved_history_id(store, tmp_path):

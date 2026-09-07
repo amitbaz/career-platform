@@ -2080,6 +2080,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
 # `test_every_public_method_is_classified`.
 _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
     {
+        "client",
         "close",
         "list_job_sources",
         "find_job_by_canonical_url",
@@ -2186,10 +2187,19 @@ class DryRunStore:
     def __init__(self, store: "PostgresJobStore") -> None:
         self._store = store
 
+    @property
+    def client(self) -> Any:
+        # `.client` hands back the live, fully write-capable SupabaseClient,
+        # bypassing every write wrapper above. A dry run must never reach
+        # it -- callers that need Supabase-backed behaviour (e.g. Brave
+        # source discovery's persisted budget in `run_pipeline`) must not be
+        # given a DryRunStore, or must be changed to not need `.client`.
+        raise AssertionError("a dry run must not reach the client")
+
     def __getattr__(self, name: str) -> Any:
         # Only reached for names DryRunStore doesn't define itself -- every
         # write method below is set directly on the class, so this path is
-        # exclusively how reads (and `client`) reach the wrapped store.
+        # exclusively how reads reach the wrapped store.
         return getattr(self._store, name)
 
     def __enter__(self) -> "DryRunStore":

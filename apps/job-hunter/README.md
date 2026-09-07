@@ -51,13 +51,11 @@ Cover letter generation + PDF rendering happens on demand, not as part of the da
 - `src/job_hunter/prefilter.py` — cheap deterministic filtering before spending Gemini calls.
 - `src/job_hunter/evaluation.py` / `gemini.py` — Gemini-based scoring and rationale.
 - `src/job_hunter/cover_letter.py` / `pdf.py` — cover letter drafting and PDF rendering, triggered on demand per job via the "Gen CL" Telegram button.
-- `src/job_hunter/store.py` — SQLite persistence (dedup, evaluation cache, delivery tracking) at `var/job_hunter.sqlite3` by default.
+- `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`: dedup, evaluation cache, delivery tracking) against the shared Supabase project.
 - `src/job_hunter/telegram.py` — outbound-only Telegram Bot API delivery (digest message + PDF documents).
 - `src/job_hunter/gmail_sync.py` — read-only Gmail intake that classifies job signals and stages discovered jobs or review-needed events in the shared SQLite state.
 - `src/job_hunter/pipeline.py` / `cli.py` — orchestration and the `python -m job_hunter run` and `python -m job_hunter sync-gmail` entrypoints.
-- `scripts/restore_state.py` — restores the SQLite database from the most recent `job-hunter-state` GitHub Actions artifact before a run, since Actions runners are ephemeral.
-
-SQLite state does not persist on the runner between workflow runs, so the daily workflow restores the previous run's database from an uploaded artifact at the start of each run and re-uploads it at the end (see [Schedule and state persistence](#schedule-and-state-persistence)).
+State now lives in Postgres (the shared Supabase project), not on the Actions runner, so `scripts/restore_state.py` and the artifact restore/upload steps it describes no longer exist.
 
 ### R2 automated discovery and company watch
 

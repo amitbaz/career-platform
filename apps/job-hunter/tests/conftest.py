@@ -8,8 +8,7 @@ Only tests that ask for `supabase_client`, `other_supabase_client`, or
 `store` touch the stack at all: requesting one of them skips the test when
 the stack isn't configured, and cleans both seed users' rows from every
 job_hunter_* table (in foreign-key-safe order) before and after the test
-runs. Every other test in the suite (the SQLite-backed ones this port
-hasn't touched yet) is unaffected. Deletes go through each user's own
+runs. Every other test in the suite is unaffected. Deletes go through each user's own
 client and token, never a service_role key, so a truncation bug cannot
 reach another user's data.
 """
