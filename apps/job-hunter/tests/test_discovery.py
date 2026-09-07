@@ -1607,6 +1607,99 @@ def test_collect_candidates_request_count_does_not_grow_with_rejected_job_count(
     )
 
 
+class _PerJobAtsResolver:
+    """Resolves every job to its own ATS posting, making no store calls itself."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def resolve(self, job):
+        self.calls.append(job.source_job_id)
+        board = f"acme-{job.source_job_id}"
+        return CanonicalResolution(
+            url=f"https://jobs.lever.co/{board}/abc",
+            ats=AtsReference(provider="lever", board=board, job_id="abc"),
+            confidence=0.9,
+            method="already_ats",
+        )
+
+
+def test_collect_candidates_resolver_tail_is_not_batched(supabase_client, policy):
+    """Record the cost of the one path `collect_candidates` did NOT batch.
+
+    The two request-count tests above pass no resolver, so the whole
+    canonical-resolution tail (`discovery.py`'s final loop over
+    `prefiltered`) is switched off in them -- while `pipeline.py` always
+    passes one. That tail was deliberately left per-job (see the design's
+    "Out of scope"), and this test exists so a reader of this file learns
+    that it exists and what it costs, rather than inferring from the tests
+    above that discovery is batched end to end.
+
+    Every job here already carries a supported ATS URL, which is the
+    expensive shape: such jobs bypass the `max_canonical_resolutions_per_run`
+    shortlist entirely (it bounds only jobs that need a *network* resolution),
+    so all of them enter the resolve branch. Each then pays, sequentially:
+    `_harvest_ats_board_safely` (a registry read plus a write),
+    `upsert_logical_job`, optionally `set_job_market`, `needs_evaluation`,
+    and -- outside the resolver gate altogether -- `record_ats_eligible_job`.
+
+    The bounds are deliberately loose. This is a shape assertion, not a
+    budget: it fails if the tail gets materially more expensive, and it also
+    fails if someone batches it -- in which case the fix is to update this
+    test, the design doc's "Out of scope", and `AGENTS.md`, all of which
+    currently document this path as per-job.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="arbeitnow",
+                source_job_id=f"tail-{job_count}-{i}",
+                title="Senior Product Engineer",
+                company=f"Acme {job_count} {i}",
+                url=f"https://jobs.lever.co/acme-tail-{job_count}-{i}/abc",
+                description="React TypeScript remote role.",
+                remote=True,
+            )
+            for i in range(job_count)
+        ]
+        resolver = _PerJobAtsResolver()
+        result = collect_candidates(
+            [FakeSource(jobs)], store, NoOpHttp(), policy, resolver=resolver
+        )
+        assert len(resolver.calls) == job_count, (
+            "sanity check: every already-ATS job must reach the resolve "
+            "branch, or this test is measuring the wrong path"
+        )
+        assert len(result.eligible) == job_count, (
+            "sanity check: these jobs must become eligible, or "
+            "record_ats_eligible_job never runs"
+        )
+        return len(client.calls)
+
+    one_job = run_with(1)
+    five_jobs = run_with(5)
+    marginal_per_job = (five_jobs - one_job) / 4
+
+    assert marginal_per_job >= 3, (
+        f"the resolver tail now costs {marginal_per_job} requests per extra "
+        f"job ({five_jobs} for 5 vs {one_job} for 1). If it was batched, "
+        "that is good news -- update this test, the design doc's 'Out of "
+        "scope', and apps/job-hunter/AGENTS.md, which all document this "
+        "path as per-job."
+    )
+    assert marginal_per_job <= 12, (
+        f"the resolver tail now costs {marginal_per_job} requests per extra "
+        f"job ({five_jobs} for 5 vs {one_job} for 1), up from the six to "
+        "eight the design records. This path is sequential and ungated for "
+        "already-ATS URLs, so growth here scales straight into the daily "
+        "run's wall clock."
+    )
+
+
 def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
     supabase_client, policy
 ):
@@ -1619,7 +1712,7 @@ def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
 
     Jobs are rejected by the legacy remote-only hard blocker (`remote=False`,
     no markets configured) so none reach `eligible`. That keeps this test
-    isolated to `upsert_ats_boards` (phase 2's board-sighting write, in
+    isolated to `upsert_ats_boards` (design step 6's board-sighting write, in
     scope for this task): an eligible ATS job would also call
     `record_ats_eligible_job` in the untouched, out-of-scope final loop,
     which touches the same `job_hunter_ats_registry` table once per

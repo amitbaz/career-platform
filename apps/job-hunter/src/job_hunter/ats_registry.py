@@ -41,17 +41,22 @@ def harvest_ats_board(
 
     A board whose `ats_board_key` is in `denylist` is never admitted, even
     on its first sighting.
+
+    The admission rules live in `ats_board_reference` and are not restated
+    here: both functions are live on the same run -- the reference on every
+    job in discovery's batch phase, this one on the canonical-resolution
+    path -- so a denylist or hint-precedence change to one must reach the
+    other. This is the store write and nothing else.
     """
-    reference = extract_ats_reference(job)
+    reference = ats_board_reference(job, market_hint=market_hint, denylist=denylist)
     if reference is None:
         return False
-    if ats_board_key(reference.provider, reference.board) in denylist:
-        return False
+    provider, board_identifier, company_name, resolved_market_hint = reference
     return store.upsert_ats_board(
-        provider=reference.provider,
-        board_identifier=reference.board,
-        company_name=job.company,
-        market_hint=market_hint or job.market_hint or job.market_id or "",
+        provider=provider,
+        board_identifier=board_identifier,
+        company_name=company_name,
+        market_hint=resolved_market_hint,
     )
 
 

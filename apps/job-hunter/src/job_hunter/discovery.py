@@ -252,16 +252,17 @@ def _ats_board_reference_safely(
 
     `ats_board_reference` has no store call to fail, but URL parsing itself
     (`parse_supported_ats_url`, reached via `extract_ats_reference`) can raise
-    on malformed input -- an unterminated IPv6 literal, for one. Phase 1 runs
-    for every job in the run, unguarded, so a single bad URL here would abort
-    the whole daily run instead of being skipped, exactly the failure class
-    this branch exists to remove.
+    on malformed input -- an unterminated IPv6 literal, for one. Design step 4
+    runs for every job in the run, unguarded, so a single bad URL here would
+    abort the whole daily run instead of being skipped, exactly the failure
+    class this branch exists to remove.
     """
     try:
         return ats_board_reference(job, market_hint=market_hint, denylist=denylist)
     except Exception:
         logger.exception(
-            "ATS board harvesting failed: source=%s", metric_source_label(job.source)
+            "ATS board reference extraction failed: source=%s",
+            metric_source_label(job.source),
         )
         return None
 
@@ -355,9 +356,9 @@ def collect_candidates(
     prefiltered: list[tuple[str, Job]] = []
     rediscovered_job_ids: list[str] = []
 
-    # Phase 1: network work only. Board references are captured here, while
-    # each job still carries the market hint it was observed with -- the
-    # attribution in phase 3 overwrites job.market_id.
+    # Design step 4 (network work on unique jobs). Board references are
+    # captured here, while each job still carries the market hint it was
+    # observed with -- the attribution in step 6 overwrites job.market_id.
     board_sightings: list[tuple[str, str, str, str]] = []
     observed_markets: list[str | None] = []
     for job in unique_jobs:
@@ -371,13 +372,21 @@ def collect_candidates(
         if job.url and not job.description:
             enrich_job(job, http)
 
-    # Phase 2: one batch of writes and one batch of reads for the whole run.
+    # Design steps 5 and 6 (batch-upsert the unique jobs, then batch the
+    # remaining reads and writes): one batch of writes and one batch of reads
+    # for the whole run.
     stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
     upserted = store.upsert_logical_jobs(unique_jobs)
 
     persisted: list[tuple[str, Job, str | None]] = []
     skipped_count = 0
-    for job, observed_market_id, result in zip(unique_jobs, observed_markets, upserted):
+    # strict=True: these three lists are built one entry per unique job and
+    # must stay that way. A store whose batch upsert returns a shorter list
+    # (DryRunStore._synthesize("list") returns []) would otherwise make
+    # collect_candidates silently return zero candidates.
+    for job, observed_market_id, result in zip(
+        unique_jobs, observed_markets, upserted, strict=True
+    ):
         if result is None:
             # upsert_logical_jobs already logged why. Dropping the job here is
             # the only option: everything downstream is keyed by its id. It
@@ -406,9 +415,10 @@ def collect_candidates(
 
     evaluation_needed = store.needs_evaluation_bulk([job_id for job_id, _job, _hint in persisted])
 
-    # Phase 3: mostly pure -- the only I/O left here is collecting the
-    # terminal-status pairs for jobs rejected this run, flushed once after
-    # the loop. That write must survive: job_hunter_gmail_candidate_complete
+    # Design step 7 (prefilter and count): mostly pure -- the only I/O left
+    # here is collecting the terminal-status pairs for jobs rejected this
+    # run, flushed once after the loop.
+    # That write must survive: job_hunter_gmail_candidate_complete
     # (20260907104935_job_hunter_gmail_candidate_eligibility.sql) treats a
     # job whose status is "rejected" or "closed" as complete regardless of
     # whether it has an evaluation, which is what stops a rejected public
