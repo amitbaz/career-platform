@@ -15,11 +15,12 @@ migrations own the schema now (see `supabase/migrations/`).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, TypeVar
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
@@ -43,7 +44,9 @@ from job_hunter.store_mapping import (
     to_iso,
     touch,
 )
-from job_hunter.supabase_client import SupabaseClient
+from job_hunter.supabase_client import SupabaseClient, SupabaseRequestError
+
+logger = logging.getLogger(__name__)
 
 # Translates store.py's `_DELIVERABLE_SCORE_FLOOR`. A job must score strictly
 # above this to ever be a delivery candidate.
@@ -64,8 +67,17 @@ _LATEST_MATERIAL_ORDER = "generated_at.desc,created_at.desc,id.desc"
 # keeps every request's URL comfortably under that regardless of id length.
 _RELEASE_LEGACY_CHUNK_SIZE = 200
 
+# upsert_logical_jobs sends this many jobs per request. The binding limit is
+# payload size, not row count: a job carries its full description, so 500 of
+# them is a request in the low megabytes -- comfortable for PostgREST, and
+# few enough calls that a 19,000-job run spends under 40 round trips where it
+# used to spend 19,000.
+_JOB_UPSERT_CHUNK_SIZE = 500
 
-def _chunked(items: list[str], size: int) -> list[list[str]]:
+_T = TypeVar("_T")
+
+
+def _chunked(items: list[_T], size: int) -> list[list[_T]]:
     """Split ``items`` into consecutive chunks of at most ``size`` elements."""
     return [items[i : i + size] for i in range(0, len(items), size)]
 
@@ -232,6 +244,61 @@ class PostgresJobStore:
         payload = self._job_payload(job)
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
         return row["id"], row["is_new"], row["description_changed"]
+
+    def upsert_logical_jobs(self, jobs: list[Job]) -> list[tuple[str, bool, bool] | None]:
+        """Persist many logical jobs in as few round trips as possible.
+
+        Returns one entry per input job, in input order, so a caller can zip
+        the results back onto the list it passed. An entry is ``None`` when
+        that job could not be persisted and was skipped -- callers must
+        handle it.
+
+        Each chunk is one transaction on the server, so a failure rolls the
+        whole chunk back. Rather than paying for a savepoint per row inside
+        plpgsql to guard against that, a failed chunk is replayed here one
+        job at a time: clean runs cost nothing, and one malformed posting
+        costs its own row instead of the run.
+        """
+        results: list[tuple[str, bool, bool] | None] = []
+        for chunk in _chunked(jobs, _JOB_UPSERT_CHUNK_SIZE):
+            try:
+                results.extend(self._upsert_job_chunk(chunk))
+            except Exception:
+                logger.exception(
+                    "batch job upsert failed for %s jobs; retrying them one at a time",
+                    len(chunk),
+                )
+                results.extend(self._upsert_jobs_individually(chunk))
+        return results
+
+    def _upsert_job_chunk(self, chunk: list[Job]) -> list[tuple[str, bool, bool]]:
+        rows = self._client.rpc(
+            "job_hunter_upsert_jobs", {"p_jobs": [self._job_payload(job) for job in chunk]}
+        )
+        if len(rows) != len(chunk):
+            raise SupabaseRequestError(
+                f"job_hunter_upsert_jobs returned {len(rows)} rows for {len(chunk)} jobs"
+            )
+        ordered = sorted(rows, key=lambda row: row["input_index"])
+        return [
+            (row["id"], row["is_new"], row["description_changed"]) for row in ordered
+        ]
+
+    def _upsert_jobs_individually(
+        self, chunk: list[Job]
+    ) -> list[tuple[str, bool, bool] | None]:
+        results: list[tuple[str, bool, bool] | None] = []
+        for job in chunk:
+            try:
+                results.append(self.upsert_logical_job(job))
+            except Exception:
+                logger.exception(
+                    "dropping a job that could not be persisted: source=%s url=%s",
+                    job.source,
+                    job.url,
+                )
+                results.append(None)
+        return results
 
     def merge_jobs(self, survivor_id: str, duplicate_id: str) -> str:
         """Transactionally merge a duplicate job and all attached records.
