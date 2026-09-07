@@ -284,5 +284,106 @@ select is(
 -- constraint never reaches the real schema, and re-tightening it here
 -- would fail anyway with the NULL row still present.
 
+-- set_job_markets -------------------------------------------------------
+
+-- Each of three rows gets its own market, not one market applied to all --
+-- an implementation that wrote the first row's market everywhere would
+-- fail two of the three checks below.
+create temporary table temp_market_jobs as
+select input_index, id from public.job_hunter_upsert_jobs(
+  jsonb_build_array(
+    jsonb_build_object('fingerprint', 'market-fp-1', 'source', 'test', 'company', 'Acme',
+                       'title', 'Engineer 1', 'location', 'Remote', 'remote', true,
+                       'description', 'market1', 'url', 'https://example.test/m1'),
+    jsonb_build_object('fingerprint', 'market-fp-2', 'source', 'test', 'company', 'Acme',
+                       'title', 'Engineer 2', 'location', 'Remote', 'remote', true,
+                       'description', 'market2', 'url', 'https://example.test/m2'),
+    jsonb_build_object('fingerprint', 'market-fp-3', 'source', 'test', 'company', 'Acme',
+                       'title', 'Engineer 3', 'location', 'Remote', 'remote', true,
+                       'description', 'market3', 'url', 'https://example.test/m3')));
+
+select public.job_hunter_set_job_markets(
+  jsonb_build_array(
+    jsonb_build_object('id', (select id from temp_market_jobs where input_index = 0), 'market_id', 'israel'),
+    jsonb_build_object('id', (select id from temp_market_jobs where input_index = 1), 'market_id', 'eu_remote'),
+    jsonb_build_object('id', (select id from temp_market_jobs where input_index = 2), 'market_id', 'us_remote')));
+
+select is(
+  (select market_id from public.job_hunter_jobs where id = (select id from temp_market_jobs where input_index = 0)),
+  'israel',
+  'job_hunter_set_job_markets writes the first row its own market');
+
+select is(
+  (select market_id from public.job_hunter_jobs where id = (select id from temp_market_jobs where input_index = 1)),
+  'eu_remote',
+  'job_hunter_set_job_markets writes the second row its own, distinct market');
+
+select is(
+  (select market_id from public.job_hunter_jobs where id = (select id from temp_market_jobs where input_index = 2)),
+  'us_remote',
+  'job_hunter_set_job_markets writes the third row its own, distinct market');
+
+-- market_id is `not null default ''`: the store's Python wrapper turns a
+-- caller's `None` into `''` before this function ever sees it (see
+-- set_job_markets in postgres_store.py), so an empty string -- not JSON
+-- null -- is the real-world "unattributed" value this function must
+-- accept and write through, clearing a prior attribution.
+select public.job_hunter_set_job_markets(
+  jsonb_build_array(
+    jsonb_build_object('id', (select id from temp_market_jobs where input_index = 0), 'market_id', '')));
+
+select is(
+  (select market_id from public.job_hunter_jobs where id = (select id from temp_market_jobs where input_index = 0)),
+  '',
+  'an empty-string market_id clears a prior attribution');
+
+-- A genuine JSON null is rejected by the not-null column constraint,
+-- exactly like any other write to this column -- proving this function
+-- does not quietly coerce null into a different stored value. The id
+-- used must match a real, readable row, or the update simply matches no
+-- rows and the constraint never fires.
+select throws_ok(
+  format(
+    $$select public.job_hunter_set_job_markets(
+        jsonb_build_array(jsonb_build_object('id', %L, 'market_id', null)))$$,
+    (select id from temp_market_jobs where input_index = 2)),
+  '23502',
+  null,
+  'a JSON null market_id is rejected by the not-null column constraint');
+
+-- An empty array issues no update and raises nothing.
+select lives_ok(
+  $$select public.job_hunter_set_job_markets('[]'::jsonb)$$,
+  'an empty array is a no-op');
+
+select is(
+  (select market_id from public.job_hunter_jobs where id = (select id from temp_market_jobs where input_index = 1)),
+  'eu_remote',
+  'an empty-array call leaves unrelated rows exactly as they were');
+
+-- RLS isolation: user B calling with user A's job ids changes nothing of
+-- A's rows, and A can still read her own (unaltered) values afterward.
+select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
+
+-- A job id the caller cannot read is silently a no-op rather than an
+-- error: user B calls with the id of one of user A's jobs.
+select public.job_hunter_set_job_markets(
+  jsonb_build_array(jsonb_build_object(
+    'id', (select id from temp_market_jobs where input_index = 1), 'market_id', 'us_remote')));
+
+select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
+
+select is(
+  (select market_id from public.job_hunter_jobs where id = (select id from temp_market_jobs where input_index = 1)),
+  'eu_remote',
+  'user B calling with user A''s job id leaves A''s market untouched -- RLS holds');
+
+select is(
+  (select p.prosecdef from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'job_hunter_set_job_markets'),
+  false,
+  'job_hunter_set_job_markets is security invoker');
+
 select * from finish();
 rollback;

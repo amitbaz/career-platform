@@ -93,3 +93,22 @@ comment on function public.job_hunter_needs_evaluation(uuid[]) is
   'become one request per id array. An id the caller cannot read returns no '
   'row, and the caller treats a missing id as needing evaluation -- which is '
   'what the per-job method does with a job whose evaluations it cannot see.';
+
+create or replace function public.job_hunter_set_job_markets(p_rows jsonb)
+returns void
+language sql
+security invoker
+set search_path = ''
+as $$
+  update public.job_hunter_jobs j
+     set market_id = r.market_id
+    from jsonb_to_recordset(coalesce(p_rows, '[]'::jsonb))
+      as r(id uuid, market_id text)
+   where j.id = r.id;
+$$;
+
+comment on function public.job_hunter_set_job_markets(jsonb) is
+  'Attribute many jobs to their markets in one statement. Exists only '
+  'because PostgREST cannot express "a different value on each of these '
+  'rows" in a single PATCH. Row-level security still restricts the update to '
+  'the caller''s own rows.';

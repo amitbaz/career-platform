@@ -305,3 +305,37 @@ def test_needs_evaluation_bulk_maps_each_id_to_its_own_verdict(store):
         failed_id: True,
         unevaluated_id: True,
     }
+
+
+def test_set_job_markets_writes_each_job_its_own_market(store):
+    results = store.upsert_logical_jobs(
+        [
+            _make_job("market-1", "Frontend Engineer", "https://example.test/mk1"),
+            _make_job("market-2", "Backend Engineer", "https://example.test/mk2"),
+        ]
+    )
+    first, second = results[0][0], results[1][0]
+
+    store.set_job_markets([(first, "israel"), (second, "eu_remote")])
+
+    assert store.get_job(first).market_id == "israel"
+    assert store.get_job(second).market_id == "eu_remote"
+
+
+def test_set_job_markets_stores_an_unattributed_job_as_empty(store):
+    job_id = store.upsert_logical_jobs(
+        [_make_job("market-3", "Platform Engineer", "https://example.test/mk3")]
+    )[0][0]
+
+    store.set_job_markets([(job_id, None)])
+
+    assert not store.get_job(job_id).market_id
+
+
+def test_set_job_markets_on_empty_input_makes_no_request(store, monkeypatch):
+    def exploding_rpc(*args, **kwargs):
+        raise AssertionError("no request should be made with nothing to set")
+
+    monkeypatch.setattr(store._client, "rpc", exploding_rpc)
+
+    store.set_job_markets([])
