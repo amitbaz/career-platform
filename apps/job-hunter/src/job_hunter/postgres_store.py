@@ -1583,17 +1583,15 @@ class PostgresJobStore:
         )
         return written[0]["id"]
 
-    def list_unmaterialized_inbound_jobs(self) -> list[dict[str, Any]]:
-        """Return staged candidates that no stored job already accounts for.
+    def list_eligible_inbound_jobs(self) -> list[dict[str, Any]]:
+        """Return recent Gmail candidates whose matching job still needs work."""
+        return self._client.rpc("job_hunter_eligible_inbound_jobs", {})
 
-        Translates store.py:1805-1846 (`list_unmaterialized_inbound_jobs` and
-        `_matches_materialized_job`) into a single call to
-        `job_hunter_unmaterialized_inbound_jobs`, which reimplements the O(n*m)
-        Python match entirely in SQL. It `returns setof jsonb`, so `rpc` hands
-        back a plain list of decoded candidate dicts, one per row -- no key to
-        unwrap.
-        """
-        return self._client.rpc("job_hunter_unmaterialized_inbound_jobs", {})
+    def set_job_status(self, job_id: str, status: str) -> None:
+        """Persist a terminal discovery status for a caller-owned logical job."""
+        if status not in {"rejected", "closed"}:
+            raise ValueError("status must be rejected or closed")
+        self._client.update("job_hunter_jobs", {"status": status}, params={"id": f"eq.{job_id}"})
 
     def save_application_event(
         self,
@@ -2043,6 +2041,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
+    "set_job_status": None,
     "backfill_ats_identity": "count",
     "save_evaluation": None,
     "save_material": None,
@@ -2105,7 +2104,7 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "list_pending_ai_work",
         "has_processed_gmail_message",
         "get_gmail_sync_state",
-        "list_unmaterialized_inbound_jobs",
+        "list_eligible_inbound_jobs",
         "list_application_events",
         "current_application_state",
         "pending_review_events",

@@ -50,8 +50,8 @@ select has_function('public', 'job_hunter_pending_review_events', array['double 
   'job_hunter_pending_review_events exists');
 select has_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
   'job_hunter_merge_jobs exists');
-select has_function('public', 'job_hunter_unmaterialized_inbound_jobs', array[]::text[],
-  'job_hunter_unmaterialized_inbound_jobs exists');
+select has_function('public', 'job_hunter_eligible_inbound_jobs', array[]::text[],
+  'job_hunter_eligible_inbound_jobs exists');
 select has_function('public', 'job_hunter_find_job_by_identity', array['text', 'text', 'text'],
   'job_hunter_find_job_by_identity exists');
 
@@ -92,7 +92,9 @@ select is(
   array[
     'job_hunter_canonicalize_url',
     'job_hunter_confidence_rank',
+    'job_hunter_eligible_inbound_jobs',
     'job_hunter_find_job_by_identity',
+    'job_hunter_gmail_candidate_complete',
     'job_hunter_locations_compatible',
     'job_hunter_merge_jobs',
     'job_hunter_normalize_company',
@@ -100,9 +102,8 @@ select is(
     'job_hunter_normalize_tokens',
     'job_hunter_pending_delivery_jobs',
     'job_hunter_pending_review_events',
-    'job_hunter_unmaterialized_inbound_jobs',
     'job_hunter_upsert_job'],
-  'exactly the twelve expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the thirteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 
@@ -305,21 +306,23 @@ select results_eq(
   $$ values ('30000000-0000-0000-0000-0000000000b1'::text) $$,
   'pending_review_events: B gets only its own event, never A''s');
 
--- 3. job_hunter_unmaterialized_inbound_jobs -------------------------------------------
+-- 3. job_hunter_eligible_inbound_jobs -------------------------------------------------
 -- store.py:1805-1822.
 
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 select results_eq(
-  $$ select (c->>'id') from public.job_hunter_unmaterialized_inbound_jobs() c $$,
-  $$ values ('40000000-0000-0000-0000-000000000002'::text) $$,
-  'unmaterialized_inbound_jobs: only the candidate with no materialized job comes back');
+  $$ select (c->>'id') from public.job_hunter_eligible_inbound_jobs() c $$,
+  $$ values ('40000000-0000-0000-0000-000000000001'::text),
+            ('40000000-0000-0000-0000-000000000002'::text),
+            ('40000000-0000-0000-0000-000000000003'::text) $$,
+  'eligible_inbound_jobs: unevaluated materialized candidates remain eligible');
 
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 select results_eq(
-  $$ select (c->>'id') from public.job_hunter_unmaterialized_inbound_jobs() c $$,
+  $$ select (c->>'id') from public.job_hunter_eligible_inbound_jobs() c $$,
   $$ values ('40000000-0000-0000-0000-0000000000b1'::text) $$,
-  'unmaterialized_inbound_jobs: B gets only its own candidate, never A''s');
+  'eligible_inbound_jobs: B gets only its own candidate, never A''s');
 
 -- 4. job_hunter_find_job_by_identity --------------------------------------------------
 -- store.py:1180-1222. Normalization drops a safe legal suffix, collapses
