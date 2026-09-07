@@ -456,7 +456,7 @@ class PostgresJobStore:
         )
 
     def set_job_markets(self, pairs: list[tuple[str, str | None]]) -> None:
-        """Attribute many jobs to their markets in one request.
+        """Attribute many jobs to their markets, chunked into few requests.
 
         ``None`` is stored as ``''``, exactly as the single-job
         `set_job_market` does. A job with no attribution still gets written:
@@ -464,15 +464,16 @@ class PostgresJobStore:
         """
         if not pairs:
             return
-        self._client.rpc(
-            "job_hunter_set_job_markets",
-            {
-                "p_rows": [
-                    {"id": job_id, "market_id": market_id or ""}
-                    for job_id, market_id in pairs
-                ]
-            },
-        )
+        for chunk in _chunked(pairs, _ID_ARRAY_CHUNK_SIZE):
+            self._client.rpc(
+                "job_hunter_set_job_markets",
+                {
+                    "p_rows": [
+                        {"id": job_id, "market_id": market_id or ""}
+                        for job_id, market_id in chunk
+                    ]
+                },
+            )
 
     def count_jobs(self) -> int:
         """Translates store.py:1662-1664."""

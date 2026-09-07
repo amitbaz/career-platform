@@ -339,3 +339,37 @@ def test_set_job_markets_on_empty_input_makes_no_request(store, monkeypatch):
     monkeypatch.setattr(store._client, "rpc", exploding_rpc)
 
     store.set_job_markets([])
+
+
+def test_set_job_markets_chunks_by_the_configured_size(store, monkeypatch):
+    """More pairs than one chunk holds must still land correctly, over more than one RPC call.
+
+    A test that only checked the final values would pass whether or not
+    chunking exists, so this asserts both: every job gets its own correct
+    market, and the store made more than one request to do it.
+    """
+    from job_hunter import postgres_store as module
+
+    monkeypatch.setattr(module, "_ID_ARRAY_CHUNK_SIZE", 2)
+    calls: list[int] = []
+    original = store._client.rpc
+
+    def counting_rpc(function, payload=None, **kwargs):
+        if function == "job_hunter_set_job_markets":
+            calls.append(len(payload["p_rows"]))
+        return original(function, payload, **kwargs)
+
+    monkeypatch.setattr(store._client, "rpc", counting_rpc)
+
+    jobs = [
+        _make_job(f"market-chunk-{i}", f"Engineer {i}", f"https://example.test/mc{i}")
+        for i in range(5)
+    ]
+    job_ids = [result[0] for result in store.upsert_logical_jobs(jobs)]
+    markets = [f"market-{i}" for i in range(5)]
+
+    store.set_job_markets(list(zip(job_ids, markets)))
+
+    assert calls == [2, 2, 1]
+    for job_id, market in zip(job_ids, markets):
+        assert store.get_job(job_id).market_id == market
