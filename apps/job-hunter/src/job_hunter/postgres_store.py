@@ -15,6 +15,7 @@ migrations own the schema now (see `supabase/migrations/`).
 
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -131,6 +132,20 @@ class PostgresJobStore:
 
     def __init__(self, client: SupabaseClient) -> None:
         self._client = client
+
+    @property
+    def client(self) -> SupabaseClient:
+        """Expose the underlying `SupabaseClient`.
+
+        `run_pipeline` needs this to build a `SearchUsageLedger`/
+        `BraveRequestBudget` for Brave source-discovery -- see
+        `build_brave_budget`'s docstring. Deriving the client from the store
+        it is already given (rather than adding a separate
+        `supabase_client` parameter to `run_pipeline` that every caller
+        would have to remember to pass) is what keeps Brave from silently
+        going dark again the way issue #70 task 12 left it.
+        """
+        return self._client
 
     def close(self) -> None:
         pass
@@ -1989,3 +2004,201 @@ class PostgresJobStore:
             params={"expires_at": f"lt.{now_iso}"},
         )
         return len(rows)
+
+
+# ----------------------------------------------------------------------------
+# DryRunStore
+# ----------------------------------------------------------------------------
+
+# Every write method `PostgresJobStore` defines, mapped to the *shape* of the
+# synthetic value `DryRunStore` fabricates in place of actually writing:
+#
+#   None            -- the real method returns None; so does the dry-run one.
+#   "id"            -- the real method returns a new row's id; the dry-run
+#                       one returns a fresh `uuid4()` string, never derived
+#                       from any real row.
+#   "bool"          -- the real method returns a boolean write outcome
+#                       (e.g. "was this newly inserted"); the dry-run one
+#                       always returns False, since nothing was inserted.
+#   "count"         -- the real method returns how many rows were touched;
+#                       the dry-run one always returns 0, since none were.
+#   a tuple of the above -- the real method returns a tuple; the dry-run one
+#                       returns a tuple of the corresponding synthetic values.
+#
+# This is the enforcement mechanism for "a method added to PostgresJobStore
+# later cannot silently become a writing method on DryRunStore": every
+# public method PostgresJobStore defines must appear in either this mapping
+# or `_POSTGRES_JOB_STORE_READ_METHODS` below, and
+# `test_postgres_store_dry_run.py::test_every_public_method_is_classified`
+# asserts that partition is exhaustive against `PostgresJobStore.__dict__`
+# by name, not by re-deriving read/write from behaviour. A new method that
+# is neither listed fails that test immediately -- including a new *write*
+# method nobody remembered to add here, which is the failure mode that
+# matters: without this check, `DryRunStore.__getattr__` (see below) would
+# delegate it straight to the real store, and a "dry" run would mutate the
+# live database.
+_POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
+    "upsert_job": ("id", "bool", "bool"),
+    "upsert_logical_job": ("id", "bool", "bool"),
+    "merge_jobs": "id",
+    "record_job_source": None,
+    "set_job_market": None,
+    "backfill_ats_identity": "count",
+    "save_evaluation": None,
+    "save_material": None,
+    "mark_delivered": None,
+    "upsert_company_watch": "id",
+    "record_watch_success": None,
+    "record_watch_failure": None,
+    "upsert_ats_board": "bool",
+    "reject_ats_board": None,
+    "clear_ats_board_rejection": None,
+    "record_ats_scan_success": None,
+    "record_ats_scan_failure": None,
+    "record_ats_eligible_job": None,
+    "record_gemini_usage": None,
+    "set_gemini_pause": None,
+    "clear_gemini_pause": None,
+    "save_candidate_context": None,
+    "enqueue_ai_work": None,
+    "complete_ai_work": None,
+    "record_gmail_message": None,
+    "save_gmail_sync_state": None,
+    "stage_inbound_job": "id",
+    "save_application_event": "id",
+    "mark_review_delivered": None,
+    "release_legacy_gmail_semantic_failures": "count",
+    "release_legacy_blank_linkedin_jobs": "count",
+    "create_navigation_session": None,
+    "attach_navigation_message_id": "bool",
+    "prune_navigation_sessions": "count",
+}
+
+# Every public method that only reads, plus `close`/`__enter__`/`__exit__`
+# (no-ops beyond `close()` on the real class, safe to delegate unchanged).
+# `client` is a property, not a method, and is exempted separately -- see
+# `test_every_public_method_is_classified`.
+_POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
+    {
+        "close",
+        "list_job_sources",
+        "find_job_by_canonical_url",
+        "find_job_by_ats",
+        "find_job_by_identity",
+        "count_jobs",
+        "list_jobs_for_matching",
+        "get_job",
+        "needs_evaluation",
+        "get_evaluation",
+        "get_material",
+        "has_delivery",
+        "pending_delivery_job_ids",
+        "get_company_watch",
+        "list_due_company_watches",
+        "list_due_ats_boards",
+        "list_rejected_ats_boards",
+        "count_ats_boards",
+        "gemini_usage_rows",
+        "get_gemini_pause",
+        "get_candidate_context",
+        "list_pending_ai_work",
+        "has_processed_gmail_message",
+        "get_gmail_sync_state",
+        "list_unmaterialized_inbound_jobs",
+        "list_application_events",
+        "current_application_state",
+        "pending_review_events",
+        "get_navigation_session",
+    }
+)
+
+
+def _synthesize(shape: str) -> Any:
+    if shape == "id":
+        return str(uuid.uuid4())
+    if shape == "bool":
+        return False
+    if shape == "count":
+        return 0
+    raise AssertionError(f"unknown DryRunStore write shape: {shape!r}")  # pragma: no cover
+
+
+def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
+    """Build a `DryRunStore` method that never calls the real one.
+
+    The wrapper accepts and discards any arguments -- it must never touch
+    `self._store`, `self._store._client`, or any network call, which is what
+    makes a dry run safe against the live database regardless of what the
+    real method would have done with those arguments.
+    """
+    if shape is None:
+        def _write(self, *args: Any, **kwargs: Any) -> None:
+            return None
+    elif isinstance(shape, tuple):
+        def _write(self, *args: Any, _shape=shape, **kwargs: Any) -> tuple[Any, ...]:
+            return tuple(_synthesize(part) for part in _shape)
+    else:
+        def _write(self, *args: Any, _shape=shape, **kwargs: Any) -> Any:
+            return _synthesize(_shape)
+    _write.__name__ = name
+    _write.__qualname__ = f"DryRunStore.{name}"
+    return _write
+
+
+class DryRunStore:
+    """Wraps a real `PostgresJobStore`, discarding every write.
+
+    Replaces `cli.py`'s old dry-run construction (`JobStore(db_path,
+    read_only=True)` plus two `JobStore(":memory:")` ledgers). That
+    `:memory:` copy was strictly weaker than this: it silently diverged from
+    real state the moment a read depended on anything the in-memory copy
+    hadn't independently been seeded with, and it still let writes happen
+    -- just into a database nobody would ever look at, rather than
+    preventing them. `DryRunStore` instead reads live data and provably
+    never writes: every write method is replaced with a synthetic stand-in
+    that fabricates a `uuid4()` string where the real method would return a
+    new row's id, `False` for a boolean write outcome, `0` for a row count,
+    and `None` otherwise -- and does so WITHOUT calling the wrapped store,
+    so a dry run cannot reach the client on any write path even if the real
+    method's implementation changes.
+
+    **Design choice and why:** an explicit write-method registry
+    (`_POSTGRES_JOB_STORE_WRITE_METHODS`), asserted complete against
+    `PostgresJobStore.__dict__` by a dedicated test, rather than a
+    deny-list plus `__getattr__` fallback for everything else. The
+    difference matters here specifically because the fallback direction is
+    dangerous: `__getattr__` below delegates any name not found on this
+    class straight to the wrapped `PostgresJobStore` instance. If a new
+    write method were added to `PostgresJobStore` and nobody updated this
+    class, a deny-list approach would fail *open* -- the unlisted method
+    would delegate to the real store and write to the live database, which
+    is exactly the failure mode a "dry run" exists to prevent. An
+    allow-list of reads would fail closed (an `AttributeError` instead), but
+    would also require this class to enumerate and re-implement every
+    trivial read delegation for no safety benefit, and a merely-forgotten
+    read is a much cheaper mistake than a merely-forgotten write. The
+    completeness test closes the actual gap: it fails whenever
+    `PostgresJobStore` gains *any* public method (read or write) that
+    hasn't been consciously placed in one of the two registries, which is
+    exactly the moment a human needs to decide which kind it is.
+    """
+
+    def __init__(self, store: "PostgresJobStore") -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for names DryRunStore doesn't define itself -- every
+        # write method below is set directly on the class, so this path is
+        # exclusively how reads (and `client`) reach the wrapped store.
+        return getattr(self._store, name)
+
+    def __enter__(self) -> "DryRunStore":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        pass
+
+
+for _name, _shape in _POSTGRES_JOB_STORE_WRITE_METHODS.items():
+    setattr(DryRunStore, _name, _make_dry_run_write(_name, _shape))
+del _name, _shape

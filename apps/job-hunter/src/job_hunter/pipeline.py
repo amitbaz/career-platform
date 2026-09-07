@@ -51,6 +51,7 @@ from job_hunter.sources import (
     build_brave_budget,
     build_sources,
 )
+from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.sources.learned_ats import LearnedAtsStats
 from job_hunter.store import JobStore
 from job_hunter.telegram import (
@@ -386,7 +387,7 @@ def _watch_promotion_state(watch) -> tuple[object, ...] | None:
 
 
 def cover_letter_output_dir(settings: Settings) -> Path:
-    return Path(settings.db_path).parent / "cover_letters"
+    return Path(settings.output_dir) / "cover_letters"
 
 
 def generate_cover_letter_on_demand(
@@ -623,7 +624,7 @@ def run_pipeline(
     settings: Settings,
     *,
     sources=None,
-    store: JobStore | None = None,
+    store: JobStore | PostgresJobStore | None = None,
     gemini: GeminiClient,
     telegram: TelegramClient | None = None,
     http: HttpClient | None = None,
@@ -643,17 +644,15 @@ def run_pipeline(
         logger.exception("manual company watch sync failed")
 
     search_breaker = CircuitBreaker(_SEARCH_FAILURE_THRESHOLD)
-    # `supabase_client` isn't threaded through `run_pipeline` yet (issue #70
-    # task 14 wires real Postgres construction here), so Brave search is
-    # deliberately disabled -- see `build_brave_budget`'s docstring -- rather
-    # than passed a stale `settings.db_path`.
-    logger.warning(
-        "Brave source-discovery is disabled: run_pipeline does not thread a "
-        "Supabase client through to build_brave_budget/build_sources yet "
-        "(pending issue #70 task 14); falling back to DuckDuckGo for "
-        "canonical resolution and building no TargetedSearchSource."
-    )
-    brave_budget = build_brave_budget(settings, None)
+    # Brave source-discovery needs a `SupabaseClient` to build its persisted
+    # budget (see `build_brave_budget`'s docstring). Rather than adding a
+    # separate `supabase_client` parameter callers would have to remember to
+    # pass, the client is derived from the `PostgresJobStore` this function
+    # is already given -- a non-Postgres store (still used by many tests
+    # until issue #70 task 14b) simply has none, and Brave stays off exactly
+    # as it was before, with no crash.
+    supabase_client = store.client if isinstance(store, PostgresJobStore) else None
+    brave_budget = build_brave_budget(settings, supabase_client)
     query_date = datetime.now(ZoneInfo(settings.timezone)).date()
     base_sources = (
         sources
@@ -664,6 +663,8 @@ def run_pipeline(
             store=store,
             search_breaker=search_breaker,
             query_date=query_date,
+            brave_budget=brave_budget,
+            supabase_client=supabase_client,
         )
     )
     sources = [

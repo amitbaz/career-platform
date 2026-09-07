@@ -111,6 +111,32 @@ class FakeGemini:
         return "Dear Hiring Team,\n\nI would love to join Acme as Senior Product Engineer.\n\nBest,\nAmit"
 
 
+class _NetworkFreeHttp:
+    """An `HttpClient` stand-in that answers every request with "nothing found".
+
+    Used only to keep `test_run_pipeline_builds_brave_backed_source_when_configured`
+    from making real requests to Ashby/Greenhouse/DuckDuckGo/etc. That test's
+    assertion is about what `build_sources` constructs -- a `TargetedSearchSource`
+    -- not about what any of those sources actually discover, and
+    `discovery.collect_candidates` already treats a source that raises during
+    `discover()` as "no jobs from that source" (`except Exception: ... continue`),
+    so failing every real call here is equivalent to those sources finding
+    nothing, without depending on live external services or the real job data
+    that made `test_run_pipeline_builds_brave_backed_source_when_configured`
+    hit a `job_hunter_upsert_job` conflict when this test exercised the
+    Postgres store instead of the SQLite one it used to.
+    """
+
+    def get_json(self, url, **kwargs):
+        raise RuntimeError("network disabled in this test")
+
+    def get(self, url, **kwargs):
+        raise RuntimeError("network disabled in this test")
+
+    def post(self, url, **kwargs):
+        raise RuntimeError("network disabled in this test")
+
+
 class FakeTelegram:
     def __init__(self):
         self.messages = []
@@ -2180,7 +2206,16 @@ def test_run_pipeline_forwards_store_to_build_sources_when_sources_not_given(
     telegram = FakeTelegram()
     captured = {}
 
-    def fake_build_sources(passed_settings, http, *, store=None, search_breaker=None, query_date=None):
+    def fake_build_sources(
+        passed_settings,
+        http,
+        *,
+        store=None,
+        search_breaker=None,
+        query_date=None,
+        brave_budget=None,
+        supabase_client=None,
+    ):
         captured["store"] = store
         return []
 
@@ -2191,18 +2226,8 @@ def test_run_pipeline_forwards_store_to_build_sources_when_sources_not_given(
     assert captured["store"] is store
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "run_pipeline does not thread a Supabase client through to "
-        "build_brave_budget/build_sources yet; Brave source-discovery stays "
-        "disabled until issue #70 task 14 wires real Postgres construction "
-        "into run_pipeline. This must start failing (forcing a fix to the "
-        "xfail marker or the code) the moment that wiring lands."
-    ),
-)
 def test_run_pipeline_builds_brave_backed_source_when_configured(
-    settings, monkeypatch
+    store, tmp_path, monkeypatch
 ):
     """`run_pipeline` itself -- not `build_sources` called directly with a
     client -- must produce a Brave-backed source when Brave is configured.
@@ -2211,13 +2236,35 @@ def test_run_pipeline_builds_brave_backed_source_when_configured(
     already proves `build_sources` does the right thing given a client; it
     would keep passing even if `run_pipeline` never threaded one through.
     This test wraps the real `build_sources` to observe what `run_pipeline`
-    actually calls it with.
+    actually calls it with. It exercises the real Postgres-backed `store`
+    fixture (not a SQLite `JobStore`), because `run_pipeline` derives its
+    Supabase client from `store.client` when `store` is a
+    `PostgresJobStore` -- see issue #70 task 14a.
+
+    Uses `make_market_policy()` (not the module's plain `policy`/`settings`
+    fixtures) because `build_sources` only ever builds a `TargetedSearchSource`
+    when `generate_search_queries` has something to give it, which needs a
+    configured market with query templates -- the module's default `policy`
+    fixture has neither.
     """
     import job_hunter.pipeline as pipeline_module
     from job_hunter.sources import build_sources as real_build_sources
 
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
-    store = JobStore(settings.db_path)
+    settings = Settings(
+        gemini_api_key="key",
+        candidate_profile="profile",
+        cover_letter_template="template",
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        policy=make_market_policy(),
+        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        dry_run=False,
+        telegram_bot_token="token",
+        telegram_chat_id="chat",
+        db_path=str(tmp_path / "state.sqlite3"),
+        output_dir=str(tmp_path),
+    )
     gemini = FakeGemini()
     telegram = FakeTelegram()
     captured = {}
@@ -2229,7 +2276,13 @@ def test_run_pipeline_builds_brave_backed_source_when_configured(
 
     monkeypatch.setattr(pipeline_module, "build_sources", capturing_build_sources)
 
-    run_pipeline(settings, store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(
+        settings,
+        store=store,
+        gemini=gemini,
+        telegram=telegram,
+        http=_NetworkFreeHttp(),
+    )
 
     assert "TargetedSearchSource" in captured.get("kinds", [])
 

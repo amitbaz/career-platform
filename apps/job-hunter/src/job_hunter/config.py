@@ -149,6 +149,7 @@ def load_settings(config_path: Path) -> Settings:
         telegram_chat_id=telegram_chat_id,
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
         db_path=os.environ.get("JOB_HUNTER_DB_PATH", "var/job_hunter.sqlite3"),
+        output_dir=os.environ.get("JOB_HUNTER_OUTPUT_DIR", "var"),
     )
 
 

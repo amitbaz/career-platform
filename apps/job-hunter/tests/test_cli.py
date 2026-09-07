@@ -25,6 +25,7 @@ def _settings(tmp_path, **overrides):
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
         dry_run=True,
         db_path=str(tmp_path / "var" / "state.sqlite3"),
+        output_dir=str(tmp_path / "var"),
     )
     defaults.update(overrides)
     return Settings(**defaults)

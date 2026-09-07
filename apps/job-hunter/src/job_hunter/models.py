@@ -338,6 +338,7 @@ class Settings:
     telegram_chat_id: str | None = None
     gemini_model: str = "gemini-3.6-flash"
     db_path: str = "var/job_hunter.sqlite3"
+    output_dir: str = "var"
 
 
 @dataclass(slots=True)
