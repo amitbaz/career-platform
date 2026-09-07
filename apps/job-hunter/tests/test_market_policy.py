@@ -145,3 +145,174 @@ def test_salary_floor_falls_back_to_gross_base_floor_for_unlisted_city():
     policy = make_market_policy()
     secondary = market_by_id(policy, "secondary_eu_relocation")
     assert salary_floor_for_job(Job(source="x", title="x", location="Lisbon"), secondary) == 70000
+
+
+# --- explicit hiring scope (issue #16) ------------------------------------
+#
+# A listing variant's location label is strong evidence, but the posting's own
+# statement of who it will hire is stronger. These cases pin both directions:
+# explicit scope must be able to widen attribution past a narrow label, and it
+# must stop an incidental region mention from widening it.
+
+_LINEAR_DESCRIPTION = (
+    "Linear is a fully remote company. This role is open to candidates based "
+    "in the US and Europe, and can be performed from anywhere within those "
+    "regions. React and TypeScript."
+)
+
+_US_ONLY_DESCRIPTION = (
+    "This role is open to candidates based in the United States. Our "
+    "engineering team collaborates with partners across Europe. React and "
+    "TypeScript."
+)
+
+
+def test_explicit_europe_eligibility_beats_a_north_america_location_label():
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior / Staff Product Engineer",
+        location="North America",
+        remote=True,
+        description=_LINEAR_DESCRIPTION,
+    )
+    assert attribute_market(job, policy.markets) == "germany_eu"
+
+
+def test_stated_hiring_region_does_not_rescue_an_explicitly_non_remote_job():
+    """Scope says *where* an employer hires, never *whether* work is remote.
+
+    The unattributed path exists so the legacy non-remote hard blocker still
+    reaches a job no market's locations name. Letting a stated region alone
+    attribute such a job would route an onsite role in an uncovered city into
+    a market whose remote policy never checks work mode.
+    """
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="Austin, TX",
+        remote=False,
+        description=(
+            "Onsite role. Candidates must be located in the United States."
+        ),
+    )
+    assert attribute_market(job, policy.markets) is None
+
+
+def test_us_only_role_is_not_attributed_to_germany_eu():
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="Remote (US)",
+        remote=True,
+        description=_US_ONLY_DESCRIPTION,
+    )
+    assert attribute_market(job, policy.markets) == "us_nyc_sf"
+
+
+def test_a_scope_no_market_covers_does_not_push_a_remote_job_out_of_the_system():
+    """Unattributed is weaker filtering, not stronger, so it is not the answer.
+
+    A job with no market falls through to the legacy global prefilter, which
+    applies none of the market rules -- salary floor, language, sponsorship,
+    employment type -- and only blocks an explicitly non-remote job. When a
+    posting's stated regions exclude every configured market there is no good
+    answer, and the least bad one is the ordinary evidence path.
+    """
+    policy = make_market_policy()
+    markets = [market for market in policy.markets if market.id != "us_nyc_sf"]
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="Remote (US)",
+        remote=True,
+        description=_US_ONLY_DESCRIPTION,
+    )
+    assert attribute_market(job, markets) == "germany_eu"
+
+
+def test_explicit_scope_outranks_a_contradicting_location_label():
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="New York, NY",
+        remote=True,
+        description=(
+            "This role is open to candidates based in Europe only. React and "
+            "TypeScript."
+        ),
+    )
+    assert attribute_market(job, policy.markets) == "germany_eu"
+
+
+def test_incidental_region_prose_does_not_widen_attribution():
+    """Without eligibility language, a Europe mention stays weak evidence.
+
+    The job still lands in germany_eu here -- via the existing remote-scope
+    tier, not via hiring scope -- so this pins that the new tier did not
+    quietly become the only thing attributing European roles.
+    """
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="Remote",
+        remote=True,
+        description="Our engineering team spans Europe. React and TypeScript.",
+    )
+    assert attribute_market(job, policy.markets) == "germany_eu"
+
+
+def test_global_posting_still_falls_back_rather_than_being_dropped():
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="Remote",
+        remote=True,
+        description="Work from anywhere in the world. React and TypeScript.",
+    )
+    assert attribute_market(job, policy.markets) == "germany_eu"
+
+
+def test_scope_membership_does_not_flatten_evidence_between_in_scope_markets():
+    """Naming a region wins the market the field, not the tie inside it.
+
+    A posting open to all of Europe still belongs in the European market its
+    location label names, so the hiring-scope tier has to add to the ordinary
+    evidence rather than replace it.
+    """
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="London, UK",
+        remote=True,
+        description=(
+            "This role is open to candidates based in Europe. React and TypeScript."
+        ),
+    )
+    assert attribute_market(job, policy.markets) == "london"
+
+
+def test_colleague_location_prose_does_not_delete_the_located_market():
+    """A false eligibility read must not drop the market the label names.
+
+    Dropping happens before scoring, so a mis-read clause would not merely add
+    noise -- it would remove the right answer from the field entirely.
+    """
+    policy = make_market_policy()
+    job = Job(
+        source="x",
+        title="Senior Product Engineer",
+        location="Tel Aviv, Israel",
+        remote=True,
+        description=(
+            "Remote position. Our employees are located in the US and Germany. "
+            "React and TypeScript."
+        ),
+    )
+    assert attribute_market(job, policy.markets) == "israel_remote"
