@@ -540,3 +540,32 @@ def test_market_source_config_distinguishes_direct_and_discovery(monkeypatch):
     market = settings.policy.markets[0]
     assert market.direct_sources == ["devjobs"]
     assert market.discovery_domains == ["jobs.techaviv.com", "jobs.ashbyhq.com"]
+
+
+def test_load_settings_rejects_non_positive_location_floor(monkeypatch):
+    # SearchProfileMarket.location_floors is `dict[str, int]` with no
+    # per-value constraint at the Pydantic layer, so a non-positive floor
+    # still reaches config.py's unchanged _parse_markets check and must
+    # still raise there.
+    _set_required_bot_env(monkeypatch)
+    with pytest.raises(
+        ValueError, match=r"salary\.location_floors\.Berlin must be positive"
+    ):
+        _load(
+            _profile(
+                markets=[
+                    SearchProfileMarket(
+                        market_id="germany_eu",
+                        query_share=0.5,
+                        locations=["Berlin"],
+                        allowed_languages=["English"],
+                        currency="EUR",
+                        gross_base_floor=90000,
+                        location_floors={"Berlin": 0},
+                        remote_policy="preferred",
+                        relocation_policy="selective",
+                        sponsorship_policy="not_required",
+                    )
+                ]
+            )
+        )
