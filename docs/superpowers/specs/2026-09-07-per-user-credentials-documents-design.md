@@ -101,7 +101,7 @@ Create `private.user_provider_credentials` with:
 
 - `user_id uuid not null references auth.users(id) on delete cascade`;
 - `provider text not null` constrained to `gemini` or `brave`;
-- `vault_secret_id uuid not null unique references vault.secrets(id) on delete cascade`;
+- `vault_secret_id uuid not null unique references vault.secrets(id)`;
 - `created_at timestamptz not null` and `updated_at timestamptz not null`; and
 - primary key `(user_id, provider)`.
 
@@ -111,9 +111,10 @@ secret names and descriptions must not contain email addresses, document text, k
 or other personal values.
 
 A private delete trigger removes the referenced Vault secret whenever a registry row is deleted,
-including deletion caused by the `auth.users` cascade. The foreign key handles the inverse
-direction, so deleting a Vault secret also removes its stale registry row. Both directions remain
-inside one database transaction.
+including deletion caused by the `auth.users` cascade. The foreign key deliberately uses its
+default restrictive behavior: callers delete through the registry, which then owns Vault cleanup,
+and cannot remove a referenced Vault row behind the registry's back. The cleanup remains inside
+the registry deletion transaction.
 
 ### Public RPC boundary
 
