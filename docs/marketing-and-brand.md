@@ -2,8 +2,9 @@
 
 Last updated: 2026-09-07
 
-Status: brand exploration in progress. A working name, a visual base, a mascot species, and a
-logo direction have been chosen as starting points. None is final. This document preserves the
+Status: brand exploration in progress. Direction 2 (illustration and editorial type) with the
+working name Caddie is the current base, without a mascot. The llama direction is retired.
+The final identity and logo remain open. This document preserves the
 marketing discussion and distinguishes agreed direction from proposals and open decisions. Use it
 as the shared reference for future marketing, landing-page, and visual-identity work.
 
@@ -44,22 +45,20 @@ Consequences for the brand:
   remain open.
 - **Working name: Caddie.** Chosen because a caddie carries your bag, walks beside you, knows
   the course, and hands you the right club at the right moment, which covers both the
-  "does the legwork" and the "gets you ready" halves. It also works as the mascot's name.
+  "does the legwork" and the "gets you ready" halves.
   Not trademark-, domain-, or app-store-checked yet. Earlier placeholder "Stride" is retired;
   it said movement, and the target user wants to stop carrying weight, not move faster.
 - **Visual base: illustration and editorial type** (brand exploration direction 2). Warm
   expressive line illustration, Newsreader serif for display, Inter for text, palette of
   paper, ink, clay (primary action), sage (progress), amber (celebration), plum (illustration
   depth). Chosen over a mascot-first concept and a geometric-progress concept.
-- **Mascot: a llama named Caddie**, added on top of the illustration base (direction 4). The
-  llama walks beside the job seeker and carries the load in saddlebags. It accompanies the
-  person rather than replacing them in the hero illustration. Chosen over a bear (generated
-  by default, rejected as generic). Should read as cute and funny; current drafts are cute
-  but not yet funny.
-- **Logo direction: llama silhouette mark** (logo option C) with the Newsreader wordmark.
-  Chosen because a stranger can name it in a second and it ties the mark to the mascot.
-  Explicitly a starting direction, not a final logo. The original arc-and-dot mark was
-  rejected as unreadable without a caption.
+- **Current choice: direction 2 + Caddie, no mascot.** The founder reversed the llama
+  decision. Continue from `direction-2-illustration-v2.pen`; do not carry the llama or its
+  silhouette mark into new work.
+- **Logo:** the current direction 2 file contains a flag mark with the Newsreader wordmark.
+  Treat it as the existing exploration, not a separately approved final logo. The llama
+  silhouette direction is retired. The original arc-and-dot mark was rejected as unreadable
+  without a caption.
 - **pen.dev organization:** use the existing `career-platform` workspace. Brand exploration
   files live in this repository under `designs/brand-exploration/` as `.pen` sources with PNG
   exports. Organize the design system, landing page, paid ads, and product designs into
@@ -92,16 +91,34 @@ logs (`*.log`) are ignored by git.
 | --- | --- | --- |
 | `direction-1-mascot` | Penguin mascot concept, name Stride | Parked |
 | `direction-2-illustration` | Illustration and type concept, name Stride | Superseded by v2 |
-| `direction-2-illustration-v2` | Same, renamed Caddie, flag logo mark | Reference, no mascot |
+| `direction-2-illustration-v2` | Same, renamed Caddie, flag logo mark, no mascot | **Current** |
+| `direction-2-illustration-v3` | Refinement: relief/readiness hero, promise section, broader illustration cast, voice and microcopy examples | Review pending |
+| `direction-2-illustration-v3.pdf` | Full v3 board exported as a one-page vector PDF | Export |
+| `direction-2-illustration-v3.svg` | Full v3 board exported as SVG; text is converted to paths for portable rendering | Export |
+| `direction-2-illustration-v4` | Fable 5.1 icon refinement: seven concepts and C-monogram option G applied across the board | Review pending |
+| `direction-2-illustration-v4-icon-options.png` | Crop comparing the seven icon concepts, sizes, lockup, and reversed uses | Review aid |
 | `direction-3-progress` | Geometric progress concept, name Stride | Parked |
 | `direction-4-caddie` | Illustration base plus bear mascot | Rejected |
-| `direction-4-caddie-v2` | Illustration base plus llama mascot, three llama options | Superseded |
-| `direction-4-caddie-v3` | Adds logo exploration, four mark options | Superseded |
-| `direction-4-caddie-v4` | Llama mark (option C) applied across the board | **Current** |
-| `direction-4-caddie-v3-logos.png` | Crop of the four logo options for legibility | Reference |
+| `direction-4-caddie-v2` | Illustration base plus llama mascot, three llama options | Retired |
+| `direction-4-caddie-v3` | Adds logo exploration, four mark options | Retired |
+| `direction-4-caddie-v4` | Llama mark (option C) applied across the board | Retired |
+| `direction-4-caddie-v3-logos.png` | Crop of the four logo options for legibility | Historical reference |
 
-Iterate from `direction-4-caddie-v4.pen` using `pen --in`. Keep earlier versions; do not
+Iterate from `direction-2-illustration-v2.pen` using `pen --in`. Keep earlier versions; do not
 overwrite.
+
+The first refinement, `direction-2-illustration-v3.pen`, is available for review. It preserves
+the direction 2 identity and adds a more explicit relief/readiness message, an older job seeker
+illustration, and product voice examples. Unsupported customer counts, hiring results, pricing
+claims, and the sample live domain were removed. This is exploratory copy and design, not
+verification of product capabilities or a final landing page. Motion remains a concept board.
+The founder has not yet approved v3; v2 remains the selected base.
+
+The v4 exploration starts from v3 and focuses on the logo icon. It was generated with
+`claude-fable-5-1`. Fable explored seven marks and applied option G: a C monogram with the
+goal flag integrated into its upper shoulder and the "you are here" ball at its center. The
+board includes 16, 24, 32, and 48 px, one-color, and reversed checks. V4 is not approved;
+direction 2 + Caddie remains the base while the icon is reviewed.
 
 ## Proposed interpretation — to explore
 
@@ -125,19 +142,19 @@ Shortlists considered before settling on Caddie, kept for reference if the name 
 - Calm and steadiness words (Steady, Stead, Poise, Aplomb) and their equivalents in other
   languages. Dropped because the product is not a mood; it does work.
 - Doing-the-legwork words: Legwork, Stand-in, Scout, Understudy, Caddie. Caddie won because
-  it covers both halves and names the mascot.
+  it covers both halves. Its earlier use as a mascot name is now retired.
 - Hebrew slang candidates if Israel is the first market: Alai (on me), Chik chak, Sagur,
   Mesudar. Tav and Tau were liked as sounds.
 
 ## Suggested next design step
 
-From `direction-4-caddie-v4.pen`:
+From `direction-2-illustration-v2.pen`:
 
-1. Pick one llama variant (A Packmate, B Woolly, C Longneck) and produce a canonical model
-   sheet: proportions, three views, expression set. Push the "funny" further.
-2. Redraw the hero and ad illustrations to match the canonical llama.
-3. Refine the llama silhouette mark: test at 16, 24, 64 px and in one colour.
-4. Then split into separate pen.dev files: design system, landing page, ad set.
+1. Refine the Caddie illustration and editorial type direction without a mascot.
+2. Review the existing flag mark and wordmark; settle the logo and test small sizes and
+   one-colour use.
+3. Develop the chosen direction into separate pen.dev files: design system, landing page,
+   and ad set.
 
 ## Open decisions
 
@@ -146,8 +163,7 @@ From `direction-4-caddie-v4.pen`:
 | First campaign audience | Which targeting segment should we test first within the cross-profession audience? |
 | Market | Geography, language, and initial age segment. Affects whether the name and slang choices travel. |
 | Name | Caddie is the working name. Needs trademark, domain, and app-store checks before anything public. |
-| Mascot | Which llama variant, how funny, and the canonical model sheet. |
-| Logo | Refine the llama silhouette mark, or combine with a flag or bag element. |
+| Logo | Review and refine the direction 2 flag mark and wordmark; final logo remains open. |
 | Motion | How progress and personality appear through animation, beyond the concept notes. |
 | Landing page | Main message, product proof, and primary call to action. |
 | Paid acquisition | Initial channel, budget, creative formats, and experiment duration. |
@@ -182,7 +198,16 @@ From `direction-4-caddie-v4.pen`:
   variants and three expressions of the leading one.
 - Logo exploration produced four marks (stairs and flag, bag, llama silhouette, golf pin).
   Founder chose the llama silhouette as a starting direction; applied across the board in v4.
+- Founder subsequently reversed the llama decision: return to **direction 2 + Caddie, no
+  mascot**. `direction-2-illustration-v2` is current again; llama explorations and their logo
+  direction are retired and preserved as history.
 - Nothing launched, no name checks done, no final design system chosen.
+- Founder requested improving the chosen direction 2 + Caddie base. Generated v3 with pen.dev,
+  exported and visually reviewed the board, and preserved v2 unchanged. V3 awaits founder review.
+- Founder found the flag icon basic and amateur. Used `claude-fable-5-1` in pen.dev to create
+  seven refinements. Fable applied C-monogram option G across a new v4 board; review is pending.
+- Exported the full direction 2 v3 board as SVG from pen.dev's native vector PDF output.
+- Saved pen.dev's native one-page vector PDF export of the full direction 2 v3 board.
 
 ## Continuing this work
 
