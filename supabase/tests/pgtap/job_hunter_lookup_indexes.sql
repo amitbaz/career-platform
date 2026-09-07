@@ -10,7 +10,7 @@
 -- fails here rather than in a timed-out production run.
 
 begin;
-select plan(7);
+select plan(9);
 
 select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_canonical_url_idx',
                  'canonical-URL lookup in job_hunter_upsert_job is indexed');
@@ -18,14 +18,44 @@ select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_canonical_ur
 select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_ats_idx',
                  'ATS-triple lookup in job_hunter_upsert_job is indexed');
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_identity_idx',
+-- These three index plain generated columns rather than expressions. An
+-- expression index cannot be used under RLS here: the qual calls a function
+-- that is not LEAKPROOF, so the planner will not push it below the security
+-- barrier, and as `authenticated` the lookup falls back to a sequential
+-- scan. Comparing a stored column is plain text equality, which is
+-- leakproof and does push down. See 202609070002.
+select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_normalized_company_title_idx',
                  'normalized company/title lookup in job_hunter_find_job_by_identity is indexed');
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_canonical_of_url_idx',
+select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_canonical_of_url_col_idx',
                  'canonicalized-url branch of the inbound anti-join is indexed');
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_normalized_triple_idx',
+select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_normalized_identity_idx',
                  'normalized-identity branch of the inbound anti-join is indexed');
+
+-- The generated columns are what makes those indexes reachable. Losing one,
+-- or having it silently become an ordinary column an application must keep
+-- in step, is the regression this guards.
+select is(
+  (select count(*)::int from information_schema.columns
+    where table_schema = 'public' and table_name = 'job_hunter_jobs'
+      and column_name in ('normalized_identity','canonical_url_of_url',
+                          'normalized_company','normalized_title')
+      and is_generated = 'ALWAYS'),
+  4,
+  'all four normalized lookup columns are GENERATED ALWAYS, not application-maintained'
+);
+
+-- The expression indexes they replace must be gone, not merely superseded:
+-- leaving them costs a write on every insert and update and can never be read.
+select is_empty(
+  $$ select indexname from pg_indexes
+      where schemaname = 'public' and tablename = 'job_hunter_jobs'
+        and indexname in ('job_hunter_jobs_user_identity_idx',
+                          'job_hunter_jobs_user_canonical_of_url_idx',
+                          'job_hunter_jobs_user_normalized_triple_idx') $$,
+  'the RLS-unreachable expression indexes were dropped'
+);
 
 select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_source_job_idx',
                  'source-identity branch of the inbound anti-join is indexed');
