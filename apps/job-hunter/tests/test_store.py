@@ -1265,6 +1265,41 @@ def test_set_job_market_treats_none_as_unset(store):
     assert store.get_job(job_id).market_id is None
 
 
+def _job_status(store, job_id: str) -> str:
+    rows = store.client.select(
+        "job_hunter_jobs", params={"id": f"eq.{job_id}", "select": "status"}
+    )
+    return rows[0]["status"]
+
+
+def test_set_job_statuses_persists_both_statuses_in_one_batch(store):
+    rejected_id, _, _ = store.upsert_logical_job(
+        Job(source="x", source_job_id="r1", title="Senior Frontend Engineer")
+    )
+    closed_id, _, _ = store.upsert_logical_job(
+        Job(source="x", source_job_id="c1", title="Senior Backend Engineer")
+    )
+
+    store.set_job_statuses([(rejected_id, "rejected"), (closed_id, "closed")])
+
+    assert _job_status(store, rejected_id) == "rejected"
+    assert _job_status(store, closed_id) == "closed"
+
+
+def test_set_job_statuses_is_a_no_op_for_an_empty_list(store):
+    # Must not raise -- discovery calls this unconditionally every run, even
+    # when nothing was rejected.
+    store.set_job_statuses([])
+
+
+def test_set_job_statuses_rejects_an_invalid_status(store):
+    job_id, _, _ = store.upsert_logical_job(
+        Job(source="x", source_job_id="bad1", title="Senior Frontend Engineer")
+    )
+    with pytest.raises(ValueError):
+        store.set_job_statuses([(job_id, "new")])
+
+
 def test_evaluation_market_id_round_trip(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer", company="Acme")
     job_id, _, _ = store.upsert_job(job)

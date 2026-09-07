@@ -1560,6 +1560,113 @@ def test_collect_candidates_request_count_does_not_grow_with_job_count(
     )
 
 
+def test_collect_candidates_request_count_does_not_grow_with_rejected_job_count(
+    supabase_client, policy
+):
+    """The prefilter-rejection path must stay batched too.
+
+    The base request-count test above only exercises jobs that survive to
+    `eligible`, so it never touches `set_job_statuses` -- the batched write
+    for jobs rejected as closed or prefiltered. Every job here is rejected
+    by the legacy remote-only hard blocker (`policy` carries no markets, so
+    `job.remote is False` always trips it), forcing that path to run for
+    all twenty jobs and proving it doesn't cost one request per job either.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="test",
+                source_job_id=f"rejected-{job_count}-{i}",
+                url=f"https://example.test/rejected-{job_count}-{i}",
+                company=f"Acme {i}",
+                title="Frontend Engineer",
+                location="Office",
+                remote=False,
+                description="A frontend engineering role working in React.",
+            )
+            for i in range(job_count)
+        ]
+        result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        assert result.stats.availability_rejected == 0
+        assert result.stats.prefilter_rejected == job_count, (
+            "sanity check: this test's jobs must actually take the "
+            "rejected/set_job_statuses path, not some other one"
+        )
+        return len(client.calls)
+
+    one_job = run_with(1)
+    twenty_jobs = run_with(20)
+
+    assert twenty_jobs <= one_job + 2, (
+        f"{twenty_jobs} requests for 20 rejected jobs vs {one_job} for 1 -- "
+        "set_job_statuses is scaling with the rejected job count"
+    )
+
+
+def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
+    supabase_client, policy
+):
+    """Twenty jobs on one ATS board must cost the same registry traffic as one.
+
+    `upsert_ats_boards` is documented as O(distinct boards), collapsing
+    thousands of sightings to dozens of registrations -- this pins that:
+    twenty jobs all pointing at the same (provider, board) must not cost
+    any more ATS-registry requests than a single job on that board.
+
+    Jobs are rejected by the legacy remote-only hard blocker (`remote=False`,
+    no markets configured) so none reach `eligible`. That keeps this test
+    isolated to `upsert_ats_boards` (phase 2's board-sighting write, in
+    scope for this task): an eligible ATS job would also call
+    `record_ats_eligible_job` in the untouched, out-of-scope final loop,
+    which touches the same `job_hunter_ats_registry` table once per
+    eligible job and would make this test fail for a reason this task was
+    never asked to fix.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="test",
+                source_job_id=f"board-{job_count}-{i}",
+                url=f"https://jobs.lever.co/acme/board-{job_count}-{i}",
+                company="Acme",
+                title=f"Frontend Engineer {i}",
+                location="Office",
+                remote=False,
+                description="A frontend engineering role working in React.",
+            )
+            for i in range(job_count)
+        ]
+        result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        assert result.eligible == [], (
+            "sanity check: these jobs must be rejected, not eligible, or "
+            "record_ats_eligible_job would contaminate this test's count"
+        )
+        return sum(
+            1 for call in client.calls if "job_hunter_ats_registry" in call
+        )
+
+    one_job = run_with(1)
+    twenty_jobs = run_with(20)
+
+    assert one_job > 0, (
+        "sanity check: registering the single job's board must actually "
+        "touch job_hunter_ats_registry, or this test proves nothing"
+    )
+    assert twenty_jobs == one_job, (
+        f"{twenty_jobs} ATS-registry requests for 20 jobs on one board vs "
+        f"{one_job} for 1 -- ATS board registration is scaling with the "
+        "job count instead of the distinct board count"
+    )
+
+
 def test_collect_candidates_harvests_ats_board_with_observed_not_attributed_market(
     store, market_policy
 ):

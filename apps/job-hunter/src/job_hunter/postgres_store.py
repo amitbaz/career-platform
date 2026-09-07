@@ -1741,6 +1741,28 @@ class PostgresJobStore:
             raise ValueError("status must be rejected or closed")
         self._client.update("job_hunter_jobs", {"status": status}, params={"id": f"eq.{job_id}"})
 
+    def set_job_statuses(self, pairs: list[tuple[str, str]]) -> None:
+        """Persist many terminal discovery statuses in as few requests as possible.
+
+        Every status must be ``"rejected"`` or ``"closed"``, same as
+        `set_job_status`. There are only ever those two values, so this
+        groups ids by status and issues one PATCH per status per chunk
+        (``id=in.(...)``) rather than a per-row RPC like `set_job_markets`
+        needs for its arbitrary per-row values.
+        """
+        by_status: dict[str, list[str]] = {}
+        for job_id, status in pairs:
+            if status not in {"rejected", "closed"}:
+                raise ValueError("status must be rejected or closed")
+            by_status.setdefault(status, []).append(job_id)
+        for status, job_ids in by_status.items():
+            for chunk in _chunked(job_ids, _ID_ARRAY_CHUNK_SIZE):
+                self._client.update(
+                    "job_hunter_jobs",
+                    {"status": status},
+                    params={"id": f"in.({','.join(chunk)})"},
+                )
+
     def save_application_event(
         self,
         *,
@@ -2192,6 +2214,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "set_job_market": None,
     "set_job_markets": None,
     "set_job_status": None,
+    "set_job_statuses": None,
     "upsert_ats_boards": "count",
     "backfill_ats_identity": "count",
     "save_evaluation": None,

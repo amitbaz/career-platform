@@ -152,6 +152,78 @@ select is(
   false,
   'the second row of a merged pair reports is_new = false');
 
+-- clock_timestamp() vs. now(): two elements in one batch call must get
+-- strictly increasing first_seen_at and created_at, not tied. now() is the
+-- transaction's start time -- constant across every iteration of one call
+-- to job_hunter_upsert_jobs -- so under now() these two rows would carry
+-- identical timestamps. clock_timestamp() advances on every call within a
+-- transaction, matching what two separate sequential single-job requests
+-- would have produced. This is what lets the merge-survivor tiebreak below
+-- (first_seen_at asc, id asc, in job_hunter_upsert_job) preserve input
+-- order for jobs batched together.
+-- Materialized first, then joined in a separate statement -- joining
+-- directly against job_hunter_upsert_jobs(...) in the same statement's
+-- FROM clause returned zero rows in manual testing (the set-returning
+-- function call apparently doesn't compose reliably with a join here),
+-- while the two-step form below (matching temp_order_batch's pattern
+-- above) reads back cleanly.
+create temporary table temp_clock_ids as
+select * from public.job_hunter_upsert_jobs(
+    jsonb_build_array(
+      jsonb_build_object('fingerprint', 'clock-fp-1', 'source', 'test',
+                         'company', 'Clock Co', 'title', 'Engineer One',
+                         'location', 'Remote', 'remote', true,
+                         'description', 'one', 'url', 'https://example.test/clock-1'),
+      jsonb_build_object('fingerprint', 'clock-fp-2', 'source', 'test',
+                         'company', 'Clock Co', 'title', 'Engineer Two',
+                         'location', 'Remote', 'remote', true,
+                         'description', 'two', 'url', 'https://example.test/clock-2')));
+
+create temporary table temp_clock_batch as
+select temp_clock_ids.input_index, j.first_seen_at, j.created_at
+  from temp_clock_ids
+  join public.job_hunter_jobs j on j.id = temp_clock_ids.id
+ order by temp_clock_ids.input_index;
+
+select ok(
+  (select first_seen_at from temp_clock_batch where input_index = 0) <
+  (select first_seen_at from temp_clock_batch where input_index = 1),
+  'two jobs upserted in one batch call get strictly increasing first_seen_at');
+
+select ok(
+  (select created_at from temp_clock_batch where input_index = 0) <
+  (select created_at from temp_clock_batch where input_index = 1),
+  'two jobs upserted in one batch call get strictly increasing created_at');
+
+-- When two elements of one batch canonicalize to the same identity, the
+-- earlier-input job must be the merge survivor. A tied first_seen_at (the
+-- bug this pins) lets survivor selection fall through to `id asc` on
+-- random uuids, which has no relationship to input order -- so this checks
+-- an observable field only the earlier-input job's row carries, rather
+-- than just that a merge happened at all (already covered above).
+create temporary table temp_survivor_batch as
+select * from public.job_hunter_upsert_jobs(
+  jsonb_build_array(
+    jsonb_build_object('fingerprint', 'survivor-fp-a', 'source', 'test',
+                       'company', 'Survivor Co', 'title', 'Engineer',
+                       'location', 'Remote', 'remote', true, 'description', 'first',
+                       'canonical_url', 'https://example.test/survivor'),
+    jsonb_build_object('fingerprint', 'survivor-fp-b', 'source', 'test',
+                       'company', 'Loser Co', 'title', 'Engineer',
+                       'location', 'Remote', 'remote', true, 'description', 'second',
+                       'canonical_url', 'https://example.test/survivor')));
+
+select is(
+  (select count(distinct id)::int from temp_survivor_batch),
+  1,
+  'sanity check: the two survivor-test jobs really did merge into one');
+
+select is(
+  (select company from public.job_hunter_jobs
+    where id = (select id from temp_survivor_batch limit 1)),
+  'Survivor Co',
+  'the earlier-input job (input_index 0) is the merge survivor, not whichever id sorts lower');
+
 -- The function is security invoker, so it can never be a way around RLS.
 select is(
   (select p.prosecdef from pg_proc p
