@@ -218,6 +218,9 @@ class SearchPolicy:
     blocked_profession_title_phrases: list[str] = field(
         default_factory=lambda: list(DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES)
     )
+    specialist_board_hosts: list[str] = field(default_factory=list)
+    frontend_signals: list[str] = field(default_factory=list)
+    backend_heavy_signals: list[str] = field(default_factory=list)
     markets: list[MarketPolicy] = field(default_factory=list)
 
 
