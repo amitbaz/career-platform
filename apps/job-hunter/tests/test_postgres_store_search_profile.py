@@ -109,3 +109,28 @@ def test_save_search_profile_replaces_markets():
 
     _, market_rows = store.get_search_profile()
     assert [row["market_id"] for row in market_rows] == ["israel_remote"]
+
+
+def test_delivery_policy_round_trips():
+    client = FakeSupabaseClient()
+    store = PostgresJobStore(client)
+    profile = _profile()
+    profile.daily_offer_limit = 20
+    profile.match_score_floor = 70
+
+    store.save_search_profile(profile)
+
+    profile_row, _ = store.get_search_profile()
+    assert profile_row["daily_offer_limit"] == 20
+    assert profile_row["match_score_floor"] == 70
+
+
+def test_delivery_policy_defaults_round_trip():
+    client = FakeSupabaseClient()
+    store = PostgresJobStore(client)
+
+    store.save_search_profile(_profile())
+
+    profile_row, _ = store.get_search_profile()
+    assert profile_row["daily_offer_limit"] == 10
+    assert profile_row["match_score_floor"] == 80
