@@ -214,12 +214,25 @@ select is(
   true,
   'a job with no evaluation needs evaluation');
 
--- An id belonging to another user returns no row at all.
+-- An id that does not exist at all returns no row at all.
 select is(
   (select count(*)::int from public.job_hunter_needs_evaluation(
      array['99999999-0000-0000-0000-000000000009'::uuid])),
   0,
-  'an unreadable id returns no row rather than a verdict');
+  'a nonexistent id returns no row rather than a verdict');
+
+-- An id that DOES exist, but belongs to another user, also returns no row --
+-- this is the RLS case proper, distinct from "no such row" above: it proves
+-- a real job that RLS filters is silent rather than mistakenly answered.
+select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
+
+select is(
+  (select count(*)::int from public.job_hunter_needs_evaluation(
+     array(select id from temp_rls_user_a))),
+  0,
+  'user A''s real job id returns no row when user B asks -- RLS holds, not just a missing-row coincidence');
+
+select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 select is(
   (select p.prosecdef from pg_proc p
@@ -227,6 +240,49 @@ select is(
     where n.nspname = 'public' and p.proname = 'job_hunter_needs_evaluation'),
   false,
   'job_hunter_needs_evaluation is security invoker');
+
+-- The asymmetric null comparison, pinned independently of Python -----------
+--
+-- Both `job_hunter_jobs.description_hash` and
+-- `job_hunter_evaluations.description_hash_at_eval` are `not null default
+-- ''`, so a real NULL can never reach either column through the normal
+-- upsert/save-evaluation paths -- the coalesce on the job side is
+-- defensive, not reachable in production today. To pin the deliberate
+-- asymmetry described in the migration comment (job side coalesced,
+-- evaluation side not) at the SQL layer regardless, this relaxes the
+-- evaluation column's NOT NULL constraint for the rest of this rolled-back
+-- transaction only, inserts a genuine NULL, and asserts the current
+-- (asymmetric) verdict. A "tidied" comparison that coalesced the
+-- evaluation side too (`coalesce(e.description_hash_at_eval, '') is
+-- distinct from j.description_hash`) would report `false` here instead --
+-- do not "fix" this test to match that if it starts failing.
+select pg_temp.become_postgres();
+alter table public.job_hunter_evaluations alter column description_hash_at_eval drop not null;
+select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
+
+create temporary table temp_asym_job as
+select id from public.job_hunter_upsert_jobs(
+  jsonb_build_array(jsonb_build_object(
+    'fingerprint', 'needs-fp-asym', 'source', 'test', 'company', 'Acme',
+    'title', 'Engineer', 'location', 'Remote', 'remote', true,
+    'description', '', 'url', 'https://example.test/n-asym')));
+
+update public.job_hunter_jobs set description_hash = '' where id = (select id from temp_asym_job);
+
+insert into public.job_hunter_evaluations
+  (user_id, job_id, status, description_hash_at_eval, content_confidence_at_eval, evaluated_at)
+values
+  ((select auth.uid()), (select id from temp_asym_job), 'ok', null, '', now());
+
+select is(
+  (select needs from public.job_hunter_needs_evaluation(
+     array(select id from temp_asym_job))),
+  true,
+  'a NULL description_hash_at_eval against an empty stored job hash counts as changed -- the asymmetry is deliberate, not a bug');
+
+-- Not restored: the whole transaction rolls back below, so the relaxed
+-- constraint never reaches the real schema, and re-tightening it here
+-- would fail anyway with the NULL row still present.
 
 select * from finish();
 rollback;

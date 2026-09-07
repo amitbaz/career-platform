@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from job_hunter.models import Job
+from job_hunter.models import Evaluation, Job
 
 
-def _make_job(fingerprint: str, title: str, url: str) -> Job:
+def _make_job(
+    fingerprint: str, title: str, url: str, content_confidence: str = ""
+) -> Job:
     return Job(
         source="test",
         source_job_id=fingerprint,
@@ -21,6 +23,24 @@ def _make_job(fingerprint: str, title: str, url: str) -> Job:
         location="Remote",
         remote=True,
         description=f"description for {title}",
+        content_confidence=content_confidence,
+    )
+
+
+def _make_evaluation(job_id: str, status: str = "ok") -> Evaluation:
+    return Evaluation(
+        job_id=job_id,
+        total_score=0,
+        scores={},
+        decision="pass",
+        hard_blockers=[],
+        strengths=[],
+        gaps=[],
+        salary_note="",
+        location_note="",
+        rationale="",
+        model="test",
+        status=status,
     )
 
 
@@ -191,3 +211,97 @@ def test_needs_evaluation_bulk_on_empty_input_makes_no_request(store, monkeypatc
     monkeypatch.setattr(store._client, "rpc", exploding_rpc)
 
     assert store.needs_evaluation_bulk([]) == {}
+
+
+# The tests above only ever exercise a job with no evaluation row, or an id
+# that does not exist -- both always answer `true`, so they would not catch
+# the SQL's evaluation comparison being weakened or its ordering flipped.
+# Everything below is differential: it drives both `needs_evaluation` and
+# `needs_evaluation_bulk` for the same job through the real per-job path
+# (`store.upsert_job`/`store.save_evaluation`) and asserts they agree, so
+# the bulk SQL can never silently drift from the single-job Python method
+# it is meant to reproduce.
+
+
+def test_needs_evaluation_bulk_agrees_when_the_evaluation_is_current(store):
+    job_id, _, _ = store.upsert_job(_make_job("diff-current", "Engineer", "https://example.test/dc"))
+    store.save_evaluation(job_id, _make_evaluation(job_id))
+
+    assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is False
+
+
+def test_needs_evaluation_bulk_agrees_when_the_description_changed_since_evaluation(store):
+    job_id, _, _ = store.upsert_job(_make_job("diff-desc", "Engineer V1", "https://example.test/dd"))
+    store.save_evaluation(job_id, _make_evaluation(job_id))
+
+    # Same fingerprint (source_job_id), different title -> different
+    # description text -> a new description_hash, deterministically
+    # overwritten because upsert_job matches by fingerprint alone.
+    store.upsert_job(_make_job("diff-desc", "Engineer V2", "https://example.test/dd"))
+
+    assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is True
+
+
+def test_needs_evaluation_bulk_agrees_when_content_confidence_changed_since_evaluation(store):
+    job_id, _, _ = store.upsert_job(
+        _make_job("diff-conf", "Engineer", "https://example.test/dcf", content_confidence="official_ats")
+    )
+    store.save_evaluation(job_id, _make_evaluation(job_id))
+
+    store.upsert_job(
+        _make_job("diff-conf", "Engineer", "https://example.test/dcf", content_confidence="partial_unknown")
+    )
+
+    assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is True
+
+
+def test_needs_evaluation_bulk_agrees_when_the_latest_evaluation_failed(store):
+    job_id, _, _ = store.upsert_job(_make_job("diff-failed", "Engineer", "https://example.test/df"))
+    store.save_evaluation(job_id, _make_evaluation(job_id, status="failed"))
+
+    assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is True
+
+
+def test_needs_evaluation_bulk_agrees_on_which_evaluation_is_latest(store):
+    """An older evaluation that matches must not win over a newer one that doesn't -- and vice versa."""
+    job_id, _, _ = store.upsert_job(_make_job("diff-order", "Engineer V1", "https://example.test/do"))
+    # eval_old: matches the job's state at the time it was saved.
+    store.save_evaluation(job_id, _make_evaluation(job_id))
+
+    # The job changes after eval_old, so eval_old is now stale relative to
+    # the job's current state.
+    store.upsert_job(_make_job("diff-order", "Engineer V2", "https://example.test/do"))
+
+    # eval_new: saved after the change, so it matches the job's *current*
+    # state. If the SQL picked the oldest evaluation instead of the
+    # newest, it would see eval_old (stale) and wrongly report `true`.
+    store.save_evaluation(job_id, _make_evaluation(job_id))
+
+    assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is False
+
+
+def test_needs_evaluation_bulk_maps_each_id_to_its_own_verdict(store):
+    """One call covering several of the cases above proves the per-row mapping, not just the single-id case."""
+    matching_id, _, _ = store.upsert_job(_make_job("diff-mix-match", "Engineer", "https://example.test/dmm"))
+    store.save_evaluation(matching_id, _make_evaluation(matching_id))
+
+    stale_id, _, _ = store.upsert_job(_make_job("diff-mix-stale", "Engineer V1", "https://example.test/dms"))
+    store.save_evaluation(stale_id, _make_evaluation(stale_id))
+    store.upsert_job(_make_job("diff-mix-stale", "Engineer V2", "https://example.test/dms"))
+
+    failed_id, _, _ = store.upsert_job(_make_job("diff-mix-failed", "Engineer", "https://example.test/dmf"))
+    store.save_evaluation(failed_id, _make_evaluation(failed_id, status="failed"))
+
+    unevaluated_id, _, _ = store.upsert_job(_make_job("diff-mix-none", "Engineer", "https://example.test/dmn"))
+
+    job_ids = [matching_id, stale_id, failed_id, unevaluated_id]
+
+    assert store.needs_evaluation_bulk(job_ids) == {
+        job_id: store.needs_evaluation(job_id) for job_id in job_ids
+    }
+    assert store.needs_evaluation_bulk(job_ids) == {
+        matching_id: False,
+        stale_id: True,
+        failed_id: True,
+        unevaluated_id: True,
+    }
