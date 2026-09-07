@@ -130,10 +130,13 @@ keep doing so.
   `job_hunter_upsert_jobs`, returns results in input order.
 - `needs_evaluation_bulk(job_ids) -> dict[str, bool]`
 - `set_job_markets(pairs)` — skips the call entirely when no job was attributed.
-- `upsert_ats_boards(references) -> int` — takes the run's **unique** (provider, board)
-  pairs and returns how many were newly admitted. A run discovers thousands of jobs but
-  only dozens of distinct boards, so deduplicating in Python before the call turns
-  thousands of requests into one.
+- `upsert_ats_boards(references) -> int` — takes every ATS board sighting from
+  the run and returns how many were newly admitted. It asks the registry once
+  per **distinct** (provider, board) pair through the existing single-board
+  method. A run sights a board once per job that references it, so thousands
+  of sightings collapse to dozens of calls; that already breaks the tie to job
+  count, and a fourth SQL function would buy a constant factor on dozens of
+  calls at the cost of more SQL to maintain.
 
 Chunk size is 500 jobs. The bound that matters is payload size, not row count: a job
 carries its full description, so 500 of them is a request in the low megabytes, which
@@ -170,7 +173,8 @@ it replaces:
    database call, and it is bounded by how many jobs lack descriptions.
 5. **Batch-upsert the unique jobs** and collect the ids.
 6. **Batch the remaining reads and writes.** `set_job_markets`, `needs_evaluation_bulk`,
-   and one `upsert_ats_boards` over the run's distinct board references.
+   and `upsert_ats_boards` over the run's board sightings, which it collapses to the
+   distinct boards.
 7. **Prefilter and count.** Availability, prefilter, per-market and per-source stats. No
    I/O at all in this loop.
 

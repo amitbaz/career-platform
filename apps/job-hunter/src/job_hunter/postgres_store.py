@@ -1094,6 +1094,44 @@ class PostgresJobStore:
         )
         return False
 
+    def upsert_ats_boards(self, references: list[tuple[str, str, str, str]]) -> int:
+        """Register a run's distinct ATS boards, returning how many were new.
+
+        Takes ``(provider, board_identifier, company_name, market_hint)``
+        tuples, one per sighting, and asks the registry once per distinct
+        ``(provider, board_identifier)``. Discovery sees a board once per job
+        that references it -- thousands of sightings resolving to dozens of
+        boards -- so collapsing here is what keeps the request count off the
+        job count. The first sighting of a board wins: its company name and
+        market hint are the ones written.
+
+        A board that fails to register is logged and skipped. Learning the
+        registry is opportunistic; losing one board must not cost the run.
+        """
+        first_sighting: dict[tuple[str, str], tuple[str, str]] = {}
+        for provider, board_identifier, company_name, market_hint in references:
+            key = (provider, board_identifier)
+            if key not in first_sighting:
+                first_sighting[key] = (company_name, market_hint)
+
+        newly_registered = 0
+        for (provider, board_identifier), (company_name, market_hint) in first_sighting.items():
+            try:
+                if self.upsert_ats_board(
+                    provider=provider,
+                    board_identifier=board_identifier,
+                    company_name=company_name,
+                    market_hint=market_hint,
+                ):
+                    newly_registered += 1
+            except Exception:
+                logger.exception(
+                    "ATS board registration failed: provider=%s board=%s",
+                    provider,
+                    board_identifier,
+                )
+        return newly_registered
+
     def reject_ats_board(
         self, provider: str, board_identifier: str, reason: str, now: datetime
     ) -> None:

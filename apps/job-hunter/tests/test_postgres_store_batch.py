@@ -373,3 +373,116 @@ def test_set_job_markets_chunks_by_the_configured_size(store, monkeypatch):
     assert calls == [2, 2, 1]
     for job_id, market in zip(job_ids, markets):
         assert store.get_job(job_id).market_id == market
+
+
+def test_upsert_ats_boards_asks_once_per_distinct_board(store, monkeypatch):
+    """Many sightings of the same (provider, board) must collapse to one call.
+
+    Asserting only the returned count would pass even if every sighting hit
+    the single-board method separately -- the count would still land on 2
+    because repeats of an already-newly-registered board return False on the
+    second call. The call log is what actually proves deduplication.
+    """
+    calls: list[tuple[str, str]] = []
+    original = store.upsert_ats_board
+
+    def counting(provider, board_identifier, company_name="", market_hint=""):
+        calls.append((provider, board_identifier))
+        return original(provider, board_identifier, company_name, market_hint)
+
+    monkeypatch.setattr(store, "upsert_ats_board", counting)
+
+    newly_registered = store.upsert_ats_boards(
+        [
+            ("greenhouse", "acme", "Acme", "israel"),
+            ("greenhouse", "acme", "Acme", "israel"),
+            ("lever", "globex", "Globex", ""),
+        ]
+    )
+
+    assert calls == [("greenhouse", "acme"), ("lever", "globex")]
+    assert newly_registered == 2
+
+
+def test_upsert_ats_boards_dedupe_key_is_provider_and_board_only(store, monkeypatch):
+    """Two sightings sharing (provider, board) collapse even when company_name differs.
+
+    The dedupe key is (provider, board_identifier) -- not the full tuple.
+    A sighting with a different company_name for the same board must still
+    collapse into a single call (first sighting wins), while a sighting with
+    a different board_identifier must never be collapsed with it. This
+    guards against an implementation that dedupes on the whole 4-tuple,
+    which would under-collapse and leave the request count tied to the
+    number of distinct company-name spellings rather than distinct boards.
+    """
+    calls: list[tuple[str, str, str, str]] = []
+    original = store.upsert_ats_board
+
+    def counting(provider, board_identifier, company_name="", market_hint=""):
+        calls.append((provider, board_identifier, company_name, market_hint))
+        return original(provider, board_identifier, company_name, market_hint)
+
+    monkeypatch.setattr(store, "upsert_ats_board", counting)
+
+    newly_registered = store.upsert_ats_boards(
+        [
+            ("greenhouse", "acme", "Acme Inc.", "israel"),
+            ("greenhouse", "acme", "ACME Corp", "remote"),  # same key, differing fields
+            ("greenhouse", "acme-eu", "Acme Inc.", "israel"),  # different key, same company
+        ]
+    )
+
+    assert calls == [
+        ("greenhouse", "acme", "Acme Inc.", "israel"),
+        ("greenhouse", "acme-eu", "Acme Inc.", "israel"),
+    ]
+    assert newly_registered == 2
+
+
+def test_upsert_ats_boards_returns_only_the_newly_registered_count(store):
+    """The count reflects boards newly admitted, not every board passed in.
+
+    Register a board first, then call again with a superset that repeats it
+    alongside a genuinely new board. If the return value merely counted
+    distinct boards seen (rather than distinct boards *newly written*), this
+    would wrongly report 2 on the second call instead of 1.
+    """
+    first_pass = store.upsert_ats_boards(
+        [("greenhouse", "acme", "Acme", "israel")]
+    )
+    assert first_pass == 1
+
+    second_pass = store.upsert_ats_boards(
+        [
+            ("greenhouse", "acme", "Acme", "israel"),  # already registered
+            ("lever", "globex", "Globex", ""),  # new
+        ]
+    )
+
+    assert second_pass == 1
+
+
+def test_upsert_ats_boards_survives_one_bad_board(store, monkeypatch):
+    original = store.upsert_ats_board
+
+    def failing_for_globex(provider, board_identifier, company_name="", market_hint=""):
+        if board_identifier == "globex":
+            raise RuntimeError("registry write failed")
+        return original(provider, board_identifier, company_name, market_hint)
+
+    monkeypatch.setattr(store, "upsert_ats_board", failing_for_globex)
+
+    newly_registered = store.upsert_ats_boards(
+        [("lever", "globex", "Globex", ""), ("greenhouse", "initech", "Initech", "")]
+    )
+
+    assert newly_registered == 1
+
+
+def test_upsert_ats_boards_on_empty_input_does_nothing(store, monkeypatch):
+    def exploding(*args, **kwargs):
+        raise AssertionError("no board write should happen for an empty list")
+
+    monkeypatch.setattr(store, "upsert_ats_board", exploding)
+
+    assert store.upsert_ats_boards([]) == 0
