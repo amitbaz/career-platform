@@ -152,9 +152,16 @@ keep doing so.
   count, and a fourth SQL function would buy a constant factor on dozens of
   calls at the cost of more SQL to maintain.
 
-Chunk size is 500 jobs. The bound that matters is payload size, not row count: a job
-carries its full description, so 500 of them is a request in the low megabytes, which
-PostgREST accepts comfortably while keeping a normal run at fewer than 40 upsert calls.
+Chunk size is 100 jobs. The bound that matters is not payload size but time: each call to
+`job_hunter_upsert_jobs` runs a whole chunk's identity resolutions inside one transaction,
+against Supabase's default 8-second `statement_timeout` on the `authenticated` role and the
+client's 25-second read timeout. A chunk that exceeds either comes back as a 500 or 504,
+which is retryable, so an oversized chunk burns its retries and backoff before falling back
+to replaying every job in it one at a time — turning a run that should be faster into one
+that is worse than before batching existed. 100 keeps a chunk's server-side work well inside
+the 8-second budget. A run makes two upsert passes, over raw jobs and unique jobs, so both
+passes count toward the total: at 100 per chunk a normal run of raw=18,839 and unique=12,819
+costs roughly 318 upsert calls, against the ~70,000-request-per-job baseline.
 
 ## Failure handling
 
@@ -170,7 +177,17 @@ logs the job that fails with its source and URL, skips it, and carries on. Clean
 the overwhelmingly common case — pay nothing. A poison posting costs one chunk's worth
 of extra calls and no longer takes the run down with it.
 
-This is strictly better than today, where any such error ends the run.
+That fallback only makes sense for an isolated bad chunk. A poison posting is a property
+of one row, so it fails one chunk and the next chunk succeeds; scattered bad postings
+never trip anything further. But if the batch path itself is broken — the function
+missing, the role's `statement_timeout` cutting every call, PostgREST unreachable — every
+chunk fails, and replaying them all one job at a time would issue tens of thousands of
+requests to produce a run slower than the unbatched code this replaces, while looking in
+the log like a run of bad luck rather than an outage. `upsert_logical_jobs` counts
+consecutive chunk failures, resetting the count on any success, and once three chunks in
+a row fail it stops falling back and raises instead, naming the real problem. So isolated
+bad postings are skipped and the run continues; a systemic failure aborts loudly instead
+of silently degrading into something worse than the bug this branch fixes.
 
 ## Restructuring `collect_candidates`
 
@@ -220,7 +237,7 @@ silent regression:
 - **Python unit tests** against the fake Supabase client asserting *request counts*, not
   only results. The regression being prevented is "one request per job", so a test that
   only checks the returned data would not catch its return. A run of N jobs must issue
-  a number of requests bounded by ceil(N/500) plus a constant.
+  a number of requests bounded by ceil(N/100) plus a constant.
 - **Failure fallback**, unit level: a chunk whose call raises replays per job, the bad
   job is skipped and logged, and every other job in the chunk is persisted.
 - **Integration**, against the local stack, in `tests/integration/`: a batch upsert
