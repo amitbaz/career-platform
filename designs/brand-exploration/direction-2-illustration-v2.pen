@@ -1,0 +1,4460 @@
+{
+  "version": "2.17",
+  "children": [
+    {
+      "type": "frame",
+      "id": "c7cDNs",
+      "x": 0,
+      "y": 0,
+      "name": "Direction 2 - Illustration & Type",
+      "width": 1600,
+      "fill": "#EDE3D6",
+      "layout": "vertical",
+      "gap": 72,
+      "padding": 80,
+      "children": [
+        {
+          "type": "frame",
+          "id": "djEAb",
+          "name": "Board Header",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 10,
+          "children": [
+            {
+              "type": "text",
+              "id": "rgYEl",
+              "name": "Kicker",
+              "fill": "$clay-deep",
+              "content": "BRAND EXPLORATION · DIRECTION 2 OF 3",
+              "fontFamily": "$font-body",
+              "fontSize": 13,
+              "fontWeight": "600",
+              "letterSpacing": 1.6
+            },
+            {
+              "type": "text",
+              "id": "Btd3o",
+              "name": "Board Title",
+              "fill": "$ink",
+              "content": "Illustration & Type",
+              "lineHeight": 1.05,
+              "fontFamily": "$font-display",
+              "fontSize": 52,
+              "fontWeight": "700"
+            },
+            {
+              "type": "text",
+              "id": "YuPPj",
+              "name": "Board Note",
+              "fill": "$ink-soft",
+              "textGrowth": "fixed-width",
+              "width": 820,
+              "content": "Warm expressive illustration and confident editorial type carry the brand. No mascot. Placeholder product name: Caddie.",
+              "lineHeight": 1.5,
+              "fontFamily": "$font-body",
+              "fontSize": 16,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "B003xa",
+          "name": "Landing - First Screen",
+          "clip": true,
+          "width": 1440,
+          "height": 900,
+          "fill": "$paper",
+          "cornerRadius": 12,
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000012",
+            "offset": {
+              "x": 0,
+              "y": 10
+            },
+            "blur": 30
+          },
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "HbzM8",
+              "name": "Nav",
+              "width": "fill_container",
+              "padding": [
+                26,
+                56
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "j5W2vR",
+                  "name": "Nav Left",
+                  "gap": 44,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "B8bj9g",
+                      "name": "Wordmark",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "lPztX",
+                          "name": "Mark Glyph",
+                          "width": 26,
+                          "height": 26,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 1.56,
+                              "id": "npDKv",
+                              "x": 3.38,
+                              "y": 1.8200000000000003,
+                              "name": "Pin Pole",
+                              "fill": "$clay",
+                              "width": 3.12,
+                              "height": 22.36
+                            },
+                            {
+                              "type": "path",
+                              "id": "o6ZDbm",
+                              "x": 5.98,
+                              "y": 2.86,
+                              "name": "Pin Flag",
+                              "geometry": "M0 0c22 3 38 10 56 18-18 8-34 15-56 18z",
+                              "viewBox": [
+                                0,
+                                0,
+                                56,
+                                36
+                              ],
+                              "fill": "$clay",
+                              "width": 14.560000000000002,
+                              "height": 9.36
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "MYwTd",
+                              "x": 14.3,
+                              "y": 16.38,
+                              "name": "Ball",
+                              "fill": "$sage",
+                              "width": 7.8,
+                              "height": 7.8
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "yF7C4",
+                          "name": "Wordmark Text",
+                          "fill": "$ink",
+                          "content": "Caddie",
+                          "fontFamily": "$font-display",
+                          "fontSize": 26,
+                          "fontWeight": "700",
+                          "letterSpacing": -0.4
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "al6c9",
+                      "name": "Nav Links",
+                      "gap": 30,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "hu6d2",
+                          "name": "Find jobs",
+                          "fill": "$ink-soft",
+                          "content": "Find jobs",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "ahipv",
+                          "name": "Interview prep",
+                          "fill": "$ink-soft",
+                          "content": "Interview prep",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "evzva",
+                          "name": "Stories",
+                          "fill": "$ink-soft",
+                          "content": "Stories",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "mwQSC",
+                          "name": "Pricing",
+                          "fill": "$ink-soft",
+                          "content": "Pricing",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "V31Gow",
+                  "name": "Nav Right",
+                  "gap": 20,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "anxiv",
+                      "name": "Log in",
+                      "fill": "$ink",
+                      "content": "Log in",
+                      "fontFamily": "$font-body",
+                      "fontSize": 15,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "MkmQh",
+                      "name": "Nav CTA",
+                      "fill": "$ink",
+                      "cornerRadius": 9999,
+                      "padding": [
+                        11,
+                        20
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "ygL8j",
+                          "name": "Label",
+                          "fill": "$paper",
+                          "content": "Start free",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "o6al0",
+              "name": "Hero",
+              "width": "fill_container",
+              "height": "fill_container",
+              "gap": 56,
+              "padding": [
+                24,
+                56,
+                0,
+                56
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "aTmZf",
+                  "name": "Hero Copy",
+                  "width": 600,
+                  "layout": "vertical",
+                  "gap": 26,
+                  "padding": [
+                    64,
+                    0,
+                    0,
+                    0
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Wgjp3",
+                      "name": "Eyebrow Pill",
+                      "fill": "$clay-tint",
+                      "cornerRadius": 9999,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        16
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "b2Bv2k",
+                          "name": "Spark",
+                          "width": 15,
+                          "height": 15,
+                          "icon": "sparkles",
+                          "library": "lucide",
+                          "fill": "$clay-deep"
+                        },
+                        {
+                          "type": "text",
+                          "id": "QqmxF",
+                          "name": "Pill Text",
+                          "fill": "$clay-deep",
+                          "content": "Job search + interview prep, together",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "k929s",
+                      "name": "Headline",
+                      "fill": "$ink",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Your next job, one confident step at a time.",
+                      "lineHeight": 1.04,
+                      "fontFamily": "$font-display",
+                      "fontSize": 66,
+                      "fontWeight": "700",
+                      "letterSpacing": -1.4
+                    },
+                    {
+                      "type": "text",
+                      "id": "I50jVp",
+                      "name": "Subhead",
+                      "fill": "$ink-soft",
+                      "textGrowth": "fixed-width",
+                      "width": 520,
+                      "content": "Caddie finds the roles worth your time, helps you tailor every application, and rehearses the interview with you until it feels easy.",
+                      "lineHeight": 1.55,
+                      "fontFamily": "$font-body",
+                      "fontSize": 19,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "L1IIsY",
+                      "name": "CTA Row",
+                      "gap": 16,
+                      "padding": [
+                        8,
+                        0,
+                        0,
+                        0
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "VVAtR",
+                          "name": "Primary CTA",
+                          "fill": "$clay",
+                          "cornerRadius": 9999,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "#D2653F44",
+                            "offset": {
+                              "x": 0,
+                              "y": 6
+                            },
+                            "blur": 16
+                          },
+                          "gap": 9,
+                          "padding": [
+                            17,
+                            30
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "IfbU4",
+                              "name": "CTA Label",
+                              "fill": "#FFFFFF",
+                              "content": "Start free",
+                              "fontFamily": "$font-body",
+                              "fontSize": 17,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "icon",
+                              "id": "LGw7z",
+                              "name": "Arrow",
+                              "width": 18,
+                              "height": 18,
+                              "icon": "arrow-right",
+                              "library": "lucide",
+                              "fill": "#FFFFFF"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "L3rJVe",
+                          "name": "Secondary CTA",
+                          "cornerRadius": 9999,
+                          "stroke": "$line",
+                          "strokeWidth": 1.5,
+                          "gap": 9,
+                          "padding": [
+                            17,
+                            26
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "tYs1S",
+                              "name": "Play",
+                              "width": 16,
+                              "height": 16,
+                              "icon": "play",
+                              "library": "lucide",
+                              "fill": "$ink"
+                            },
+                            {
+                              "type": "text",
+                              "id": "w62XEF",
+                              "name": "Sec Label",
+                              "fill": "$ink",
+                              "content": "See how it works",
+                              "fontFamily": "$font-body",
+                              "fontSize": 17,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "TDvTw",
+                      "name": "Trust Row",
+                      "gap": 22,
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "TMmEW",
+                          "name": "Free to start",
+                          "gap": 7,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "R3sjYV",
+                              "name": "Icon",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "check",
+                              "library": "lucide",
+                              "fill": "$sage"
+                            },
+                            {
+                              "type": "text",
+                              "id": "t7YHz",
+                              "name": "Label",
+                              "fill": "$ink-muted",
+                              "content": "Free to start",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "uIemU",
+                          "name": "No credit card",
+                          "gap": 7,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "l57c32",
+                              "name": "Icon",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "shield-check",
+                              "library": "lucide",
+                              "fill": "$sage"
+                            },
+                            {
+                              "type": "text",
+                              "id": "ouWaS",
+                              "name": "Label",
+                              "fill": "$ink-muted",
+                              "content": "No credit card",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "E4PK9",
+                          "name": "12,400 job seekers",
+                          "gap": 7,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "kCAf8",
+                              "name": "Icon",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "users",
+                              "library": "lucide",
+                              "fill": "$sage"
+                            },
+                            {
+                              "type": "text",
+                              "id": "EIQMO",
+                              "name": "Label",
+                              "fill": "$ink-muted",
+                              "content": "12,400 job seekers",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "rKJny",
+                  "name": "Hero Illustration Area",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "layout": "none",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "NiQ4C",
+                      "x": 70,
+                      "y": 70,
+                      "name": "Warm Halo",
+                      "fill": "$clay-tint",
+                      "width": 500,
+                      "height": 500
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "w8CUYm",
+                      "x": 436,
+                      "y": 410,
+                      "name": "Sage Accent",
+                      "fill": "$sage-tint",
+                      "width": 150,
+                      "height": 150
+                    },
+                    {
+                      "type": "frame",
+                      "id": "otc6L",
+                      "x": 20,
+                      "y": 56,
+                      "name": "Hero Illustration",
+                      "clip": true,
+                      "width": 620,
+                      "height": 520,
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "v3cbza",
+                          "x": 48.1979,
+                          "y": 0,
+                          "fill": "#FEF6EB",
+                          "width": 523.6043,
+                          "height": 520
+                        },
+                        {
+                          "type": "path",
+                          "id": "kjIJy",
+                          "x": 483.3333,
+                          "y": 29.4896,
+                          "geometry": "M0 0l0.65533 36.69817c21.29803-1.63831 52.42596-13.76182 60.61756-20.97038-18.67676-2.6213-40.63013-15.07247-61.27289-15.72779z",
+                          "fill": "#C75A46",
+                          "width": 61.2729,
+                          "height": 36.6982
+                        },
+                        {
+                          "type": "path",
+                          "id": "Sk0vY",
+                          "x": 483.3333,
+                          "y": 27.5236,
+                          "geometry": "M0 0l1.96597 94.69439",
+                          "width": 1.966,
+                          "height": 94.6944,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "KrTMt",
+                          "x": 481.695,
+                          "y": 29.4896,
+                          "geometry": "M2.29364 36.69817c16.38312-1.31065 43.5791-8.51922 60.28986-19.33207-20.9704-2.94896-43.57907-14.08948-53.73661-16.05545l-8.84689-1.31065",
+                          "width": 62.5835,
+                          "height": 36.6982,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.262835538752363,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "kGyE5",
+                          "x": 431.5627,
+                          "y": 121.5263,
+                          "geometry": "M0.32767 2.33005l-0.32767 49.80466 105.83496 0 0-50.78765c-0.98303-2.94897-71.43042-0.32766-105.50729 0.98299z",
+                          "fill": "#C75A46",
+                          "width": 105.835,
+                          "height": 52.1347
+                        },
+                        {
+                          "type": "path",
+                          "id": "KkOge",
+                          "x": 371.2728,
+                          "y": 173.661,
+                          "geometry": "M1.31064 1.63831l-1.31064 14.74481 1.31064 38.9918 108.78387 0 0-55.37492-108.78387 1.63831z",
+                          "fill": "#C75A46",
+                          "width": 110.0945,
+                          "height": 55.3749
+                        },
+                        {
+                          "type": "path",
+                          "id": "aKTGf",
+                          "x": 313.9319,
+                          "y": 229.3636,
+                          "geometry": "M0.983 0.65532l-0.983 13.76182 1.31067 38.33648 106.49023-1.31064 0-51.44298-106.8179 0.65532z",
+                          "fill": "#C75A46",
+                          "width": 107.8009,
+                          "height": 52.7536
+                        },
+                        {
+                          "type": "path",
+                          "id": "Gw4kA",
+                          "x": 259.54,
+                          "y": 281.4619,
+                          "geometry": "M28.17895 0.6553l-1.6383 22.60871-26.21298 0.6553-0.32767 27.85132 102.88596-1.63834 0.32763-50.13229-75.03463 0.6553z",
+                          "fill": "#C75A46",
+                          "width": 103.2136,
+                          "height": 51.7706
+                        },
+                        {
+                          "type": "path",
+                          "id": "K390vc",
+                          "x": 196.9573,
+                          "y": 332.5772,
+                          "geometry": "M0.98221 0.65533c-2.62129 7.53622 0.98299 48.16635-0.32767 56.03025l106.16257-1.63831 0-55.04727-105.8349 0.65533z",
+                          "fill": "#C75A46",
+                          "width": 106.8171,
+                          "height": 56.6856
+                        },
+                        {
+                          "type": "path",
+                          "id": "tCs29",
+                          "x": 134.2981,
+                          "y": 388.2798,
+                          "geometry": "M0.73022 0.98297c-2.29364 11.4682 1.63832 47.18335 0.65534 51.1153l107.47322-0.65531 0.32765-51.44296-108.45621 0.98297z",
+                          "fill": "#C75A46",
+                          "width": 109.1864,
+                          "height": 52.0983
+                        },
+                        {
+                          "type": "path",
+                          "id": "Kaq2j",
+                          "x": 74.7385,
+                          "y": 440.0504,
+                          "geometry": "M0 0.983l0.32766 50.45996 106.49023-0.983 0.65534-50.45996-107.47323 0.983z",
+                          "fill": "#C75A46",
+                          "width": 107.4732,
+                          "height": 51.443
+                        },
+                        {
+                          "type": "path",
+                          "id": "pj5nt",
+                          "x": 136.339,
+                          "y": 332.9048,
+                          "geometry": "M0 56.68558l105.83492-1.31064 14.74478 0.32764 32.43856-0.98298 14.08948 0 0.32767-0.983c0.98297-19.33206-1.63831-37.35349 0.32767-53.7366",
+                          "width": 167.7631,
+                          "height": 56.6856,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "LBkN1",
+                          "x": 198.2672,
+                          "y": 281.7896,
+                          "geometry": "M0 52.0983l46.20039-0.983 64.87711-0.32767c17.36609 0.32767 32.7662-0.983 52.75363-0.65531l0.6553-0.983c0.98301-21.95337-1.6383-33.74921 0.32767-49.14932",
+                          "width": 164.8141,
+                          "height": 52.0983,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "LNoEs",
+                          "x": 75.0662,
+                          "y": 388.2798,
+                          "geometry": "M0 53.40894l45.21739-0.65531 81.91558-0.65536c12.77882 0 25.55764-0.6553 40.30244-0.32764l0.65533-0.6553 0.32766-12.45118c0-16.05548-1.96598-26.54068 0-38.66415",
+                          "width": 168.4184,
+                          "height": 53.4089,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "peMdP",
+                          "x": 75.7215,
+                          "y": 439.7227,
+                          "geometry": "M0 51.77063c25.88531 0.983 63.23882-0.6553 90.76245-0.983l14.7448 0 0.32767-0.32764 0.32766-13.10647c0-15.40018-1.96597-25.55768 0.32767-37.35352",
+                          "width": 106.4902,
+                          "height": 52.0808,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "N3fDQ",
+                          "x": 310,
+                          "y": 174.3163,
+                          "geometry": "M0 108.12854l39.97476-0.6553 31.12793 0c12.77884 0 22.6087-0.98301 39.97482-0.32767l0.65531-0.65534 0.32767-11.4682c0.32763-15.4001-1.96598-23.59166 0-39.97477m-106.81791 0.983l36.37052-0.65534 93.71139-0.65532 15.72779-0.32765 18.34912 0 0.32763-0.65535 0-13.10649c0-15.40012-1.31063-26.86829 0-40.63011",
+                          "width": 169.729,
+                          "height": 108.1285,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "LeUlg",
+                          "x": 373.2388,
+                          "y": 173.0057,
+                          "geometry": "M0 2.62131l46.20038-0.98299 75.03464-0.65533 19.33215-0.65531 12.45111-0.32768 10.15753 0.32768",
+                          "width": 163.1758,
+                          "height": 2.6213,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "CPK3X",
+                          "x": 432.218,
+                          "y": 122.4638,
+                          "geometry": "M0 1.39256l39.97479-0.65532 39.97482-0.65532c6.22559 0 16.71076-0.32767 24.57471 0.32766",
+                          "width": 104.5243,
+                          "height": 1.3926,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "zB39C",
+                          "x": 483.3333,
+                          "y": 27.5236,
+                          "geometry": "M0 0l0.65533 1.96597",
+                          "width": 0.6553,
+                          "height": 1.966,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.262835538752363,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "uSNZ4",
+                          "x": 274.2848,
+                          "y": 167.7631,
+                          "geometry": "M6.88089 0l9.5022 0.65532 9.17456 3.27663-1.31064 3.27662 10.1575 6.22557-2.62131 1.96599 0.983 2.94894-2.94894 0.98299-0.32767 2.94898-5.57025 1.31065-2.29364 1.63831-13.76181-5.89794-6.22558-5.24258-1.63831-0.65534 6.88089-13.43414z",
+                          "fill": "#FAD3AF",
+                          "width": 34.4045,
+                          "height": 25.23
+                        },
+                        {
+                          "type": "path",
+                          "id": "hOdJA",
+                          "x": 231.3611,
+                          "y": 130.0819,
+                          "geometry": "M8.84686 0c7.53624 15.40012 14.08949 18.67674 22.93636 23.91934l18.67676 10.15752-8.51923 20.64273c-3.60428-0.65532-27.85127-10.4852-33.09389-15.40013l-8.84686-6.55324 8.84686-32.76622z",
+                          "fill": "#C75A46",
+                          "width": 50.46,
+                          "height": 54.7196
+                        },
+                        {
+                          "type": "path",
+                          "id": "eThHI",
+                          "x": 208.4247,
+                          "y": 51.1153,
+                          "geometry": "M7.86388 36.37051l2.29364-10.15753c-3.27663-1.96597-6.22559-4.91493-10.15752-17.36611l9.82986-8.84687 21.29805 0.65532 2.94895 7.20857 5.2426 6.88091-3.93195 2.62129-0.65532 9.82987-3.93196 2.94896-5.89792 0-0.98297 8.84688-5.89792-2.94896-10.15754 0 0 0.32767z",
+                          "fill": "#FAD3AF",
+                          "width": 39.3195,
+                          "height": 38.9918
+                        },
+                        {
+                          "type": "path",
+                          "id": "vkSQQ",
+                          "x": 156.9817,
+                          "y": 157.9332,
+                          "geometry": "M0 2.62129l26.54065-2.62129 13.43416 55.70256-34.40454 3.60431-5.57027-56.68558z",
+                          "fill": "#EAAB44",
+                          "width": 39.9748,
+                          "height": 59.3069
+                        },
+                        {
+                          "type": "path",
+                          "id": "f5exH",
+                          "x": 142.8922,
+                          "y": 167.7631,
+                          "geometry": "M31.12793 49.477c0.6553 12.45116 1.31064 40.95779-0.65534 51.44297l-30.47259 73.724 29.81728 13.43417c15.40013-28.17895 36.3705-70.44739 39.97479-82.57089 4.58727-12.77884 7.86389-47.51103 7.86389-47.18337l23.91936 11.79584 5.89792 5.57027 4.58726 61.60049 31.12792-0.32767c1.31063-22.6087 4.91491-65.53244-0.65534-81.26023-5.57028-10.48518-26.86832-26.21297-43.90674-39.9748l-9.50221-15.72778-35.05984 30.80025-22.93636 14.41714 0 4.25962z",
+                          "fill": "#5B9977",
+                          "width": 145.5483,
+                          "height": 188.0781
+                        },
+                        {
+                          "type": "path",
+                          "id": "WaI15",
+                          "x": 173.0372,
+                          "y": 86.4982,
+                          "geometry": "M0 72.09035c1.63831-30.80025 24.24701-70.44739 46.52805-72.0857 20.97038-0.32766 21.62572 16.71078 21.29805 41.28544l-3.93195 25.23001-28.17895 1.6383 2.29363 38.66414c-8.51923 2.94897-10.4852 3.60428-19.33207 7.53624-6.22559-9.5022-11.14052-28.17896-10.15753-49.14934-3.60429 5.57025-2.29364 5.89792-8.51923 6.88091z",
+                          "fill": "#C75A46",
+                          "width": 67.8766,
+                          "height": 114.3588
+                        },
+                        {
+                          "type": "path",
+                          "id": "t8dwe",
+                          "x": 145.1859,
+                          "y": 345.356,
+                          "geometry": "M3.60429 0l-3.60429 6.55325 17.3661 7.20856 3.27663-5.89792-17.03844-7.86389z",
+                          "fill": "#EAAB44",
+                          "width": 20.6427,
+                          "height": 13.7618
+                        },
+                        {
+                          "type": "path",
+                          "id": "zmw39",
+                          "x": 260.8506,
+                          "y": 305.3812,
+                          "geometry": "M0 0l0 6.55325 16.71079 0 0-6.55325-16.71079 0z",
+                          "fill": "#EAAB44",
+                          "width": 16.7108,
+                          "height": 6.5533
+                        },
+                        {
+                          "type": "path",
+                          "id": "uyumO",
+                          "x": 196.3012,
+                          "y": 197.908,
+                          "geometry": "M0 3.27663c0.32765 7.20856-0.98299 21.29805 5.89792 18.34907l3.93194 2.94898 10.48519-2.29366-0.65532-5.57025 4.25961-0.32765-1.31065-5.24262-8.84688-11.1405-13.76181 3.27663z",
+                          "fill": "#FAD3AF",
+                          "width": 23.9193,
+                          "height": 24.5747
+                        },
+                        {
+                          "type": "path",
+                          "id": "NNoyL",
+                          "x": 210.063,
+                          "y": 152.6906,
+                          "geometry": "M0.32765 1.96599l28.17896-1.96599 4.91493 56.03026-24.90233 2.94896-8.51921-12.12351 3.27663-3.27661-2.94898-41.61311z",
+                          "fill": "#EAAB44",
+                          "width": 33.4215,
+                          "height": 58.9792
+                        },
+                        {
+                          "type": "path",
+                          "id": "A2heR6",
+                          "x": 257.574,
+                          "y": 311.9344,
+                          "geometry": "M0.98297 0.3277l19.00443-0.3277c11.46817 9.17456 11.79584 7.53625 20.64273 10.15756 4.91495 0.6553 7.86386 3.27661 7.53619 9.82987l-48.16632 0.32766 0.98297-19.98739z",
+                          "fill": "#634D83",
+                          "width": 48.1911,
+                          "height": 20.3151,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "e0HP3z",
+                          "x": 135.356,
+                          "y": 352.5646,
+                          "geometry": "M8.51923 0l19.00439 6.88092c8.19156 19.00439 12.77884 15.07248 18.67676 20.97037 2.94896 1.63831 2.62129 4.91495 2.29364 7.86392l-13.10649 0c-3.27663 0-12.1235-4.91495-35.38753-15.72781 1.96597-5.57025 8.51923-19.9874 8.51923-19.9874z",
+                          "fill": "#634D83",
+                          "width": 48.7012,
+                          "height": 35.7152,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "s9259",
+                          "x": 173.0372,
+                          "y": 86.1245,
+                          "geometry": "M0 72.464c2.94896-28.50661 24.24701-67.17076 43.25142-71.75804 11.46818-2.94896 20.31506 3.60429 22.93635 14.74481 2.29364 11.14052 1.96599 34.40453-2.29362 51.44297",
+                          "width": 67.5981,
+                          "height": 72.464,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "G4WpoY",
+                          "x": 182.2719,
+                          "y": 107.1456,
+                          "geometry": "M18.61652 0c-6.22557 10.48519-16.71077 29.16193-18.34908 41.94076-1.63831 12.77884 4.58728 38.33649 9.50221 52.09831 2.29362 0.65532 18.34908-1.31065 20.97039-3.93195-1.63832-18.34911-5.2426-39.97481-0.32767-53.08129 1.63832-4.58727 12.45117-24.57466 12.77882-24.90232",
+                          "width": 43.1912,
+                          "height": 94.1661,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "yrxb8",
+                          "x": 195.8097,
+                          "y": 198.2357,
+                          "geometry": "M12.28732 0l7.53624 9.17455 4.58728 5.89791c-1.31065 5.89793-6.55325-3.27663-6.8809-3.27662l2.29362 4.58728c1.6383 6.55325 1.6383 6.55325-1.96597 5.89793l-2.62129-3.60431 0.98298 1.63832c0.98299 3.60429-1.96597 5.24262-4.91493-0.65532l-0.98298 0.32766c1.96596 5.89793-3.93195 3.27663-3.6043 0l-2.29362 1.96597c-3.93195-0.98297-5.2426-8.19156-3.93195-19.0044",
+                          "width": 24.4108,
+                          "height": 23.5602,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "QoEkr",
+                          "x": 206.7112,
+                          "y": 38.8984,
+                          "geometry": "M11.87108 39.0852c-6.55324-1.63831-10.4852-5.89792-10.81285-12.77883-0.98299-4.58727-3.27663-11.46818 4.91493-15.07246 2.29364-13.43415 14.41713-6.22558 21.29805-9.50221 10.81285-6.55325 16.71077 7.20857 7.53622 12.77883-6.22559 1.31066-13.10649 0-13.76181 5.89792-0.32765 2.29363-1.63831 4.58727-2.94896 3.27663-5.89792-1.63831-9.17454 6.55324-0.98298 7.20857 1.96597 4.58727-0.98299 7.20857-5.2426 8.19155z",
+                          "fill": "#242221",
+                          "width": 39.3382,
+                          "height": 39.0852
+                        },
+                        {
+                          "type": "path",
+                          "id": "xz3Jc",
+                          "x": 214.978,
+                          "y": 77.0006,
+                          "geometry": "M0 10.48519c1.63831-1.63831 2.62129-10.48519 2.62129-10.48519",
+                          "width": 2.6213,
+                          "height": 10.4852,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "uZjfl",
+                          "x": 232.3441,
+                          "y": 51.7706,
+                          "geometry": "M0 38.00882l0.98297-8.51922c9.50221 1.31065 10.81287-2.6213 10.15753-12.45116l0.32767-0.32767 3.93195-1.63831 0-1.31065c-3.27661-3.93195-6.55324-7.86389-7.20858-13.76181",
+                          "width": 15.4001,
+                          "height": 38.0088,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "vFuFi",
+                          "x": 237.9143,
+                          "y": 72.0857,
+                          "geometry": "M0 0l4.91493 1.31065",
+                          "width": 4.9149,
+                          "height": 1.3107,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "VXrhQ",
+                          "x": 240.5356,
+                          "y": 130.0819,
+                          "geometry": "M0 0c7.53624 14.7448 13.43416 19.65973 24.57466 25.8853l16.71079 8.84689c0.32767 1.96597-7.20859 18.67674-8.51923 19.9874-2.62128 0-23.59167-7.53624-32.76622-14.7448",
+                          "width": 41.2958,
+                          "height": 54.7196,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "gCPn3",
+                          "x": 281.1657,
+                          "y": 168.4184,
+                          "geometry": "M0 0l8.84689 0.32767c6.22556 1.31065 14.41711 3.93195 8.84687 6.22558",
+                          "width": 19.545,
+                          "height": 6.5533,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "LDmyD",
+                          "x": 289.3573,
+                          "y": 175.4114,
+                          "geometry": "M0 0.5432c2.62131-1.63832 5.89792 0.98299 11.79584 0.65532 10.4852 4.91493 7.53622 6.55325 2.94897 6.22558",
+                          "width": 18.9225,
+                          "height": 7.4643,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "A4pnc",
+                          "x": 275.9231,
+                          "y": 179.5589,
+                          "geometry": "M19.65973 0l11.46817 5.2426c-0.983 3.93195-5.89792 1.63832-13.43414-1.96597l-1.31064-0.65534 13.10647 5.57027c-0.32767 3.93195-5.24259 1.63831-15.07245-1.63832l-1.31066-0.65532 13.1065 4.58728c0 4.2596-8.51923 0.65532-15.07248-1.96597-2.62131-0.983-8.19156-4.25963-11.1405-7.20858",
+                          "width": 31.1279,
+                          "height": 12.4512,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.1419281663516068,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "CWhNz",
+                          "x": 142.8922,
+                          "y": 183.1632,
+                          "geometry": "M31.12793 33.42154c0.32765 7.86389 1.63831 43.25143-0.65534 53.0813-0.98299 5.24258-26.8683 63.56647-30.47259 73.06866l30.14493 13.10651c6.22559-11.4682 29.81728-57.66858 36.04284-72.41336 8.19156-19.00443 10.15755-56.68559 11.79586-57.66856 19.33206 12.45116 29.16194 11.46818 30.80024 23.91934 0.98301 12.45116 0.98301 38.3365 2.62131 55.37492l31.78324 0c1.6383-25.22998 4.25961-46.20038 1.31063-75.03467-1.31063-13.43414-24.90231-29.81726-45.54504-46.85568",
+                          "width": 145.8343,
+                          "height": 172.678,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "YRvm7",
+                          "x": 145.5135,
+                          "y": 345.356,
+                          "geometry": "M2.94896 0l-2.94896 6.88089 17.36609 6.88092 3.27662-5.89792",
+                          "width": 20.6427,
+                          "height": 13.7618,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "eAGAx",
+                          "x": 210.063,
+                          "y": 152.6906,
+                          "geometry": "M0 2.62132l28.50661-2.62132 4.91493 56.03026-23.59168 2.62129",
+                          "width": 33.4215,
+                          "height": 58.6516,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "xHDUY",
+                          "x": 156.9817,
+                          "y": 158.2609,
+                          "geometry": "M38.99181 55.37491l-32.43856 3.93196-0.98298-0.32765c-4.25961-38.3365-5.57027-53.40895-5.57027-56.35793l25.23001-2.62129",
+                          "fill": "#EAAB44",
+                          "width": 38.9918,
+                          "height": 59.3069,
+                          "stroke": "#242221",
+                          "strokeWidth": 1.9659735349716445,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "v52vK",
+                          "x": 260.8506,
+                          "y": 305.3812,
+                          "geometry": "M0 0l0 6.55325 16.71079 0 0-6.55325",
+                          "width": 16.7108,
+                          "height": 6.5533,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "D3bIn4",
+                          "x": 288.0466,
+                          "y": 282.4449,
+                          "geometry": "M0 0.32767l26.86832-0.32767",
+                          "width": 26.8683,
+                          "height": 0.3277,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "t18Cw",
+                          "x": 338.1789,
+                          "y": 132.3755,
+                          "geometry": "M4.91495 0l-4.91495 0",
+                          "width": 4.9149,
+                          "height": 0,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "lsG86",
+                          "x": 348.0088,
+                          "y": 132.7032,
+                          "geometry": "M4.91492 0l-4.91492 0",
+                          "width": 4.9149,
+                          "height": 0,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "toqvQ",
+                          "x": 345.3875,
+                          "y": 135.6522,
+                          "geometry": "M0 0l0 5.2426",
+                          "width": 0,
+                          "height": 5.2426,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "jz2ZY",
+                          "x": 345.3875,
+                          "y": 125.8223,
+                          "geometry": "M0 0l0 3.93193",
+                          "width": 0,
+                          "height": 3.9319,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "ut8Hr",
+                          "x": 97.3472,
+                          "y": 169.0737,
+                          "geometry": "M4.58727 0l-4.58727 0",
+                          "width": 4.5873,
+                          "height": 0,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "DgRyY",
+                          "x": 109.7984,
+                          "y": 169.0737,
+                          "geometry": "M5.57027 0l-5.57027 0",
+                          "width": 5.5703,
+                          "height": 0,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "C2Vm5",
+                          "x": 106.1941,
+                          "y": 173.9886,
+                          "geometry": "M0 0l0 5.57027",
+                          "width": 0,
+                          "height": 5.5703,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "JoZT4",
+                          "x": 106.1941,
+                          "y": 158.9162,
+                          "geometry": "M0 0l0 5.57025",
+                          "width": 0,
+                          "height": 5.5703,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "A9n0vt",
+                          "x": 77.0321,
+                          "y": 362.3944,
+                          "geometry": "M3.27663 6.55325l-3.27663 0m11.46818 0l-3.27662 0m-2.6213 3.93198l0 2.62128m0-13.10651l0 3.27664",
+                          "width": 11.4682,
+                          "height": 13.1065,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "BkzEU",
+                          "x": 456.1374,
+                          "y": 336.1815,
+                          "geometry": "M0 0l6.55322 0c-2.62131 0-4.91492 2.62131-4.58725 4.58728 0.32764-1.31064-0.65533-4.58728-1.96597-4.58728z",
+                          "fill": "#FFFFFF",
+                          "width": 6.5532,
+                          "height": 4.5873
+                        },
+                        {
+                          "type": "path",
+                          "id": "Zv8XS",
+                          "x": 452.2054,
+                          "y": 330.6112,
+                          "geometry": "M0 5.89792l3.27661 0c2.94897-1.31067 2.62131-2.94897 2.94898-5.57025m0 11.79584c0-2.94897 0.6553-5.89792 5.57025-6.55326-4.58728 0.32767-6.22559-1.63831-5.89792-5.57025",
+                          "width": 11.7958,
+                          "height": 12.1235,
+                          "stroke": "#242221",
+                          "strokeWidth": 3.2766225582860744
+                        },
+                        {
+                          "type": "path",
+                          "id": "BkSPM",
+                          "x": 369.6345,
+                          "y": 413.8374,
+                          "geometry": "M4.58728 9.82986l-4.58728 0m17.36609-0.32766l-5.24259 0.32766m-3.6043 3.27665l0 5.89792m0-19.00443l0 5.57025",
+                          "width": 17.3661,
+                          "height": 19.0044,
+                          "stroke": "#242221",
+                          "strokeWidth": 2.4342028985507245,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "MsRxv",
+                          "x": 131.0964,
+                          "y": 76.0176,
+                          "fill": "#221E1C",
+                          "width": 2.6213,
+                          "height": 2.6213
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "zWqSN",
+                          "x": 110.7813,
+                          "y": 264.7511,
+                          "fill": "#221E1C",
+                          "width": 2.6213,
+                          "height": 2.6213
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "LRhRa",
+                          "x": 309.6723,
+                          "y": 457.7442,
+                          "fill": "#221E1C",
+                          "width": 2.6213,
+                          "height": 2.6213
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "k08qJY",
+                          "x": 317.5362,
+                          "y": 43.5791,
+                          "fill": "#221E1C",
+                          "width": 2.6213,
+                          "height": 2.6213
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "BMkHo",
+                          "x": 401.3005,
+                          "y": 76.228,
+                          "fill": "#221E1C",
+                          "width": 2.8559,
+                          "height": 2.8559
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "V8L1ww",
+                          "x": 508.2357,
+                          "y": 237.5551,
+                          "fill": "#221E1C",
+                          "width": 1.966,
+                          "height": 1.966
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "G0bPm",
+                          "x": 520.6868,
+                          "y": 237.2275,
+                          "fill": "#221E1C",
+                          "width": 1.966,
+                          "height": 1.966
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "Vtnkx",
+                          "x": 514.1898,
+                          "y": 240.4548,
+                          "rotation": 1.1388090768477823,
+                          "fill": "#221E1C",
+                          "width": 1.966,
+                          "height": 5.2426
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "XbpYR",
+                          "x": 516.0995,
+                          "y": 233.2955,
+                          "fill": "#221E1C",
+                          "width": 1.966,
+                          "height": 1.966
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "gCXrW",
+                          "x": 507.7658,
+                          "y": 289.0105,
+                          "rotation": 3.0093495883790693,
+                          "fill": "#221E1C",
+                          "width": 2.6212,
+                          "height": 2.6212
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "jScvK",
+                      "x": 0,
+                      "y": 492,
+                      "name": "Floating Progress Card",
+                      "width": 322,
+                      "fill": "$surface",
+                      "cornerRadius": 12,
+                      "effect": {
+                        "type": "shadow",
+                        "shadowType": "outer",
+                        "color": "#1E1B1814",
+                        "offset": {
+                          "x": 0,
+                          "y": 10
+                        },
+                        "blur": 26
+                      },
+                      "layout": "vertical",
+                      "gap": 12,
+                      "padding": 18,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "WElz2",
+                          "name": "Card Top",
+                          "width": "fill_container",
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "nZ63f",
+                              "name": "Card Title",
+                              "fill": "$ink",
+                              "content": "This week",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "eos9o",
+                              "name": "Card Value",
+                              "fill": "$sage",
+                              "content": "4 of 5 steps",
+                              "fontFamily": "$font-body",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "MvYTb",
+                          "name": "Progress Bar",
+                          "width": "fill_container",
+                          "height": 8,
+                          "fill": "$line",
+                          "cornerRadius": 9999,
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "U2lA4",
+                              "name": "Progress Fill",
+                              "fill": "$sage",
+                              "width": 230,
+                              "height": 8
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "te1p6",
+                          "name": "Card Caption",
+                          "fill": "$ink-muted",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Two tailored applications sent · One mock interview done",
+                          "lineHeight": 1.45,
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Gr8Cc",
+              "name": "Proof Band",
+              "width": "fill_container",
+              "stroke": "#E7DCCC",
+              "strokeWidth": {
+                "top": 1
+              },
+              "padding": [
+                22,
+                56
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "YWSW9",
+                  "name": "Band Lead",
+                  "fill": "$ink-soft",
+                  "content": "People hired last month came from 40+ professions",
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "x1NJq",
+                  "name": "Roles",
+                  "gap": 26,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "yLWsw",
+                      "name": "Nurse",
+                      "fill": "$ink-muted",
+                      "content": "Nurse",
+                      "fontFamily": "$font-display",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "UbiiE",
+                      "name": "Warehouse lead",
+                      "fill": "$ink-muted",
+                      "content": "Warehouse lead",
+                      "fontFamily": "$font-display",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "hHOXN",
+                      "name": "Backend engineer",
+                      "fill": "$ink-muted",
+                      "content": "Backend engineer",
+                      "fontFamily": "$font-display",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Cubvx",
+                      "name": "Teacher",
+                      "fill": "$ink-muted",
+                      "content": "Teacher",
+                      "fontFamily": "$font-display",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "qDYzk",
+                      "name": "Account manager",
+                      "fill": "$ink-muted",
+                      "content": "Account manager",
+                      "fontFamily": "$font-display",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "tUOGT",
+                      "name": "Chef",
+                      "fill": "$ink-muted",
+                      "content": "Chef",
+                      "fontFamily": "$font-display",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "uLtwc",
+          "name": "Row A",
+          "width": "fill_container",
+          "gap": 32,
+          "children": [
+            {
+              "type": "frame",
+              "id": "b78E5D",
+              "name": "Logo & wordmark",
+              "width": 660,
+              "fill": "$paper",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "gap": 24,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "WTNn7",
+                  "name": "Caption",
+                  "fill": "$ink-muted",
+                  "content": "LOGO & WORDMARK",
+                  "fontFamily": "$font-body",
+                  "fontSize": 12,
+                  "fontWeight": "600",
+                  "letterSpacing": 0.8
+                },
+                {
+                  "type": "frame",
+                  "id": "sa0DT",
+                  "name": "Primary Lockup",
+                  "gap": 16,
+                  "padding": [
+                    16,
+                    0
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "TripM",
+                      "name": "Mark",
+                      "width": 58,
+                      "height": 58,
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 3.48,
+                          "id": "hW29g",
+                          "x": 7.54,
+                          "y": 4.0600000000000005,
+                          "name": "Pin Pole",
+                          "fill": "$clay",
+                          "width": 6.96,
+                          "height": 49.88
+                        },
+                        {
+                          "type": "path",
+                          "id": "rNT9E",
+                          "x": 13.34,
+                          "y": 6.38,
+                          "name": "Pin Flag",
+                          "geometry": "M0 0c22 3 38 10 56 18-18 8-34 15-56 18z",
+                          "viewBox": [
+                            0,
+                            0,
+                            56,
+                            36
+                          ],
+                          "fill": "$clay",
+                          "width": 32.480000000000004,
+                          "height": 20.88
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "liVnp",
+                          "x": 31.900000000000002,
+                          "y": 36.54,
+                          "name": "Ball",
+                          "fill": "$sage",
+                          "width": 17.4,
+                          "height": 17.4
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "y96vNM",
+                      "name": "Wordmark",
+                      "fill": "$ink",
+                      "content": "Caddie",
+                      "fontFamily": "$font-display",
+                      "fontSize": 58,
+                      "fontWeight": "700",
+                      "letterSpacing": -1.2
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "KxF1B",
+                  "name": "Variants",
+                  "width": "fill_container",
+                  "gap": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "E8ohr",
+                      "name": "Wordmark Only",
+                      "width": "fill_container",
+                      "height": 96,
+                      "fill": "$surface",
+                      "cornerRadius": 8,
+                      "stroke": "$line",
+                      "strokeWidth": 1,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "o5TpO",
+                          "name": "Wordmark",
+                          "fill": "$ink",
+                          "content": "Caddie",
+                          "fontFamily": "$font-display",
+                          "fontSize": 30,
+                          "fontWeight": "700",
+                          "letterSpacing": -0.6
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KfDM1",
+                      "name": "Mark Only",
+                      "width": "fill_container",
+                      "height": 96,
+                      "fill": "$clay-tint",
+                      "cornerRadius": 8,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "cGJgQ",
+                          "name": "Mark",
+                          "width": 44,
+                          "height": 44,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 2.6399999999999997,
+                              "id": "CoKsE",
+                              "x": 5.720000000000001,
+                              "y": 3.08,
+                              "name": "Pin Pole",
+                              "fill": "$clay-deep",
+                              "width": 5.279999999999999,
+                              "height": 37.839999999999996
+                            },
+                            {
+                              "type": "path",
+                              "id": "DK4mG",
+                              "x": 10.120000000000001,
+                              "y": 4.84,
+                              "name": "Pin Flag",
+                              "geometry": "M0 0c22 3 38 10 56 18-18 8-34 15-56 18z",
+                              "viewBox": [
+                                0,
+                                0,
+                                56,
+                                36
+                              ],
+                              "fill": "$clay-deep",
+                              "width": 24.64,
+                              "height": 15.84
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "DdBqI",
+                              "x": 24.200000000000003,
+                              "y": 27.72,
+                              "name": "Ball",
+                              "fill": "$sage",
+                              "width": 13.2,
+                              "height": 13.2
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ZMirx",
+                      "name": "Reversed",
+                      "width": "fill_container",
+                      "height": 96,
+                      "fill": "$ink-deep",
+                      "cornerRadius": 8,
+                      "gap": 10,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "smShn",
+                          "name": "Mark",
+                          "width": 32,
+                          "height": 32,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 1.92,
+                              "id": "nDMoy",
+                              "x": 4.16,
+                              "y": 2.24,
+                              "name": "Pin Pole",
+                              "fill": "$amber",
+                              "width": 3.84,
+                              "height": 27.52
+                            },
+                            {
+                              "type": "path",
+                              "id": "j4qrHP",
+                              "x": 7.36,
+                              "y": 3.52,
+                              "name": "Pin Flag",
+                              "geometry": "M0 0c22 3 38 10 56 18-18 8-34 15-56 18z",
+                              "viewBox": [
+                                0,
+                                0,
+                                56,
+                                36
+                              ],
+                              "fill": "$amber",
+                              "width": 17.92,
+                              "height": 11.52
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "Tgcjc",
+                              "x": 17.6,
+                              "y": 20.16,
+                              "name": "Ball",
+                              "fill": "$paper",
+                              "width": 9.6,
+                              "height": 9.6
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "gIfTr",
+                          "name": "Wordmark",
+                          "fill": "$paper",
+                          "content": "Caddie",
+                          "fontFamily": "$font-display",
+                          "fontSize": 28,
+                          "fontWeight": "700",
+                          "letterSpacing": -0.6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "Y66IFC",
+                  "name": "Rationale",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "The mark is a flag planted at the target with the ball already in play: where you are heading, and where you are now. Newsreader at bold weight keeps the wordmark warm rather than corporate.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "HRFNO",
+              "name": "Palette",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "gap": 24,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "A7RHXl",
+                  "name": "Caption",
+                  "fill": "$ink-muted",
+                  "content": "PALETTE",
+                  "fontFamily": "$font-body",
+                  "fontSize": 12,
+                  "fontWeight": "600",
+                  "letterSpacing": 0.8
+                },
+                {
+                  "type": "frame",
+                  "id": "eXXSA",
+                  "name": "Swatches",
+                  "width": "fill_container",
+                  "gap": 14,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Bxked",
+                      "name": "Paper",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "y2fTIm",
+                          "name": "Chip",
+                          "width": "fill_container",
+                          "height": 104,
+                          "fill": "#FBF6EF",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "Xi05U",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "content": "Paper",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "LD4jX",
+                          "name": "Hex",
+                          "fill": "$ink-muted",
+                          "content": "#FBF6EF",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "w5yM2",
+                          "name": "Role",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Ground",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "JPaI1",
+                      "name": "Ink",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "neTug",
+                          "name": "Chip",
+                          "width": "fill_container",
+                          "height": 104,
+                          "fill": "#1E1B18",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "cu5Cp",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "content": "Ink",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "spxsM",
+                          "name": "Hex",
+                          "fill": "$ink-muted",
+                          "content": "#1E1B18",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "D98A8",
+                          "name": "Role",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Text, reversed sections",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "RE0sy",
+                      "name": "Clay",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "LfYcp",
+                          "name": "Chip",
+                          "width": "fill_container",
+                          "height": 104,
+                          "fill": "#D2653F",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "s2rYQE",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "content": "Clay",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "KIJOA",
+                          "name": "Hex",
+                          "fill": "$ink-muted",
+                          "content": "#D2653F",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "f1tlJQ",
+                          "name": "Role",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Primary action",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "PrLGE",
+                      "name": "Sage",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Zw1GJ",
+                          "name": "Chip",
+                          "width": "fill_container",
+                          "height": 104,
+                          "fill": "#4F7C63",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "jlaU4",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "content": "Sage",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "dxmwn",
+                          "name": "Hex",
+                          "fill": "$ink-muted",
+                          "content": "#4F7C63",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "jJuHT",
+                          "name": "Role",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Progress, confirmation",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KtaGR",
+                      "name": "Amber",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "c7RcoX",
+                          "name": "Chip",
+                          "width": "fill_container",
+                          "height": 104,
+                          "fill": "#F2B441",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "NtkTu",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "content": "Amber",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "aNfZC",
+                          "name": "Hex",
+                          "fill": "$ink-muted",
+                          "content": "#F2B441",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "EsfCz",
+                          "name": "Role",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Highlight, celebration",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "V0tkdh",
+                      "name": "Plum",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "uJxoN",
+                          "name": "Chip",
+                          "width": "fill_container",
+                          "height": 104,
+                          "fill": "#5C4A6B",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "kuZBv",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "content": "Plum",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "qBa0L",
+                          "name": "Hex",
+                          "fill": "$ink-muted",
+                          "content": "#5C4A6B",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "Vd05K",
+                          "name": "Role",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Illustration depth",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "rVzTz",
+                  "name": "Palette Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Clay is reserved for actions, sage for progress and reassurance, amber only for moments worth celebrating. Everything else is paper and ink.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "gKx0x",
+          "name": "Row B",
+          "width": "fill_container",
+          "gap": 32,
+          "children": [
+            {
+              "type": "frame",
+              "id": "dvBbK",
+              "name": "Typography",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "gap": 22,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "I6Lpie",
+                  "name": "Caption",
+                  "fill": "$ink-muted",
+                  "content": "TYPOGRAPHY",
+                  "fontFamily": "$font-body",
+                  "fontSize": 12,
+                  "fontWeight": "600",
+                  "letterSpacing": 0.8
+                },
+                {
+                  "type": "frame",
+                  "id": "Lvd9i",
+                  "name": "Families",
+                  "width": "fill_container",
+                  "gap": 32,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "M8oSEo",
+                      "name": "Newsreader",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "t3FlKD",
+                          "name": "Sample",
+                          "fill": "$clay",
+                          "content": "Aa",
+                          "lineHeight": 1.1,
+                          "fontFamily": "Newsreader",
+                          "fontSize": 64,
+                          "fontWeight": "700"
+                        },
+                        {
+                          "type": "text",
+                          "id": "lVdwi",
+                          "name": "Family",
+                          "fill": "$ink",
+                          "content": "Newsreader",
+                          "fontFamily": "$font-body",
+                          "fontSize": 16,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "mDKs3",
+                          "name": "Role",
+                          "fill": "$ink-muted",
+                          "content": "Display · 600/700",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "U7WF9",
+                      "name": "Inter",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "HJVtL",
+                          "name": "Sample",
+                          "fill": "$clay",
+                          "content": "Aa",
+                          "lineHeight": 1.1,
+                          "fontFamily": "Inter",
+                          "fontSize": 64,
+                          "fontWeight": "700"
+                        },
+                        {
+                          "type": "text",
+                          "id": "Zw6b7",
+                          "name": "Family",
+                          "fill": "$ink",
+                          "content": "Inter",
+                          "fontFamily": "$font-body",
+                          "fontSize": 16,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "Z1PAB",
+                          "name": "Role",
+                          "fill": "$ink-muted",
+                          "content": "Text · 400/500/600",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "q8iiv",
+                  "name": "Rule",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "H8Mla",
+                  "name": "Scale",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 18,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "mAz0x",
+                      "name": "Display / 66 / Newsreader 700",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "XLsi7",
+                          "name": "Meta",
+                          "fill": "$ink-muted",
+                          "content": "Display / 66 / Newsreader 700",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "cssES",
+                          "name": "Sample",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Steady beats frantic.",
+                          "lineHeight": 1.05,
+                          "fontFamily": "Newsreader",
+                          "fontSize": 56,
+                          "fontWeight": "700",
+                          "letterSpacing": -1.2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "H3E3uo",
+                      "name": "Section / 36 / Newsreader 700",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "qevFb",
+                          "name": "Meta",
+                          "fill": "$ink-muted",
+                          "content": "Section / 36 / Newsreader 700",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "xf9AK",
+                          "name": "Sample",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Practice the hard question",
+                          "lineHeight": 1.15,
+                          "fontFamily": "Newsreader",
+                          "fontSize": 36,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "WiXKO",
+                      "name": "Lead / 19 / Inter 400",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "V9fQ8F",
+                          "name": "Meta",
+                          "fill": "$ink-muted",
+                          "content": "Lead / 19 / Inter 400",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "kRvOH",
+                          "name": "Sample",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Every application you send gets a plan behind it — the role, the story, the follow-up.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Inter",
+                          "fontSize": 19,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "U9iceg",
+                      "name": "Body / 16 / Inter 400",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "ICox3",
+                          "name": "Meta",
+                          "fill": "$ink-muted",
+                          "content": "Body / 16 / Inter 400",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "JkprH",
+                          "name": "Sample",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Caddie reads the job post, finds what the team actually cares about, and shows you which of your experiences answers it. You approve every word before it goes out.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 16,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "XmrR9",
+                      "name": "Label / 13 / Inter 600 · +0.8 tracking",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "UzEiT",
+                          "name": "Meta",
+                          "fill": "$ink-muted",
+                          "content": "Label / 13 / Inter 600 · +0.8 tracking",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "lL8BT",
+                          "name": "Sample",
+                          "fill": "$clay-deep",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "INTERVIEW PREP",
+                          "lineHeight": 1.4,
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "600",
+                          "letterSpacing": 0.8
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "FHYMS",
+              "name": "Icons",
+              "width": 470,
+              "fill": "$paper",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "gap": 22,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "og7lR",
+                  "name": "Caption",
+                  "fill": "$ink-muted",
+                  "content": "ICONS",
+                  "fontFamily": "$font-body",
+                  "fontSize": 12,
+                  "fontWeight": "600",
+                  "letterSpacing": 0.8
+                },
+                {
+                  "type": "frame",
+                  "id": "aUxkB",
+                  "name": "Icon Grid",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "zXmOT",
+                      "name": "Icon Row 1",
+                      "width": "fill_container",
+                      "gap": 16,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "V8dCjK",
+                          "name": "Find roles",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "b7E5Hu",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "kcp41",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "compass",
+                                  "library": "lucide",
+                                  "fill": "$clay"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "CIfgV",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Find roles",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "HtOfp",
+                          "name": "Tailor CV",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "CXpM7",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "jQW7n",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "file-pen-line",
+                                  "library": "lucide",
+                                  "fill": "$clay"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "gt0l2",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Tailor CV",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "tsq5u",
+                          "name": "Mock interview",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "ikKia",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "fctt0",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "messages-square",
+                                  "library": "lucide",
+                                  "fill": "$plum"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "TJzxF",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Mock interview",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "jGp2H",
+                          "name": "Daily step",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "m54dS",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "gTnyK",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "footprints",
+                                  "library": "lucide",
+                                  "fill": "$sage"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "SqW9B",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Daily step",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "iPyMm",
+                      "name": "Icon Row 2",
+                      "width": "fill_container",
+                      "gap": 16,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "b0DKG",
+                          "name": "After a no",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "Nm3mV",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "srgyb",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "heart-handshake",
+                                  "library": "lucide",
+                                  "fill": "$plum"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "e6L94c",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "After a no",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "oeou9",
+                          "name": "Progress",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "PgehW",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "xoH54",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "trending-up",
+                                  "library": "lucide",
+                                  "fill": "$sage"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "k9sIG",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Progress",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "TO5NL",
+                          "name": "Follow up",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "mYBCk",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "CqaHm",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "bell-ring",
+                                  "library": "lucide",
+                                  "fill": "$amber"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "N5Tkl2",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Follow up",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "H3ZVQ6",
+                          "name": "Offer",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 9,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "r5W6OF",
+                              "name": "Box",
+                              "width": "fill_container",
+                              "height": 74,
+                              "fill": "$surface",
+                              "cornerRadius": 8,
+                              "stroke": "$line",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "n7Ux3c",
+                                  "name": "Icon",
+                                  "width": 30,
+                                  "height": 30,
+                                  "icon": "party-popper",
+                                  "library": "lucide",
+                                  "fill": "$amber"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "EAmGn",
+                              "name": "Label",
+                              "fill": "$ink-soft",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Offer",
+                              "lineHeight": 1.35,
+                              "textAlign": "center",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "OID8U",
+                  "name": "Icon Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Lucide at a single stroke weight, coloured by meaning: clay for doing, sage for progress, plum for the human moments, amber for celebration.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "J9ajXd",
+          "name": "Row C",
+          "width": "fill_container",
+          "gap": 32,
+          "children": [
+            {
+              "type": "frame",
+              "id": "eO9uW",
+              "name": "Paid Ad Creative",
+              "width": 604,
+              "fill": "$paper",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "gap": 22,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "mqjAM",
+                  "name": "Caption",
+                  "fill": "$ink-muted",
+                  "content": "PAID AD CREATIVE · 4:5 FEED",
+                  "fontFamily": "$font-body",
+                  "fontSize": 12,
+                  "fontWeight": "600",
+                  "letterSpacing": 0.8
+                },
+                {
+                  "type": "frame",
+                  "id": "wV9eZ",
+                  "name": "Ad 4:5",
+                  "clip": true,
+                  "width": 540,
+                  "height": 675,
+                  "fill": "$clay-tint",
+                  "cornerRadius": 8,
+                  "layout": "vertical",
+                  "padding": [
+                    36,
+                    36,
+                    32,
+                    36
+                  ],
+                  "justifyContent": "space_between",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "oSQMc",
+                      "name": "Ad Top",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 18,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "YiYTE",
+                          "name": "Ad Wordmark",
+                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "Izzqq",
+                              "name": "Mark",
+                              "width": 24,
+                              "height": 24,
+                              "layout": "none",
+                              "children": [
+                                {
+                                  "type": "rectangle",
+                                  "cornerRadius": 1.44,
+                                  "id": "OFD3f",
+                                  "x": 3.12,
+                                  "y": 1.6800000000000002,
+                                  "name": "Pin Pole",
+                                  "fill": "$clay-deep",
+                                  "width": 2.88,
+                                  "height": 20.64
+                                },
+                                {
+                                  "type": "path",
+                                  "id": "puRhX",
+                                  "x": 5.5200000000000005,
+                                  "y": 2.64,
+                                  "name": "Pin Flag",
+                                  "geometry": "M0 0c22 3 38 10 56 18-18 8-34 15-56 18z",
+                                  "viewBox": [
+                                    0,
+                                    0,
+                                    56,
+                                    36
+                                  ],
+                                  "fill": "$clay-deep",
+                                  "width": 13.440000000000001,
+                                  "height": 8.64
+                                },
+                                {
+                                  "type": "ellipse",
+                                  "id": "HglOd",
+                                  "x": 13.200000000000001,
+                                  "y": 15.120000000000001,
+                                  "name": "Ball",
+                                  "fill": "$sage",
+                                  "width": 7.199999999999999,
+                                  "height": 7.199999999999999
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "HeAys",
+                              "name": "Wordmark",
+                              "fill": "$ink",
+                              "content": "Caddie",
+                              "fontFamily": "$font-display",
+                              "fontSize": 24,
+                              "fontWeight": "700",
+                              "letterSpacing": -0.5
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "E43JoM",
+                          "name": "Ad Headline",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "The job hunt, minus the dread.",
+                          "lineHeight": 1.02,
+                          "fontFamily": "$font-display",
+                          "fontSize": 50,
+                          "fontWeight": "700",
+                          "letterSpacing": -1.2
+                        },
+                        {
+                          "type": "text",
+                          "id": "U0JAmb",
+                          "name": "Ad Sub",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": 400,
+                          "content": "Find the roles worth applying to, tailor each one, and practise the interview before it happens.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-body",
+                          "fontSize": 17,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "gcPeG",
+                      "name": "Ad Illustration",
+                      "clip": true,
+                      "width": 468,
+                      "height": 300,
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "q6I9fz",
+                          "x": 47.5039,
+                          "y": 0,
+                          "fill": "#FCF8EF",
+                          "width": 372.9921,
+                          "height": 299.5276
+                        },
+                        {
+                          "type": "path",
+                          "id": "jOkbm",
+                          "x": 89.6784,
+                          "y": 219.3514,
+                          "geometry": "M0.58147 5.05807c0.23622-3.5433 2.59843-3.77953 5.19686-3.77952l70.86615-1.18111c4.7244-0.47244 6.37794 0.70866 6.37794 4.96063l0 52.20472-2.59842 2.83465-78.89764-0.94488-0.94489-5.66928c-0.23622-5.19684-1.1811-38.97638 0-48.4252z",
+                          "fill": "#DE6244",
+                          "width": 83.0224,
+                          "height": 60.0974
+                        },
+                        {
+                          "type": "path",
+                          "id": "m1AfDR",
+                          "x": 185.3643,
+                          "y": 174.0945,
+                          "geometry": "M0.56479 4.72441c0.23622-4.25195 2.59842-4.01573 4.72441-4.25195l70.39369-0.47246c4.25195 0.47246 6.37796 0.70868 6.14172 6.37796l-0.2362 94.96063-0.70868 3.3071-78.42517 0.70865-1.88977-2.83466c-1.65353-10.86612 0.94489-89.0551 0-97.79527z",
+                          "fill": "#A33C27",
+                          "width": 81.8424,
+                          "height": 105.3543
+                        },
+                        {
+                          "type": "path",
+                          "id": "xnp8B",
+                          "x": 279.2006,
+                          "y": 108.189,
+                          "geometry": "M0.74429 4.7244c0.23621-4.01575 1.65356-4.7244 4.48822-4.48818l44.64563-0.23622 0.23624 170.07875-47.95276 0c-1.41733 0-1.65353-1.41733-1.41733-5.90552 0.47244-24.56692-1.88977-145.74804 0-156.85039l0-2.59844z",
+                          "fill": "#509B76",
+                          "width": 50.1144,
+                          "height": 170.0788
+                        },
+                        {
+                          "type": "path",
+                          "id": "JV4I1",
+                          "x": 329.0787,
+                          "y": 107.6837,
+                          "geometry": "M0.23624 0.50529l27.87402-0.47245c3.77951-0.23622 5.19684 0.70866 4.9606 5.90551l0.23624 158.03153-0.94489 6.37793-32.36221 0 0.70868-47.2441-0.47244-79.37008 0-43.22834z",
+                          "fill": "#EAA83D",
+                          "width": 33.3071,
+                          "height": 170.3478
+                        },
+                        {
+                          "type": "path",
+                          "id": "Yugx1",
+                          "x": 89.8745,
+                          "y": 107.1899,
+                          "geometry": "M0.62151 120.52661c-1.41732 10.62991 0 45.82678 0.23622 46.2992m4.25197-53.1496c3.07086-0.47244 68.97638-1.65354 73.93702-0.94489m3.30708 53.85828c1.18111-3.77954 0-46.06299 0.47244-47.71655m13.22835-43.46456c-0.94488 8.03148 0.47244 74.64568 0.47244 88.8189m3.07086-96.14174c2.83464 0.70866 69.21263-1.41731 72.99214-0.70865m4.25198 3.77953c1.18109 10.62991-0.47247 42.51968 0 60.47242 0.23621 19.84255 0.70865 33.07088 0 32.59844m13.22833-155.43308c-1.88977 31.88977 0.70868 104.8819 0.47245 149.29135m3.5433-156.61418c4.25198 0.47244 68.50397-2.36221 73.46457-1.18111m4.48822 163.22837c1.4173-1.41733 0.47241-152.59844 0-156.14175",
+                          "width": 272.7874,
+                          "height": 166.8258,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.7716535433070866,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "tZHwC",
+                          "x": 115.5354,
+                          "y": 152.3622,
+                          "geometry": "M6.14174 0c0 4.01573 1.41732 5.9055 5.66929 6.14172-3.30708 0.23622-5.43307 1.88977-5.66929 6.61418-0.23622-4.01576-2.12598-6.37796-6.14174-6.37796 4.96063 0 5.90552-2.36221 6.14174-6.37794z",
+                          "width": 11.811,
+                          "height": 12.7559,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.4173228346456692,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "lJyt9",
+                          "x": 282.5433,
+                          "y": 20.0787,
+                          "geometry": "M5.90549 0c0 4.25197 1.65353 5.90551 5.66928 6.37795-3.30707 0.23622-5.43304 0.94488-5.66928 6.61417-0.23621-5.19685-2.36221-6.37795-5.90549-6.37795 4.25195-0.47244 5.66928-1.65354 5.90549-6.61417z",
+                          "width": 11.5748,
+                          "height": 12.9921,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.4173228346456692,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "bLWWl",
+                          "x": 254.4331,
+                          "y": 56.6929,
+                          "geometry": "M3.77951 0c0 2.83464 0.94489 3.5433 3.77954 3.77953-2.12598 0.23622-3.54327 0.94488-3.54327 4.01574-0.23627-3.07087-1.65356-4.01575-4.01578-4.01574 2.36221 0 3.5433-0.94488 3.77951-3.77953z",
+                          "width": 7.5591,
+                          "height": 7.7953,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.4173228346456692,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "yo85h",
+                          "x": 373.252,
+                          "y": 42.9921,
+                          "geometry": "M4.25198 4.01574l0 0c0.70868 0.23622 2.12601 0.23622 4.01575 0.23622-3.5433 0.47244-3.5433 1.65355-4.01575 4.48819-0.23621-3.30709-0.94485-4.25197-4.25198-4.25196 2.59845-0.23622 4.01578-0.70866 4.01578-4.48819l0.2362 4.01574z",
+                          "width": 8.2677,
+                          "height": 8.7402,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.4173228346456692,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "VywlV",
+                          "x": 141.5197,
+                          "y": 169.8425,
+                          "geometry": "M4.01575 0c0.23622 3.07085 0.94489 4.01575 4.25197 4.25195-2.3622 0.23624-4.01575 0.47246-4.01575 4.25199-0.23622-3.3071-1.65353-4.25198-4.25197-4.25199 3.07086 0 3.77954-0.70865 4.01575-4.25195z",
+                          "width": 8.2677,
+                          "height": 8.5039,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.4173228346456692,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "P5lSz",
+                          "x": 91.6772,
+                          "y": 278.0046,
+                          "geometry": "M0 0.73557l70.62991 0.47241c21.73229 0.23624 85.27559-1.18109 112.44097-1.18109 25.27557-0.23621 75.11808 1.18109 112.91337 0.47244",
+                          "width": 295.9843,
+                          "height": 1.2345,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.7716535433070866,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "PM289",
+                          "x": 391.7373,
+                          "y": 276.1352,
+                          "geometry": "M1.59338 1.6601c-2.59839 0.23621-1.65353-1.41733 0.23624 0-1.41733-0.70865-1.18109-0.23624 0 0-1.41733-0.70868-1.41733-1.65353 0.47244-1.65354 1.88977 0 7.08661-0.23624 6.37796 2.12598-1.4173 0.47244-5.90552 0.70865-7.08664 0.2362l0-0.70864z",
+                          "fill": "#1E1B1B",
+                          "width": 8.7459,
+                          "height": 2.6263
+                        },
+                        {
+                          "type": "path",
+                          "id": "HQ06U",
+                          "x": 66.6012,
+                          "y": 277.5591,
+                          "geometry": "M0.27277 0.94489c-0.47244-0.70865-0.23622-0.23621 0 0 0.23622-0.70865 0.23622-0.47244 0.23622-0.47245-0.23622-0.23621 1.41732-0.23621 3.30708-0.47244 1.88976 0.23624 3.30709-0.47241 2.36221 1.88977-0.23622 0-5.43307 0.23624-5.90551-0.23624l0-0.70864z",
+                          "fill": "#1E1B1B",
+                          "width": 6.479,
+                          "height": 1.9488
+                        },
+                        {
+                          "type": "path",
+                          "id": "mF5Vb",
+                          "x": 77.2677,
+                          "y": 277.4409,
+                          "geometry": "M0.23622 1.06299c-0.23622 0-0.23622 0.23624-0.23622 0 0-0.23621 0-0.23621 0.23622 0-0.70866-0.70865 0.47244-0.94489 2.36221-0.94489 0.70866 0.23624 5.66929-0.94489 4.72441 1.18112-1.41732 0.70865-6.14173 0.23621-7.08662 0.47242-0.23622-0.47241 0-0.70865 0-0.70865z",
+                          "fill": "#1E1B1B",
+                          "width": 7.442,
+                          "height": 1.7716
+                        },
+                        {
+                          "type": "path",
+                          "id": "SyGuo",
+                          "x": 97.1365,
+                          "y": 273.8136,
+                          "geometry": "M0.20998 1.14703c0-0.23621-0.47244-0.23621 0 0 0.23622-0.70865-0.47244-0.23621 0-0.70864l0 0.70864 0.23622-0.70864c1.65354-0.23624 9.92126-0.70868 11.81103-0.23624 1.88975 1.65353-7.79528 1.18112-12.04725 1.41733 0.47243 0 0.23622-0.47244 0-0.47245z",
+                          "fill": "#1E1B1B",
+                          "width": 12.4988,
+                          "height": 1.6195
+                        },
+                        {
+                          "type": "path",
+                          "id": "dcgLl",
+                          "x": 240.7323,
+                          "y": 272.3622,
+                          "geometry": "M0 1.41733l0.47243-0.47244c2.12599-0.94489 14.88188 0 18.18895-0.94489 3.30713 3.30707-18.18895 2.59842-18.66138 2.12598l0-0.70865z",
+                          "fill": "#1E1B1B",
+                          "width": 19.0071,
+                          "height": 2.5343
+                        },
+                        {
+                          "type": "path",
+                          "id": "Co8Yo",
+                          "x": 286.7953,
+                          "y": 273.0971,
+                          "geometry": "M0.47241 0.4462l0.23624-0.23624c3.77951 0 10.1575-0.47244 13.46457 0 2.59842 2.36218-11.5748 1.18109-13.70081 1.65353l-0.47241-0.70864 0.47241-0.70865z",
+                          "fill": "#1E1B1B",
+                          "width": 14.4901,
+                          "height": 1.8635
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "J0ORe7",
+                          "x": 156.5622,
+                          "y": 117.874,
+                          "fill": "#1E1B1B",
+                          "width": 2.8346,
+                          "height": 2.8346
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "K7flx",
+                          "x": 274.9843,
+                          "y": 70.6299,
+                          "fill": "#1E1B1B",
+                          "width": 2.8346,
+                          "height": 2.8346
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "dJhjW",
+                          "x": 131.9528,
+                          "y": 82.7953,
+                          "fill": "#1E1B1B",
+                          "width": 2.126,
+                          "height": 2.126
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "FmrvZ",
+                          "x": 174.1181,
+                          "y": 138.8976,
+                          "fill": "#1E1B1B",
+                          "width": 1.8898,
+                          "height": 1.8898
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "pOOzc",
+                          "x": 244.2756,
+                          "y": 35.9055,
+                          "fill": "#1E1B1B",
+                          "width": 1.8898,
+                          "height": 1.8898
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "hEL8I",
+                          "x": 361.9134,
+                          "y": 32.3622,
+                          "fill": "#1E1B1B",
+                          "width": 1.8898,
+                          "height": 1.8898
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "iC858",
+                          "x": 377.1496,
+                          "y": 69.3307,
+                          "fill": "#1E1B1B",
+                          "width": 1.6535,
+                          "height": 1.6535
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "B8eot",
+                          "x": 158.0551,
+                          "y": 184.7244,
+                          "fill": "#1E1B1B",
+                          "width": 1.8898,
+                          "height": 1.8898
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "cu5iu",
+                          "x": 385.7717,
+                          "y": 140.7874,
+                          "fill": "#1E1B1B",
+                          "width": 2.3622,
+                          "height": 2.3622
+                        },
+                        {
+                          "type": "path",
+                          "id": "bjeTK",
+                          "x": 224.6693,
+                          "y": 166.063,
+                          "geometry": "M4.01575 0l0 2.83464c1.88977 4.01573 8.74016 1.65353 8.03149 5.43308l-12.04724-0.23624 0.23622-4.96062 3.77953-0.47244",
+                          "fill": "#FFFFFF",
+                          "width": 12.0984,
+                          "height": 8.2677,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "zkice",
+                          "x": 204.5906,
+                          "y": 165.5905,
+                          "geometry": "M2.3622 0l-2.3622 5.6693 8.74014 3.07087 2.59842 0c1.18112-4.25197-5.90549-1.41734-4.72438-8.26771",
+                          "fill": "#FFFFFF",
+                          "width": 11.4719,
+                          "height": 8.7402,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "C1GTf",
+                          "x": 208.6479,
+                          "y": 69.1821,
+                          "geometry": "M12.24191 2.15648c-0.47246-2.83465-3.5433-2.83465-3.5433-0.23622-4.48819 0.70866-8.97638 4.25197-4.96063 12.04725 1.88976 5.19685-4.96063 4.96063-3.54331 12.28346 5.43306 7.32283-0.47244 8.03149 0.47244 14.88189 2.12598 3.54331 7.79527 1.88976 8.74015 2.59842 2.3622-13.937 0-32.83464 2.83465-41.5748z",
+                          "fill": "#854679",
+                          "width": 12.2419,
+                          "height": 43.7313,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.5354330708661417,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "GJN3S",
+                          "x": 216.3788,
+                          "y": 71.811,
+                          "geometry": "M4.2748 0l2.83464 2.83465 1.88977 0.47243-0.47245 1.88977c3.77953 5.6693-3.5433 2.83465-2.83464 7.79528l-0.47245 2.3622c-1.18111-0.70867-3.30707-0.47244-4.25196-0.70867 0.47243-1.1811 2.59842-3.77952 1.41732-5.43307-0.94489-1.88976-2.59842-0.94488-2.3622-2.3622 0.23622-1.1811 2.12599-1.1811 2.12599-1.41732l0.23621-4.01575 1.88977-1.41732z",
+                          "fill": "#FFFFFF",
+                          "width": 9.6164,
+                          "height": 15.3543,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "myfJc",
+                          "x": 212.0241,
+                          "y": 113.622,
+                          "geometry": "M2.96019 0c-3.30708 3.07087-4.25197 9.2126-0.70866 14.64567 0.94489 1.18111 7.32283 12.99213 7.79528 16.06299l1.65354 22.20472c0.47246 0.70868 4.25197 0 6.14172 0l0.70868-22.67715c0-7.32285-3.77953-29.76379-4.72441-29.29134l-10.86615-0.94489z",
+                          "fill": "#9E4E5E",
+                          "width": 18.5508,
+                          "height": 53.2284,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "fTFqM",
+                          "x": 227.0315,
+                          "y": 111.2598,
+                          "geometry": "M0.47244 0.23623c1.18111 2.36221 5.43307 8.26772 7.55907 10.62992 2.83464 8.74016-3.07088 6.37795-4.01576 0.47244l-4.01575-4.96064 0-6.37795 0.47244 0.23623z",
+                          "fill": "#FFFFFF",
+                          "width": 8.7947,
+                          "height": 16.6171,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "hCx3A",
+                          "x": 210.4236,
+                          "y": 85.9843,
+                          "geometry": "M12.59216 0.47243c1.65353 5.19685 8.50394 8.50394 4.01573 15.35433l0.23623 12.75591-6.14173-0.23621-5.90551-2.12599c-5.6693-1.41732-5.6693-4.01575-3.30709-8.26772l-0.23622-7.08661c-0.23622-3.30709 3.77953-10.86613 7.08661-10.86614l4.25198 0.47243z",
+                          "fill": "#854679",
+                          "width": 18.1087,
+                          "height": 28.5827
+                        },
+                        {
+                          "type": "path",
+                          "id": "wLGrr",
+                          "x": 206.7165,
+                          "y": 130.3937,
+                          "geometry": "M7.32283 0l0.47244 13.937c-1.88976 3.77954-7.08661 16.063-7.79527 20.07875l5.6693 1.41731 9.68504-17.24408-0.47246-4.72441-7.55905-13.46457z",
+                          "fill": "#9E4E5E",
+                          "width": 15.3543,
+                          "height": 35.4331,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "mGDvs",
+                          "x": 214.0394,
+                          "y": 95.6693,
+                          "geometry": "M0.47244 0l-0.47244 12.99213 1.18111 5.43306 4.96063 8.74016c0.47244 3.30709 0.23621 6.61417 2.83465 8.50393 2.3622 0.70868 0.47243-3.77952 1.65354-5.66928l-2.12599-3.30709-3.30709-12.99213 2.126-12.51968",
+                          "fill": "#FFFFFF",
+                          "width": 10.6299,
+                          "height": 35.7444,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.2992125984251968,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "RXKlg",
+                          "x": 213.8032,
+                          "y": 96.8504,
+                          "geometry": "M0 4.4882l6.61415 0.70865 0.9449-5.19685",
+                          "width": 7.5591,
+                          "height": 5.1969,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.7716535433070866,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "ShCZ4",
+                          "x": 221.126,
+                          "y": 86.9291,
+                          "geometry": "M1.88977 0c2.12596 5.43307 7.79526 7.32284 4.01573 14.40945l-0.2362 12.99213-5.6693-0.23623",
+                          "width": 7.1736,
+                          "height": 27.4016,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.7716535433070866,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "Nbi5C",
+                          "x": 316.5591,
+                          "y": 57.4016,
+                          "geometry": "",
+                          "fill": "#854679",
+                          "width": 0,
+                          "height": 0,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.5354330708661417,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "B0nOpg",
+                          "x": 316.7953,
+                          "y": 57.4016,
+                          "geometry": "M0 0.70866l0.70865 26.22048 30.47244-14.17323-31.18109-12.75591 0 0.70866z",
+                          "fill": "#854679",
+                          "width": 31.1811,
+                          "height": 26.9291,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.5354330708661417,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "iGojT",
+                          "x": 317.0315,
+                          "y": 57.874,
+                          "geometry": "M0 0l0.47244 49.37009",
+                          "width": 0.4724,
+                          "height": 49.3701,
+                          "stroke": "#1E1B1B",
+                          "strokeWidth": 1.7716535433070866,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "bJO95",
+                      "name": "Ad Bottom",
+                      "width": "fill_container",
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "DBJZx",
+                          "name": "Ad CTA",
+                          "fill": "$clay",
+                          "cornerRadius": 9999,
+                          "gap": 8,
+                          "padding": [
+                            14,
+                            26
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "mzNj2",
+                              "name": "Label",
+                              "fill": "#FFFFFF",
+                              "content": "Start free",
+                              "fontFamily": "$font-body",
+                              "fontSize": 17,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "icon",
+                              "id": "omzef",
+                              "name": "Arrow",
+                              "width": 17,
+                              "height": 17,
+                              "icon": "arrow-right",
+                              "library": "lucide",
+                              "fill": "#FFFFFF"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "idw89",
+                          "name": "Ad Footer",
+                          "fill": "$ink-muted",
+                          "content": "caddie.app",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "xe5j4",
+                  "name": "Ad Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Same illustration language, same two typefaces, same one accent for the action — an ad and the landing page read as one brand.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Odzm8",
+              "name": "Motion Concept",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "gap": 24,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "ygpvs",
+                  "name": "Caption",
+                  "fill": "$ink-muted",
+                  "content": "MOTION CONCEPT",
+                  "fontFamily": "$font-body",
+                  "fontSize": 12,
+                  "fontWeight": "600",
+                  "letterSpacing": 0.8
+                },
+                {
+                  "type": "text",
+                  "id": "B15q8o",
+                  "name": "Motion Title",
+                  "fill": "$ink",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Motion is the step, not the sparkle.",
+                  "lineHeight": 1.1,
+                  "fontFamily": "$font-display",
+                  "fontSize": 34,
+                  "fontWeight": "700",
+                  "letterSpacing": -0.8
+                },
+                {
+                  "type": "frame",
+                  "id": "H4XBtR",
+                  "name": "Storyboard",
+                  "width": "fill_container",
+                  "gap": 14,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "IhIVP",
+                      "name": "Frame 1",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "KEgG9",
+                          "name": "Stage",
+                          "clip": true,
+                          "width": "fill_container",
+                          "height": 118,
+                          "fill": "$surface",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "YOspg",
+                              "x": 24,
+                              "y": 60,
+                              "name": "Track",
+                              "fill": "$line",
+                              "width": 190,
+                              "height": 10
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "Q0XJOf",
+                              "x": 24,
+                              "y": 60,
+                              "name": "Fill",
+                              "fill": "$sage",
+                              "width": 62,
+                              "height": 10
+                            },
+                            {
+                              "type": "text",
+                              "id": "rxKr7",
+                              "x": 24,
+                              "y": 26,
+                              "name": "Stage Label",
+                              "fill": "$ink",
+                              "content": "Application sent",
+                              "fontFamily": "$font-body",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "fozP7",
+                          "name": "Frame Label",
+                          "fill": "$ink-soft",
+                          "content": "1 · Step lands",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "N9KE8",
+                      "name": "Frame 2",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "QoEju",
+                          "name": "Stage",
+                          "clip": true,
+                          "width": "fill_container",
+                          "height": 118,
+                          "fill": "$surface",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "A7efy",
+                              "x": 24,
+                              "y": 60,
+                              "name": "Track",
+                              "fill": "$line",
+                              "width": 190,
+                              "height": 10
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "Yn5I7",
+                              "x": 24,
+                              "y": 60,
+                              "name": "Fill",
+                              "fill": "$sage",
+                              "width": 132,
+                              "height": 10
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "UNa8X",
+                              "x": 147,
+                              "y": 55,
+                              "name": "Head",
+                              "fill": "$sage",
+                              "width": 20,
+                              "height": 20,
+                              "stroke": "$surface",
+                              "strokeWidth": 3
+                            },
+                            {
+                              "type": "text",
+                              "id": "oknfu",
+                              "x": 24,
+                              "y": 26,
+                              "name": "Stage Label",
+                              "fill": "$ink",
+                              "content": "Application sent",
+                              "fontFamily": "$font-body",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "vCjPt",
+                          "name": "Frame Label",
+                          "fill": "$ink-soft",
+                          "content": "2 · Bar advances",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "UIQEX",
+                      "name": "Frame 3",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "yWif9",
+                          "name": "Stage",
+                          "clip": true,
+                          "width": "fill_container",
+                          "height": 118,
+                          "fill": "$surface",
+                          "cornerRadius": 8,
+                          "stroke": "$line",
+                          "strokeWidth": 1,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "c0735k",
+                              "x": 24,
+                              "y": 60,
+                              "name": "Track",
+                              "fill": "$line",
+                              "width": 190,
+                              "height": 10
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 9999,
+                              "id": "n2PLyr",
+                              "x": 24,
+                              "y": 60,
+                              "name": "Fill",
+                              "fill": "$sage",
+                              "width": 186,
+                              "height": 10
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "xn5Io",
+                              "x": 201,
+                              "y": 55,
+                              "name": "Head",
+                              "fill": "$sage",
+                              "width": 20,
+                              "height": 20,
+                              "stroke": "$surface",
+                              "strokeWidth": 3
+                            },
+                            {
+                              "type": "text",
+                              "id": "WW9pF",
+                              "x": 24,
+                              "y": 26,
+                              "name": "Stage Label",
+                              "fill": "$ink",
+                              "content": "Interview booked",
+                              "fontFamily": "$font-body",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "iFPkN",
+                              "x": 150,
+                              "y": 20,
+                              "name": "Fleck",
+                              "fill": "$amber",
+                              "width": 9,
+                              "height": 9
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "mmmbF",
+                              "x": 178,
+                              "y": 38,
+                              "name": "Fleck",
+                              "fill": "$clay",
+                              "width": 6,
+                              "height": 6
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "u82gcE",
+                              "x": 126,
+                              "y": 44,
+                              "name": "Fleck",
+                              "fill": "$sage",
+                              "width": 5,
+                              "height": 5
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "PVVY2",
+                              "x": 196,
+                              "y": 16,
+                              "name": "Fleck",
+                              "fill": "$plum",
+                              "width": 7,
+                              "height": 7
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "mCeYS",
+                              "x": 108,
+                              "y": 26,
+                              "name": "Fleck",
+                              "fill": "$amber",
+                              "width": 4,
+                              "height": 4
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "sU9g5",
+                          "name": "Frame Label",
+                          "fill": "$ink-soft",
+                          "content": "3 · Milestone",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "EcOlA",
+                  "name": "Motion Rules",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "xUobN",
+                      "name": "Arrival",
+                      "width": "fill_container",
+                      "gap": 20,
+                      "padding": [
+                        16,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "BhgSB",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": 120,
+                          "content": "Arrival",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "H1yaDc",
+                          "name": "Detail",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Content rises 12px and fades in, never scales or bounces. 240ms, ease-out.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "njvmx",
+                          "name": "Tag",
+                          "fill": "$sage-tint",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            5,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "jedF0",
+                              "name": "Tag Label",
+                              "fill": "$sage",
+                              "content": "Calm confidence",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Rh3dR",
+                      "name": "Progress",
+                      "width": "fill_container",
+                      "stroke": "#E7DCCC",
+                      "strokeWidth": {
+                        "top": 1
+                      },
+                      "gap": 20,
+                      "padding": [
+                        16,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "G6e50",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": 120,
+                          "content": "Progress",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "da7dQ",
+                          "name": "Detail",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "The bar fills toward the next step, the head dot settles with a single soft overshoot. 420ms.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ye9Bx",
+                          "name": "Tag",
+                          "fill": "$sage-tint",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            5,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "P5SjuC",
+                              "name": "Tag Label",
+                              "fill": "$sage",
+                              "content": "Sense of progress",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "o5GH5K",
+                      "name": "Milestone",
+                      "width": "fill_container",
+                      "stroke": "#E7DCCC",
+                      "strokeWidth": {
+                        "top": 1
+                      },
+                      "gap": 20,
+                      "padding": [
+                        16,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "zxGpg",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": 120,
+                          "content": "Milestone",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "ZfADl",
+                          "name": "Detail",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Amber flecks scatter once, briefly, then clear. Reserved for a real milestone — an interview booked, an offer.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "jos0x",
+                          "name": "Tag",
+                          "fill": "$sage-tint",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            5,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "M8rTRx",
+                              "name": "Tag Label",
+                              "fill": "$sage",
+                              "content": "Cheerful, earned",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "GHiD2",
+                      "name": "Setback",
+                      "width": "fill_container",
+                      "stroke": "#E7DCCC",
+                      "strokeWidth": {
+                        "top": 1
+                      },
+                      "gap": 20,
+                      "padding": [
+                        16,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "khdDJ",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": 120,
+                          "content": "Setback",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "FxjbG",
+                          "name": "Detail",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "After a rejection nothing animates. The screen simply changes, and the next step is already visible.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "AOcuz",
+                          "name": "Tag",
+                          "fill": "$sage-tint",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            5,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "hfTS4",
+                              "name": "Tag Label",
+                              "fill": "$sage",
+                              "content": "Considerate",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "f3bWc8",
+                      "name": "Illustration",
+                      "width": "fill_container",
+                      "stroke": "#E7DCCC",
+                      "strokeWidth": {
+                        "top": 1
+                      },
+                      "gap": 20,
+                      "padding": [
+                        16,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "RsE8d",
+                          "name": "Name",
+                          "fill": "$ink",
+                          "textGrowth": "fixed-width",
+                          "width": 120,
+                          "content": "Illustration",
+                          "fontFamily": "$font-body",
+                          "fontSize": 15,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "Sg0Yr",
+                          "name": "Detail",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Figures hold still. Only one secondary element loops slowly — a flag, a fleck — at low amplitude.",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "aiHqK",
+                          "name": "Tag",
+                          "fill": "$sage-tint",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            5,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "MZdCL",
+                              "name": "Tag Label",
+                              "fill": "$sage",
+                              "content": "Warm, not busy",
+                              "fontFamily": "$font-body",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "paper": {
+      "type": "color",
+      "value": "#FBF6EF"
+    },
+    "surface": {
+      "type": "color",
+      "value": "#FFFFFF"
+    },
+    "ink": {
+      "type": "color",
+      "value": "#1E1B18"
+    },
+    "ink-soft": {
+      "type": "color",
+      "value": "#5F564E"
+    },
+    "ink-muted": {
+      "type": "color",
+      "value": "#8C8177"
+    },
+    "clay": {
+      "type": "color",
+      "value": "#D2653F"
+    },
+    "clay-deep": {
+      "type": "color",
+      "value": "#A8452A"
+    },
+    "clay-tint": {
+      "type": "color",
+      "value": "#F6E3D8"
+    },
+    "sage": {
+      "type": "color",
+      "value": "#4F7C63"
+    },
+    "sage-tint": {
+      "type": "color",
+      "value": "#DCE8DF"
+    },
+    "amber": {
+      "type": "color",
+      "value": "#F2B441"
+    },
+    "plum": {
+      "type": "color",
+      "value": "#5C4A6B"
+    },
+    "line": {
+      "type": "color",
+      "value": "#E7DCCC"
+    },
+    "ink-deep": {
+      "type": "color",
+      "value": "#232019"
+    },
+    "font-display": {
+      "type": "string",
+      "value": "Newsreader"
+    },
+    "font-body": {
+      "type": "string",
+      "value": "Inter"
+    }
+  },
+  "fileToken": "9cc2a2b8-c6d0-4965-86f2-dd015ab6132a"
+}

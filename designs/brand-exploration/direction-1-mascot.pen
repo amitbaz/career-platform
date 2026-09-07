@@ -1,0 +1,3032 @@
+{
+  "version": "2.17",
+  "children": [
+    {
+      "type": "frame",
+      "id": "OIZYW",
+      "x": 0,
+      "y": 0,
+      "name": "Direction 1 — Mascot-led",
+      "clip": true,
+      "width": 1760,
+      "fill": "$board-bg",
+      "layout": "vertical",
+      "gap": 56,
+      "padding": [
+        72,
+        80
+      ],
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "frame",
+          "id": "C1xWP",
+          "name": "Board Header",
+          "width": "fill_container",
+          "gap": 40,
+          "justifyContent": "space_between",
+          "alignItems": "end",
+          "children": [
+            {
+              "type": "frame",
+              "id": "Y9JDX",
+              "name": "Header Left",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 12,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "umrFH",
+                  "name": "Eyebrow",
+                  "fill": "$ink-soft",
+                  "content": "BRAND EXPLORATION · DIRECTION 1 OF 3",
+                  "fontFamily": "$font-body",
+                  "fontSize": 13,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.6
+                },
+                {
+                  "type": "text",
+                  "id": "X3O9f4",
+                  "name": "Title",
+                  "fill": "$ink",
+                  "content": "Mascot-led",
+                  "lineHeight": 1.05,
+                  "fontFamily": "$font-display",
+                  "fontSize": 56,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "UfEyI",
+                  "name": "Premise",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "A friendly companion carries the brand. Stride walks beside the job seeker — cheering progress, staying calm through rejection.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 17,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "rnzSL",
+              "name": "Product",
+              "fill": "$ink-soft",
+              "content": "Stride · job search + interview prep",
+              "fontFamily": "$font-body",
+              "fontSize": 15,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "WUSba",
+          "name": "Identity Row",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "JkgeN",
+              "name": "Logo Card",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 24,
+              "layout": "vertical",
+              "gap": 28,
+              "padding": 36,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "p8nklO",
+                  "name": "Card Label",
+                  "fill": "$ink-soft",
+                  "content": "LOGO / WORDMARK",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "frame",
+                  "id": "zodOV",
+                  "name": "Primary Lockup",
+                  "gap": 14,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "eiAcO",
+                      "name": "Mascot Mark",
+                      "clip": true,
+                      "width": 72,
+                      "height": 72,
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "path",
+                          "id": "UTUzT",
+                          "x": 5.3019,
+                          "y": 3.936,
+                          "geometry": "M59.49811 36.864c-2.4-7.2-2.64-11.04-3.696-16.512-1.968-10.128-10.032-20.352-25.104-20.352-15.072 0-22.464 9.504-24.672 18.144-0.912 3.504-1.104 6.864-2.208 11.184-1.296 5.232-3.024 8.88-3.6 12.96-0.48 4.08-1.104 12.816 9.36 18.096 4.368 2.064 10.848 3.74401 21.12 3.74401 5.664 0 12.912-0.336 19.008-2.54401 7.728-2.544 14.928-8.496 9.792-24.72z",
+                          "fill": "#4841C1",
+                          "width": 61.2285,
+                          "height": 64.128
+                        },
+                        {
+                          "type": "path",
+                          "id": "DOtaQ",
+                          "x": 15.137,
+                          "y": 17.1802,
+                          "geometry": "M31.08698 0.00383c-4.464 0.096-5.664 2.784-8.928 3.408-5.616 0.864-5.952-2.832-10.944-3.408-6.432-0.192-10.464 6.864-11.184 16.176-0.528 9.264 5.664 14.496 20.832 14.592 12.048 0 20.4-3.216 20.64-12.38401 0.192-5.664-2.064-18.192-10.416-18.38399z",
+                          "fill": "#FDF6E3",
+                          "width": 41.5141,
+                          "height": 30.7718
+                        },
+                        {
+                          "type": "path",
+                          "id": "slbK2",
+                          "x": 29.808,
+                          "y": 33.312,
+                          "geometry": "M0 0c0.144 1.296 3.072 4.56 4.944 5.808 0.768 0.48 1.536 0.672 2.592 0.048 1.776-1.056 4.656-4.464 4.752-5.856l-12.288 0z",
+                          "fill": "#EE874D",
+                          "width": 12.288,
+                          "height": 6.2508
+                        },
+                        {
+                          "type": "path",
+                          "id": "mtUrF",
+                          "x": 29.7991,
+                          "y": 29.568,
+                          "geometry": "M6.2009 0c-2.736 0-4.944 1.68-5.76 2.592-0.24 0.336-0.576 0.864-0.38401 1.344 3.312 1.968 4.848 3.312 6.14401 3.312 1.296 0 2.256-0.672 6.04799-3.216 0.576-1.44-2.736-4.032-6.04799-4.032z",
+                          "fill": "#FFA45B",
+                          "width": 12.3146,
+                          "height": 7.248
+                        },
+                        {
+                          "type": "path",
+                          "id": "Lc5NG",
+                          "x": 23.0867,
+                          "y": 26.2069,
+                          "geometry": "M2.49734 0.00113c-1.296 0.096-2.544 1.2-2.496 2.928 0.048 1.248 0.912 2.592 2.592 2.592 1.2 0 2.4-1.056 2.4-2.688 0-1.392-1.104-2.88-2.496-2.832z",
+                          "fill": "#28224B",
+                          "width": 4.9933,
+                          "height": 5.5211
+                        },
+                        {
+                          "type": "path",
+                          "id": "Eszph",
+                          "x": 25.8204,
+                          "y": 27.349,
+                          "geometry": "M0.00365 0.44301c-0.048 0.48 0.384 1.152 0.912 1.056 0.336-0.048 0.528-0.48 0.432-0.816-0.192-0.528-1.152-1.104-1.344-0.24z",
+                          "fill": "#656582",
+                          "width": 1.3724,
+                          "height": 1.5083
+                        },
+                        {
+                          "type": "path",
+                          "id": "sKnC3",
+                          "x": 43.8706,
+                          "y": 26.208,
+                          "geometry": "M2.40145 0c-1.296 0.096-2.448 1.248-2.4 2.64-0.048 1.44 1.104 2.88 2.496 2.88 1.344 0.048 2.496-1.104 2.448-2.736 0-1.584-1.2-2.784-2.544-2.784z",
+                          "fill": "#28224B",
+                          "width": 4.9469,
+                          "height": 5.5214
+                        },
+                        {
+                          "type": "path",
+                          "id": "mjPld",
+                          "x": 44.8876,
+                          "y": 27.3572,
+                          "geometry": "M0.85645 0.00281c-0.48-0.048-1.008 0.528-0.816 1.056 0.384 1.008 1.728-0.096 1.2-0.864l-0.384-0.192z",
+                          "fill": "#656582",
+                          "width": 1.3617,
+                          "height": 1.4627
+                        },
+                        {
+                          "type": "path",
+                          "id": "mwGzo",
+                          "x": 22.464,
+                          "y": 21.7716,
+                          "geometry": "M0 0.26036c1.008-0.336 3.408-0.624 6 1.00799",
+                          "width": 6,
+                          "height": 1.2684,
+                          "stroke": "#4841C1",
+                          "strokeWidth": 1.24752,
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "path",
+                          "id": "z6bxZ",
+                          "x": 43.44,
+                          "y": 21.7716,
+                          "geometry": "M5.952 0.26036c-1.008-0.336-3.36-0.624-5.952 1.00799",
+                          "width": 5.952,
+                          "height": 1.2684,
+                          "stroke": "#4841C1",
+                          "strokeWidth": 1.24752,
+                          "strokeLinecap": "round"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "rW7oB",
+                      "name": "Wordmark",
+                      "fill": "$ink",
+                      "content": "Stride",
+                      "fontFamily": "$font-display",
+                      "fontSize": 48,
+                      "fontWeight": "700",
+                      "letterSpacing": -1
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "nnI0W",
+                  "name": "Divider",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "eYCGa",
+                  "name": "Lockup Variants",
+                  "width": "fill_container",
+                  "gap": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "fjzs3",
+                      "name": "Reversed",
+                      "width": "fill_container",
+                      "height": 96,
+                      "fill": "$brand",
+                      "cornerRadius": 16,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "uqxWy",
+                          "name": "Wordmark Reversed",
+                          "fill": "$paper",
+                          "content": "Stride",
+                          "fontFamily": "$font-display",
+                          "fontSize": 30,
+                          "fontWeight": "700",
+                          "letterSpacing": -0.6
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "cEOjh",
+                      "name": "Wordmark Only",
+                      "width": "fill_container",
+                      "height": 96,
+                      "fill": "#F4F3EE",
+                      "cornerRadius": 16,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "eJLXK",
+                          "name": "Wordmark Plain",
+                          "fill": "$ink",
+                          "content": "Stride",
+                          "fontFamily": "$font-display",
+                          "fontSize": 30,
+                          "fontWeight": "700",
+                          "letterSpacing": -0.6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "po2VC",
+                  "name": "Logo Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Mark leads in product and app icon. Wordmark alone is allowed under 24px, where the character stops reading.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "AcAaB",
+              "name": "Palette Card",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 24,
+              "layout": "vertical",
+              "gap": 22,
+              "padding": 36,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "TiUxI",
+                  "name": "Card Label",
+                  "fill": "$ink-soft",
+                  "content": "PALETTE",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "frame",
+                  "id": "QNoel",
+                  "name": "Swatches",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "bVSaz",
+                      "name": "Indigo",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 14,
+                          "id": "b4Nm7N",
+                          "name": "Indigo Chip",
+                          "fill": "#4B45E4",
+                          "width": "fill_container",
+                          "height": 88
+                        },
+                        {
+                          "type": "text",
+                          "id": "uBCS6",
+                          "name": "Indigo Name",
+                          "fill": "$ink",
+                          "content": "Indigo",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "K2QRL",
+                          "name": "Indigo Hex",
+                          "fill": "$ink-soft",
+                          "content": "#4B45E4",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "NjUiq",
+                      "name": "Deep",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 14,
+                          "id": "uWMHU",
+                          "name": "Deep Chip",
+                          "fill": "#252096",
+                          "width": "fill_container",
+                          "height": 88
+                        },
+                        {
+                          "type": "text",
+                          "id": "j9Ux2",
+                          "name": "Deep Name",
+                          "fill": "$ink",
+                          "content": "Deep",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "QjVio",
+                          "name": "Deep Hex",
+                          "fill": "$ink-soft",
+                          "content": "#252096",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "a47RFe",
+                      "name": "Apricot",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 14,
+                          "id": "q3kAQ",
+                          "name": "Apricot Chip",
+                          "fill": "#FFA25C",
+                          "width": "fill_container",
+                          "height": 88
+                        },
+                        {
+                          "type": "text",
+                          "id": "gB4zZ",
+                          "name": "Apricot Name",
+                          "fill": "$ink",
+                          "content": "Apricot",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "tqODZ",
+                          "name": "Apricot Hex",
+                          "fill": "$ink-soft",
+                          "content": "#FFA25C",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "xTuTb",
+                      "name": "Mint",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 14,
+                          "id": "tqOE7",
+                          "name": "Mint Chip",
+                          "fill": "#2FBF8F",
+                          "width": "fill_container",
+                          "height": 88
+                        },
+                        {
+                          "type": "text",
+                          "id": "Rf2tn",
+                          "name": "Mint Name",
+                          "fill": "$ink",
+                          "content": "Mint",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "gyUtL",
+                          "name": "Mint Hex",
+                          "fill": "$ink-soft",
+                          "content": "#2FBF8F",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "K7zRCN",
+                      "name": "Blush",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 14,
+                          "id": "VX94T",
+                          "name": "Blush Chip",
+                          "fill": "#FFDCC9",
+                          "width": "fill_container",
+                          "height": 88
+                        },
+                        {
+                          "type": "text",
+                          "id": "zNem6",
+                          "name": "Blush Name",
+                          "fill": "$ink",
+                          "content": "Blush",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "JwVTb",
+                          "name": "Blush Hex",
+                          "fill": "$ink-soft",
+                          "content": "#FFDCC9",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "I7x1oI",
+                  "name": "Neutrals",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Fdbgf",
+                      "name": "Ink",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 12,
+                          "id": "uzeGU",
+                          "name": "Ink Chip",
+                          "fill": "#14162B",
+                          "width": "fill_container",
+                          "height": 52,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "XvTvk",
+                          "name": "Ink Hex",
+                          "fill": "$ink-soft",
+                          "content": "Ink · #14162B",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "WVTCq",
+                      "name": "Slate",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 12,
+                          "id": "F3bWk5",
+                          "name": "Slate Chip",
+                          "fill": "#5A5F7D",
+                          "width": "fill_container",
+                          "height": 52,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "uiVIg",
+                          "name": "Slate Hex",
+                          "fill": "$ink-soft",
+                          "content": "Slate · #5A5F7D",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "XpSAn",
+                      "name": "Paper",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 12,
+                          "id": "Nrkfu",
+                          "name": "Paper Chip",
+                          "fill": "#FFFDF7",
+                          "width": "fill_container",
+                          "height": 52,
+                          "stroke": "$line",
+                          "strokeWidth": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "B7CmD4",
+                          "name": "Paper Hex",
+                          "fill": "$ink-soft",
+                          "content": "Paper · #FFFDF7",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "gOmNq",
+                  "name": "Palette Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Indigo carries trust and does the heavy lifting. Apricot is the cheer — reserved for the mascot and encouragement. Mint marks real progress only, so it keeps its meaning.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "jG2hw",
+              "name": "Typography Card",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 24,
+              "layout": "vertical",
+              "gap": 20,
+              "padding": 36,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "uZ9H2",
+                  "name": "Card Label",
+                  "fill": "$ink-soft",
+                  "content": "TYPOGRAPHY",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "frame",
+                  "id": "XHlJF",
+                  "name": "Display Sample",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "CgVz8",
+                      "name": "Display Meta",
+                      "fill": "$ink-soft",
+                      "content": "Bricolage Grotesque · 700 · headlines",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "J24PgL",
+                      "name": "Display Big",
+                      "fill": "$brand",
+                      "content": "Aa",
+                      "lineHeight": 1.05,
+                      "fontFamily": "$font-display",
+                      "fontSize": 72,
+                      "fontWeight": "700"
+                    },
+                    {
+                      "type": "text",
+                      "id": "FbOdE",
+                      "name": "Display Line",
+                      "fill": "$ink",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Keep going. You're closer than yesterday.",
+                      "lineHeight": 1.2,
+                      "fontFamily": "$font-display",
+                      "fontSize": 24,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "RW6nw",
+                  "name": "Divider",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "U3MHe",
+                  "name": "Body Sample",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "T6Nt9m",
+                      "name": "Body Meta",
+                      "fill": "$ink-soft",
+                      "content": "Inter · 400/600 · interface + long form",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "zhHYs",
+                      "name": "Body Line",
+                      "fill": "$ink",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Stride reads the job post, rewrites your CV for it, and runs a mock interview with the questions that role actually asks. Every answer you practise is saved.",
+                      "lineHeight": 1.6,
+                      "fontFamily": "$font-body",
+                      "fontSize": 15,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ypkJJ",
+                  "name": "Scale",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "jnpx8",
+                      "name": "Display 56 / 1.05",
+                      "fill": "$ink-soft",
+                      "content": "Display 56 / 1.05",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "nNMlN",
+                      "name": "Heading 32 / 1.15",
+                      "fill": "$ink-soft",
+                      "content": "Heading 32 / 1.15",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "mT8b6",
+                      "name": "Subhead 20 / 1.4",
+                      "fill": "$ink-soft",
+                      "content": "Subhead 20 / 1.4",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "ursRm",
+                      "name": "Body 16 / 1.6",
+                      "fill": "$ink-soft",
+                      "content": "Body 16 / 1.6",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "gkJ4F",
+                      "name": "Caption 13 / 1.5",
+                      "fill": "$ink-soft",
+                      "content": "Caption 13 / 1.5",
+                      "fontFamily": "$font-body",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "vetsP",
+          "name": "Landing — First Screen",
+          "clip": true,
+          "width": 1440,
+          "height": 900,
+          "fill": "$paper",
+          "cornerRadius": 20,
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "JLZWO",
+              "name": "Nav",
+              "width": "fill_container",
+              "height": 80,
+              "padding": [
+                0,
+                72
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "oImcc",
+                  "name": "Nav Wordmark",
+                  "fill": "$ink",
+                  "content": "Stride",
+                  "fontFamily": "$font-display",
+                  "fontSize": 26,
+                  "fontWeight": "700",
+                  "letterSpacing": -0.5
+                },
+                {
+                  "type": "frame",
+                  "id": "H534Q",
+                  "name": "Nav Right",
+                  "gap": 32,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "IG5AZ",
+                      "name": "Find jobs",
+                      "fill": "$ink-soft",
+                      "content": "Find jobs",
+                      "fontFamily": "$font-body",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "kcbNG",
+                      "name": "Practice interviews",
+                      "fill": "$ink-soft",
+                      "content": "Practice interviews",
+                      "fontFamily": "$font-body",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "ZkqsL",
+                      "name": "Pricing",
+                      "fill": "$ink-soft",
+                      "content": "Pricing",
+                      "fontFamily": "$font-body",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "v9BDp",
+                      "name": "Nav CTA",
+                      "fill": "$ink",
+                      "cornerRadius": 999,
+                      "padding": [
+                        11,
+                        20
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "CJtZz",
+                          "name": "Nav CTA Label",
+                          "fill": "$paper",
+                          "content": "Start free",
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ByQvp",
+              "name": "Hero Body",
+              "width": "fill_container",
+              "height": "fill_container",
+              "gap": 56,
+              "padding": [
+                0,
+                72
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "jecea",
+                  "name": "Hero Copy",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 26,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "q0abY",
+                      "name": "Eyebrow Pill",
+                      "fill": "$blush",
+                      "cornerRadius": 999,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        16
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "xfIAB",
+                          "name": "Pill Icon",
+                          "width": 15,
+                          "height": 15,
+                          "icon": "sparkles",
+                          "library": "lucide",
+                          "fill": "#C2551A"
+                        },
+                        {
+                          "type": "text",
+                          "id": "q9WFV",
+                          "name": "Pill Label",
+                          "fill": "#8A3A0B",
+                          "content": "Job search + interview prep, in one place",
+                          "fontFamily": "$font-body",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "A8s7uK",
+                      "name": "Headline",
+                      "fill": "$ink",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Find the job. Then walk in ready.",
+                      "lineHeight": 1.04,
+                      "fontFamily": "$font-display",
+                      "fontSize": 68,
+                      "fontWeight": "700",
+                      "letterSpacing": -1.6
+                    },
+                    {
+                      "type": "text",
+                      "id": "IPmz8",
+                      "name": "Subhead",
+                      "fill": "$ink-soft",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Stride finds roles that actually fit, tailors each application for you, and rehearses the interview until the answers are yours. One steady step at a time.",
+                      "lineHeight": 1.55,
+                      "fontFamily": "$font-body",
+                      "fontSize": 19,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "k8b2we",
+                      "name": "CTA Row",
+                      "gap": 14,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "OHiXK",
+                          "name": "Primary CTA",
+                          "fill": "$brand",
+                          "cornerRadius": 999,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "#4B45E455",
+                            "offset": {
+                              "x": 0,
+                              "y": 6
+                            },
+                            "blur": 18,
+                            "spread": -4
+                          },
+                          "gap": 10,
+                          "padding": [
+                            18,
+                            30
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "v3g2nJ",
+                              "name": "Primary CTA Label",
+                              "fill": "$paper",
+                              "content": "Start free",
+                              "fontFamily": "$font-body",
+                              "fontSize": 17,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "icon",
+                              "id": "k1O5AD",
+                              "name": "CTA Arrow",
+                              "width": 18,
+                              "height": 18,
+                              "icon": "arrow-right",
+                              "library": "lucide",
+                              "fill": "$paper"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "J7MJf",
+                          "name": "Secondary CTA",
+                          "cornerRadius": 999,
+                          "stroke": "$line",
+                          "strokeWidth": 1.5,
+                          "gap": 9,
+                          "padding": [
+                            17,
+                            26
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "YmRYv",
+                              "name": "Play Icon",
+                              "width": 18,
+                              "height": 18,
+                              "icon": "circle-play",
+                              "library": "lucide",
+                              "fill": "$ink"
+                            },
+                            {
+                              "type": "text",
+                              "id": "i4rcwK",
+                              "name": "Secondary CTA Label",
+                              "fill": "$ink",
+                              "content": "Watch a 60s tour",
+                              "fontFamily": "$font-body",
+                              "fontSize": 17,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "CjFSW",
+                      "name": "Trust Row",
+                      "gap": 22,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "txwmV",
+                          "name": "Free to start",
+                          "gap": 7,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "FHWTE",
+                              "name": "Check",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "check",
+                              "library": "lucide",
+                              "fill": "$mint"
+                            },
+                            {
+                              "type": "text",
+                              "id": "gmnix",
+                              "name": "Free to start Label",
+                              "fill": "$ink-soft",
+                              "content": "Free to start",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "fjamI",
+                          "name": "No credit card",
+                          "gap": 7,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "WNLpx",
+                              "name": "Check",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "check",
+                              "library": "lucide",
+                              "fill": "$mint"
+                            },
+                            {
+                              "type": "text",
+                              "id": "VtKHo",
+                              "name": "No credit card Label",
+                              "fill": "$ink-soft",
+                              "content": "No credit card",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "QNbYD",
+                          "name": "Works in 14 languages",
+                          "gap": 7,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "FJgWe",
+                              "name": "Check",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "check",
+                              "library": "lucide",
+                              "fill": "$mint"
+                            },
+                            {
+                              "type": "text",
+                              "id": "xbEAX",
+                              "name": "Works in 14 languages Label",
+                              "fill": "$ink-soft",
+                              "content": "Works in 14 languages",
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "lUjhC",
+                  "name": "Mascot Stage",
+                  "width": 540,
+                  "height": 580,
+                  "layout": "none",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "cJtce",
+                      "x": 20,
+                      "y": 60,
+                      "name": "Blob",
+                      "fill": "$brand-soft",
+                      "width": 500,
+                      "height": 500
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "TV4l9",
+                      "x": 44,
+                      "y": 120,
+                      "name": "Dot Mint",
+                      "fill": "$mint",
+                      "width": 18,
+                      "height": 18
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "AAOYl",
+                      "x": 470,
+                      "y": 400,
+                      "name": "Dot Apricot",
+                      "fill": "$apricot",
+                      "width": 26,
+                      "height": 26
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "GKiol",
+                      "x": 430,
+                      "y": 96,
+                      "name": "Dot Ring",
+                      "innerRadius": 0.62,
+                      "fill": "$brand",
+                      "width": 34,
+                      "height": 34
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LYwHw",
+                      "x": 100,
+                      "y": 110,
+                      "name": "Mascot Full Body",
+                      "clip": true,
+                      "width": 360,
+                      "height": 440,
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "path",
+                          "id": "LrGdQ",
+                          "x": 93.6746,
+                          "y": 326.8,
+                          "geometry": "M38.32545 12.23999l-9.12 7.92001c6.24 5.03998 16.32001 12.23999 16.8 20.16001-0.24 5.51999-6.24 6.47998-11.04 1.67999 1.68001 6.24002-3.36 11.51999-8.63999 4.55997l-25.20001-33.11997c-3.12-4.32001 0.48-10.56003 7.92-5.04001l8.64 5.52002c2.16-1.44003 14.88-12.72003 13.2-13.92001l7.44 12.23999z",
+                          "fill": "#FBAE66",
+                          "width": 46.0055,
+                          "height": 49.858
+                        },
+                        {
+                          "type": "path",
+                          "id": "divTT",
+                          "x": 119.52,
+                          "y": 329.2,
+                          "geometry": "M0 5.52002c1.92 2.63998 5.28 5.51999 10.08 5.75998l2.4-2.16-7.44-9.12c0 0.72-3.12 3.84-5.04 5.52002z",
+                          "fill": "#EF9448",
+                          "width": 12.48,
+                          "height": 11.28
+                        },
+                        {
+                          "type": "path",
+                          "id": "MAgSO",
+                          "x": 237.6,
+                          "y": 328.2656,
+                          "geometry": "M0 7.89438l10.32001 13.92001-6 7.19998c-5.28001 6.72 0.24001 12.24002 6 7.68 8.39999-5.03998 20.64001-11.75998 28.32-15.35999 8.63998-4.32001 11.51999-5.28 11.51999-8.63998 0.23999-2.88-4.32001-5.28003-6.95999-4.56 5.28-5.04001 1.19998-10.32001-7.20001-7.20001-5.76001 2.88-12 8.16-17.75999 12.95999l-8.88001-12.48001-9.36 6.48001z",
+                          "fill": "#FBAE66",
+                          "width": 50.1691,
+                          "height": 38.3637
+                        },
+                        {
+                          "type": "path",
+                          "id": "hwNk7",
+                          "x": 237.6,
+                          "y": 329.68,
+                          "geometry": "M4.08 11.04004c2.88-0.24002 6.95999-4.56003 8.4-6.72003l-3.12-4.32001-9.36 6.48001 4.08 4.56003z",
+                          "fill": "#EF9448",
+                          "width": 12.48,
+                          "height": 11.04
+                        },
+                        {
+                          "type": "path",
+                          "id": "uiUEs",
+                          "x": 207.84,
+                          "y": 312.16,
+                          "geometry": "M29.75999 24.72c10.8-2.63998 16.08-13.67999 14.64-24.72-8.39999 2.40002-44.39999 15.11999-44.39999 18 8.16 5.51999 19.2 10.08002 29.75999 6.72z",
+                          "fill": "#403D87",
+                          "width": 44.6329,
+                          "height": 25.867
+                        },
+                        {
+                          "type": "path",
+                          "id": "kDwWp",
+                          "x": 117.12,
+                          "y": 313.6,
+                          "geometry": "M0 4.56c0.24001 20.88 21.6 28.08002 42.96 13.67999l-20.16001-18.23999-22.79999 4.56z",
+                          "fill": "#403D87",
+                          "width": 42.96,
+                          "height": 25.7641
+                        },
+                        {
+                          "type": "path",
+                          "id": "A21Ie",
+                          "x": 286.56,
+                          "y": 129.5737,
+                          "geometry": "M0 34.02626c10.07999-5.51999 27.35999-21.36002 35.51999-29.52 8.64001-7.44 17.27997-6.24001 17.76001 7.91999 0 13.20001-2.88004 24-7.44 34.32001 6.72-1.68001 10.07999 2.64 8.64001 10.08-2.64001 13.67999-16.08005 27.84-21.84003 32.64 7.67999 2.16 6.95999 13.2-7.20001 21.84-6.95999 5.28001-15.84 8.39999-23.27997 10.8l0-88.08-2.16 0z",
+                          "fill": "#403D87",
+                          "width": 54.809,
+                          "height": 122.1063
+                        },
+                        {
+                          "type": "path",
+                          "id": "Gv8lt",
+                          "x": 18.6813,
+                          "y": 162.4,
+                          "geometry": "M96.75867 30.00002c-14.16 7.43999-41.04 28.56-44.63999 41.52l0 0c-4.56 3.12-13.2 8.15999-18.24 13.67999-7.2-3.36-15.6-6.96001-24.24-6.72-6.96 0.48001-11.52 6-8.88 15.35999 5.76 19.44 32.4 34.55999 68.39999 35.28003 9.60001 13.20001 26.88 27.11999 48.72001 33.6 17.52 6.23999 41.28 9.60001 72.00001 5.51999 35.51999-6 69.84-26.64001 79.19998-69.36002 5.04001-18.23999 2.88001-46.31999-3.11999-66.23999l-164.40001-32.64001c-1.2 4.32001-3.35999 11.52-5.27999 16.56001",
+                          "fill": "#655EBD",
+                          "width": 271.89,
+                          "height": 170.0264
+                        },
+                        {
+                          "type": "path",
+                          "id": "RUPz4",
+                          "x": 173.76,
+                          "y": 196.96,
+                          "geometry": "M9.84 11.03999c2.64 28.56001-9.60001 40.56001-9.84 58.56 0 15.84003 10.8 39.36002 48.96001 39.12 19.91998-0.47998 54.71998-9.59998 62.40001-54.23999 2.87997-16.8 0.95999-45.84-3.36002-54.48l-98.16 11.03999z",
+                          "fill": "#FFF8EA",
+                          "width": 112.7294,
+                          "height": 108.7218
+                        },
+                        {
+                          "type": "path",
+                          "id": "jIVr7",
+                          "x": 182.88,
+                          "y": 195.04,
+                          "geometry": "M0.72 15.59999c14.40001 8.16 30.96001 16.08002 53.04 16.08002 19.20001 0.23999 43.68001-7.68001 47.52-23.52001l-2.88001-8.16-98.39999 10.32001 0.72 5.27998z",
+                          "fill": "#F3DBBB",
+                          "width": 101.28,
+                          "height": 31.6853
+                        },
+                        {
+                          "type": "path",
+                          "id": "Tb7mt",
+                          "x": 125.04,
+                          "y": 63.4574,
+                          "geometry": "M0 97.98259c3.36001-17.04001 2.16-37.20001 12.72001-57.6 10.8-19.68 30-37.92001 62.40001-40.32 27.83999-0.96 50.87999 9.12 65.27997 30.48 3.12003 5.04001 5.28003 9.60001 6.72001 14.4l-45.36 27.6-61.67999 34.8c-12.96001-4.8-30.24-7.92-40.08001-9.36z",
+                          "fill": "#655EBD",
+                          "width": 147.12,
+                          "height": 107.3426
+                        },
+                        {
+                          "type": "path",
+                          "id": "q4EsX",
+                          "x": 160.8678,
+                          "y": 102.0431,
+                          "geometry": "M3.53221 67.55692c-5.76001-15.36002-6.24001-44.64 12.23999-60 7.2-5.76 19.20001-10.56 30.72002-5.28 10.07999 3.84 18.23999 15.12 19.67999 28.32l3.36 3.36 41.76-27.6c4.32 6.48 10.08001 31.43999 10.08001 49.68001l-0.24002 8.63999-44.15999 17.28-67.20001-9.12-6.23999-5.28z",
+                          "fill": "#FFF7E6",
+                          "width": 121.3722,
+                          "height": 81.9569
+                        },
+                        {
+                          "type": "path",
+                          "id": "s1RP2",
+                          "x": 189.3542,
+                          "y": 123.5909,
+                          "geometry": "M17.28583 4.7291c2.40001 5.04001-0.23999 10.07999-4.07999 11.76-3.84 1.67999-10.32001 0.71999-12.72002-5.04-1.67999-5.04001 1.20001-9.60001 5.52002-11.04001 3.84-1.2 8.64 0.24 11.27999 4.32001z",
+                          "fill": "#2B234A",
+                          "width": 18.2035,
+                          "height": 17.2322
+                        },
+                        {
+                          "type": "path",
+                          "id": "S8eZ5N",
+                          "x": 199.0706,
+                          "y": 126.368,
+                          "geometry": "M4.44939 0.99204c1.91998 1.43999 0.95998 3.84-0.72002 3.84001-1.67999 0-4.79999-1.44-3.36-3.84001 0.96001-1.44001 3.12001-1.2 4.08002 0z",
+                          "fill": "#8C8CA0",
+                          "width": 5.5098,
+                          "height": 4.832
+                        },
+                        {
+                          "type": "path",
+                          "id": "R9q6ER",
+                          "x": 250.6445,
+                          "y": 119.784,
+                          "geometry": "M16.9555 3.01602c2.64002 3.36 0.96002 9.59999-3.6 12-4.56 2.40001-9.83998-0.72-12.95999-4.8-1.44-3.6 1.2-8.39999 5.52002-9.6 5.03998-1.43999 8.87997-0.24 11.03997 2.4z",
+                          "fill": "#2B234A",
+                          "width": 18.2101,
+                          "height": 15.8532
+                        },
+                        {
+                          "type": "path",
+                          "id": "o3NHsS",
+                          "x": 260.7467,
+                          "y": 122.4182,
+                          "geometry": "M2.77335 0.14182c1.44-0.72001 2.63998 1.43999 1.91998 3.35999-0.23999 1.44001-2.87997 1.92-4.07999 0-1.20001-1.68-0.72-3.35999 2.16001-3.35999z",
+                          "fill": "#8C8CA0",
+                          "width": 4.9085,
+                          "height": 4.7682
+                        },
+                        {
+                          "type": "path",
+                          "id": "UQFEL",
+                          "x": 221.04,
+                          "y": 128.8,
+                          "geometry": "M0 11.28001c3.12001-5.04001 9.59999-11.28001 16.32001-11.28001 6.72 0 15.84 6.24001 18 12.48 1.20001 2.16 0 4.32001-1.92002 2.40001l-23.27998 0.71998-8.88002-2.16-0.23999-2.15998z",
+                          "fill": "#FBAE66",
+                          "width": 34.8005,
+                          "height": 15.6233
+                        },
+                        {
+                          "type": "path",
+                          "id": "Ecaye",
+                          "x": 222.96,
+                          "y": 141.28,
+                          "geometry": "M0 0c2.64 4.80002 10.31999 12.95999 18 12.48001 2.88001-0.96001 4.8-5.76001 5.04001-9.60001-1.67999 0.23999-15.84 0.23999-23.04001-2.88z",
+                          "fill": "#C16049",
+                          "width": 23.04,
+                          "height": 12.5003
+                        },
+                        {
+                          "type": "path",
+                          "id": "WoF7x",
+                          "x": 228.96,
+                          "y": 146.3682,
+                          "geometry": "M0 0.43181c2.40001-0.96001 10.56001-0.96001 12.24001 6.96001-3.12001-0.48001-10.56001-4.32001-12.24001-6.96001z",
+                          "fill": "#FC8C7E",
+                          "width": 12.24,
+                          "height": 7.3918
+                        },
+                        {
+                          "type": "path",
+                          "id": "To3hu",
+                          "x": 220.8097,
+                          "y": 140.08,
+                          "geometry": "M0.23032 0c-1.67999 2.87999 6 16.07999 17.52 16.55998 5.03999 0 7.2-3.59999 7.44-12.24-1.44 0.24001-6.48 1.44-24.24-3.35999l-0.72-0.95999z",
+                          "fill": "#FAAF63",
+                          "width": 25.1903,
+                          "height": 16.56
+                        },
+                        {
+                          "type": "path",
+                          "id": "NbSW2",
+                          "x": 18.0857,
+                          "y": 232.96,
+                          "geometry": "M34.47427 14.64c-5.76 6-10.32 16.80002 10.32 21.6 6.24 1.67999 16.08 2.39999 21.36 1.68 3.12001 8.88 27.60001 6.72 43.19999 0.96002 13.92002-4.80002 33.12001-18.00002 39.36-38.88002-5.03999 27.83998-29.03999 46.8-43.43998 52.8-10.80001 3.84-25.2 7.44-37.92002 2.64002l2.4 3.11999c-20.39999 0.47998-61.67999-5.52002-69.36-35.52002-1.92-9.59999 3.36-15.36 11.76001-15.36 8.4 0.96001 13.92 3.60001 22.32 6.96001z",
+                          "fill": "#403D87",
+                          "width": 148.7143,
+                          "height": 58.5859
+                        },
+                        {
+                          "type": "path",
+                          "id": "qkGgY",
+                          "x": 33.0238,
+                          "y": 150.8232,
+                          "geometry": "M92.73624 11.33681c-10.8-2.16-23.52002-0.72-34.80001-0.23999-14.16 0.47998-21.36-2.88-33.36-10.08002-3.6-1.67999-7.2-1.67999-10.56001 3.12001-3.36 4.8-12.48 17.52-13.91999 24.24001-0.48 3.36 0.72 7.2 6.23999 10.08 11.52 6.71999 29.28001 10.31999 51.60001 3.59999 8.87999-2.16 18.23999-7.44 26.4-8.4l2.64 2.15999 9.83999-18-4.07998-6.47999z",
+                          "fill": "#94DEAE",
+                          "width": 96.8162,
+                          "height": 45.6427
+                        },
+                        {
+                          "type": "path",
+                          "id": "IPCgm",
+                          "x": 65.76,
+                          "y": 162.64,
+                          "geometry": "M0 33.84c9.84-1.67999 21.12-9.59999 30.00001-16.79999 7.43999-5.52001 16.79999-13.44002 28.79999-17.04001-4.32001 1.2-9.36 18-6.47999 22.32001-7.68001 0-19.92 6.24001-27.84001 8.16-6.24 1.92-16.8 4.08-24.48 3.35999z",
+                          "fill": "#77CB9B",
+                          "width": 58.8,
+                          "height": 33.9818
+                        },
+                        {
+                          "type": "path",
+                          "id": "ruIph",
+                          "x": 117.0847,
+                          "y": 159.04,
+                          "geometry": "M6.75528 3.35999c19.92001-1.19998 33.6 4.80002 56.63999 10.80001 24.48001 6 51.12001 10.56 73.92001 6.95999 13.20001-2.39999 24.00003-6.72 27.84002-14.16-0.24002-2.16-0.24002-3.60001-0.24002-6.95999 7.44001 2.16 8.64002 10.56 5.76001 18.72-1.92001 8.39999 7.91999 20.87999-12.95999 32.87999-21.36001 12.72002-51.12002 10.8-75.84002 3.36-19.43999-5.75999-36.72-19.2-48.72-24-10.8-4.79999-24.48-4.79999-31.68-3.59999-3.36-2.64-0.72-18.96001 5.28-24.00001z",
+                          "fill": "#8CDAAF",
+                          "width": 172.1163,
+                          "height": 60.8497
+                        },
+                        {
+                          "type": "path",
+                          "id": "YM0DJ",
+                          "x": 226.56,
+                          "y": 178.96,
+                          "geometry": "M0 20.87999c20.87999 1.92001 51.59999-4.07999 61.2-20.87999 0.48001 2.87999 0.48001 5.28 0.48001 7.2-12.72 14.40001-32.88 17.04001-43.44002 16.8-6 0.48-15.84-0.96001-18.23999-3.12001z",
+                          "fill": "#77CB9B",
+                          "width": 61.68,
+                          "height": 24.0925
+                        },
+                        {
+                          "type": "path",
+                          "id": "INT69",
+                          "x": 252.3171,
+                          "y": 119.9441,
+                          "geometry": "M7.12291 0.21586c-4.07999 1.2-8.87999 6.72-6.48 12 1.92 4.32001 7.44002 5.04001 11.04 3.60001 3.60001-1.68001 5.28-5.76001 3.6-11.52002-1.19998-2.63999-4.56-5.03999-8.16-4.07999z",
+                          "fill": "#2B234A",
+                          "width": 15.9375,
+                          "height": 16.4898
+                        },
+                        {
+                          "type": "path",
+                          "id": "VuLMs",
+                          "x": 259.9919,
+                          "y": 122.3426,
+                          "geometry": "M1.60815 0.21737c-1.44 1.2-2.63998 4.07999-0.23999 4.8 2.88 1.19999 3.84-1.92001 3.60001-3.12001 0-1.2-1.92001-2.4-3.36002-1.67999z",
+                          "fill": "#8C8CA0",
+                          "width": 5.0035,
+                          "height": 5.2873
+                        },
+                        {
+                          "type": "path",
+                          "id": "cFvxO",
+                          "x": 242.1043,
+                          "y": 99.4637,
+                          "geometry": "M0.2957 30.29631c-1.2-12.48 1.2-22.56 8.16-27.60001 9.59999-6.48 17.03999 0 20.87999 6 5.52002 12 10.80002 33.60001 10.56 56.4l-39.59999-34.79999z",
+                          "fill": "#FFF7E6",
+                          "width": 39.9036,
+                          "height": 65.0963
+                        },
+                        {
+                          "type": "path",
+                          "id": "EtBPg",
+                          "x": 251.9873,
+                          "y": 120.2303,
+                          "geometry": "M5.05267 0.88972c-3.60001 1.92-8.40001 11.04-1.67999 14.87999 4.79999 2.64 8.63998-0.23999 10.79999-2.16 1.67999-2.15999 2.88-7.44 0-10.79999-1.91998-2.4-6.48001-3.84-9.12-1.92z",
+                          "fill": "#2B234A",
+                          "width": 15.9113,
+                          "height": 16.8319
+                        },
+                        {
+                          "type": "path",
+                          "id": "C5SiNB",
+                          "x": 260.258,
+                          "y": 122.3612,
+                          "geometry": "M1.58203 0.19882c-1.67999 0.24-2.39999 4.07999-0.23999 4.80001 2.64001 1.43999 3.84-3.12001 2.39999-4.32001-0.47998-0.48-1.43997-0.96-2.16-0.48z",
+                          "fill": "#8C8CA0",
+                          "width": 4.3581,
+                          "height": 5.277
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "C2sWl",
+                      "x": 296,
+                      "y": 150,
+                      "name": "Speech Bubble",
+                      "fill": "$paper",
+                      "cornerRadius": [
+                        18,
+                        18,
+                        18,
+                        4
+                      ],
+                      "effect": {
+                        "type": "shadow",
+                        "shadowType": "outer",
+                        "color": "#14162B22",
+                        "offset": {
+                          "x": 0,
+                          "y": 4
+                        },
+                        "blur": 16,
+                        "spread": -2
+                      },
+                      "gap": 10,
+                      "padding": [
+                        14,
+                        18
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "cur4d",
+                          "name": "Bubble Text",
+                          "fill": "$ink",
+                          "content": "3 interviews booked\nthis week. Nice one.",
+                          "lineHeight": 1.4,
+                          "fontFamily": "$font-body",
+                          "fontSize": 14,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "ZNZ8c",
+          "name": "Assets Row",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "u9igcq",
+              "name": "Icon Set Card",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 24,
+              "layout": "vertical",
+              "gap": 22,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "hyZh2",
+                  "name": "Card Label",
+                  "fill": "$ink-soft",
+                  "content": "ICONOGRAPHY",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "frame",
+                  "id": "J0GHy",
+                  "name": "Icon Row 1",
+                  "width": "fill_container",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "c6LC60",
+                      "name": "Matched roles",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "fSbsb",
+                          "name": "Matched roles Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "KnRfe",
+                              "name": "Matched roles Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "search",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "DZU4T",
+                          "name": "Matched roles Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Matched roles",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "K6IbNv",
+                      "name": "Tailored CV",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "EF4Xv",
+                          "name": "Tailored CV Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "uN5Xc",
+                              "name": "Tailored CV Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "file-pen-line",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "rwjCj",
+                          "name": "Tailored CV Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Tailored CV",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Tayf4",
+                      "name": "Mock interview",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "GvPnx",
+                          "name": "Mock interview Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "m6PNf",
+                              "name": "Mock interview Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "mic",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "xeV4G",
+                          "name": "Mock interview Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Mock interview",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "kyreN",
+                      "name": "Booked",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "qHfgU",
+                          "name": "Booked Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "FOeye",
+                              "name": "Booked Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "calendar-check",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "yACc3",
+                          "name": "Booked Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Booked",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "QRk7v",
+                  "name": "Icon Row 2",
+                  "width": "fill_container",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "yxjSh",
+                      "name": "Progress",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "mFCOp",
+                          "name": "Progress Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "AsCja",
+                              "name": "Progress Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "trending-up",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "zZrJO",
+                          "name": "Progress Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Progress",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "v1hG4",
+                      "name": "Nudges",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "lNsrK",
+                          "name": "Nudges Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "j2hnK",
+                              "name": "Nudges Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "message-circle-heart",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "k8fQM",
+                          "name": "Nudges Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Nudges",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LEJct",
+                      "name": "New match",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "T0fVF",
+                          "name": "New match Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "y9yjD",
+                              "name": "New match Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "bell-ring",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "s1pim",
+                          "name": "New match Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "New match",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "FFtwy",
+                      "name": "Offer",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "WLOYU",
+                          "name": "Offer Tile",
+                          "width": "fill_container",
+                          "height": 72,
+                          "fill": "$brand-soft",
+                          "cornerRadius": 18,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "Df901",
+                              "name": "Offer Icon",
+                              "width": 30,
+                              "height": 30,
+                              "icon": "party-popper",
+                              "library": "lucide",
+                              "fill": "$brand-deep"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "sJDIj",
+                          "name": "Offer Label",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Offer",
+                          "textAlign": "center",
+                          "fontFamily": "$font-body",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "L5BvbD",
+                  "name": "Icon Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Lucide, 2px stroke, rounded caps — soft enough to sit beside the character, plain enough to stay legible in dense product screens. The mascot supplies personality so the icons never have to.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-body",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "NDndI",
+              "name": "Ad Creative Card",
+              "layout": "vertical",
+              "gap": 14,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "EvQ2d",
+                  "name": "Card Label",
+                  "fill": "$ink-soft",
+                  "content": "PAID AD CREATIVE · 4:5 FEED",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "frame",
+                  "id": "KrY22",
+                  "name": "Ad 4x5",
+                  "clip": true,
+                  "width": 560,
+                  "height": 780,
+                  "fill": "$brand",
+                  "cornerRadius": 24,
+                  "layout": "vertical",
+                  "gap": 18,
+                  "padding": 36,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "ah4yx",
+                      "name": "Ad Wordmark",
+                      "fill": "$paper",
+                      "content": "Stride",
+                      "fontFamily": "$font-display",
+                      "fontSize": 24,
+                      "fontWeight": "700",
+                      "letterSpacing": -0.5
+                    },
+                    {
+                      "type": "text",
+                      "id": "OVLXs",
+                      "name": "Ad Headline",
+                      "fill": "$paper",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Practise the interview before it happens.",
+                      "lineHeight": 1.06,
+                      "fontFamily": "$font-display",
+                      "fontSize": 42,
+                      "fontWeight": "700",
+                      "letterSpacing": -1
+                    },
+                    {
+                      "type": "frame",
+                      "id": "mssT0",
+                      "name": "Ad Stage",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "cWvfo",
+                          "x": 78,
+                          "y": 60,
+                          "name": "Ad Glow",
+                          "fill": "#6D67F0",
+                          "width": 332,
+                          "height": 332
+                        },
+                        {
+                          "type": "frame",
+                          "id": "U4Rto2",
+                          "x": 64,
+                          "y": 30,
+                          "name": "Ad Mascot",
+                          "clip": true,
+                          "width": 360,
+                          "height": 440,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "CLidr",
+                              "x": 93.6746,
+                              "y": 326.8,
+                              "geometry": "M38.32545 12.23999l-9.12 7.92001c6.24 5.03998 16.32001 12.23999 16.8 20.16001-0.24 5.51999-6.24 6.47998-11.04 1.67999 1.68001 6.24002-3.36 11.51999-8.63999 4.55997l-25.20001-33.11997c-3.12-4.32001 0.48-10.56003 7.92-5.04001l8.64 5.52002c2.16-1.44003 14.88-12.72003 13.2-13.92001l7.44 12.23999z",
+                              "fill": "#FBAE66",
+                              "width": 46.0055,
+                              "height": 49.858
+                            },
+                            {
+                              "type": "path",
+                              "id": "qURqK",
+                              "x": 119.52,
+                              "y": 329.2,
+                              "geometry": "M0 5.52002c1.92 2.63998 5.28 5.51999 10.08 5.75998l2.4-2.16-7.44-9.12c0 0.72-3.12 3.84-5.04 5.52002z",
+                              "fill": "#EF9448",
+                              "width": 12.48,
+                              "height": 11.28
+                            },
+                            {
+                              "type": "path",
+                              "id": "APDdZ",
+                              "x": 237.6,
+                              "y": 328.2656,
+                              "geometry": "M0 7.89438l10.32001 13.92001-6 7.19998c-5.28001 6.72 0.24001 12.24002 6 7.68 8.39999-5.03998 20.64001-11.75998 28.32-15.35999 8.63998-4.32001 11.51999-5.28 11.51999-8.63998 0.23999-2.88-4.32001-5.28003-6.95999-4.56 5.28-5.04001 1.19998-10.32001-7.20001-7.20001-5.76001 2.88-12 8.16-17.75999 12.95999l-8.88001-12.48001-9.36 6.48001z",
+                              "fill": "#FBAE66",
+                              "width": 50.1691,
+                              "height": 38.3637
+                            },
+                            {
+                              "type": "path",
+                              "id": "wcFTo",
+                              "x": 237.6,
+                              "y": 329.68,
+                              "geometry": "M4.08 11.04004c2.88-0.24002 6.95999-4.56003 8.4-6.72003l-3.12-4.32001-9.36 6.48001 4.08 4.56003z",
+                              "fill": "#EF9448",
+                              "width": 12.48,
+                              "height": 11.04
+                            },
+                            {
+                              "type": "path",
+                              "id": "hY2nn",
+                              "x": 207.84,
+                              "y": 312.16,
+                              "geometry": "M29.75999 24.72c10.8-2.63998 16.08-13.67999 14.64-24.72-8.39999 2.40002-44.39999 15.11999-44.39999 18 8.16 5.51999 19.2 10.08002 29.75999 6.72z",
+                              "fill": "#403D87",
+                              "width": 44.6329,
+                              "height": 25.867
+                            },
+                            {
+                              "type": "path",
+                              "id": "IZ96e",
+                              "x": 117.12,
+                              "y": 313.6,
+                              "geometry": "M0 4.56c0.24001 20.88 21.6 28.08002 42.96 13.67999l-20.16001-18.23999-22.79999 4.56z",
+                              "fill": "#403D87",
+                              "width": 42.96,
+                              "height": 25.7641
+                            },
+                            {
+                              "type": "path",
+                              "id": "T3ufCl",
+                              "x": 286.56,
+                              "y": 129.5737,
+                              "geometry": "M0 34.02626c10.07999-5.51999 27.35999-21.36002 35.51999-29.52 8.64001-7.44 17.27997-6.24001 17.76001 7.91999 0 13.20001-2.88004 24-7.44 34.32001 6.72-1.68001 10.07999 2.64 8.64001 10.08-2.64001 13.67999-16.08005 27.84-21.84003 32.64 7.67999 2.16 6.95999 13.2-7.20001 21.84-6.95999 5.28001-15.84 8.39999-23.27997 10.8l0-88.08-2.16 0z",
+                              "fill": "#403D87",
+                              "width": 54.809,
+                              "height": 122.1063
+                            },
+                            {
+                              "type": "path",
+                              "id": "e26Db",
+                              "x": 18.6813,
+                              "y": 162.4,
+                              "geometry": "M96.75867 30.00002c-14.16 7.43999-41.04 28.56-44.63999 41.52l0 0c-4.56 3.12-13.2 8.15999-18.24 13.67999-7.2-3.36-15.6-6.96001-24.24-6.72-6.96 0.48001-11.52 6-8.88 15.35999 5.76 19.44 32.4 34.55999 68.39999 35.28003 9.60001 13.20001 26.88 27.11999 48.72001 33.6 17.52 6.23999 41.28 9.60001 72.00001 5.51999 35.51999-6 69.84-26.64001 79.19998-69.36002 5.04001-18.23999 2.88001-46.31999-3.11999-66.23999l-164.40001-32.64001c-1.2 4.32001-3.35999 11.52-5.27999 16.56001",
+                              "fill": "#655EBD",
+                              "width": 271.89,
+                              "height": 170.0264
+                            },
+                            {
+                              "type": "path",
+                              "id": "uDvXp",
+                              "x": 173.76,
+                              "y": 196.96,
+                              "geometry": "M9.84 11.03999c2.64 28.56001-9.60001 40.56001-9.84 58.56 0 15.84003 10.8 39.36002 48.96001 39.12 19.91998-0.47998 54.71998-9.59998 62.40001-54.23999 2.87997-16.8 0.95999-45.84-3.36002-54.48l-98.16 11.03999z",
+                              "fill": "#FFF8EA",
+                              "width": 112.7294,
+                              "height": 108.7218
+                            },
+                            {
+                              "type": "path",
+                              "id": "PzmQ3",
+                              "x": 182.88,
+                              "y": 195.04,
+                              "geometry": "M0.72 15.59999c14.40001 8.16 30.96001 16.08002 53.04 16.08002 19.20001 0.23999 43.68001-7.68001 47.52-23.52001l-2.88001-8.16-98.39999 10.32001 0.72 5.27998z",
+                              "fill": "#F3DBBB",
+                              "width": 101.28,
+                              "height": 31.6853
+                            },
+                            {
+                              "type": "path",
+                              "id": "I4sMx",
+                              "x": 125.04,
+                              "y": 63.4574,
+                              "geometry": "M0 97.98259c3.36001-17.04001 2.16-37.20001 12.72001-57.6 10.8-19.68 30-37.92001 62.40001-40.32 27.83999-0.96 50.87999 9.12 65.27997 30.48 3.12003 5.04001 5.28003 9.60001 6.72001 14.4l-45.36 27.6-61.67999 34.8c-12.96001-4.8-30.24-7.92-40.08001-9.36z",
+                              "fill": "#655EBD",
+                              "width": 147.12,
+                              "height": 107.3426
+                            },
+                            {
+                              "type": "path",
+                              "id": "LbyC6",
+                              "x": 160.8678,
+                              "y": 102.0431,
+                              "geometry": "M3.53221 67.55692c-5.76001-15.36002-6.24001-44.64 12.23999-60 7.2-5.76 19.20001-10.56 30.72002-5.28 10.07999 3.84 18.23999 15.12 19.67999 28.32l3.36 3.36 41.76-27.6c4.32 6.48 10.08001 31.43999 10.08001 49.68001l-0.24002 8.63999-44.15999 17.28-67.20001-9.12-6.23999-5.28z",
+                              "fill": "#FFF7E6",
+                              "width": 121.3722,
+                              "height": 81.9569
+                            },
+                            {
+                              "type": "path",
+                              "id": "S6Iks",
+                              "x": 189.3542,
+                              "y": 123.5909,
+                              "geometry": "M17.28583 4.7291c2.40001 5.04001-0.23999 10.07999-4.07999 11.76-3.84 1.67999-10.32001 0.71999-12.72002-5.04-1.67999-5.04001 1.20001-9.60001 5.52002-11.04001 3.84-1.2 8.64 0.24 11.27999 4.32001z",
+                              "fill": "#2B234A",
+                              "width": 18.2035,
+                              "height": 17.2322
+                            },
+                            {
+                              "type": "path",
+                              "id": "hKeyp",
+                              "x": 199.0706,
+                              "y": 126.368,
+                              "geometry": "M4.44939 0.99204c1.91998 1.43999 0.95998 3.84-0.72002 3.84001-1.67999 0-4.79999-1.44-3.36-3.84001 0.96001-1.44001 3.12001-1.2 4.08002 0z",
+                              "fill": "#8C8CA0",
+                              "width": 5.5098,
+                              "height": 4.832
+                            },
+                            {
+                              "type": "path",
+                              "id": "yZLLL",
+                              "x": 250.6445,
+                              "y": 119.784,
+                              "geometry": "M16.9555 3.01602c2.64002 3.36 0.96002 9.59999-3.6 12-4.56 2.40001-9.83998-0.72-12.95999-4.8-1.44-3.6 1.2-8.39999 5.52002-9.6 5.03998-1.43999 8.87997-0.24 11.03997 2.4z",
+                              "fill": "#2B234A",
+                              "width": 18.2101,
+                              "height": 15.8532
+                            },
+                            {
+                              "type": "path",
+                              "id": "wNDlZ",
+                              "x": 260.7467,
+                              "y": 122.4182,
+                              "geometry": "M2.77335 0.14182c1.44-0.72001 2.63998 1.43999 1.91998 3.35999-0.23999 1.44001-2.87997 1.92-4.07999 0-1.20001-1.68-0.72-3.35999 2.16001-3.35999z",
+                              "fill": "#8C8CA0",
+                              "width": 4.9085,
+                              "height": 4.7682
+                            },
+                            {
+                              "type": "path",
+                              "id": "ySD50",
+                              "x": 221.04,
+                              "y": 128.8,
+                              "geometry": "M0 11.28001c3.12001-5.04001 9.59999-11.28001 16.32001-11.28001 6.72 0 15.84 6.24001 18 12.48 1.20001 2.16 0 4.32001-1.92002 2.40001l-23.27998 0.71998-8.88002-2.16-0.23999-2.15998z",
+                              "fill": "#FBAE66",
+                              "width": 34.8005,
+                              "height": 15.6233
+                            },
+                            {
+                              "type": "path",
+                              "id": "yYTuw",
+                              "x": 222.96,
+                              "y": 141.28,
+                              "geometry": "M0 0c2.64 4.80002 10.31999 12.95999 18 12.48001 2.88001-0.96001 4.8-5.76001 5.04001-9.60001-1.67999 0.23999-15.84 0.23999-23.04001-2.88z",
+                              "fill": "#C16049",
+                              "width": 23.04,
+                              "height": 12.5003
+                            },
+                            {
+                              "type": "path",
+                              "id": "Kb9xD",
+                              "x": 228.96,
+                              "y": 146.3682,
+                              "geometry": "M0 0.43181c2.40001-0.96001 10.56001-0.96001 12.24001 6.96001-3.12001-0.48001-10.56001-4.32001-12.24001-6.96001z",
+                              "fill": "#FC8C7E",
+                              "width": 12.24,
+                              "height": 7.3918
+                            },
+                            {
+                              "type": "path",
+                              "id": "XgI8T",
+                              "x": 220.8097,
+                              "y": 140.08,
+                              "geometry": "M0.23032 0c-1.67999 2.87999 6 16.07999 17.52 16.55998 5.03999 0 7.2-3.59999 7.44-12.24-1.44 0.24001-6.48 1.44-24.24-3.35999l-0.72-0.95999z",
+                              "fill": "#FAAF63",
+                              "width": 25.1903,
+                              "height": 16.56
+                            },
+                            {
+                              "type": "path",
+                              "id": "J105mv",
+                              "x": 18.0857,
+                              "y": 232.96,
+                              "geometry": "M34.47427 14.64c-5.76 6-10.32 16.80002 10.32 21.6 6.24 1.67999 16.08 2.39999 21.36 1.68 3.12001 8.88 27.60001 6.72 43.19999 0.96002 13.92002-4.80002 33.12001-18.00002 39.36-38.88002-5.03999 27.83998-29.03999 46.8-43.43998 52.8-10.80001 3.84-25.2 7.44-37.92002 2.64002l2.4 3.11999c-20.39999 0.47998-61.67999-5.52002-69.36-35.52002-1.92-9.59999 3.36-15.36 11.76001-15.36 8.4 0.96001 13.92 3.60001 22.32 6.96001z",
+                              "fill": "#403D87",
+                              "width": 148.7143,
+                              "height": 58.5859
+                            },
+                            {
+                              "type": "path",
+                              "id": "KXfJd",
+                              "x": 33.0238,
+                              "y": 150.8232,
+                              "geometry": "M92.73624 11.33681c-10.8-2.16-23.52002-0.72-34.80001-0.23999-14.16 0.47998-21.36-2.88-33.36-10.08002-3.6-1.67999-7.2-1.67999-10.56001 3.12001-3.36 4.8-12.48 17.52-13.91999 24.24001-0.48 3.36 0.72 7.2 6.23999 10.08 11.52 6.71999 29.28001 10.31999 51.60001 3.59999 8.87999-2.16 18.23999-7.44 26.4-8.4l2.64 2.15999 9.83999-18-4.07998-6.47999z",
+                              "fill": "#94DEAE",
+                              "width": 96.8162,
+                              "height": 45.6427
+                            },
+                            {
+                              "type": "path",
+                              "id": "SdqZD",
+                              "x": 65.76,
+                              "y": 162.64,
+                              "geometry": "M0 33.84c9.84-1.67999 21.12-9.59999 30.00001-16.79999 7.43999-5.52001 16.79999-13.44002 28.79999-17.04001-4.32001 1.2-9.36 18-6.47999 22.32001-7.68001 0-19.92 6.24001-27.84001 8.16-6.24 1.92-16.8 4.08-24.48 3.35999z",
+                              "fill": "#77CB9B",
+                              "width": 58.8,
+                              "height": 33.9818
+                            },
+                            {
+                              "type": "path",
+                              "id": "ssAI1",
+                              "x": 117.0847,
+                              "y": 159.04,
+                              "geometry": "M6.75528 3.35999c19.92001-1.19998 33.6 4.80002 56.63999 10.80001 24.48001 6 51.12001 10.56 73.92001 6.95999 13.20001-2.39999 24.00003-6.72 27.84002-14.16-0.24002-2.16-0.24002-3.60001-0.24002-6.95999 7.44001 2.16 8.64002 10.56 5.76001 18.72-1.92001 8.39999 7.91999 20.87999-12.95999 32.87999-21.36001 12.72002-51.12002 10.8-75.84002 3.36-19.43999-5.75999-36.72-19.2-48.72-24-10.8-4.79999-24.48-4.79999-31.68-3.59999-3.36-2.64-0.72-18.96001 5.28-24.00001z",
+                              "fill": "#8CDAAF",
+                              "width": 172.1163,
+                              "height": 60.8497
+                            },
+                            {
+                              "type": "path",
+                              "id": "te6To",
+                              "x": 226.56,
+                              "y": 178.96,
+                              "geometry": "M0 20.87999c20.87999 1.92001 51.59999-4.07999 61.2-20.87999 0.48001 2.87999 0.48001 5.28 0.48001 7.2-12.72 14.40001-32.88 17.04001-43.44002 16.8-6 0.48-15.84-0.96001-18.23999-3.12001z",
+                              "fill": "#77CB9B",
+                              "width": 61.68,
+                              "height": 24.0925
+                            },
+                            {
+                              "type": "path",
+                              "id": "wrUWv",
+                              "x": 252.3171,
+                              "y": 119.9441,
+                              "geometry": "M7.12291 0.21586c-4.07999 1.2-8.87999 6.72-6.48 12 1.92 4.32001 7.44002 5.04001 11.04 3.60001 3.60001-1.68001 5.28-5.76001 3.6-11.52002-1.19998-2.63999-4.56-5.03999-8.16-4.07999z",
+                              "fill": "#2B234A",
+                              "width": 15.9375,
+                              "height": 16.4898
+                            },
+                            {
+                              "type": "path",
+                              "id": "T9VgPJ",
+                              "x": 259.9919,
+                              "y": 122.3426,
+                              "geometry": "M1.60815 0.21737c-1.44 1.2-2.63998 4.07999-0.23999 4.8 2.88 1.19999 3.84-1.92001 3.60001-3.12001 0-1.2-1.92001-2.4-3.36002-1.67999z",
+                              "fill": "#8C8CA0",
+                              "width": 5.0035,
+                              "height": 5.2873
+                            },
+                            {
+                              "type": "path",
+                              "id": "nPcvg",
+                              "x": 242.1043,
+                              "y": 99.4637,
+                              "geometry": "M0.2957 30.29631c-1.2-12.48 1.2-22.56 8.16-27.60001 9.59999-6.48 17.03999 0 20.87999 6 5.52002 12 10.80002 33.60001 10.56 56.4l-39.59999-34.79999z",
+                              "fill": "#FFF7E6",
+                              "width": 39.9036,
+                              "height": 65.0963
+                            },
+                            {
+                              "type": "path",
+                              "id": "u7bGP",
+                              "x": 251.9873,
+                              "y": 120.2303,
+                              "geometry": "M5.05267 0.88972c-3.60001 1.92-8.40001 11.04-1.67999 14.87999 4.79999 2.64 8.63998-0.23999 10.79999-2.16 1.67999-2.15999 2.88-7.44 0-10.79999-1.91998-2.4-6.48001-3.84-9.12-1.92z",
+                              "fill": "#2B234A",
+                              "width": 15.9113,
+                              "height": 16.8319
+                            },
+                            {
+                              "type": "path",
+                              "id": "f8uZB",
+                              "x": 260.258,
+                              "y": 122.3612,
+                              "geometry": "M1.58203 0.19882c-1.67999 0.24-2.39999 4.07999-0.23999 4.80001 2.64001 1.43999 3.84-3.12001 2.39999-4.32001-0.47998-0.48-1.43997-0.96-2.16-0.48z",
+                              "fill": "#8C8CA0",
+                              "width": 4.3581,
+                              "height": 5.277
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "bB8IA",
+                          "x": 236,
+                          "y": 0,
+                          "name": "Ad Bubble",
+                          "fill": "$paper",
+                          "cornerRadius": [
+                            16,
+                            16,
+                            16,
+                            4
+                          ],
+                          "padding": [
+                            12,
+                            16
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "lnOgc",
+                              "name": "Ad Bubble Text",
+                              "fill": "$ink",
+                              "content": "\"Tell me about a time\nyou failed.\" Ready?",
+                              "lineHeight": 1.4,
+                              "fontFamily": "$font-body",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "IyWMk",
+                      "name": "Ad CTA",
+                      "fill": "$apricot",
+                      "cornerRadius": 999,
+                      "gap": 9,
+                      "padding": [
+                        16,
+                        26
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "MYlxn",
+                          "name": "Ad CTA Label",
+                          "fill": "#4A2405",
+                          "content": "Run a free mock interview",
+                          "fontFamily": "$font-body",
+                          "fontSize": 17,
+                          "fontWeight": "700"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "d9ORmA",
+                          "name": "Ad CTA Arrow",
+                          "width": 18,
+                          "height": 18,
+                          "icon": "arrow-right",
+                          "library": "lucide",
+                          "fill": "#4A2405"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "eFCX9",
+              "name": "Motion Card",
+              "width": "fill_container",
+              "fill": "$paper",
+              "cornerRadius": 24,
+              "layout": "vertical",
+              "gap": 20,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "vnQzb",
+                  "name": "Card Label",
+                  "fill": "$ink-soft",
+                  "content": "MOTION CONCEPT — \"ONE MORE STEP\"",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "frame",
+                  "id": "nktwn",
+                  "name": "Storyboard",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "DZb6V",
+                      "name": "Beat 1",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "g9VFK",
+                          "name": "Beat 1 Thumb",
+                          "clip": true,
+                          "width": "fill_container",
+                          "height": 100,
+                          "fill": "#F4F3EE",
+                          "cornerRadius": 14,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 999,
+                              "id": "Q0rUPA",
+                              "x": 16,
+                              "y": 74,
+                              "name": "Track",
+                              "fill": "$line",
+                              "width": 110,
+                              "height": 8
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 999,
+                              "id": "a35MEZ",
+                              "x": 16,
+                              "y": 74,
+                              "name": "Fill",
+                              "fill": "$mint",
+                              "width": 26,
+                              "height": 8
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "L3JNs",
+                              "x": 24,
+                              "y": 36,
+                              "name": "Walker",
+                              "fill": "$brand",
+                              "width": 30,
+                              "height": 30
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "vnMbY",
+                          "name": "Beat 1 Title",
+                          "fill": "$ink",
+                          "content": "1 · Idle",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "NZI8C",
+                          "name": "Beat 1 Desc",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Slow breathing loop, 0.9s. Blinks every 4–7s at random.",
+                          "lineHeight": 1.45,
+                          "fontFamily": "$font-body",
+                          "fontSize": 11.5,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "H75Xue",
+                      "name": "Beat 2",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "cE591",
+                          "name": "Beat 2 Thumb",
+                          "clip": true,
+                          "width": "fill_container",
+                          "height": 100,
+                          "fill": "#F4F3EE",
+                          "cornerRadius": 14,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 999,
+                              "id": "pLmP1",
+                              "x": 16,
+                              "y": 74,
+                              "name": "Track",
+                              "fill": "$line",
+                              "width": 110,
+                              "height": 8
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 999,
+                              "id": "ZcEs7",
+                              "x": 16,
+                              "y": 74,
+                              "name": "Fill",
+                              "fill": "$mint",
+                              "width": 64,
+                              "height": 8
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "JxuqG",
+                              "x": 62,
+                              "y": 36,
+                              "name": "Walker",
+                              "fill": "$brand",
+                              "width": 30,
+                              "height": 30
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "StGVh",
+                          "name": "Beat 2 Title",
+                          "fill": "$ink",
+                          "content": "2 · Step",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "QYISi",
+                          "name": "Beat 2 Desc",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "On task complete the character takes one step right; progress bar advances with it.",
+                          "lineHeight": 1.45,
+                          "fontFamily": "$font-body",
+                          "fontSize": 11.5,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "C34GQm",
+                      "name": "Beat 3",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "nCBuP",
+                          "name": "Beat 3 Thumb",
+                          "clip": true,
+                          "width": "fill_container",
+                          "height": 100,
+                          "fill": "#F4F3EE",
+                          "cornerRadius": 14,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 999,
+                              "id": "y1yQoe",
+                              "x": 16,
+                              "y": 74,
+                              "name": "Track",
+                              "fill": "$line",
+                              "width": 110,
+                              "height": 8
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 999,
+                              "id": "mGmEJ",
+                              "x": 16,
+                              "y": 74,
+                              "name": "Fill",
+                              "fill": "$mint",
+                              "width": 102,
+                              "height": 8
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "RciT3",
+                              "x": 100,
+                              "y": 36,
+                              "name": "Walker",
+                              "fill": "$brand",
+                              "width": 30,
+                              "height": 30
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "MvJgK",
+                              "x": 96,
+                              "y": 22,
+                              "name": "Burst",
+                              "fill": "$apricot",
+                              "width": 12,
+                              "height": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "t5z4XA",
+                          "name": "Beat 3 Title",
+                          "fill": "$ink",
+                          "content": "3 · Cheer",
+                          "fontFamily": "$font-body",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "e49yUY",
+                          "name": "Beat 3 Desc",
+                          "fill": "$ink-soft",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Scarf flicks, apricot burst, 400ms. Then settles back to idle.",
+                          "lineHeight": 1.45,
+                          "fontFamily": "$font-body",
+                          "fontSize": 11.5,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "tnE0k",
+                  "name": "Motion Note",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Everything eases out, nothing bounces hard — calm confidence, not hype. The character is the only thing that moves; the interface stays still. After a rejection the same character appears, but the motion drops to a single slow blink and the copy softens. Ads reuse beat 3 as the last 400ms so the feed loop ends on the cheer.",
+                  "lineHeight": 1.55,
+                  "fontFamily": "$font-body",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "hcxVl",
+          "name": "Direction Notes",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "gZYvY",
+              "name": "VOICE",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": [
+                24,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 999,
+                  "id": "mR18U",
+                  "name": "VOICE Rule",
+                  "fill": "$brand",
+                  "width": 56,
+                  "height": 3
+                },
+                {
+                  "type": "text",
+                  "id": "sEMjp",
+                  "name": "VOICE Title",
+                  "fill": "$ink",
+                  "content": "VOICE",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "text",
+                  "id": "QEC6a",
+                  "name": "VOICE Body",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Warm, plain, second person. Short sentences. The character speaks in the product; the brand speaks on the site. Never chirpy about a rejection — the mascot goes quiet and the copy gets shorter, not more upbeat.",
+                  "lineHeight": 1.6,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "i1nBE",
+              "name": "WHERE THE CHARACTER LIVES",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": [
+                24,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 999,
+                  "id": "xcsb7",
+                  "name": "WHERE THE CHARACTER LIVES Rule",
+                  "fill": "$brand",
+                  "width": 56,
+                  "height": 3
+                },
+                {
+                  "type": "text",
+                  "id": "J7WjX4",
+                  "name": "WHERE THE CHARACTER LIVES Title",
+                  "fill": "$ink",
+                  "content": "WHERE THE CHARACTER LIVES",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "text",
+                  "id": "blJ2n",
+                  "name": "WHERE THE CHARACTER LIVES Body",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Ads, landing page, empty states, streaks, results and rejections. It stays out of the CV editor, the job list and anything the user is concentrating in — presence there would read as a toy.",
+                  "lineHeight": 1.6,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ApD2o",
+              "name": "RISKS TO WATCH",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": [
+                24,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 999,
+                  "id": "art0M",
+                  "name": "RISKS TO WATCH Rule",
+                  "fill": "$brand",
+                  "width": 56,
+                  "height": 3
+                },
+                {
+                  "type": "text",
+                  "id": "CgOJq",
+                  "name": "RISKS TO WATCH Title",
+                  "fill": "$ink",
+                  "content": "RISKS TO WATCH",
+                  "fontFamily": "$font-body",
+                  "fontSize": 11,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.4
+                },
+                {
+                  "type": "text",
+                  "id": "yFK0W",
+                  "name": "RISKS TO WATCH Body",
+                  "fill": "$ink-soft",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "A character can read junior to senior candidates and to recruiters. Test the same ad with and without it. Second risk: a mascot is expensive to keep — every new state needs new artwork, so the pose set must be finite and defined early.",
+                  "lineHeight": 1.6,
+                  "fontFamily": "$font-body",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "ink": {
+      "type": "color",
+      "value": "#14162B"
+    },
+    "ink-soft": {
+      "type": "color",
+      "value": "#5A5F7D"
+    },
+    "paper": {
+      "type": "color",
+      "value": "#FFFDF7"
+    },
+    "board-bg": {
+      "type": "color",
+      "value": "#EAE8E1"
+    },
+    "brand": {
+      "type": "color",
+      "value": "#4B45E4"
+    },
+    "brand-deep": {
+      "type": "color",
+      "value": "#252096"
+    },
+    "brand-soft": {
+      "type": "color",
+      "value": "#E4E2FD"
+    },
+    "apricot": {
+      "type": "color",
+      "value": "#FFA25C"
+    },
+    "mint": {
+      "type": "color",
+      "value": "#2FBF8F"
+    },
+    "blush": {
+      "type": "color",
+      "value": "#FFDCC9"
+    },
+    "line": {
+      "type": "color",
+      "value": "#DEDBD2"
+    },
+    "font-display": {
+      "type": "string",
+      "value": "Bricolage Grotesque"
+    },
+    "font-body": {
+      "type": "string",
+      "value": "Inter"
+    }
+  },
+  "fileToken": "62c74774-9165-4002-a2ed-767382d1d0c8"
+}
