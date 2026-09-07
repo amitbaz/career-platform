@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 _REMOTE_POLICIES = {"preferred", "required", "allowed"}
 _RELOCATION_POLICIES = {"none", "selective", "allowed"}
 _SPONSORSHIP_POLICIES = {"not_required", "required"}
+
+# Delivery policy. The daily offer limit is a closed product choice rather than
+# a tuning knob, so it is a set and not a range. The match-score floor is a
+# range, bounded away from both ends of the score scale on purpose: a floor of 0
+# would disable the feature without saying so, and a floor at or near 100 would
+# silence the digest permanently. Below the `possible` decision threshold the
+# floor stops filtering anything the decision ladder does not already drop.
+DailyOfferLimit = Literal[5, 10, 20]
+_MATCH_SCORE_FLOOR_MIN = 50
+_MATCH_SCORE_FLOOR_MAX = 95
 
 
 class SearchProfileMarket(BaseModel):
@@ -56,6 +68,11 @@ class SearchProfileMarket(BaseModel):
 
 
 class SearchProfile(BaseModel):
+    # Assignment is validated as well as construction: callers edit a loaded
+    # profile in place, so an out-of-range value must be refused where it is
+    # set rather than surviving until the database check rejects the write.
+    model_config = ConfigDict(validate_assignment=True)
+
     timezone: str = Field(min_length=1)
     scheduled_hour: int = Field(ge=0, le=23)
     max_jobs_per_run: int = Field(gt=0)
@@ -63,6 +80,11 @@ class SearchProfile(BaseModel):
     source_max_share: float = Field(ge=0)
     thresholds: dict = Field(default_factory=dict)
     salary_floor_eur: int = Field(ge=0)
+
+    daily_offer_limit: DailyOfferLimit = 10
+    match_score_floor: int = Field(
+        default=80, ge=_MATCH_SCORE_FLOOR_MIN, le=_MATCH_SCORE_FLOOR_MAX
+    )
 
     target_titles: list[str] = Field(default_factory=list)
     positive_keywords: list[str] = Field(default_factory=list)

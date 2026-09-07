@@ -91,3 +91,54 @@ def test_to_market_rows_carries_profile_id():
     assert len(rows) == 1
     assert rows[0]["profile_id"] == "11111111-1111-1111-1111-111111111111"
     assert rows[0]["market_id"] == "germany_eu"
+
+
+def test_delivery_policy_fields_default_when_not_given():
+    profile = _profile()
+    assert profile.daily_offer_limit == 10
+    assert profile.match_score_floor == 80
+
+
+@pytest.mark.parametrize("limit", [5, 10, 20])
+def test_daily_offer_limit_accepts_allowed_values(limit):
+    assert _profile(daily_offer_limit=limit).daily_offer_limit == limit
+
+
+@pytest.mark.parametrize("limit", [0, 1, 7, 15, 21, 100, -5])
+def test_daily_offer_limit_rejects_values_outside_the_allowed_set(limit):
+    with pytest.raises(ValidationError):
+        _profile(daily_offer_limit=limit)
+
+
+@pytest.mark.parametrize("floor", [50, 65, 80, 95])
+def test_match_score_floor_accepts_values_inside_the_band(floor):
+    assert _profile(match_score_floor=floor).match_score_floor == floor
+
+
+@pytest.mark.parametrize("floor", [0, 49, 96, 100, 101, -1])
+def test_match_score_floor_rejects_values_outside_the_band(floor):
+    """0 would disable the floor silently; 100 would silence the digest."""
+    with pytest.raises(ValidationError):
+        _profile(match_score_floor=floor)
+
+
+@pytest.mark.parametrize("field, value", [("daily_offer_limit", 7), ("match_score_floor", 100)])
+def test_delivery_policy_rejects_a_bad_value_assigned_after_construction(field, value):
+    """A loaded profile is edited in place, so assignment must validate too."""
+    profile = _profile()
+    with pytest.raises(ValidationError):
+        setattr(profile, field, value)
+
+
+@pytest.mark.parametrize("field, value", [("daily_offer_limit", 7), ("match_score_floor", 100)])
+def test_delivery_policy_rejects_a_bad_value_assigned_after_construction(field, value):
+    """A loaded profile is edited in place, so assignment must validate too."""
+    profile = _profile()
+    with pytest.raises(ValidationError):
+        setattr(profile, field, value)
+
+
+def test_to_profile_row_carries_delivery_policy():
+    row = _profile(daily_offer_limit=20, match_score_floor=70).to_profile_row()
+    assert row["daily_offer_limit"] == 20
+    assert row["match_score_floor"] == 70
