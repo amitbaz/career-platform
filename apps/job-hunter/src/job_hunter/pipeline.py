@@ -522,6 +522,31 @@ _FACET_SKIPPED = "skipped"
 _FACET_QUOTA_BLOCKED = "quota_blocked"
 
 
+def _waiting_out_capacity(call, *, doing: str, job_id: str):
+    """Run `call`, waiting out the provider's rolling window as often as needed.
+
+    Both provider calls a user is waiting on -- reading the posting and
+    scoring it -- wait rather than give up their turn: the run is producing
+    this person's digest and there is no later chance today.
+    `GeminiClient._preflight_with_pacing` has already slept out one window and
+    re-checked before raising, so each pass here is a second, deliberate wait.
+
+    The backfill pass deliberately does not use this. Nobody is waiting on it,
+    so it gives up its turn instead of holding the run open.
+    """
+    while True:
+        try:
+            return call()
+        except GeminiTemporaryCapacity as exc:
+            logger.info(
+                "Gemini temporary capacity reached; waiting %.2fs before %s for job_id=%s",
+                exc.retry_after_seconds,
+                doing,
+                job_id,
+            )
+            time.sleep(exc.retry_after_seconds)
+
+
 def _extract_and_store_facets(
     job_id: str,
     job: Job,
@@ -602,29 +627,20 @@ def _facets_for_scoring(
         # there now. Read the posting again rather than score it blind.
         logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
 
-    # Spent whether or not the read succeeds: a posting that could not be read
-    # has had its turn this run.
+    facets = _waiting_out_capacity(
+        lambda: _extract_and_store_facets(job_id, job, store, gemini, summary),
+        doing="reading the posting",
+        job_id=job_id,
+    )
+    # A turn is spent once the provider has actually answered -- including an
+    # answer that could not be read, which cost a call. A refusal that never
+    # reached the provider raises out of here instead, leaving the job in the
+    # set, because it has not had its turn.
     needs_facets.discard(job_id)
-
-    while True:
-        try:
-            facets = _extract_and_store_facets(job_id, job, store, gemini, summary)
-            break
-        except GeminiTemporaryCapacity as exc:
-            # A user is waiting on this job's score, so this waits out the
-            # rolling window exactly as the scoring call itself does. The
-            # backfill pass, which nobody is waiting on, skips instead.
-            logger.info(
-                "Gemini temporary capacity reached; waiting %.2fs before reading job_id=%s",
-                exc.retry_after_seconds,
-                job_id,
-            )
-            time.sleep(exc.retry_after_seconds)
-
     return facets
 
 
-def _extract_job_facets(
+def _backfill_one_job_facets(
     job_id: str,
     job: Job,
     store: PostgresJobStore,
@@ -677,13 +693,17 @@ def _extract_facets_for_run(
     state -- everything already read, nothing rewritten -- costs one pair of
     store reads and no provider call at all.
 
-    `limit` is what is left of the run's facet budget -- the shortlist size the
-    user's search profile already sets as "how much AI work one run may do",
-    less whatever the run's inline reads already spent. Reusing that figure
-    rather than adding a knob keeps the work bounded without asking an operator
-    to size it. Half of what remains is **reserved for the backfill**: spending the budget in priority order
-    alone would mean a day that discovers a full shortlist leaves nothing for
-    the corpus, and the backfill would only ever progress on quiet days --
+    `limit` is what is left of `max_jobs_per_run` -- the shortlist size the
+    user's search profile already sets as "how much AI work one run may do" --
+    once the run's inline reads have been subtracted. It bounds this pass, not
+    the run: an inline read is the unavoidable cost of scoring a job and is
+    never refused for want of budget, so a run that scores a full shortlist of
+    unread postings simply leaves this pass nothing. Reusing that figure rather
+    than adding a knob keeps the backfill bounded without asking an operator to
+    size it. Half of what remains is **reserved for the backfill**: spending
+    the budget in priority order alone would mean a day that discovers a full
+    shortlist leaves nothing for the corpus, and the backfill would only ever
+    progress on quiet days --
     which is not a backfill. The reserve is what makes the existing corpus
     drain over consecutive runs whether or not discovery is productive.
 
@@ -730,7 +750,7 @@ def _extract_facets_for_run(
                     continue
             if job is None:
                 continue
-            outcome = _extract_job_facets(job_id, job, store, gemini, summary)
+            outcome = _backfill_one_job_facets(job_id, job, store, gemini, summary)
             if outcome == _FACET_QUOTA_BLOCKED:
                 quota_blocked = True
             elif outcome == _FACET_SKIPPED:
@@ -853,7 +873,7 @@ def _evaluate_and_deliver_one_job(
             "no shared budget left to read the posting for job_id=%s; not scored this run",
             job_id,
         )
-        summary.evaluation_skipped_without_facets += 1
+        summary.scoring_deferred_by_read_budget += 1
         store.enqueue_ai_work("job_evaluation", job_id)
         return False, False, None, False
 
@@ -865,38 +885,33 @@ def _evaluate_and_deliver_one_job(
         logger.warning(
             "job_id=%s has no readable facets; not scored this run", job_id
         )
-        summary.evaluation_skipped_without_facets += 1
+        summary.scoring_skipped_without_facets += 1
         return False, False, None, False
 
-    while True:
-        try:
-            evaluation = evaluate_job(
+    try:
+        evaluation = _waiting_out_capacity(
+            lambda: evaluate_job(
                 job,
                 facets,
                 candidate_context,
                 settings.policy,
                 gemini,
-            )
-            break
-        except GeminiTemporaryCapacity as exc:
-            logger.info(
-                "Gemini temporary capacity reached; waiting %.2fs before retrying job_id=%s",
-                exc.retry_after_seconds,
-                job_id,
-            )
-            time.sleep(exc.retry_after_seconds)
-        except (GeminiBudgetExceeded, GeminiQuotaPaused):
-            logger.warning(
-                "job evaluation deferred by Gemini quota for job_id=%s",
-                job_id,
-            )
-            store.enqueue_ai_work("job_evaluation", job_id)
-            return False, True, None, False
-        except Exception:
-            logger.exception("evaluation failed for job_id=%s", job_id)
-            summary.evaluation_attempted += 1
-            summary.errors += 1
-            return False, False, None, False
+            ),
+            doing="scoring",
+            job_id=job_id,
+        )
+    except (GeminiBudgetExceeded, GeminiQuotaPaused):
+        logger.warning(
+            "job evaluation deferred by Gemini quota for job_id=%s",
+            job_id,
+        )
+        store.enqueue_ai_work("job_evaluation", job_id)
+        return False, True, None, False
+    except Exception:
+        logger.exception("evaluation failed for job_id=%s", job_id)
+        summary.evaluation_attempted += 1
+        summary.errors += 1
+        return False, False, None, False
 
     summary.evaluation_attempted += 1
     # A job selected earlier in the run can have been merged away since --
@@ -1320,7 +1335,8 @@ def run_pipeline(
         "evaluation_capacity selected=%s evaluated=%s deferred_by_budget=%s "
         "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
         "deferred_by_offer_cap=%s match_score_floor=%s "
-        "withheld_by_score_floor=%s skipped_without_facets=%s",
+        "withheld_by_score_floor=%s skipped_without_facets=%s "
+        "deferred_by_read_budget=%s",
         len(selected),
         summary.evaluated,
         deferred_by_budget,
@@ -1330,7 +1346,8 @@ def run_pipeline(
         cap_deferred_count,
         settings.policy.match_score_floor,
         summary.withheld_by_score_floor,
-        summary.evaluation_skipped_without_facets,
+        summary.scoring_skipped_without_facets,
+        summary.scoring_deferred_by_read_budget,
     )
 
     for job_id in (

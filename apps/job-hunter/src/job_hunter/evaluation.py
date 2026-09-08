@@ -197,8 +197,15 @@ def _format_compensation(compensation: Compensation) -> str:
     "not disclosed" is spelled out rather than left blank: an empty field
     invites the model to read silence as zero, and a zero salary is a hard
     blocker under every market policy.
+
+    A row claiming disclosure but carrying neither bound is read as no
+    disclosure. `facets.py` cannot produce that, but `job_facets_from_row`
+    reads the columns straight, so a row written before that rule existed can
+    -- and rendering it would put "up to None" in front of the model.
     """
     if not compensation.disclosed:
+        return "not disclosed"
+    if compensation.minimum is None and compensation.maximum is None:
         return "not disclosed"
     if compensation.minimum is not None and compensation.maximum is not None:
         amount = f"{compensation.minimum}-{compensation.maximum}"

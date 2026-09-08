@@ -10,9 +10,9 @@ from job_hunter.models import (
     Compensation,
     Evaluation,
     Job,
-    JobFacets,
     SearchPolicy,
 )
+from tests.facet_fixtures import make_facets
 from tests.market_fixtures import make_market_policy
 
 # A sentinel that would only appear in the prompt if some future change
@@ -70,30 +70,6 @@ def job():
         description="React TypeScript remote",
         content_confidence="official_ats",
     )
-
-
-def make_facets(**overrides) -> JobFacets:
-    """The objective facets #125 already read from the posting.
-
-    Scoring is handed these instead of the description, so every test that
-    exercises the scoring call needs a set of them.
-    """
-    values = dict(
-        seniority="senior",
-        remote_policy="remote",
-        relocation_policy="unknown",
-        hiring_regions=["europe"],
-        stack=["react", "typescript"],
-        compensation=Compensation(),
-        requirements=[
-            {"requirement": "React", "depth": "experience", "kind": "must_have"},
-            {"requirement": "GraphQL", "depth": "familiarity", "kind": "preferred"},
-        ],
-        source_supplied=[],
-        model="gemini-2.5-flash-lite",
-    )
-    values.update(overrides)
-    return JobFacets(**values)
 
 
 @pytest.fixture
@@ -695,8 +671,12 @@ def test_the_scoring_prompt_does_not_carry_the_job_description(
 
     assert "SECRET_DESCRIPTION_MARKER" not in prompt
     assert description not in prompt
-    # Materially smaller, not incidentally: the whole posting text is gone.
-    assert len(prompt) < len(description)
+    # The combined prompt was this prompt's material plus the whole posting,
+    # so that sum is the fair baseline to measure the fall against. A typical
+    # posting dominates it, and the fall has to be material rather than
+    # incidental -- more than half of what the combined call carried.
+    combined_prompt_size = len(prompt) + len(description)
+    assert len(prompt) < combined_prompt_size / 2
 
 
 def test_the_scoring_prompt_carries_the_facets_instead(
@@ -737,6 +717,25 @@ def test_undisclosed_compensation_reaches_the_prompt_as_undisclosed(
     prompt = fake_gemini.prompts[0][0]
 
     assert "not disclosed" in prompt.lower()
+
+
+def test_compensation_claiming_disclosure_without_a_figure_reads_as_undisclosed(
+    fake_gemini, job, policy, context
+):
+    """A row `facets.py` cannot write, but `job_facets_from_row` can read.
+
+    Rendering it literally would put "up to None" in front of the model, and
+    an unreadable pay figure is exactly the case that must read as silence.
+    """
+    facets = make_facets(
+        compensation=Compensation(disclosed=True, currency="EUR", period="year")
+    )
+    fake_gemini.text = json.dumps(_valid_payload())
+    evaluate_job(job, facets, context, policy, fake_gemini)
+    prompt = fake_gemini.prompts[0][0]
+
+    assert "Disclosed compensation: not disclosed" in prompt
+    assert "up to None" not in prompt
 
 
 def test_a_posting_that_states_no_requirements_is_scored_without_any(

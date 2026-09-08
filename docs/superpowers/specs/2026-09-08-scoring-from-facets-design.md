@@ -76,9 +76,12 @@ least is known about. So `evaluate_job` refuses `None` facets before it makes a 
 pipeline leaves such a job unscored. It keeps its place in the ranking and is scored on a
 later run.
 
-`RunSummary.evaluation_skipped_without_facets` counts those jobs, apart from `errors` (this
-is neither damage nor a scoring failure) and apart from the quota counters. A number that
-stops being near zero means extraction is failing and the run is quietly delivering less.
+`RunSummary.scoring_skipped_without_facets` counts those jobs, apart from `errors` (this is
+neither damage nor a scoring failure). A number that stops being near zero means extraction
+is failing and the run is quietly delivering less — which is exactly why a *provider
+refusal* is counted separately, as `scoring_deferred_by_read_budget`. An ordinary
+budget-exhausted day must not inflate the signal that says extraction is broken. Both are
+reported on the `evaluation_capacity` log line.
 
 ## Where the reading happens
 
@@ -103,8 +106,13 @@ blocking for the rest of the run; a 429 tripped by a backfill call made first wo
 every score behind it and deliver nothing. The run's own inline reads are not subject to that
 argument, because they are the unavoidable cost of scoring the job at all.
 
-The run's whole facet budget is still `max_jobs_per_run`. The inline reads spend part of it,
-and the backfill gets the remainder.
+`max_jobs_per_run` bounds the *backfill*, not the run's reads as a whole. An inline read is
+the unavoidable cost of scoring the job in front of it and is never refused for want of that
+budget; what it spends is subtracted, and the backfill gets the remainder, floored at zero.
+So a run that scores a full shortlist of postings nobody has read leaves the backfill
+nothing that day, which is the right trade: the jobs the user is waiting on come first, and
+the corpus drains on a quieter one. What bounds the reads themselves is what bounds scoring
+— the shortlist, the retry queue and the daily offer limit.
 
 ## Running out of budget
 
@@ -123,6 +131,20 @@ had to:
 
 The third differs from the backfill pass, which gives up its turn instead: nobody is waiting
 on the backfill.
+
+## How the equivalence was verified
+
+There is no before/after fixture, because the combined call is deleted and cannot be run
+alongside its replacement. What stands in its place is the existing pipeline suite: over a
+hundred tests written against the combined implementation — decisions, score caps, the
+`match_score_floor` and `daily_offer_limit` behaviour, digest contents, delivery, merges,
+retries — pass **unchanged in their expectations** against the facet-fed path. The six that
+did change are the ones whose contract this ticket deliberately changes: a run that cannot
+read a posting no longer delivers that job.
+
+The token fall is asserted rather than assumed: the combined prompt was this prompt's
+material plus the whole posting, so `test_the_scoring_prompt_does_not_carry_the_job_description`
+measures the new prompt against that sum and requires it to be less than half.
 
 ## What kept its name
 

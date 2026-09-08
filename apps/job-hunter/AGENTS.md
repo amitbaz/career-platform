@@ -139,7 +139,8 @@ all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or 
   -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
   -> per job: objective facet extraction if the posting has not been read yet
      (facets.py, once per posting ever, candidate-blind)
-     then subjective scoring from those facets (evaluation.py, per user, never sees the description)
+     then subjective scoring from those facets
+     (evaluation.py, per user, never sees the description)
   -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
   -> facet backfill over what scoring did not need (rediscovered jobs + the shortlist tail)
   -> Telegram digest delivery (telegram.py)
@@ -174,11 +175,13 @@ Key modules:
   `pipeline.py::_extract_facets_for_run`, over this run's shortlist and retry queue first and
   then rediscovered jobs, every one of which survived the non-AI filters; it is bounded per run
   by `max_jobs_per_run` minus whatever the run's own inline reads already spent, which is
-  what makes the existing corpus drain over consecutive runs with no migration script. A failure of any kind leaves the job unenriched with **no** marker,
-  so a later run retries it — never record a placeholder, and never let a failure mark a posting
-  permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart from
-  evaluation's counters, and reported on the `facet_extraction` log line. `job_facets` is a *non-core* Gemini purpose, so the
-  core reserve refuses a read before it refuses a score. Since #126 that has a consequence:
+  what makes the existing corpus drain over consecutive runs with no migration script.
+  A failure of any kind leaves the job unenriched with **no** marker, so a later run
+  retries it — never record a placeholder, and never let a failure mark a posting
+  permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart
+  from scoring's own counters, and reported on the `facet_extraction` log line.
+  `job_facets` is a *non-core* Gemini purpose, so the core reserve refuses a read before
+  it refuses a score. Since #126 that has a consequence:
   `GeminiBudgetExceeded` on a read defers only the job whose posting has never been read, and
   the run keeps scoring every job that has been — unlike `GeminiQuotaPaused`, which means the
   model is paused and blocks the run as it always did.

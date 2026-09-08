@@ -34,6 +34,7 @@ from job_hunter.sources import GmailStagedSource, LearnedAtsSource
 from job_hunter.sources.company_watch import CompanyWatchSource
 from job_hunter.telegram import build_digest, build_gemini_pause_warning, select_deliverable_items
 from job_hunter.watchlist import promote_company as persist_promoted_company
+from tests.facet_fixtures import REACT_MUST_HAVE, make_facets
 from tests.market_fixtures import make_market_policy
 
 
@@ -59,25 +60,15 @@ FACET_PAYLOAD = {
 }
 
 
-def _stored_facets(**overrides) -> JobFacets:
+def _stored_facets(**overrides):
     """The facets a posting already read on an earlier run carries.
 
-    Scoring is handed these instead of the description (#126), so a test that
-    wants a job scored without a fresh read stores them first.
+    The single must-have matches `FACET_PAYLOAD` and the fake's scoring
+    response: a job scored from these must get exactly one support verdict.
     """
-    values = dict(
-        seniority="senior",
-        remote_policy="remote",
-        relocation_policy="not_offered",
-        hiring_regions=["europe"],
-        stack=["react", "typescript"],
-        compensation=Compensation(),
-        requirements=[{"requirement": "React", "depth": "experience", "kind": "must_have"}],
-        source_supplied=[],
-        model="gemini-test",
-    )
-    values.update(overrides)
-    return JobFacets(**values)
+    overrides.setdefault("relocation_policy", "not_offered")
+    overrides.setdefault("requirements", [REACT_MUST_HAVE])
+    return make_facets(**overrides)
 
 
 class FakeGemini:
@@ -3172,7 +3163,7 @@ def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(s
     # Scoring is fed the facets (#126), so a posting that could not be read is
     # left unscored rather than scored against an empty requirements list.
     assert failing.eval_calls == 0
-    assert summary.evaluation_skipped_without_facets == 1
+    assert summary.scoring_skipped_without_facets == 1
     assert store.get_evaluation(job_id) is None
     # Nothing was written to say "this job is bad", so the next run tries again.
     assert store.jobs_needing_facets([job_id]) == {job_id}
@@ -3197,7 +3188,7 @@ def test_a_posting_that_cannot_be_read_is_not_counted_as_a_failed_evaluation(sto
                            gemini=failing, telegram=FakeTelegram())
 
     assert summary.facet_extraction_failed == 1
-    assert summary.evaluation_skipped_without_facets == 1
+    assert summary.scoring_skipped_without_facets == 1
     assert summary.evaluation_attempted == 0
     assert summary.evaluated == 0
     assert summary.errors == 0
@@ -3222,7 +3213,7 @@ def test_one_unreadable_posting_does_not_cost_the_rest_of_the_run(store, setting
     )
 
     assert summary.ready_to_apply == 1
-    assert summary.evaluation_skipped_without_facets == 1
+    assert summary.scoring_skipped_without_facets == 1
     assert summary.errors == 0
     assert telegram.messages
     assert "Globex" not in str(telegram.messages)
@@ -3266,7 +3257,10 @@ def test_running_out_of_shared_budget_only_defers_the_unread_posting(store, sett
     )
 
     assert summary.ready_to_apply == 1
-    assert summary.evaluation_skipped_without_facets == 1
+    # A provider refusal, counted apart from a failed read: a budget-exhausted
+    # day must not inflate the signal that says extraction is broken.
+    assert summary.scoring_deferred_by_read_budget == 1
+    assert summary.scoring_skipped_without_facets == 0
     assert summary.facet_extraction_failed == 0
     assert summary.errors == 0
     # Deferred, not discarded: it is queued for the next run.
@@ -3531,4 +3525,5 @@ def test_a_provider_pause_during_the_backfill_cannot_cost_the_run_its_digest(sto
     assert summary.ready_to_apply == 1
     assert telegram.messages
     assert summary.facet_extraction_attempted == 0
-    assert summary.evaluation_skipped_without_facets == 0
+    assert summary.scoring_skipped_without_facets == 0
+    assert summary.scoring_deferred_by_read_budget == 0
