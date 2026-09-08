@@ -20,7 +20,7 @@ def _paragraphs(story):
 
 
 def test_render_pdf_has_pdf_signature(tmp_path):
-    path = render_cover_letter_pdf("Amit Baz\n\nDear Hiring Team,\nHello.", "Acme", "Senior Product Engineer", tmp_path)
+    path = render_cover_letter_pdf("Robin Vance\n\nDear Hiring Team,\nHello.", "Acme", "Senior Product Engineer", tmp_path)
     assert path.name == "Acme_Senior_Product_Engineer_Cover_Letter.pdf"
     assert path.read_bytes().startswith(b"%PDF")
 
@@ -39,9 +39,9 @@ def test_render_pdf_escapes_special_characters(tmp_path):
 def test_render_pdf_applies_business_letter_spacing_with_single_newlines(monkeypatch, tmp_path):
     text = "\n".join(
         [
-            "Amit Baz",
+            "Robin Vance",
             "Berlin, Germany",
-            "amit@example.com",
+            "robin.vance@example.com",
             "September 4, 2026",
             "RELEX Solutions",
             "Helsinki, Finland",
@@ -50,7 +50,7 @@ def test_render_pdf_applies_business_letter_spacing_with_single_newlines(monkeyp
             "First body paragraph with enough text to be a real paragraph.",
             "Second body paragraph with different content.",
             "Best regards,",
-            "Amit Baz",
+            "Robin Vance",
         ]
     )
 
@@ -82,8 +82,8 @@ def test_render_pdf_applies_business_letter_spacing_with_single_newlines(monkeyp
 
 
 def test_render_pdf_normalizes_blank_lines_without_double_spacing(monkeypatch, tmp_path):
-    single_newlines = "Amit Baz\nBerlin, Germany\namit@example.com\nSeptember 4, 2026\nAcme\nSubject: Engineer\nDear Hiring Team,\nBody one.\nBody two.\nBest regards,\nAmit Baz"
-    blank_lines = "Amit Baz\n\nBerlin, Germany\n\namit@example.com\n\nSeptember 4, 2026\n\nAcme\n\nSubject: Engineer\n\nDear Hiring Team,\n\nBody one.\n\nBody two.\n\nBest regards,\n\nAmit Baz"
+    single_newlines = "Robin Vance\nBerlin, Germany\nrobin.vance@example.com\nSeptember 4, 2026\nAcme\nSubject: Engineer\nDear Hiring Team,\nBody one.\nBody two.\nBest regards,\nRobin Vance"
+    blank_lines = "Robin Vance\n\nBerlin, Germany\n\nrobin.vance@example.com\n\nSeptember 4, 2026\n\nAcme\n\nSubject: Engineer\n\nDear Hiring Team,\n\nBody one.\n\nBody two.\n\nBest regards,\n\nRobin Vance"
 
     single_story = _capture_story(monkeypatch, tmp_path, single_newlines)
     blank_story = _capture_story(monkeypatch, tmp_path, blank_lines)

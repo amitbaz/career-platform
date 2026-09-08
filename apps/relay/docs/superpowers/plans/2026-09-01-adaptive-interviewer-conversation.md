@@ -1050,9 +1050,9 @@ describe("validateInterviewerLine", () => {
   });
 
   it("rejects contact details and URLs", () => {
-    expect(validateInterviewerLine("Your CV lists amitbaz2@gmail.com. What did you own?", context)).toBe("contact-details");
-    expect(validateInterviewerLine("You link linkedin.com/in/amit-baz. What did you own?", context)).toBe("contact-details");
-    expect(validateInterviewerLine("Your number is +49 177 2276319. What did you own?", context)).toBe("contact-details");
+    expect(validateInterviewerLine("Your CV lists robin.vance@example.com. What did you own?", context)).toBe("contact-details");
+    expect(validateInterviewerLine("You link linkedin.com/in/robin-vance. What did you own?", context)).toBe("contact-details");
+    expect(validateInterviewerLine("Your number is +44 7700 900123. What did you own?", context)).toBe("contact-details");
   });
 
   it("rejects more than two sentences", () => {
@@ -1315,7 +1315,7 @@ describe("speakIntent", () => {
         evidence: [{
           id: "e1",
           sourceKind: "cv",
-          sourceExcerpt: "Amit Baz | +49 177 2276319 | amitbaz2@gmail.com",
+          sourceExcerpt: "Robin Vance | +44 7700 900123 | robin.vance@example.com",
           projectOrEmployer: "Acme",
           ownership: "Owned the design system migration",
           technologies: ["React"],
@@ -1333,8 +1333,8 @@ describe("speakIntent", () => {
     );
 
     expect(captured[0]).toContain("Owned the design system migration");
-    expect(captured[0]).not.toContain("amitbaz2@gmail.com");
-    expect(captured[0]).not.toContain("2276319");
+    expect(captured[0]).not.toContain("robin.vance@example.com");
+    expect(captured[0]).not.toContain("900123");
   });
 });
 ```
@@ -1592,7 +1592,7 @@ describe("nextTurn — regressions from the observed session", () => {
       evidence: [{
         id: "e1",
         sourceKind: "cv",
-        sourceExcerpt: "Amit Baz Senior Product Engineer | Berlin, Germany | +49 177 2276319 | amitbaz2@gmail.com",
+        sourceExcerpt: "Robin Vance Senior Product Engineer | Berlin, Germany | +44 7700 900123 | robin.vance@example.com",
         projectOrEmployer: "Acme",
         ownership: "Owned frontend architecture",
         technologies: ["React"],
@@ -1605,8 +1605,8 @@ describe("nextTurn — regressions from the observed session", () => {
     }));
 
     const interviewerCall = captured[captured.length - 1];
-    expect(interviewerCall).not.toContain("2276319");
-    expect(interviewerCall).not.toContain("amitbaz2@gmail.com");
+    expect(interviewerCall).not.toContain("900123");
+    expect(interviewerCall).not.toContain("robin.vance@example.com");
   });
 
   it("does not ask the same follow-up twice across different targets", async () => {
