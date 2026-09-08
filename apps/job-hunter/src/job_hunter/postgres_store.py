@@ -928,12 +928,15 @@ class PostgresJobStore:
         function, rather than fetching every job/evaluation pair into
         Python and filtering there. The SQL predicate is `>=`, matching the
         profile's inclusive floor, so the value passes through unchanged
-        (migration 20260908150000). It `returns table (job_id uuid)`, so
+        (migration 20260908160000). The parameter is still named
+        `p_score_floor`: PostgREST resolves `rpc` by parameter name, so
+        renaming it would break whichever side of a deploy is not yet
+        updated. It `returns table (job_id uuid)`, so
         `rpc` hands back `[{'job_id': '...'}, ...]`; unwrap the single key.
         """
         rows = self._client.rpc(
             "job_hunter_pending_delivery_jobs",
-            {"p_match_score_floor": match_score_floor},
+            {"p_score_floor": match_score_floor},
         )
         return [row["job_id"] for row in rows]
 
