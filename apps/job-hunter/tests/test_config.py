@@ -311,11 +311,21 @@ def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
     settings = _load(_profile())
 
     assert settings.policy.max_jobs_per_run == 35
+    assert settings.policy.daily_offer_limit == 10
     assert settings.policy.source_minimum_per_run == 0
     assert settings.policy.source_max_share == 0.5
     assert settings.policy.manual_company_watch == []
     assert settings.policy.max_learned_ats_boards_per_run == 75
     assert settings.policy.learned_ats_denylist == []
+
+
+@pytest.mark.parametrize("limit", [5, 10, 20])
+def test_load_settings_reads_the_daily_offer_limit(monkeypatch, limit):
+    _set_required_bot_env(monkeypatch)
+
+    settings = _load(_profile(daily_offer_limit=limit))
+
+    assert settings.policy.daily_offer_limit == limit
 
 
 def test_load_settings_falls_back_to_defaults_for_empty_ranking_lists(monkeypatch):

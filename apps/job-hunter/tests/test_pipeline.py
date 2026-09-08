@@ -381,6 +381,52 @@ def _jobs_for_source(source: str, count: int, *, title="Senior Product Engineer"
     ]
 
 
+def _digest_offer_lines(digest_text: str) -> list[str]:
+    """The job lines of a Telegram digest, ignoring its section headers."""
+    return [line for line in digest_text.splitlines() if line.startswith("- ")]
+
+
+def _digest_offer_count(digest_text: str) -> int:
+    return len(_digest_offer_lines(digest_text))
+
+
+def _digest_companies(digest_text: str) -> set[str]:
+    # `- {score} | {company} - {title} | {url}`, per telegram._digest_line.
+    return {line.split(" | ")[1].split(" - ")[0] for line in _digest_offer_lines(digest_text)}
+
+
+class AlternatingDecisionGemini(FakeGemini):
+    """Scores every other job below the `possible` threshold, so it is skipped.
+
+    Lets a test tell a cap on delivered offers apart from a cap on evaluations:
+    the two counts diverge only when some evaluations produce no offer.
+    """
+
+    _STRONG = {
+        "role_seniority": 28,
+        "technical": 22,
+        "product_architecture": 18,
+        "career_direction": 8,
+        "location_language": 9,
+        "company_environment": 5,
+    }
+    _WEAK = {
+        "role_seniority": 10,
+        "technical": 8,
+        "product_architecture": 6,
+        "career_direction": 2,
+        "location_language": 2,
+        "company_environment": 2,
+    }
+
+    def generate_text(self, prompt, **kwargs):
+        if kwargs.get("purpose") == "candidate_context" or not kwargs.get("json_mode"):
+            return super().generate_text(prompt, **kwargs)
+        self.eval_calls += 1
+        scores = self._STRONG if self.eval_calls % 2 == 1 else self._WEAK
+        return json.dumps(_evaluation_payload(scores, "high_priority"))
+
+
 def _record_review_event(store, *, message_id, occurred_at, company="Acme", role_title="Frontend Engineer"):
     store.record_gmail_message(
         message_id=message_id,
@@ -1788,6 +1834,9 @@ def test_pipeline_defers_all_evaluations_when_context_load_is_quota_blocked(stor
 
 
 def test_pipeline_evaluates_all_eligible_jobs_when_under_budget(store, settings):
+    # About the shortlist budget, not the daily offer limit: raise the offer
+    # limit above the pool so the run is bounded only by max_jobs_per_run.
+    settings.policy.daily_offer_limit = 20
     jobs = _jobs_for_source("ashby", 18)
     gemini = FakeGemini()
     telegram = FakeTelegram()
@@ -1799,6 +1848,9 @@ def test_pipeline_evaluates_all_eligible_jobs_when_under_budget(store, settings)
 
 
 def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(store, settings, caplog):
+    # As above: the assertion is about max_jobs_per_run, so the offer limit is
+    # lifted out of the way rather than left at its product default of 10.
+    settings.policy.daily_offer_limit = 200
     ashby_jobs = _jobs_for_source("ashby", 160)
     remotive_jobs = _jobs_for_source("remotive", 40)
     gemini = FakeGemini()
@@ -1823,6 +1875,162 @@ def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(store, settings, 
         "evaluation_capacity selected=100 evaluated=100 "
         "deferred_by_budget=100 quota_deferred=0"
     ) in caplog.text
+
+
+@pytest.mark.parametrize("limit", [5, 10, 20])
+def test_pipeline_delivers_at_most_the_daily_offer_limit(store, settings, limit):
+    settings.policy.daily_offer_limit = limit
+    jobs = _jobs_for_source("ashby", limit + 8)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert summary.ready_to_apply == limit
+    assert _digest_offer_count(telegram.messages[0]) == limit
+    # The cap is the run's budget, not a filter at the end: evaluation stops
+    # once the user has their offers, so the Gemini spend falls with it.
+    assert gemini.eval_calls == limit
+
+
+def test_pipeline_delivers_the_highest_ranked_offers_when_the_cap_bites(store, settings):
+    settings.policy.daily_offer_limit = 5
+    # Both tiers pass the prefilter; the weak tier lacks the nice-to-have
+    # signal, so profile-aware ranking puts it below the strong tier.
+    strong = [
+        _job(
+            source_job_id=f"strong-{index}",
+            company=f"Strong {index:02d}",
+            description="React TypeScript remote role",
+        )
+        for index in range(5)
+    ]
+    weak = [
+        _job(
+            source_job_id=f"weak-{index}",
+            company=f"Weak {index:02d}",
+            description="React remote role",
+        )
+        for index in range(10)
+    ]
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    run_pipeline(
+        settings,
+        sources=[FakeSource(strong + weak)],
+        store=store,
+        gemini=gemini,
+        telegram=telegram,
+    )
+
+    assert _digest_companies(telegram.messages[0]) == {job.company for job in strong}
+
+
+def test_pipeline_delivers_what_it_found_when_the_pool_is_smaller_than_the_cap(store, settings):
+    settings.policy.daily_offer_limit = 10
+    jobs = _jobs_for_source("ashby", 3)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert summary.ready_to_apply == 3
+    assert summary.errors == 0
+    assert _digest_offer_count(telegram.messages[0]) == 3
+
+
+def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settings):
+    """A run that keeps rejecting candidates keeps going until it has the cap.
+
+    The cap counts what reaches the user, so a `skip` costs an evaluation but
+    no delivery budget -- otherwise a day of poor candidates would deliver
+    almost nothing while still reporting the cap as met.
+    """
+    settings.policy.daily_offer_limit = 5
+    jobs = _jobs_for_source("ashby", 20)
+    gemini = AlternatingDecisionGemini()
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    # Every other candidate scores below `possible`, so reaching five offers
+    # costs nine evaluations rather than five.
+    assert summary.ready_to_apply == 5
+    assert summary.skipped == 4
+    assert gemini.eval_calls == 9
+
+
+def test_pipeline_does_not_spend_the_cap_on_offers_the_digest_would_drop(store, settings):
+    """An offer scoring under the digest's floor costs no delivery budget.
+
+    A profile may put its `possible` rung below the score Telegram is willing
+    to send, and then a possible_match never reaches the user. Counting it
+    would end the run early and leave the digest short of the cap.
+    """
+    settings.policy.thresholds = {"package": 75, "possible": 30}
+    settings.policy.daily_offer_limit = 5
+    jobs = _jobs_for_source("ashby", 20)
+    gemini = AlternatingDecisionGemini()
+    telegram = FakeTelegram()
+
+    run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert _digest_offer_count(telegram.messages[0]) == 5
+
+
+def test_pipeline_leaves_candidates_beyond_the_cap_for_the_next_run(store, settings):
+    settings.policy.daily_offer_limit = 5
+    jobs = _jobs_for_source("ashby", 12)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    first_run_companies = _digest_companies(telegram.messages[0])
+    # Cap-deferred candidates are not queued work: they are simply unevaluated
+    # and get ranked again tomorrow, like anything else discovery finds.
+    assert store.list_pending_ai_work("job_evaluation") == []
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    second_run_companies = _digest_companies(telegram.messages[1])
+    assert summary.ready_to_apply == 5
+    assert gemini.eval_calls == 10
+    assert not (first_run_companies & second_run_companies)
+
+
+def test_pipeline_logs_the_offer_cap_and_what_it_deferred(store, settings, caplog):
+    settings.policy.daily_offer_limit = 5
+    jobs = _jobs_for_source("ashby", 9)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    with caplog.at_level(logging.INFO):
+        run_pipeline(
+            settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        )
+
+    # Deferred by the cap is kept apart from deferred by the ranking budget:
+    # they answer different questions about a short digest.
+    assert (
+        "evaluation_capacity selected=9 evaluated=5 deferred_by_budget=0 "
+        "quota_deferred=0 daily_offer_limit=5 delivered_offers=5 "
+        "deferred_by_offer_cap=4"
+    ) in caplog.text
+
 
 def test_pipeline_logs_profile_fallback_without_private_content(store, settings, caplog):
     settings.candidate_profile = "PRIVATE_RESUME_TEXT"
