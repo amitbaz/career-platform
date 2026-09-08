@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 from datetime import datetime, timezone
 
 from job_hunter.config import load_gmail_settings, load_settings, load_supabase_settings
-from job_hunter.gemini import GeminiClient
-from job_hunter.gemini_usage import GeminiUsageTracker
+from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
+from job_hunter.ai.usage import AIUsageTracker
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
 from job_hunter.gmail_client import GmailClient
 from job_hunter.gmail_sync import GmailSyncService
@@ -98,12 +97,14 @@ def _run(args: argparse.Namespace) -> int:
 
     cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
 
-    tracker = GeminiUsageTracker(
-        store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
+    tracker = AIUsageTracker(
+        store, settings.ai_quota, settings.ai_model, provider=PROVIDER
     )
-    gemini = GeminiClient(settings.gemini_api_key, settings.gemini_model, http, tracker=tracker)
+    ai = build_gemini_provider(
+        settings.ai_api_key, settings.ai_model, http, tracker=tracker
+    )
 
-    summary = run_pipeline(settings, store=store, gemini=gemini, http=http)
+    summary = run_pipeline(settings, store=store, ai=ai, usage=tracker, http=http)
     logger.info(
         "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
         "blocked_by_facets=%d facets_extracted=%d facets_failed=%d",
@@ -142,14 +143,16 @@ def _generate_cover_letter(args: argparse.Namespace) -> int:
     settings = load_settings(store)
     cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
 
-    tracker = GeminiUsageTracker(
-        store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
+    tracker = AIUsageTracker(
+        store, settings.ai_quota, settings.ai_model, provider=PROVIDER
     )
-    gemini = GeminiClient(settings.gemini_api_key, settings.gemini_model, http, tracker=tracker)
+    ai = build_gemini_provider(
+        settings.ai_api_key, settings.ai_model, http, tracker=tracker
+    )
     telegram = TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id, http)
 
     delivered = generate_cover_letter_on_demand(
-        settings, args.job_id, store=store, gemini=gemini, telegram=telegram
+        settings, args.job_id, store=store, ai=ai, telegram=telegram
     )
     logger.info("on-demand cover letter for job_id=%s: delivered=%s", args.job_id, delivered)
     return 0 if delivered else 1
@@ -160,9 +163,9 @@ def _sync_gmail(args: argparse.Namespace) -> int:
     real_store = PostgresJobStore(_build_client(http))
     settings = load_gmail_settings(real_store)
     if args.dry_run:
-        # A GeminiUsageTracker WRITES usage/pause rows, and `store` below is
+        # An AIUsageTracker WRITES usage/pause rows, and `store` below is
         # a DryRunStore precisely so --dry-run can never persist anything
-        # live. A dry run still makes real Gemini calls (see
+        # live. A dry run still makes real provider calls (see
         # GmailSyncService.process_message), so the guardrails must still be
         # active for it -- just against a store that discards every write,
         # so the "never persists" guarantee for --dry-run holds regardless
@@ -175,11 +178,13 @@ def _sync_gmail(args: argparse.Namespace) -> int:
         tracker_store = store
 
     gmail = GmailClient(http, GoogleOAuthTokenProvider(settings))
-    tracker = GeminiUsageTracker(
-        tracker_store, settings.gemini_quota, settings.gemini_model, run_id=os.getenv("GEMINI_RUN_ID")
+    tracker = AIUsageTracker(
+        tracker_store, settings.ai_quota, settings.ai_model, provider=PROVIDER
     )
-    gemini = GeminiClient(settings.gemini_api_key, settings.gemini_model, http, tracker=tracker)
-    service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
+    ai = build_gemini_provider(
+        settings.ai_api_key, settings.ai_model, http, tracker=tracker
+    )
+    service = GmailSyncService(gmail=gmail, ai=ai, store=store)
     summary = service.sync(
         datetime.now(timezone.utc),
         dry_run=args.dry_run,

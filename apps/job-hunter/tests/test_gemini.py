@@ -2,9 +2,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from job_hunter.gemini import GeminiClient, GeminiError
-from job_hunter.gemini_usage import GeminiQuotaPaused, GeminiUsageTracker
-from job_hunter.models import GeminiQuotaSettings
+from job_hunter.ai import AIError, CallClass
+from job_hunter.ai.gemini import build_gemini_provider
+from job_hunter.ai.usage import AIQuotaPaused, AIUsageTracker
+from job_hunter.models import AIQuotaSettings
+
+
+def _generate(provider, prompt, **kwargs):
+    """Every adapter test is a user-subjective call; the class itself is
+    exercised in tests/test_ai_call_class.py."""
+    return provider.generate_text(prompt, call_class=CallClass.USER_SUBJECTIVE, **kwargs)
+
+
 
 
 class FakeResponse:
@@ -29,7 +38,7 @@ class FakeHttp:
 
 class FakeTracker:
     """Records calls without touching a real store, for tests that only need to
-    assert what GeminiClient told the tracker (as opposed to the 429 tests below,
+    assert what GeminiProvider told the tracker (as opposed to the 429 tests below,
     which use a real tracker to exercise the actual pause it computes)."""
 
     def __init__(self):
@@ -73,8 +82,8 @@ def _usage_response(text="{}"):
 
 
 def _real_tracker(store):
-    quota = GeminiQuotaSettings(rpm=10, tpm=1000, rpd=100)
-    tracker = GeminiUsageTracker(store, quota, "gemini-2.5-flash-lite", run_id="run-1")
+    quota = AIQuotaSettings(rpm=10, tpm=1000, rpd=100)
+    tracker = AIUsageTracker(store, quota, "gemini-2.5-flash-lite", provider="gemini")
     return tracker, store
 
 
@@ -96,9 +105,9 @@ def _quota_error_response(message: str, quota_id: str | None = None):
 
 def test_generate_text_posts_to_expected_url_with_key_header():
     http = FakeHttp(FakeResponse(200, _candidate_response("hi")))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    result = client.generate_text("say hi")
+    result = _generate(client, "say hi")
 
     assert result == "hi"
     url, kwargs = http.calls[0]
@@ -110,9 +119,9 @@ def test_generate_text_posts_to_expected_url_with_key_header():
 
 def test_generate_text_json_mode_sets_response_mime_type():
     http = FakeHttp(FakeResponse(200, _candidate_response("{}")))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    client.generate_text("give me json", json_mode=True)
+    _generate(client, "give me json", json_mode=True)
 
     _, kwargs = http.calls[0]
     assert kwargs["json"]["generationConfig"]["responseMimeType"] == "application/json"
@@ -120,14 +129,14 @@ def test_generate_text_json_mode_sets_response_mime_type():
 
 def test_generate_text_json_schema_sets_structured_output_config():
     http = FakeHttp(FakeResponse(200, _candidate_response("{}")))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
     schema = {
         "type": "OBJECT",
         "properties": {"kind": {"type": "STRING"}},
         "required": ["kind"],
     }
 
-    client.generate_text("classify this", json_schema=schema)
+    _generate(client, "classify this", json_schema=schema)
 
     _, kwargs = http.calls[0]
     generation_config = kwargs["json"]["generationConfig"]
@@ -137,33 +146,33 @@ def test_generate_text_json_schema_sets_structured_output_config():
 
 def test_generate_text_raises_on_non_2xx():
     http = FakeHttp(FakeResponse(429, None, "rate limited"))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("say hi")
+    with pytest.raises(AIError):
+        _generate(client, "say hi")
 
 
 def test_generate_text_raises_on_missing_content():
     http = FakeHttp(FakeResponse(200, {"candidates": []}))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("say hi")
+    with pytest.raises(AIError):
+        _generate(client, "say hi")
 
 
 def test_generate_text_concatenates_multiple_parts():
     data = {"candidates": [{"content": {"parts": [{"text": "hello "}, {"text": "world"}]}}]}
     http = FakeHttp(FakeResponse(200, data))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    assert client.generate_text("say hi") == "hello world"
+    assert _generate(client, "say hi") == "hello world"
 
 
 def test_generate_text_posts_with_retry_status_codes_excluding_429():
     http = FakeHttp(FakeResponse(200, _candidate_response("hi")))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    client.generate_text("say hi")
+    _generate(client, "say hi")
 
     _, kwargs = http.calls[0]
     assert kwargs["retry_status_codes"] == {500, 502, 503, 504}
@@ -171,9 +180,9 @@ def test_generate_text_posts_with_retry_status_codes_excluding_429():
 
 def test_generate_text_builds_generation_config_for_thinking_and_output_controls():
     http = FakeHttp(FakeResponse(200, _candidate_response("hi")))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    client.generate_text("say hi", thinking_level="minimal", max_output_tokens=800)
+    _generate(client, "say hi", thinking_level="minimal", max_output_tokens=800)
 
     _, kwargs = http.calls[0]
     assert kwargs["json"]["generationConfig"] == {
@@ -184,9 +193,9 @@ def test_generate_text_builds_generation_config_for_thinking_and_output_controls
 
 def test_generate_text_generation_config_combines_thinking_output_and_json():
     http = FakeHttp(FakeResponse(200, _candidate_response("{}")))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    client.generate_text(
+    _generate(client, 
         "classify",
         thinking_level="low",
         max_output_tokens=1200,
@@ -204,11 +213,11 @@ def test_generate_text_generation_config_combines_thinking_output_and_json():
 def test_generate_text_calls_tracker_preflight_with_purpose_and_prompt(monkeypatch):
     http = FakeHttp(FakeResponse(200, _candidate_response("hi")))
     tracker = FakeTracker()
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     fixed_now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: fixed_now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: fixed_now)
 
-    client.generate_text("say hi", purpose="gmail_semantic")
+    _generate(client, "say hi", purpose="gmail_semantic")
 
     assert tracker.preflight_calls == [("gmail_semantic", "say hi", fixed_now)]
 
@@ -216,11 +225,11 @@ def test_generate_text_calls_tracker_preflight_with_purpose_and_prompt(monkeypat
 def test_generate_text_records_success_with_exact_usage_metadata(monkeypatch):
     http = FakeHttp(FakeResponse(200, _usage_response()))
     tracker = FakeTracker()
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     fixed_now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: fixed_now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: fixed_now)
 
-    client.generate_text("say hi", purpose="gmail_semantic")
+    _generate(client, "say hi", purpose="gmail_semantic")
 
     purpose, prompt, now, kwargs = tracker.success_calls[0]
     assert (purpose, prompt, now) == ("gmail_semantic", "say hi", fixed_now)
@@ -236,12 +245,12 @@ def test_generate_text_records_success_with_exact_usage_metadata(monkeypatch):
 def test_generate_text_missing_usage_metadata_records_estimate_and_warns(monkeypatch, caplog):
     http = FakeHttp(FakeResponse(200, _candidate_response("hi")))
     tracker = FakeTracker()
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     fixed_now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: fixed_now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: fixed_now)
 
     with caplog.at_level("WARNING"):
-        result = client.generate_text("say hi", purpose="gmail_semantic")
+        result = _generate(client, "say hi", purpose="gmail_semantic")
 
     assert result == "hi"
     purpose, prompt, now, kwargs = tracker.success_calls[0]
@@ -253,10 +262,10 @@ def test_generate_text_missing_usage_metadata_records_estimate_and_warns(monkeyp
 def test_generate_text_records_error_for_non_429_failure():
     http = FakeHttp(FakeResponse(500, None, "server error"))
     tracker = FakeTracker()
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIError):
+        _generate(client, "say hi", purpose="job_evaluation")
 
     purpose, prompt, _now, kwargs = tracker.error_calls[0]
     assert purpose == "job_evaluation"
@@ -268,10 +277,10 @@ def test_generate_text_429_without_tracker_raises_generic_gemini_error():
     # A tracker-less client is a test affordance, not a supported production
     # path (Task 8 forbids building one); it keeps the old plain-error behavior.
     http = FakeHttp(FakeResponse(429, None, "rate limited"))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("say hi")
+    with pytest.raises(AIError):
+        _generate(client, "say hi")
 
 
 def test_generate_text_daily_quota_429_pauses_until_pacific_reset(store, monkeypatch):
@@ -282,17 +291,17 @@ def test_generate_text_daily_quota_429_pauses_until_pacific_reset(store, monkeyp
             quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier",
         )
     )
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: now)
 
-    with pytest.raises(GeminiQuotaPaused) as excinfo:
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused) as excinfo:
+        _generate(client, "say hi", purpose="job_evaluation")
 
     assert excinfo.value.reason == "daily_quota"
     assert len(http.calls) == 1
     assert http.calls[0][1]["retry_status_codes"] == {500, 502, 503, 504}
-    pause = store.get_gemini_pause("gemini-2.5-flash-lite")
+    pause = store.get_ai_pause("gemini", "gemini-2.5-flash-lite")
     assert pause["reason"] == "daily_quota"
 
 
@@ -304,16 +313,16 @@ def test_generate_text_rate_limit_429_pauses_ninety_seconds(store, monkeypatch):
             quota_id="GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
         )
     )
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: now)
 
-    with pytest.raises(GeminiQuotaPaused) as excinfo:
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused) as excinfo:
+        _generate(client, "say hi", purpose="job_evaluation")
 
     assert excinfo.value.reason == "rate_limit"
     assert len(http.calls) == 1
-    pause = store.get_gemini_pause("gemini-2.5-flash-lite")
+    pause = store.get_ai_pause("gemini", "gemini-2.5-flash-lite")
     assert pause["reason"] == "rate_limit"
     paused_until = datetime.fromisoformat(pause["paused_until"])
     assert paused_until == now + timedelta(seconds=90)
@@ -322,16 +331,16 @@ def test_generate_text_rate_limit_429_pauses_ninety_seconds(store, monkeypatch):
 def test_generate_text_unknown_429_pauses_conservatively(store, monkeypatch):
     tracker, store = _real_tracker(store)
     http = FakeHttp(_quota_error_response("Something went wrong."))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: now)
 
-    with pytest.raises(GeminiQuotaPaused) as excinfo:
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused) as excinfo:
+        _generate(client, "say hi", purpose="job_evaluation")
 
     assert excinfo.value.reason == "unknown"
     assert len(http.calls) == 1
-    pause = store.get_gemini_pause("gemini-2.5-flash-lite")
+    pause = store.get_ai_pause("gemini", "gemini-2.5-flash-lite")
     assert pause["reason"] == "unknown"
 
 
@@ -343,17 +352,17 @@ def test_generate_text_pause_blocks_subsequent_call_without_new_http_request(sto
             quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier",
         )
     )
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: now)
 
-    with pytest.raises(GeminiQuotaPaused):
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused):
+        _generate(client, "say hi", purpose="job_evaluation")
 
     assert len(http.calls) == 1
 
-    with pytest.raises(GeminiQuotaPaused):
-        client.generate_text("say hi again", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused):
+        _generate(client, "say hi again", purpose="job_evaluation")
 
     # The second call was refused locally by the tracker's preflight; no
     # second HTTP request was ever sent.
@@ -365,16 +374,16 @@ def test_generate_text_429_does_not_reinvoke_preflight_after_record_429(monkeypa
     value, never from re-running preflight() afterward. A second preflight()
     call re-derives the pause from persisted store state and re-runs the
     daily budget check against the row record_429 just wrote — which used to
-    let a bare GeminiError or the wrong exception type (GeminiBudgetExceeded)
+    let a bare AIError or the wrong exception type (AIBudgetExceeded)
     slip through depending on rate_pause_seconds or how full the ceiling was.
     """
     tracker = FakeTracker()
     tracker.record_429 = lambda *a, **k: ("2026-09-01T20:01:30+00:00", "rate_limit")
     http = FakeHttp(FakeResponse(429, None, "rate limited"))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
 
-    with pytest.raises(GeminiQuotaPaused) as excinfo:
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused) as excinfo:
+        _generate(client, "say hi", purpose="job_evaluation")
 
     assert excinfo.value.paused_until == "2026-09-01T20:01:30+00:00"
     assert excinfo.value.reason == "rate_limit"
@@ -387,24 +396,25 @@ def test_generate_text_429_raises_quota_paused_despite_tight_daily_ceiling(store
     """Regression: the exception type must not depend on how full the daily
     budget is. With a tight rpd ceiling, the old re-preflight-after-record_429
     mechanism counted the just-written quota_429 row, tripped the budget
-    check, and raised GeminiBudgetExceeded plus a second, spurious
+    check, and raised AIBudgetExceeded plus a second, spurious
     blocked_budget row for a call that indisputably reached Google. It must
-    now raise GeminiQuotaPaused and write exactly one quota_429 row.
+    now raise AIQuotaPaused and write exactly one quota_429 row.
     """
-    quota = GeminiQuotaSettings(rpm=10, tpm=1000, rpd=2, rate_pause_seconds=1)
-    tracker = GeminiUsageTracker(store, quota, "gemini-2.5-flash-lite", run_id="run-1")
+    quota = AIQuotaSettings(rpm=10, tpm=1000, rpd=2, rate_pause_seconds=1)
+    tracker = AIUsageTracker(store, quota, "gemini-2.5-flash-lite", provider="gemini")
     http = FakeHttp(_quota_error_response("Something went wrong."))
-    client = GeminiClient("secret-key", "gemini-2.5-flash-lite", http, tracker)
+    client = build_gemini_provider("secret-key", "gemini-2.5-flash-lite", http, tracker=tracker)
     now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: now)
 
-    with pytest.raises(GeminiQuotaPaused) as excinfo:
-        client.generate_text("say hi", purpose="job_evaluation")
+    with pytest.raises(AIQuotaPaused) as excinfo:
+        _generate(client, "say hi", purpose="job_evaluation")
 
     assert excinfo.value.reason == "unknown"
-    rows = store.gemini_usage_rows(
+    rows = store.ai_usage_rows(
         "2026-09-01T00:00:00+00:00",
         "2026-09-02T00:00:00+00:00",
+        provider="gemini",
         model="gemini-2.5-flash-lite",
     )
     assert [row["status"] for row in rows] == ["quota_429"]

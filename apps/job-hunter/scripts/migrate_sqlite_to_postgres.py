@@ -623,7 +623,7 @@ def _migrate_gemini_usage(
     """Carry the AI accounting ledger across (`gemini_usage` -> `job_hunter_ai_usage`).
 
     The destination is the renamed table from issue #70: one row per model
-    call, read back by `gemini_usage_rows` to pace against Gemini's rolling
+    call, read back by `ai_usage_rows` to pace against Gemini's rolling
     per-minute, per-day and token limits. Dropping it would leave those
     windows empty, so a migration part-way through a day would let the run
     exceed the free-tier daily cap it had already partly spent -- the same
@@ -631,7 +631,7 @@ def _migrate_gemini_usage(
 
     `run_id` is nullable in the legacy schema but NOT NULL in Postgres, so a
     missing one becomes `'unknown'`, matching both the backfill in migration
-    202609060003 and `PostgresJobStore.record_gemini_usage`'s own fallback.
+    202609060003 and `PostgresJobStore.record_ai_usage`'s own fallback.
     `provider` does not exist in the legacy table, which predates any second
     provider; every row it holds is Gemini.
     """

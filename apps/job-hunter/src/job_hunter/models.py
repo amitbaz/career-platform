@@ -239,7 +239,7 @@ class Evaluation:
     market_id: str = ""
     content_confidence: str = ""
     requirements: dict = field(default_factory=dict)
-    #: Gemini's raw component sum, before any deterministic cap. Diagnostics
+    #: The model's raw component sum, before any deterministic cap. Diagnostics
     #: only — `total_score` is the number every consumer should use.
     raw_model_score: int = 0
 
@@ -373,7 +373,7 @@ class CandidateContextCacheEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class GeminiQuotaSettings:
+class AIQuotaSettings:
     rpm: int
     tpm: int
     rpd: int
@@ -382,25 +382,25 @@ class GeminiQuotaSettings:
     rate_pause_seconds: int = 90
 
     def __post_init__(self) -> None:
-        # config.py's _require_positive_int_env already rejects a non-positive
-        # rpm/tpm/rpd from the environment; this guard closes the same gap for
+        # config.py's _optional_positive_int_env already rejects a non-positive
+        # rpm/tpm/rpd override from the environment; this guard closes the same gap for
         # any other construction path (tests, future callers) so it can never
         # contradict that validation, only extend it. rate_pause_seconds has
         # no env-level guard at all today, and a non-positive value is the
         # root cause of a real correctness bug: a zero-length rate-limit pause
-        # (`paused_until == now`) makes GeminiUsageTracker.record_429's caller
+        # (`paused_until == now`) makes AIUsageTracker.record_429's caller
         # look paused-and-already-expired in the same instant, so a 429 could
-        # surface as the wrong exception type. See gemini.py's 429 handling.
+        # surface as the wrong exception type. See the adapter's 429 handling.
         for field_name in ("rpm", "tpm", "rpd", "rate_pause_seconds"):
             if getattr(self, field_name) <= 0:
                 raise ValueError(
-                    f"GeminiQuotaSettings.{field_name} must be a positive integer"
+                    f"AIQuotaSettings.{field_name} must be a positive integer"
                 )
 
 
 @dataclass(frozen=True, slots=True)
-class GeminiUsageSummary:
-    """A point-in-time rollup of Gemini usage against configured free-tier quotas.
+class AIUsageSummary:
+    """A point-in-time rollup of AI usage against configured free-tier quotas.
 
     Percentages are against the configured provider limit, not the internal
     80% ceiling. Token totals and `requests_today` cover only attempts that
@@ -430,18 +430,18 @@ class GeminiUsageSummary:
 
 @dataclass(slots=True)
 class Settings:
-    gemini_api_key: str = field(repr=False)
+    ai_api_key: str = field(repr=False)
     candidate_profile: str = field(repr=False)
     cover_letter_template: str = field(repr=False)
     timezone: str
     scheduled_hour: int
     policy: SearchPolicy
-    gemini_quota: GeminiQuotaSettings
+    ai_quota: AIQuotaSettings
     brave_search_api_key: str | None = field(default=None, repr=False)
     dry_run: bool = False
     telegram_bot_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = field(default=None, repr=False)
-    gemini_model: str = "gemini-3.6-flash"
+    ai_model: str = "gemini-3.5-flash-lite"
     output_dir: str = "var"
 
 
@@ -512,7 +512,7 @@ class RunSummary:
     errors: int = 0
     # Core-evaluation health, distinct from `errors` (which also counts
     # unrelated post-decision failures like company-watch promotion).
-    # `evaluation_attempted` counts jobs where a fresh Gemini evaluation was
+    # `evaluation_attempted` counts jobs where a fresh AI evaluation was
     # actually made (excludes already-evaluated and quota-deferred jobs);
     # `evaluated` counts how many of those produced a decision. The run is
     # catastrophic when jobs were attempted but none produced a decision.

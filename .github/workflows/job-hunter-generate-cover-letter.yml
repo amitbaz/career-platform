@@ -28,7 +28,6 @@ jobs:
           GEMINI_FREE_RPM: ${{ vars.GEMINI_FREE_RPM }}
           GEMINI_FREE_TPM: ${{ vars.GEMINI_FREE_TPM }}
           GEMINI_FREE_RPD: ${{ vars.GEMINI_FREE_RPD }}
-          GEMINI_RUN_ID: ${{ github.run_id }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           JOB_ID: ${{ github.event.client_payload.job_id }}

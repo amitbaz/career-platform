@@ -107,7 +107,7 @@ python -m job_hunter run                       # full pipeline run
 python -m job_hunter run --scheduled           # only runs at the scheduled_hour in the user's search profile
 ```
 
-Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, then `set -a; source .env; set +a` before running. `.env.example` is grouped by the surface each variable serves; a dry run needs the Supabase group (`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`) and the three Gemini free-tier quota values (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`), which are required and have no default. Everything under "Optional overrides" can stay blank — each takes the code default stated in its comment, so never copy a default into a value there. The webhook group is not needed for a run.
+Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, then `set -a; source .env; set +a` before running. `.env.example` is grouped by the surface each variable serves; a dry run needs the Supabase group (`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`). The three free-tier limits (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`) are optional overrides: the published limits per model are defaults in code (`src/job_hunter/ai/limits.py`). Everything under "Optional overrides" can stay blank — each takes the code default stated in its comment, so never copy a default into a value there. The webhook group is not needed for a run.
 
 Set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery; truthy values are `1/true/yes` (case-insensitive), anything else is treated as unset/false. The Gemini key and the CV and cover letter text are not env vars: they are saved in Relay's Profile view for `JOB_HUNTER_USER_ID` and read from Postgres at run time.
 
@@ -181,11 +181,13 @@ Key modules:
   retries it — never record a placeholder, and never let a failure mark a posting
   permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart
   from scoring's own counters, and reported on the `facet_extraction` log line.
-  `job_facets` is a *non-core* Gemini purpose, so the core reserve refuses a read before
+  `job_facets` is a *non-core* AI purpose, so the core reserve refuses a read before
   it refuses a score. Since #126 that has a consequence:
-  `GeminiBudgetExceeded` on a read defers only the job whose posting has never been read, and
-  the run keeps scoring every job that has been — unlike `GeminiQuotaPaused`, which means the
-  model is paused and blocks the run as it always did.
+  `AIBudgetExceeded` on a read defers only the job whose posting has never been read, and
+  the run keeps scoring every job that has been — unlike `AIQuotaPaused`, which means the
+  model is paused and blocks the run as it always did. The read declares
+  `CallClass.USER_SUBJECTIVE` today because the user's own key still funds it (#73); #128
+  flips that one argument to `SHARED_EXTRACTION` once a platform key exists.
 - `src/job_hunter/hard_blockers.py` — decides the two objective hard blockers from the facets
   scoring is about to be given, with no provider call (#127): compensation disclosed below the
   user's floor, and a role that is not remote or requires relocation contrary to the user's
@@ -206,7 +208,7 @@ Key modules:
   everything downstream — the merge-following write, company promotion, the score floor, the
   digest, the decision counters — handles it identically. Counted in
   `RunSummary.blocked_by_facets`, deliberately *not* in `evaluation_attempted`/`evaluated`,
-  which exist to detect a run where every fresh Gemini scoring call failed.
+  which exist to detect a run where every fresh AI scoring call failed.
 - `src/job_hunter/evaluation.py` — subjective scoring, the per-user half (#126). Takes a
   `JobFacets` and a `CandidateContext` and returns an `Evaluation`: the six score components,
   the total, hard blockers, strengths, gaps, the notes, the decision and the rationale. It
@@ -261,6 +263,18 @@ Key modules:
   rather than completed, because from outside there is no way to tell "nothing left" from
   "one more unit" without paying for that unit.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids(match_score_floor)` retries undelivered Telegram work without re-calling Gemini, applying the profile's inclusive floor. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, `upsert_ats_boards`, and `record_ats_eligible_jobs` — `collect_candidates` calls these instead of looping the single-job methods. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time — and for `collect_candidates`'s own canonical-resolution tail, which is still per-job but now pays only for a job whose resolution actually changed something — roughly two requests each (`upsert_logical_job`, `needs_evaluation`, plus `set_job_market` when the market moved). A job already on a supported ATS URL resolves to what it already was and writes nothing at all (#160): its row, market, board and `needs_evaluation` answer all come from the batched phases, and `discovery.py::_resolution_fingerprint` is what tells the two cases apart — a future resolution step that mutates another stored field must be added there or its change will not be written. Board registration left the tail with #160 (batched through `upsert_ats_boards`, so no board is registered twice in a run) and eligibility recording left it with #151. Those jobs still bypass the `max_canonical_resolutions_per_run` shortlist, which bounds network resolutions only. New bulk work should use the batch methods rather than looping the single-job ones.
+- `src/job_hunter/ai/` — the AI provider port (#73). `port.py` holds the vocabulary core
+  modules are allowed to know: `AIProvider`, `CallClass` (who funds a call and whether its
+  answer is shared), the purposes, and the provider-neutral errors (`AIIncompleteResponse`,
+  `AIBudgetExceeded`, `AITemporaryCapacity`, `AIQuotaPaused`). `credentials.py` is the seam a
+  credential comes from — the class alone decides which, and `SHARED_EXTRACTION` is refused a
+  user credential on every branch, including quota exhaustion. `usage.py` is the
+  provider-neutral quota ledger and circuit breaker; `limits.py` holds the published free-tier
+  limits per model, so a run needs only an API key. `gemini.py` is the **only** module that
+  knows Gemini exists: it builds Google's request, picks the header, and translates a 429 body
+  into the port's pause kinds. A second provider is a new file there plus wiring in `cli.py` —
+  no core module changes. The paper review behind the interface's shape is
+  `docs/superpowers/specs/2026-09-08-ai-provider-port-paper-review.md`.
 - `src/job_hunter/config.py` — loads the user's search profile, provider credentials and source documents (all from Postgres, via `load_settings(store)`) plus the remaining env vars into a `Settings`/`SearchPolicy` (see `models.py`). The Gemini key, the Brave key, the candidate profile and the cover letter template are per-user rows read through RLS and held in memory only — never write them to the repo or logs. A missing Gemini key, CV or cover letter raises `RuntimeConfigurationError` before any provider call.
 - `src/job_hunter/cli.py` — `python -m job_hunter run` entrypoint. `--scheduled` gates execution on `should_run_scheduled` (pipeline.py), comparing current local hour in `settings.timezone` against `settings.scheduled_hour`.
 - `src/job_hunter/preferences.py` extracts a compact preference profile from the candidate profile. When that succeeds, `pipeline.py` uses `rank_jobs(..., preferences)` plus `select_diverse_candidates()` to enforce profile-aware ranking with per-source diversity. The shortlist knobs are `max_jobs_per_run` (code default 35, set to 100 in the user's search profile), `source_minimum_per_run` (0) and `source_max_share` (0.5) — the user's search profile (stored in Postgres) is what a real run uses, so read the values there rather than the code defaults. If preference extraction or shortlist selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
@@ -285,7 +299,7 @@ The daily workflow fires on two cron triggers (`5 7 * * *` and `5 8 * * *` UTC) 
 
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — see README.md for setup. In dry-run mode, Telegram vars are optional.
 
-Per-user runtime material is stored in Relay, not in the environment. Saving or replacing the CV and cover letter text happens in Relay's **Profile** view via **Replace source information**; the Gemini and Brave Search API keys are saved in the **Provider credentials** panel on the same page. Gemini is required — a run stops at startup without it. Brave Search is optional: without it, Brave-backed source discovery is skipped and search falls back to DuckDuckGo. `BRAVE_MONTHLY_QUERY_LIMIT`, `GEMINI_MODEL` and
+Per-user runtime material is stored in Relay, not in the environment. Saving or replacing the CV and cover letter text happens in Relay's **Profile** view via **Replace source information**; the Gemini and Brave Search API keys are saved in the **Provider credentials** panel on the same page. Gemini is required — a run stops at startup without it. Brave Search is optional: without it, Brave-backed source discovery is skipped and search falls back to DuckDuckGo. `BRAVE_MONTHLY_QUERY_LIMIT`, `GEMINI_MODEL`, the optional `GEMINI_FREE_*` overrides and
 `JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS` remain environment variables.
 
 Gmail OAuth stays environment-backed (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`), but `sync-gmail` calls Gemini with the stored per-user key, exactly like the main pipeline. Relay's own deployment-level Gemini API key (configured in `apps/relay/.env.example`) is a separate server-side setting for Relay's interview features and is unchanged.

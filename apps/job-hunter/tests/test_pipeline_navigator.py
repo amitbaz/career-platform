@@ -1,6 +1,6 @@
 import json
 
-from job_hunter.models import GeminiQuotaSettings, Job, SearchPolicy, Settings
+from job_hunter.models import AIQuotaSettings, Job, SearchPolicy, Settings
 from job_hunter.pipeline import run_pipeline
 from job_hunter.telegram_navigation import parse_callback
 
@@ -12,6 +12,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,
@@ -130,7 +131,7 @@ class NavigatorTelegram:
 
 def _settings():
     return Settings(
-        gemini_api_key="key",
+        ai_api_key="key",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
@@ -143,7 +144,7 @@ def _settings():
             thresholds={"package": 75, "possible": 65},
             max_jobs_per_run=35,
         ),
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",
@@ -206,7 +207,7 @@ def test_pipeline_sends_one_sorted_navigator_and_persists_location(store):
         settings,
         sources=[FakeSource(jobs)],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -237,7 +238,7 @@ def test_pipeline_failed_navigator_send_keeps_jobs_pending(store):
         settings,
         sources=[FakeSource([job])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -263,7 +264,7 @@ def test_pipeline_with_no_deliverable_jobs_sends_nothing(store):
         settings,
         sources=[FakeSource([irrelevant])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -280,7 +281,7 @@ def test_pipeline_sends_gmail_activity_before_job_navigator(store):
         settings,
         sources=[FakeSource([_job("1", "Acme", "Berlin")])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -308,7 +309,7 @@ def test_pipeline_failed_gmail_activity_send_keeps_review_pending(store):
         settings,
         sources=[FakeSource([])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 

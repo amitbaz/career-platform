@@ -1640,14 +1640,14 @@ class PostgresJobStore:
         )
 
     # ------------------------------------------------------------------
-    # Gemini / AI-accounting persistence
+    # AI-accounting persistence
     # ------------------------------------------------------------------
 
-    def record_gemini_usage(
+    def record_ai_usage(
         self,
         *,
         occurred_at: str,
-        run_id: str | None,
+        provider: str,
         model: str,
         purpose: str,
         status: str,
@@ -1660,26 +1660,40 @@ class PostgresJobStore:
         http_status: int | None = None,
         error_code: str | None = None,
     ) -> None:
-        """Record one Gemini attempt without persisting request or response content.
+        """Record one provider attempt without persisting request or response content.
 
         Translates store.py:463-507 onto `job_hunter_ai_usage` (renamed from
-        `gemini_usage`; `provider` defaults to `'gemini'` in the schema).
-        `run_id` is NOT NULL after migration 202609060003 -- `GeminiUsageTracker`
-        is constructed with `run_id=os.getenv("GEMINI_RUN_ID")`, which is `None`
-        outside CI, so a caller's `None` is coerced to `'unknown'` here, matching
-        the migration's own backfill sentinel for pre-existing rows. Upserts
-        against `(user_id, run_id, model, purpose, occurred_at)` -- the only
-        natural key distinguishing two identical calls in one run from a
-        retried POST hitting the same call twice.
+        `gemini_usage`). `provider` is supplied by the adapter that made the
+        call rather than left to the column's `'gemini'` default, so a second
+        adapter writes its own rows correctly on the day it is added.
+
+        `run_id` is NOT NULL after migration 202609060003 and is written as the
+        migration's own backfill sentinel `'unknown'`. It survives as an inert
+        annotation: nothing quota-related reads it, and issue #73 removed the
+        `GEMINI_RUN_ID` plumbing that used to set it, because a per-run
+        discriminator in a per-user ledger let one run's budget hide behind
+        another's.
+
+        That leaves the upsert conflict target -- `(user_id, run_id, model,
+        purpose, occurred_at)`, the unique constraint the schema actually has
+        -- effectively `(user_id, model, purpose, occurred_at)`, since `run_id`
+        is now constant. Two attempts sharing a microsecond timestamp would
+        collapse into one row; `occurred_at` comes from `datetime.now()`, so
+        that is a theoretical loss rather than an observed one. `provider` is
+        deliberately *not* in the target because it is not in the constraint:
+        the second adapter this port exists to enable needs a migration that
+        widens the unique index to include it, or two providers on the same
+        model id would overwrite each other's ledger rows. That migration is a
+        schema change with its own plan, not a side effect of this one.
         """
         self._client.upsert(
             "job_hunter_ai_usage",
             [
                 {
                     "user_id": self._client.user_id,
-                    "provider": "gemini",
+                    "provider": provider,
                     "occurred_at": occurred_at,
-                    "run_id": run_id or "unknown",
+                    "run_id": "unknown",
                     "model": model,
                     "purpose": purpose,
                     "status": status,
@@ -1696,24 +1710,24 @@ class PostgresJobStore:
             on_conflict="user_id,run_id,model,purpose,occurred_at",
         )
 
-    def gemini_usage_rows(
+    def ai_usage_rows(
         self,
         start_at: str,
         end_at: str,
         *,
+        provider: str,
         model: str | None = None,
-        run_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return Gemini ledger rows in the half-open time range [start_at, end_at).
+        """Return one provider's ledger rows in the half-open range [start_at, end_at).
 
         Translates store.py:509-530. `select` is scoped to exactly the columns
         the SQLite `SELECT *` returned (`gemini_usage` never had `prompt`/
-        `response` columns to begin with -- see `record_gemini_usage`'s
+        `response` columns to begin with -- see `record_ai_usage`'s
         docstring), so `id` is a random uuid, not the callers' former ordering
         proxy; `occurred_at` (with `select`'s `id.asc` tie-breaker) replaces it.
         """
         params: dict[str, str] = {
-            "provider": "eq.gemini",
+            "provider": f"eq.{provider}",
             "and": f"(occurred_at.gte.{start_at},occurred_at.lt.{end_at})",
             "select": (
                 "id,occurred_at,run_id,model,purpose,status,estimated_input_tokens,"
@@ -1724,17 +1738,15 @@ class PostgresJobStore:
         }
         if model is not None:
             params["model"] = f"eq.{model}"
-        if run_id is not None:
-            params["run_id"] = f"eq.{run_id}"
         return self._client.select("job_hunter_ai_usage", params=params)
 
-    def set_gemini_pause(
-        self, model: str, paused_until: str | None, reason: str
+    def set_ai_pause(
+        self, provider: str, model: str, paused_until: str | None, reason: str
     ) -> None:
-        """Persist the active quota pause for a Gemini model.
+        """Persist the active quota pause for one provider model.
 
         Translates store.py:532-547 onto `job_hunter_ai_quota_state` (renamed
-        from `gemini_quota_state`). Upserts against `(user_id, provider,
+        from `ai_quota_state`). Upserts against `(user_id, provider,
         model)`, with `touch()` maintaining `updated_at` -- there is no
         trigger for it (see `store_mapping.touch`). `created_at` is
         deliberately omitted from the payload so an existing row's insertion
@@ -1747,7 +1759,7 @@ class PostgresJobStore:
                 touch(
                     {
                         "user_id": self._client.user_id,
-                        "provider": "gemini",
+                        "provider": provider,
                         "model": model,
                         "paused_until": paused_until,
                         "reason": reason,
@@ -1757,25 +1769,29 @@ class PostgresJobStore:
             on_conflict="user_id,provider,model",
         )
 
-    def get_gemini_pause(self, model: str) -> dict[str, Any] | None:
-        """Return the persisted quota pause for a model, if present.
+    def get_ai_pause(self, provider: str, model: str) -> dict[str, Any] | None:
+        """Return the persisted quota pause for a provider model, if present.
 
         Translates store.py:549-553.
         """
         rows = self._client.select(
             "job_hunter_ai_quota_state",
-            params={"provider": "eq.gemini", "model": f"eq.{model}", "limit": "1"},
+            params={
+                "provider": f"eq.{provider}",
+                "model": f"eq.{model}",
+                "limit": "1",
+            },
         )
         return rows[0] if rows else None
 
-    def clear_gemini_pause(self, model: str) -> None:
-        """Remove a model's persisted quota pause.
+    def clear_ai_pause(self, provider: str, model: str) -> None:
+        """Remove a provider model's persisted quota pause.
 
         Translates store.py:555-560.
         """
         self._client.delete(
             "job_hunter_ai_quota_state",
-            params={"provider": "eq.gemini", "model": f"eq.{model}"},
+            params={"provider": f"eq.{provider}", "model": f"eq.{model}"},
         )
 
     def get_candidate_context(self, cache_key: str) -> CandidateContextCacheEntry | None:
@@ -1812,7 +1828,7 @@ class PostgresJobStore:
         """Persist a structured candidate context under its cache identity.
 
         Translates store.py:578-609. Upserts against `(user_id, cache_key)`.
-        Unlike `set_gemini_pause`, `created_at` is included in the payload:
+        Unlike `set_ai_pause`, `created_at` is included in the payload:
         the SQLite original's own `ON CONFLICT ... DO UPDATE SET` refreshed
         `created_at = excluded.created_at` on every save, so this does too.
         """
@@ -2684,9 +2700,9 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "record_ats_scan_success": None,
     "record_ats_scan_failure": None,
     "record_ats_eligible_jobs": "count",
-    "record_gemini_usage": None,
-    "set_gemini_pause": None,
-    "clear_gemini_pause": None,
+    "record_ai_usage": None,
+    "set_ai_pause": None,
+    "clear_ai_pause": None,
     "save_candidate_context": None,
     "enqueue_ai_work": None,
     "complete_ai_work": None,
@@ -2732,8 +2748,8 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "list_due_ats_boards",
         "list_rejected_ats_boards",
         "count_ats_boards",
-        "gemini_usage_rows",
-        "get_gemini_pause",
+        "ai_usage_rows",
+        "get_ai_pause",
         "get_candidate_context",
         "list_pending_ai_work",
         "has_processed_gmail_message",

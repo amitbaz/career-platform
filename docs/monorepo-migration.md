@@ -103,8 +103,9 @@ four that moved.
 Both apps read their own env file; neither reads the repository root.
 
 `apps/job-hunter/.env` — copy from `apps/job-hunter/.env.example`. Beyond the secrets above
-it needs `GEMINI_MODEL`, `BRAVE_MONTHLY_QUERY_LIMIT`, `GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`,
-`GEMINI_FREE_RPD`, and — only if you run the Telegram webhook locally —
+it needs `GEMINI_MODEL` and `BRAVE_MONTHLY_QUERY_LIMIT` (the `GEMINI_FREE_*` limits became
+optional overrides in #73 — the published limits per model are defaults in code), and — only
+if you run the Telegram webhook locally —
 `TELEGRAM_WEBHOOK_SECRET`, `GITHUB_REPOSITORY`, `GITHUB_STATE_TOKEN`, `GITHUB_DISPATCH_TOKEN`.
 The Gemini and Brave keys and the CV and cover letter are not env vars: a local run reads them
 from Postgres for `JOB_HUNTER_USER_ID`, exactly as the scheduled run does.

@@ -60,7 +60,7 @@ def test_candidate_context_ignores_unknown_structured_output_fields(store):
         store,
     )
 
-    assert context.source == "gemini"
+    assert context.source == "ai"
     assert context.technical_skills == ["React", "TypeScript"]
 
 
@@ -75,7 +75,7 @@ def test_candidate_context_accepts_evidence_string_at_max_length_boundary(store)
         store,
     )
 
-    assert context.source == "gemini"
+    assert context.source == "ai"
     assert context.agentic_ai_evidence == ["x" * _MAX_ITEM_LENGTH]
 
 

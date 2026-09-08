@@ -1,6 +1,6 @@
 """Bounded retry for transient Gemini failures (issue #35).
 
-Covers HTTP 5xx and network-timeout retries in GeminiClient.generate_text:
+Covers HTTP 5xx and network-timeout retries in GeminiProvider.generate_text:
 retry-then-succeed, repeated-failure-then-clean-raise, pacing/accounting on
 every attempt, and that non-transient failures never consume retry budget.
 """
@@ -10,7 +10,16 @@ from datetime import datetime, timezone
 import requests
 import pytest
 
-from job_hunter.gemini import GeminiClient, GeminiError
+from job_hunter.ai import AIError, CallClass
+from job_hunter.ai.gemini import build_gemini_provider
+
+
+def _generate(provider, prompt, **kwargs):
+    """Every adapter test is a user-subjective call; the class itself is
+    exercised in tests/test_ai_call_class.py."""
+    return provider.generate_text(prompt, call_class=CallClass.USER_SUBJECTIVE, **kwargs)
+
+
 
 
 class FakeResponse:
@@ -71,12 +80,12 @@ def test_http_500_then_success_retries_and_returns_text(monkeypatch):
     http = SequencedHttp([FakeResponse(500, None, "server error"), _ok_response("recovered")])
     tracker = FakeTracker()
     sleep_fn, sleeps = _sleep_recorder()
-    client = GeminiClient("key", "gemini-test", http, tracker, sleep_fn=sleep_fn)
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker, sleep_fn=sleep_fn)
     monkeypatch.setattr(
-        "job_hunter.gemini._now", lambda: datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+        "job_hunter.ai.gemini._now", lambda: datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
     )
 
-    result = client.generate_text("evaluate", purpose="job_evaluation", max_attempts=2)
+    result = _generate(client, "evaluate", purpose="job_evaluation", max_attempts=2)
 
     assert result == "recovered"
     assert len(http.calls) == 2
@@ -91,12 +100,12 @@ def test_read_timeout_then_success_retries_and_returns_text(monkeypatch):
     http = SequencedHttp([requests.ReadTimeout("slow"), _ok_response("recovered")])
     tracker = FakeTracker()
     sleep_fn, sleeps = _sleep_recorder()
-    client = GeminiClient("key", "gemini-test", http, tracker, sleep_fn=sleep_fn)
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker, sleep_fn=sleep_fn)
     monkeypatch.setattr(
-        "job_hunter.gemini._now", lambda: datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+        "job_hunter.ai.gemini._now", lambda: datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
     )
 
-    result = client.generate_text("evaluate", purpose="job_evaluation", max_attempts=2)
+    result = _generate(client, "evaluate", purpose="job_evaluation", max_attempts=2)
 
     assert result == "recovered"
     assert len(http.calls) == 2
@@ -110,13 +119,13 @@ def test_repeated_transient_failure_fails_cleanly_without_exceeding_bound(monkey
     http = SequencedHttp([FakeResponse(503, None, "busy"), FakeResponse(503, None, "still busy")])
     tracker = FakeTracker()
     sleep_fn, _sleeps = _sleep_recorder()
-    client = GeminiClient("key", "gemini-test", http, tracker, sleep_fn=sleep_fn)
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker, sleep_fn=sleep_fn)
     monkeypatch.setattr(
-        "job_hunter.gemini._now", lambda: datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+        "job_hunter.ai.gemini._now", lambda: datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
     )
 
-    with pytest.raises(GeminiError):
-        client.generate_text("evaluate", purpose="job_evaluation", max_attempts=2)
+    with pytest.raises(AIError):
+        _generate(client, "evaluate", purpose="job_evaluation", max_attempts=2)
 
     # Bounded: exactly two attempts were made, never more.
     assert len(http.calls) == 2
@@ -127,10 +136,10 @@ def test_repeated_transient_failure_fails_cleanly_without_exceeding_bound(monkey
 def test_default_max_attempts_does_not_retry_transient_failure():
     http = SequencedHttp([FakeResponse(500, None, "server error")])
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-test", http, tracker)
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("evaluate", purpose="job_evaluation")
+    with pytest.raises(AIError):
+        _generate(client, "evaluate", purpose="job_evaluation")
 
     assert len(http.calls) == 1
 
@@ -138,10 +147,10 @@ def test_default_max_attempts_does_not_retry_transient_failure():
 def test_non_retryable_http_error_is_not_retried_even_with_budget():
     http = SequencedHttp([FakeResponse(400, None, "bad request")])
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-test", http, tracker)
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("evaluate", purpose="job_evaluation", max_attempts=3)
+    with pytest.raises(AIError):
+        _generate(client, "evaluate", purpose="job_evaluation", max_attempts=3)
 
     assert len(http.calls) == 1
 
@@ -151,9 +160,9 @@ def test_connection_error_is_not_retried_blindly():
     requests.RequestException subtypes still fail on the first attempt."""
     http = SequencedHttp([requests.ConnectionError("refused")])
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-test", http, tracker)
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker)
 
     with pytest.raises(requests.ConnectionError):
-        client.generate_text("evaluate", purpose="job_evaluation", max_attempts=3)
+        _generate(client, "evaluate", purpose="job_evaluation", max_attempts=3)
 
     assert len(http.calls) == 1

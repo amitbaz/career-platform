@@ -9,7 +9,7 @@ from job_hunter.gmail_classifier import (
     classify_email,
     source_candidate_key,
 )
-from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
+from job_hunter.ai import AIBudgetExceeded, AIQuotaPaused
 from job_hunter.gmail_client import GmailHistoryExpired, GmailMessageNotFound
 from job_hunter.gmail_linkedin_cleanup import release_legacy_blank_linkedin_jobs
 from job_hunter.gmail_matching import match_job
@@ -49,14 +49,14 @@ class GmailSyncService:
         self,
         *,
         gmail,
-        gemini,
+        ai,
         store,
         backfill_batch_size: int = DEFAULT_BACKFILL_BATCH_SIZE,
     ) -> None:
         if backfill_batch_size <= 0:
             raise ValueError("backfill_batch_size must be positive")
         self.gmail = gmail
-        self.gemini = gemini
+        self.ai = ai
         self.store = store
         self.backfill_batch_size = backfill_batch_size
         self._backfill_now: datetime | None = None
@@ -195,9 +195,9 @@ class GmailSyncService:
     ) -> GmailClassification:
         # Freshness must be computed before classify_email decides whether to
         # request job-alert extraction: a gate applied only afterwards would
-        # still have spent the Gemini call it's supposed to avoid.
+        # still have spent the model call it's supposed to avoid.
         is_fresh = self._alert_is_fresh(message)
-        classification = classify_email(message, self.gemini, is_fresh=is_fresh)
+        classification = classify_email(message, self.ai, is_fresh=is_fresh)
         effective = classification
 
         if dry_run:
@@ -349,7 +349,7 @@ class GmailSyncService:
                     self.gmail.get_message(message_id),
                     dry_run=dry_run,
                 )
-            except (GeminiQuotaPaused, GeminiBudgetExceeded) as exc:
+            except (AIQuotaPaused, AIBudgetExceeded) as exc:
                 # The circuit breaker is open (or our own ceiling is): stop
                 # attempting further messages rather than hammering a paused
                 # API. This message was never recorded, so it stays

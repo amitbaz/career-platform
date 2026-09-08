@@ -9,7 +9,7 @@ from job_hunter.candidate_context import (
     FALLBACK_CONTEXT_SUMMARY,
     get_candidate_context,
 )
-from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
+from job_hunter.ai.usage import AIBudgetExceeded, AIQuotaPaused
 from job_hunter.models import CandidateContext, SearchPolicy
 from job_hunter.preferences import FALLBACK_PREFERENCES_SUMMARY
 
@@ -25,6 +25,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,
@@ -222,22 +223,22 @@ def test_get_candidate_context_falls_back_when_evidence_item_exceeds_length_boun
 
 def test_get_candidate_context_propagates_gemini_budget_exceeded(store):
     policy = make_policy()
-    gemini = FakeGemini([], exceptions=[GeminiBudgetExceeded("over budget")])
+    gemini = FakeGemini([], exceptions=[AIBudgetExceeded("over budget")])
 
-    with pytest.raises(GeminiBudgetExceeded):
+    with pytest.raises(AIBudgetExceeded):
         get_candidate_context("candidate profile text", policy, gemini, store)
 
 
-def test_get_candidate_context_propagates_gemini_quota_paused(store):
+def test_get_candidate_context_propagates_ai_quota_paused(store):
     policy = make_policy()
     gemini = FakeGemini(
         [],
         exceptions=[
-            GeminiQuotaPaused("paused", paused_until="2026-01-01T00:00:00+00:00", reason="daily_quota")
+            AIQuotaPaused("paused", paused_until="2026-01-01T00:00:00+00:00", reason="daily_quota")
         ],
     )
 
-    with pytest.raises(GeminiQuotaPaused):
+    with pytest.raises(AIQuotaPaused):
         get_candidate_context("candidate profile text", policy, gemini, store)
 
 

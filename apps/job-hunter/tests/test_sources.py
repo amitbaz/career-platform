@@ -5,7 +5,7 @@ import pytest
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.config import load_settings
 from job_hunter.models import (
-    GeminiQuotaSettings,
+    AIQuotaSettings,
     ProviderCredentials,
     SearchPolicy,
     Settings,
@@ -412,13 +412,13 @@ def test_himalayas_skips_malformed_records(fake_http):
 
 def test_build_sources_includes_always_on_and_configured_ats(fake_http, policy):
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
     sources = build_sources(settings, fake_http)
     kinds = [type(s).__name__ for s in sources]
@@ -447,13 +447,13 @@ def test_build_sources_uses_only_brave_for_metered_market_discovery(fake_http):
             pass
 
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=make_market_policy(),
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
         brave_search_api_key="brave-key",
     )
 
@@ -468,13 +468,13 @@ def test_build_sources_skips_market_discovery_sources_without_brave_key(
     fake_http, policy
 ):
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http, store=object())
@@ -493,13 +493,13 @@ def test_build_sources_appends_learned_ats_source_when_store_is_given(
     fake_http, policy
 ):
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http, store=store)
@@ -516,13 +516,13 @@ def test_build_sources_passes_learned_ats_allowlist_to_source(store, fake_http, 
         policy, learned_ats_allowlist=["ashby:acme"]
     )
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=allowlisted_policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http, store=store)
@@ -538,13 +538,13 @@ def test_build_sources_skips_learned_ats_source_when_limit_is_zero(
 ):
     disabled_policy = dataclasses.replace(policy, max_learned_ats_boards_per_run=0)
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=disabled_policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http, store=store)
@@ -555,13 +555,13 @@ def test_build_sources_skips_learned_ats_source_when_limit_is_zero(
 
 def test_build_sources_skips_devjobs_when_no_market_lists_it(fake_http, policy):
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -579,13 +579,13 @@ def test_build_sources_adds_devjobs_once_when_a_market_lists_it(fake_http, polic
         ],
     )
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_devjobs,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -605,13 +605,13 @@ def test_build_sources_adds_devjobs_once_even_with_multiple_markets_listing_it(
         ],
     )
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_devjobs,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -631,13 +631,13 @@ def test_build_sources_skips_devjobs_when_only_disabled_market_lists_it(
     )
     policy_with_disabled_devjobs.markets[0].enabled = False
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_disabled_devjobs,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -648,13 +648,13 @@ def test_build_sources_skips_devjobs_when_only_disabled_market_lists_it(
 
 def test_build_sources_skips_wellfound_when_no_market_lists_it(fake_http, policy):
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -677,13 +677,13 @@ def test_build_sources_builds_one_wellfound_source_from_enabled_markets_in_order
         ],
     )
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_wellfound,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -707,13 +707,13 @@ def test_build_sources_skips_wellfound_when_only_disabled_market_lists_it(
     )
     policy_with_disabled_wellfound.markets[0].enabled = False
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_disabled_wellfound,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, fake_http)
@@ -728,13 +728,13 @@ def test_build_sources_rejects_unrecognized_direct_sources_entry(fake_http, poli
         markets=[make_market("germany_eu", 1.0, direct_sources=["dev_jobs"])],
     )
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_typo,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     with pytest.raises(ValueError, match="dev_jobs"):
@@ -749,13 +749,13 @@ def test_build_sources_rejects_wellfound_direct_source_without_routes(
         markets=[make_market("singapore", 1.0, direct_sources=["wellfound"])],
     )
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_without_routes,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     with pytest.raises(ValueError, match="wellfound"):
@@ -771,13 +771,13 @@ def test_build_sources_ignores_bad_direct_sources_on_disabled_market(
     )
     policy_with_disabled_typo.markets[0].enabled = False
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy_with_disabled_typo,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     build_sources(settings, fake_http)

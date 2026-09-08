@@ -16,6 +16,7 @@ class FailingGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
@@ -30,6 +31,7 @@ class InvalidSemanticGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
@@ -111,7 +113,7 @@ def test_semantic_provider_failure_is_error_not_review_and_remains_retryable(sto
     )
     service = GmailSyncService(
         gmail=OneMessageGmail(message),
-        gemini=FailingGemini(),
+        ai=FailingGemini(),
         store=store,
     )
 
@@ -135,7 +137,7 @@ def test_invalid_semantic_response_logs_safe_validation_detail_only(store, tmp_p
     )
     service = GmailSyncService(
         gmail=OneMessageGmail(message),
-        gemini=InvalidSemanticGemini(),
+        ai=InvalidSemanticGemini(),
         store=store,
     )
     caplog.set_level(logging.WARNING, logger="job_hunter.gmail_sync")
@@ -188,7 +190,7 @@ def test_writable_sync_reopens_completed_backfill_to_reprocess_legacy_failure(st
     )
     service = GmailSyncService(
         gmail=OneMessageGmail(message),
-        gemini=FailingGemini(),
+        ai=FailingGemini(),
         store=store,
     )
 

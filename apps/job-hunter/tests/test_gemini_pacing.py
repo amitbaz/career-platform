@@ -1,5 +1,14 @@
-from job_hunter.gemini import GeminiClient
-from job_hunter.gemini_usage import GeminiTemporaryCapacity
+from job_hunter.ai import CallClass
+from job_hunter.ai.gemini import build_gemini_provider
+from job_hunter.ai.usage import AITemporaryCapacity
+
+
+def _generate(provider, prompt, **kwargs):
+    """Every adapter test is a user-subjective call; the class itself is
+    exercised in tests/test_ai_call_class.py."""
+    return provider.generate_text(prompt, call_class=CallClass.USER_SUBJECTIVE, **kwargs)
+
+
 
 
 class _Tracker:
@@ -10,7 +19,7 @@ class _Tracker:
     def preflight(self, purpose, prompt, now):
         self.preflight_calls += 1
         if self.preflight_calls == 1:
-            raise GeminiTemporaryCapacity(
+            raise AITemporaryCapacity(
                 "rolling capacity full",
                 retry_after_seconds=12.5,
             )
@@ -49,15 +58,10 @@ def test_client_waits_and_rechecks_capacity_before_http_call():
     slept = []
     tracker = _Tracker()
     http = _Http(slept)
-    client = GeminiClient(
-        "key",
-        "gemini-test",
-        http,
-        tracker,
-        sleep_fn=slept.append,
+    client = build_gemini_provider("key", "gemini-test", http, tracker=tracker, sleep_fn=slept.append,
     )
 
-    assert client.generate_text("prompt", purpose="job_evaluation") == "ok"
+    assert _generate(client, "prompt", purpose="job_evaluation") == "ok"
     assert slept == [12.5]
     assert tracker.preflight_calls == 2
     assert http.post_calls == 1

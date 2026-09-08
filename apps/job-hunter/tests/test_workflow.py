@@ -44,14 +44,19 @@ def test_gmail_sync_step_is_bounded_and_fail_open():
     assert gmail_step["continue-on-error"] is True
 
 
-def test_both_gemini_steps_carry_quota_vars_and_matching_run_id():
+def test_both_ai_steps_carry_the_optional_quota_overrides():
+    """The three limits are optional overrides (#73), not required setup.
+
+    They are still plumbed through, so an operator whose project limits differ
+    from the published ones can set them; an unset repository variable expands
+    to an empty string and config treats that as absent.
+    """
     _, gmail_step, run_step = _load_workflow_steps()
 
     expected_quota_vars = {
         "GEMINI_FREE_RPM": "${{ vars.GEMINI_FREE_RPM }}",
         "GEMINI_FREE_TPM": "${{ vars.GEMINI_FREE_TPM }}",
         "GEMINI_FREE_RPD": "${{ vars.GEMINI_FREE_RPD }}",
-        "GEMINI_RUN_ID": "${{ github.run_id }}",
     }
 
     for step in (gmail_step, run_step):
@@ -59,9 +64,14 @@ def test_both_gemini_steps_carry_quota_vars_and_matching_run_id():
         for key, expected_value in expected_quota_vars.items():
             assert env[key] == expected_value
 
-    # The two Gemini-using processes must share one usage ledger, which
-    # requires an identical run id expression in both steps.
-    assert gmail_step["env"]["GEMINI_RUN_ID"] == run_step["env"]["GEMINI_RUN_ID"]
+
+def test_no_workflow_step_sets_a_run_id_for_ai_accounting():
+    """`GEMINI_RUN_ID` is gone: the ledger is per user, not per run (#73)."""
+    for workflow_path in (DAILY_WORKFLOW, COVER_LETTER_WORKFLOW):
+        workflow = yaml.safe_load(workflow_path.read_text())
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                assert "GEMINI_RUN_ID" not in (step.get("env") or {})
 
 
 def test_user_runtime_secrets_are_not_injected_into_workflows():

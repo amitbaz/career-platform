@@ -1,7 +1,16 @@
 import requests
 import pytest
 
-from job_hunter.gemini import GeminiClient, GeminiError
+from job_hunter.ai import AIError, CallClass
+from job_hunter.ai.gemini import build_gemini_provider
+
+
+def _generate(provider, prompt, **kwargs):
+    """Every adapter test is a user-subjective call; the class itself is
+    exercised in tests/test_ai_call_class.py."""
+    return provider.generate_text(prompt, call_class=CallClass.USER_SUBJECTIVE, **kwargs)
+
+
 
 
 class FakeResponse:
@@ -42,10 +51,10 @@ class FakeTracker:
 def test_gemini_disables_automatic_retries():
     http = CapturingHttp(FakeResponse(503, None, "high demand"))
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-3.6-flash", http, tracker)
+    client = build_gemini_provider("key", "gemini-3.6-flash", http, tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("evaluate", purpose="job_evaluation")
+    with pytest.raises(AIError):
+        _generate(client, "evaluate", purpose="job_evaluation")
 
     assert len(http.calls) == 1
     _, kwargs = http.calls[0]
@@ -59,10 +68,10 @@ def test_gemini_records_network_exception_once_and_reraises():
     error = requests.ReadTimeout("slow Gemini response")
     http = CapturingHttp(exception=error)
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-3.6-flash", http, tracker)
+    client = build_gemini_provider("key", "gemini-3.6-flash", http, tracker=tracker)
 
     with pytest.raises(requests.ReadTimeout):
-        client.generate_text("evaluate", purpose="job_evaluation")
+        _generate(client, "evaluate", purpose="job_evaluation")
 
     assert len(http.calls) == 1
     assert len(tracker.error_calls) == 1

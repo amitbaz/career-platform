@@ -33,6 +33,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,

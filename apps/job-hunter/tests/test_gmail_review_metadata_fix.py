@@ -18,6 +18,7 @@ class FakeGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,

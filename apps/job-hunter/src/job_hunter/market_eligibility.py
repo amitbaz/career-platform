@@ -1,11 +1,11 @@
-"""Conservative pre-Gemini market eligibility checks.
+"""Conservative pre-evaluation market eligibility checks.
 
 This module only rejects a job when a market's policy is *explicitly*
 contradicted by the posting (disallowed required language, salary clearly
 below the market floor, sponsorship explicitly unavailable where required,
 a non-permanent employment type, or an Israel role that is explicitly
 onsite/hybrid/location-bound). Anything the posting simply omits is kept and
-marked "unknown" rather than rejected -- this stage exists to save Gemini
+marked "unknown" rather than rejected -- this stage exists to save model
 requests on unambiguous incompatibilities, not to make nuanced calls.
 """
 

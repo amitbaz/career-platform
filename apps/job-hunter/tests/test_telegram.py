@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from job_hunter.models import DigestItem, GeminiUsageSummary, ReviewItem
+from job_hunter.models import DigestItem, AIUsageSummary, ReviewItem
 from job_hunter.telegram import (
     TelegramClient,
     build_digest,
-    build_gemini_pause_warning,
+    build_ai_pause_warning,
     build_gmail_review_digest,
     build_gmail_review_digest_chunks,
     chunk_message,
@@ -68,7 +68,7 @@ def _usage_summary(**overrides):
         provider_paused=False,
     )
     defaults.update(overrides)
-    return GeminiUsageSummary(**defaults)
+    return AIUsageSummary(**defaults)
 
 
 def _review_item(**overrides):
@@ -345,19 +345,19 @@ def test_send_document_returns_none_on_failure(tmp_path):
     assert client.send_document(doc_path, "caption") is None
 
 
-def test_build_gemini_pause_warning_returns_none_when_healthy():
-    assert build_gemini_pause_warning(_usage_summary()) is None
+def test_build_ai_pause_warning_returns_none_when_healthy():
+    assert build_ai_pause_warning(_usage_summary()) is None
 
 
-def test_build_gemini_pause_warning_when_provider_paused():
-    warning = build_gemini_pause_warning(_usage_summary(provider_paused=True))
+def test_build_ai_pause_warning_when_provider_paused():
+    warning = build_ai_pause_warning(_usage_summary(provider_paused=True))
 
     assert warning is not None
     assert "paused" in warning.lower()
 
 
-def test_build_gemini_pause_warning_when_internal_budget_exhausted():
-    warning = build_gemini_pause_warning(_usage_summary(internal_budget_exhausted=True))
+def test_build_ai_pause_warning_when_internal_budget_exhausted():
+    warning = build_ai_pause_warning(_usage_summary(internal_budget_exhausted=True))
 
     assert warning is not None
     assert "deferred" in warning.lower()

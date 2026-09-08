@@ -5,7 +5,7 @@ from job_hunter.models import (
     CandidateContext,
     CandidatePreferences,
     Evaluation,
-    GeminiQuotaSettings,
+    AIQuotaSettings,
     Job,
     SearchQuery,
     Settings,
@@ -122,13 +122,13 @@ def test_market_delivered_metric_counts_only_successful_telegram_delivery(
     policy = make_market_policy()
     policy.max_jobs_per_run = 1
     settings = Settings(
-        gemini_api_key="key",
+        ai_api_key="key",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=15, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=15, tpm=250000, rpd=500),
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",
@@ -167,7 +167,7 @@ def test_market_delivered_metric_counts_only_successful_telegram_delivery(
             settings,
             sources=[_Source([job])],
             store=store,
-            gemini=_Gemini(),
+            ai=_Gemini(),
             telegram=_FailedNavigator(),
             http=_NoHttp(),
         )

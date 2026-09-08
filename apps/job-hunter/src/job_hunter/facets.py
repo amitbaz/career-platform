@@ -28,6 +28,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from job_hunter.ai import CallClass
 from job_hunter import content_confidence
 from job_hunter.hiring_scope import (
     ASIA_PACIFIC,
@@ -39,7 +40,7 @@ from job_hunter.hiring_scope import (
 from job_hunter.models import Compensation, Job, JobFacets
 
 if TYPE_CHECKING:
-    from job_hunter.gemini import GeminiClient
+    from job_hunter.ai import AIProvider
 
 UNKNOWN = "unknown"
 
@@ -418,7 +419,7 @@ def _parse_facets(raw: str, requested: list[str]) -> dict[str, Any]:
     return {name: _PARSERS[name](data) for name in requested}
 
 
-def extract_facets(posting: PostingFacts, gemini: "GeminiClient") -> JobFacets:
+def extract_facets(posting: PostingFacts, ai: "AIProvider") -> JobFacets:
     """Read `posting`'s objective facets, asking the model only for the residue.
 
     Raises `FacetExtractionError` when the response cannot be read as facets.
@@ -429,8 +430,13 @@ def extract_facets(posting: PostingFacts, gemini: "GeminiClient") -> JobFacets:
     supplied = source_supplied_facets(posting)
     requested = [name for name in FACET_FIELDS if name not in supplied]
 
-    raw = gemini.generate_text(
+    # Facet extraction is objective, shared work, and #128 moves it to the
+    # platform key by changing this one argument to SHARED_EXTRACTION. Until
+    # that key exists it runs, as it does today, on the user's own credential
+    # and quota -- the class names who pays, and today that is still the user.
+    raw = ai.generate_text(
         _build_facet_prompt(posting, requested),
+        call_class=CallClass.USER_SUBJECTIVE,
         purpose="job_facets",
         thinking_level="low",
         max_output_tokens=4000,
@@ -449,5 +455,5 @@ def extract_facets(posting: PostingFacts, gemini: "GeminiClient") -> JobFacets:
         compensation=values["compensation"],
         requirements=values["requirements"],
         source_supplied=sorted(supplied),
-        model=gemini.model,
+        model=ai.model,
     )

@@ -700,12 +700,12 @@ def test_tables_absent_from_the_sqlite_file_migrate_as_zero(tmp_path, supabase_c
     assert all(value == 0 for value in counts.values())
 
 
-def test_gemini_usage_rows_are_carried_with_their_token_accounting(
+def test_ai_usage_rows_are_carried_with_their_token_accounting(
     tmp_path, supabase_client: SupabaseClient
 ):
     """The AI ledger must survive the move, values intact.
 
-    `gemini_usage_rows` reads this table back to pace against Gemini's
+    `ai_usage_rows` reads this table back to pace against Gemini's
     rolling per-minute, per-day and token limits, so dropping it would leave
     those windows empty and let a run exceed a daily cap it had already
     partly spent.
@@ -754,7 +754,7 @@ def test_gemini_usage_row_without_a_run_id_becomes_unknown(
     """`run_id` is nullable in SQLite and NOT NULL in Postgres.
 
     Migration 202609060003 backfilled existing nulls to 'unknown' and
-    `record_gemini_usage` uses the same sentinel, so a legacy row with no
+    `record_ai_usage` uses the same sentinel, so a legacy row with no
     run id must land on it rather than failing the insert.
     """
     sqlite_path = build_legacy_db(

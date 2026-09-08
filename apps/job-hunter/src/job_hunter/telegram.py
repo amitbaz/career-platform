@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
-from job_hunter.models import DigestItem, GeminiUsageSummary, ReviewItem
+from job_hunter.models import DigestItem, AIUsageSummary, ReviewItem
 
 if TYPE_CHECKING:
     from job_hunter.http import HttpClient
@@ -194,7 +194,7 @@ def chunk_message(text: str, limit: int = 3900) -> list[str]:
     return chunks
 
 
-def build_gemini_pause_warning(summary: GeminiUsageSummary) -> str | None:
+def build_ai_pause_warning(summary: AIUsageSummary) -> str | None:
     """A single warning line when work was deferred this run, else `None`.
 
     A persisted provider pause and our own internal ceiling are distinct
@@ -203,12 +203,12 @@ def build_gemini_pause_warning(summary: GeminiUsageSummary) -> str | None:
     """
     if summary.provider_paused:
         return (
-            "⚠️ Gemini hit its free-tier provider limit and is paused — "
+            "⚠️ The AI provider hit its free-tier limit and is paused — "
             "remaining work has been deferred to a later run."
         )
     if summary.internal_budget_exhausted:
         return (
-            "⚠️ Gemini's daily budget ceiling was reached — "
+            "⚠️ The AI daily budget ceiling was reached — "
             "remaining work has been deferred to a later run."
         )
     return None

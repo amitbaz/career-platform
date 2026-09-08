@@ -46,10 +46,10 @@ def _evaluation(job_id, **overrides):
     return Evaluation(**defaults)
 
 
-def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(store):
-    store.record_gemini_usage(
+def test_ai_usage_rows_persist_success_without_prompt_or_response_content(store):
+    store.record_ai_usage(
         occurred_at="2026-09-01T08:00:00+00:00",
-        run_id="run-1",
+        provider="gemini",
         model="gemini-3.6-flash",
         purpose="job_evaluation",
         status="success",
@@ -61,11 +61,11 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(st
         total_tokens=125,
     )
 
-    rows = store.gemini_usage_rows(
+    rows = store.ai_usage_rows(
         "2026-09-01T00:00:00+00:00",
         "2026-09-02T00:00:00+00:00",
+        provider="gemini",
         model="gemini-3.6-flash",
-        run_id="run-1",
     )
 
     assert len(rows) == 1
@@ -73,7 +73,7 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(st
     row.pop("id")
     assert row == {
         "occurred_at": "2026-09-01T08:00:00+00:00",
-        "run_id": "run-1",
+        "run_id": "unknown",
         "model": "gemini-3.6-flash",
         "purpose": "job_evaluation",
         "status": "success",
@@ -86,7 +86,7 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(st
         "http_status": None,
         "error_code": None,
     }
-    # This only proves gemini_usage_rows' own select projects no prompt/response
+    # This only proves ai_usage_rows' own select projects no prompt/response
     # column -- it is not a claim about the job_hunter_ai_usage table itself.
     # The table-level privacy invariant (no prompt/response column can be
     # added without a conscious decision) lives in
@@ -95,10 +95,10 @@ def test_gemini_usage_rows_persist_success_without_prompt_or_response_content(st
     assert "response" not in rows[0].keys()
 
 
-def test_gemini_usage_rows_persist_429_attempt(store):
-    store.record_gemini_usage(
+def test_ai_usage_rows_persist_429_attempt(store):
+    store.record_ai_usage(
         occurred_at="2026-09-01T08:00:00+00:00",
-        run_id="run-1",
+        provider="gemini",
         model="gemini-3.6-flash",
         purpose="cover_letter",
         status="quota_429",
@@ -107,8 +107,8 @@ def test_gemini_usage_rows_persist_429_attempt(store):
         error_code="RESOURCE_EXHAUSTED",
     )
 
-    rows = store.gemini_usage_rows(
-        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00"
+    rows = store.ai_usage_rows(
+        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00", provider="gemini"
     )
 
     assert len(rows) == 1
@@ -117,75 +117,80 @@ def test_gemini_usage_rows_persist_429_attempt(store):
     assert rows[0]["error_code"] == "RESOURCE_EXHAUSTED"
 
 
-def test_gemini_usage_rows_respects_half_open_time_range(store):
-    store.record_gemini_usage(
+def test_ai_usage_rows_respects_half_open_time_range(store):
+    store.record_ai_usage(
         occurred_at="2026-09-01T00:00:00+00:00",
-        run_id="run-1",
+        provider="gemini",
         model="gemini-3.6-flash",
         purpose="job_evaluation",
         status="success",
         estimated_input_tokens=1,
     )
-    store.record_gemini_usage(
+    store.record_ai_usage(
         occurred_at="2026-09-02T00:00:00+00:00",
-        run_id="run-2",
+        provider="gemini",
         model="gemini-3.6-flash",
         purpose="job_evaluation",
         status="success",
         estimated_input_tokens=1,
     )
 
-    rows = store.gemini_usage_rows(
-        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00"
+    rows = store.ai_usage_rows(
+        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00", provider="gemini"
     )
 
-    assert [row["run_id"] for row in rows] == ["run-1"]
+    assert [row["occurred_at"] for row in rows] == ["2026-09-01T00:00:00+00:00"]
 
 
-def test_record_gemini_usage_falls_back_to_unknown_run_id(store):
-    """`job_hunter_ai_usage.run_id` is NOT NULL; a caller with no run id must not 500."""
-    store.record_gemini_usage(
+def test_record_ai_usage_writes_the_run_id_sentinel(store):
+    """`run_id` is NOT NULL but no longer carries meaning (#73).
+
+    The column stays as an optional annotation; every row now takes the
+    migration's own backfill sentinel, and no quota decision reads it.
+    """
+    store.record_ai_usage(
         occurred_at="2026-09-01T08:00:00+00:00",
-        run_id=None,
+        provider="gemini",
         model="gemini-3.6-flash",
         purpose="job_evaluation",
         status="success",
         estimated_input_tokens=10,
     )
 
-    rows = store.gemini_usage_rows(
-        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00"
+    rows = store.ai_usage_rows(
+        "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00", provider="gemini"
     )
 
     assert len(rows) == 1
     assert rows[0]["run_id"] == "unknown"
 
 
-def test_gemini_pause_round_trip_and_clear(store):
-    store.set_gemini_pause(
+def test_ai_pause_round_trip_and_clear(store):
+    store.set_ai_pause(
+        "gemini",
         "gemini-3.6-flash",
         "2026-09-01T08:01:30+00:00",
         "rate_limit",
     )
 
-    pause = store.get_gemini_pause("gemini-3.6-flash")
+    pause = store.get_ai_pause("gemini", "gemini-3.6-flash")
 
     assert pause is not None
     assert pause["paused_until"] == "2026-09-01T08:01:30+00:00"
     assert pause["reason"] == "rate_limit"
     assert pause["updated_at"]
 
-    store.clear_gemini_pause("gemini-3.6-flash")
+    store.clear_ai_pause("gemini", "gemini-3.6-flash")
 
-    assert store.get_gemini_pause("gemini-3.6-flash") is None
+    assert store.get_ai_pause("gemini", "gemini-3.6-flash") is None
 
 
-def test_gemini_pause_upsert_converges_on_repeated_writes(store):
+def test_ai_pause_upsert_converges_on_repeated_writes(store):
     """A retried POST on a transient 5xx must update the one row, not duplicate it."""
-    store.set_gemini_pause("gemini-3.6-flash", "2026-09-01T08:01:30+00:00", "rate_limit")
-    store.set_gemini_pause("gemini-3.6-flash", "2026-09-01T09:00:00+00:00", "daily_quota")
+    store.set_ai_pause("gemini", "gemini-3.6-flash", "2026-09-01T08:01:30+00:00", "rate_limit")
+    store.set_ai_pause("gemini", "gemini-3.6-flash", "2026-09-01T09:00:00+00:00", "daily_quota")
 
-    pause = store.get_gemini_pause("gemini-3.6-flash")
+    pause = store.get_ai_pause("gemini", "gemini-3.6-flash")
     assert pause["paused_until"] == "2026-09-01T09:00:00+00:00"
     assert pause["reason"] == "daily_quota"
 
