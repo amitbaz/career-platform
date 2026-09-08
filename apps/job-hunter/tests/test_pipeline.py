@@ -1747,6 +1747,21 @@ def _evaluation(job_id, *, decision="high_priority", total_score=90):
     )
 
 
+def _record_application_history(store, job_id):
+    """Give the intended merge survivor history stronger than a card delivery."""
+    store.save_application_event(
+        job_id=job_id,
+        event_type="INTERVIEW",
+        occurred_at="2026-09-08T10:00:00+00:00",
+        source_message_id=f"application-{job_id}",
+        source_thread_id=None,
+        confidence=1.0,
+        company="Acme Survivor",
+        role_title="Senior Product Engineer",
+        rationale="interview invitation",
+    )
+
+
 def test_generate_cover_letter_on_demand_calls_gemini_when_no_material(store, settings):
     job = _job()
     job_id, _, _ = store.upsert_job(job)
@@ -1814,8 +1829,9 @@ def test_generate_cover_letter_on_demand_follows_a_job_merged_since_delivery(
     survivor_id, _, _ = store.upsert_job(
         _job(source_job_id="survivor", company="Acme Survivor")
     )
-    # History decides which row survives, so pin the intended one with an evaluation.
     store.save_evaluation(survivor_id, _evaluation(survivor_id))
+    _record_application_history(store, survivor_id)
+    store.mark_delivered(duplicate_id, "telegram_message", "card-message")
     assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
     gemini = FakeGemini()
     telegram = FakeTelegram()
@@ -1829,6 +1845,7 @@ def test_generate_cover_letter_on_demand_follows_a_job_merged_since_delivery(
     assert len(telegram.documents) == 1
     # The letter and its delivery belong to the surviving job, not the dead id.
     assert store.get_material(survivor_id) is not None
+    assert store.has_delivery(survivor_id, "telegram_message")
     assert store.has_delivery(survivor_id, "telegram_document")
 
 
@@ -1847,6 +1864,8 @@ def test_generate_cover_letter_on_demand_resends_a_merged_job_letter_for_free(
         survivor_id,
         Material(job_id=survivor_id, cover_letter_text="Existing letter text"),
     )
+    _record_application_history(store, survivor_id)
+    store.mark_delivered(duplicate_id, "telegram_message", "card-message")
     assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
     gemini = FakeGemini()
     telegram = FakeTelegram()
@@ -1856,7 +1875,11 @@ def test_generate_cover_letter_on_demand_resends_a_merged_job_letter_for_free(
     )
 
     assert delivered is True
-    assert gemini.cover_letter_calls == 0
+    assert (gemini.preference_calls, gemini.eval_calls, gemini.cover_letter_calls) == (
+        0,
+        0,
+        0,
+    )
     assert len(telegram.documents) == 1
 
 
@@ -1878,7 +1901,11 @@ def test_generate_cover_letter_on_demand_tells_the_user_when_the_job_is_gone(sto
     )
 
     assert delivered is False
-    assert gemini.cover_letter_calls == 0
+    assert (gemini.preference_calls, gemini.eval_calls, gemini.cover_letter_calls) == (
+        0,
+        0,
+        0,
+    )
     assert telegram.documents == []
     assert len(telegram.messages) == 1
     assert "no longer available" in telegram.messages[0].lower()
