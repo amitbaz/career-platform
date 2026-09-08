@@ -2501,6 +2501,10 @@ class PostgresJobStore:
 #                       always returns False, since nothing was inserted.
 #   "count"         -- the real method returns how many rows were touched;
 #                       the dry-run one always returns 0, since none were.
+#   "job_upsert_results" -- the real batch method returns one
+#                       (job id, inserted, description changed) tuple per
+#                       input job; the dry-run one preserves that cardinality
+#                       with a fresh synthetic id and two False outcomes.
 #   a tuple of the above -- the real method returns a tuple; the dry-run one
 #                       returns a tuple of the corresponding synthetic values.
 #
@@ -2519,7 +2523,7 @@ class PostgresJobStore:
 _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_job": ("id", "bool", "bool"),
     "upsert_logical_job": ("id", "bool", "bool"),
-    "upsert_logical_jobs": "list",
+    "upsert_logical_jobs": "job_upsert_results",
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
@@ -2611,22 +2615,17 @@ def _synthesize(shape: str) -> Any:
         return False
     if shape == "count":
         return 0
-    if shape == "list":
-        # A batch write's per-input results. Args are discarded like every
-        # other dry-run write, so there's no input length to mirror -- an
-        # empty list is the honest synthetic value; nothing in the current
-        # call graph zips this back onto its input under dry run.
-        return []
     raise AssertionError(f"unknown DryRunStore write shape: {shape!r}")  # pragma: no cover
 
 
 def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
     """Build a `DryRunStore` method that never calls the real one.
 
-    The wrapper accepts and discards any arguments -- it must never touch
-    `self._store`, `self._store._client`, or any network call, which is what
-    makes a dry run safe against the live database regardless of what the
-    real method would have done with those arguments.
+    The wrapper discards argument values, except that a batch write preserves
+    the input list's cardinality. It must never touch `self._store`,
+    `self._store._client`, or any network call, which is what makes a dry run
+    safe against the live database regardless of what the real method would
+    have done with those arguments.
     """
     if shape is None:
         def _write(self, *args: Any, **kwargs: Any) -> None:
@@ -2639,6 +2638,15 @@ def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
             # moved under it: hand the caller its own id back. Synthesizing a
             # uuid here instead would put an id naming no row into the digest.
             return job_id
+    elif shape == "job_upsert_results":
+        def _write(
+            self, jobs: list[Any] | None = None, *args: Any, **kwargs: Any
+        ) -> list[tuple[Any, ...]]:
+            result_shape = ("id", "bool", "bool")
+            return [
+                tuple(_synthesize(part) for part in result_shape)
+                for _job in jobs or ()
+            ]
     elif isinstance(shape, tuple):
         def _write(self, *args: Any, _shape=shape, **kwargs: Any) -> tuple[Any, ...]:
             return tuple(_synthesize(part) for part in _shape)

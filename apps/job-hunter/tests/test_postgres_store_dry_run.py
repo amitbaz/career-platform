@@ -14,6 +14,7 @@ import uuid
 
 import pytest
 
+from job_hunter.models import Job
 from job_hunter.postgres_store import (
     DryRunStore,
     PostgresJobStore,
@@ -142,7 +143,7 @@ def _assert_synthetic(value, shape: str) -> None:
         assert value is False
     elif shape == "count":
         assert value == 0
-    elif shape == "list":
+    elif shape == "job_upsert_results":
         assert value == []
     elif shape == "echo_job_id":
         # The wrapper hands back its first argument; the caller above passes
@@ -191,6 +192,31 @@ def test_two_id_and_bool_write_methods_return_independent_synthetic_ids():
         confidence=0.5,
     )
     assert first != second
+
+
+@pytest.mark.parametrize("job_count", [0, 1, 3])
+def test_batch_job_upsert_returns_one_non_insert_result_per_job(job_count):
+    real_store = PostgresJobStore(_ExplodingClient())
+    dry_run = DryRunStore(real_store)
+    jobs = [
+        Job(
+            source="test",
+            source_job_id=str(index),
+            title="Senior Product Engineer",
+        )
+        for index in range(job_count)
+    ]
+
+    results = dry_run.upsert_logical_jobs(jobs)
+
+    assert len(results) == job_count
+    synthetic_ids = []
+    for synthetic_id, is_new, description_changed in results:
+        uuid.UUID(synthetic_id)
+        synthetic_ids.append(synthetic_id)
+        assert is_new is False
+        assert description_changed is False
+    assert len(set(synthetic_ids)) == job_count
 
 
 class _FakeReadOnlyStore:
