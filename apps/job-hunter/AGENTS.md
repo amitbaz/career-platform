@@ -23,8 +23,8 @@ Target direction:
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
-   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and sixteen `security invoker`
-   SQL functions across three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and nineteen `security invoker`
+   SQL functions, sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
    `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`, and
    `supabase/migrations/20260907104935_job_hunter_gmail_candidate_eligibility.sql`, which drops
    `job_hunter_unmaterialized_inbound_jobs` and adds `job_hunter_gmail_candidate_complete` and
@@ -36,7 +36,16 @@ Migration rules:
    `20260908170000_job_hunter_job_facets.sql` adds `job_hunter_job_facets`, one row per job
    holding the objective facets `facets.py` extracts, with dedicated columns and indexes
    because hiring-eligible regions, remote policy, seniority and compensation have to be
-   filterable in a query rather than parsed out of every row.) Job Hunter's runtime reads and writes these tables through
+   filterable in a query rather than parsed out of every row.
+   `20260909100000_job_hunter_postings.sql` adds `job_hunter_postings` — one row per job
+   advertisement, keyed by fingerprint and shared by every user who discovers it, which
+   `job_hunter_jobs.posting_id` points at. It is the only Job Hunter table that is shared
+   between users: it has no `user_id`, and any authenticated user may read — and, for now,
+   write — any posting. (The two `job_hunter_platform_*` tables also have no `user_id`, but
+   they are the platform key's own ledger and no user reaches them at all.) It adds
+   `job_hunter_upsert_posting`, and re-creates both `job_hunter_upsert_job`, to write the
+   posting and the job row in one call, and `job_hunter_merge_jobs`, so a merged job keeps
+   the posting whose description it kept. Nothing reads a posting yet (#174).) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
    `tests/integration/test_supabase_isolation.py` proves those policies hold by writing and

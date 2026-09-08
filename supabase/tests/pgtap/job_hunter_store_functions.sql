@@ -44,6 +44,8 @@ end $$;
 
 select has_function('public', 'job_hunter_upsert_job', array['jsonb'],
   'job_hunter_upsert_job exists');
+select has_function('public', 'job_hunter_upsert_posting', array['jsonb'],
+  'job_hunter_upsert_posting exists');
 select has_function('public', 'job_hunter_pending_delivery_jobs', array['integer'],
   'job_hunter_pending_delivery_jobs exists');
 select has_function('public', 'job_hunter_pending_review_events', array['double precision'],
@@ -108,8 +110,9 @@ select is(
     'job_hunter_record_ats_eligible_jobs',
     'job_hunter_set_job_markets',
     'job_hunter_upsert_job',
-    'job_hunter_upsert_jobs'],
-  'exactly the eighteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+    'job_hunter_upsert_jobs',
+    'job_hunter_upsert_posting'],
+  'exactly the nineteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 
