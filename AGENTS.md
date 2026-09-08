@@ -78,7 +78,11 @@ pnpm test               # both suites
 pnpm db:key             # one-time: create the local stack's signing key
 supabase start          # local Supabase stack
 pnpm db:test            # pgTAP suite against that stack
+pnpm db:reset           # rebuild the local DB from migrations (destructive)
 ```
+
+`pnpm job-hunter:test`, `pnpm db:test` and `pnpm db:reset` serialise against every other session on
+this machine — see [Working alongside other sessions](#working-alongside-other-sessions).
 
 `supabase start` will not boot until `supabase/signing_keys.json` exists, because `config.toml`
 sets `signing_keys_path`. The file is generated per machine and git-ignored, so a fresh clone has
@@ -99,13 +103,26 @@ here.
 Every worktree's tests connect to the same local database. It is not per-branch and not
 per-worktree.
 
-- **Never run `supabase db reset` without first checking whether another session is mid-run.** It
-  wipes state that every session shares, and the other session sees inexplicable failures rather
-  than a clear error.
-- **Avoid running database-touching suites concurrently from two worktrees.** Serialise them
-  instead. The Job Hunter suite and the pgTAP suite both qualify.
-- **Check before assuming you are alone.** `git worktree list` shows other active workspaces;
-  `docker ps` shows whether the stack is already up and who brought it up.
+This is now **enforced, not just advised**: `pnpm job-hunter:test`, `pnpm db:test` and
+`pnpm db:reset` all run through `scripts/stack_lock.py`, which takes a machine-wide `flock` before
+doing anything. A second session queues rather than corrupting the first, and prints who it is
+waiting for. The lockfile lives at `~/.cache/career-platform/stack.lock` — outside every worktree,
+because one inside the tree would give each worktree its own lock and defeat the point.
+
+- **Use the pnpm scripts, not the bare commands.** `.venv/bin/python -m pytest` and
+  `supabase db reset` bypass the lock and reintroduce the whole problem. If you need a bare
+  invocation, wrap it: `python3 scripts/stack_lock.py <command>`.
+- **A wait is not a hang.** `stack_lock: waiting for the local Supabase stack (PID ...)` means
+  another session holds it; it reports progress every 30s and gives up after 30 minutes.
+- **What it looks like when the lock is bypassed:** a scatter of unrelated assertion failures
+  (`assert [] == ['acme']`) or a `RuntimeError` about a foreign-key violation while cleaning seed
+  users. Both mean two runs are sharing the stack, not that the branch is broken. Check
+  `ps aux | grep pytest` and `git worktree list` before believing a red suite.
+
+The underlying cause is that every store-backed test truncates the same two seed users
+(`apps/job-hunter/tests/conftest.py`), so concurrent runs delete each other's rows. Serialising is
+the current answer; giving each run its own user pair so they can run in parallel is tracked
+separately.
 
 ### Migration filenames are allocated across the whole repository
 
