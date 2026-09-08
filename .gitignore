@@ -62,9 +62,16 @@ apps/relay/data/
 # Agent tooling
 .worktrees/
 .superpowers/
-.claude/
 .agents/
 .vscode/
+
+# .claude/ is local state (settings.local.json, caches) with one exception: the
+# skills that encode this repository's own process. Git will not descend into an
+# ignored directory, so every parent has to be re-included before the leaf.
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/make-repo-contribution/
 
 # design generation logs
 designs/**/*.log
