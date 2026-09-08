@@ -137,7 +137,8 @@ Pipeline, in `pipeline.py::run_pipeline`:
 ```
 all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or profile-aware rank
   -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
-  -> Gemini -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
+  -> facet-decided hard blockers (hard_blockers.py, no provider call) -> Gemini for the rest
+  -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
   -> objective facet extraction (facets.py, once per posting, candidate-blind, after every evaluation)
   -> Telegram digest delivery (telegram.py)
 ```
@@ -175,6 +176,26 @@ Key modules:
   everything, and both calls run against the same jobs (roughly 122 provider calls a day against
   a 500 allowance). `job_facets` is a *non-core* Gemini purpose, so the core reserve refuses
   facets before it refuses an evaluation.
+- `src/job_hunter/hard_blockers.py` — decides the two objective hard blockers from stored facets,
+  with no provider call (#127): compensation disclosed below the user's floor, and a role that is
+  not remote or requires relocation contrary to the user's policy. The facts are shared (the
+  posting's facets, extracted once for everybody); the thresholds are per-user
+  (`SearchPolicy.salary_floor_eur`, or the attributed market's currency, floor, remote and
+  relocation rules), so the comparison is made per user at the scoring seam and its result is
+  written only to that user's evaluation row — never cached across users. Everything about it
+  **fails open**: no facet row, stale facets, thin content (`partial_unknown`, where a facet may
+  have been read from a search-result snippet — `evaluate_job` withholds a confident decision on
+  the same content), an `unknown` policy, undisclosed pay, a disclosed minimum with no maximum, a
+  foreign currency or a non-annual period all send the job to scoring.
+  Only the disclosed *maximum* is compared, matching the prompt's own rule. The evaluation prompt
+  keeps both rules for exactly that reason — this removes calls, it does not remove the model's
+  authority over what the facets cannot settle. Staleness reuses `store.jobs_needing_facets`, so
+  there is still one notion of a changed posting. `pipeline.py::_facet_decided_blockers` is the
+  seam; a block builds the same `Evaluation` shape a model block produces (`decision="blocked"`,
+  zero scores, empty `model`) and everything downstream — the merge-following write, company
+  promotion, the score floor, the digest, the decision counters — handles it identically. Counted
+  in `RunSummary.blocked_by_facets`, deliberately *not* in `evaluation_attempted`/`evaluated`,
+  which exist to detect a run where every fresh Gemini evaluation failed.
 - `src/job_hunter/hiring_scope.py` — reads a posting's *explicitly stated* hiring regions ("open to candidates based in the US and Europe") from its text alone. It is deliberately self-contained: no market, no candidate, no scoring. `market_policy.py::attribute_market` consumes it as a bonus that outranks a listing variant's location label, and as a filter that drops markets the posting's stated regions exclude. Keep it that way — a posting's eligible regions are a shared, cacheable property of the posting, whereas whether a given candidate may work there is per-user, and only the first belongs in this module.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
 - `DiscoveryStats.newly_discovered` counts the rows a run inserted, and is reported as

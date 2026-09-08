@@ -526,3 +526,9 @@ class RunSummary:
     # unenriched and the next run retries it, which is recovery, not damage.
     facet_extraction_attempted: int = 0
     facet_extraction_failed: int = 0
+    # Jobs the stored facets disqualified for this user before any scoring
+    # call was dispatched (issue #127). Deliberately not part of
+    # `evaluation_attempted`/`evaluated`: no provider call was made, and a
+    # deterministic block must not be able to mask a run where every fresh
+    # evaluation failed.
+    blocked_by_facets: int = 0
