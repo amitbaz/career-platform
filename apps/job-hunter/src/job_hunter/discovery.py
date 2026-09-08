@@ -397,6 +397,7 @@ def _iter_source_jobs(
     failure isolation and cost accounting -- have to follow the work into the
     iteration rather than sitting around the call that starts it.
 
+<<<<<<< HEAD
     *Failures* can now surface at any point during iteration. The iterator is
     therefore driven by hand: that keeps the `except` around the source's own
     work alone, so a bug in the caller's per-job handling still propagates
@@ -418,6 +419,17 @@ def _iter_source_jobs(
     written to `stats` after every step rather than once at the end, so a
     caller that abandons the drain part way -- which is the whole point of
     #122 -- still sees what the source spent before it stopped.
+=======
+    Jobs the source produced before it failed have already been handed over
+    and stay handed over -- handled exactly as they are when the source
+    succeeds. That is a deliberate reading of "unchanged": before sources
+    yielded, a source raising part way contributed nothing, because its
+    whole list was discarded. No source in the tree can reach that path
+    today -- each either catches its own errors or raises on its first
+    request, before yielding -- so no run's job set changes. Keeping the
+    prefix is the behaviour the per-source budget (issue #120) needs, and
+    discarding it would defeat the point of yielding at all.
+>>>>>>> 1924e9a (docs: describe the incremental source contract where it is documented)
     """
     elapsed = 0.0
     requests = 0

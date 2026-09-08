@@ -29,6 +29,11 @@ class JobSource(Protocol):
         point. A source that materialises its whole harvest first cannot
         be bounded from outside without discarding the harvest.
 
+        No caller stops a source yet: this is groundwork for the per-source
+        time budget (issue #120), which is where the stopping happens.
+        Every implementation is a generator function, which the protocol
+        cannot express but `test_sources_incremental.py` enforces.
+
         Because the work now happens while the caller iterates rather than
         inside this call, a caller measuring what a source costs has to
         bracket the whole drain, not this call -- see
