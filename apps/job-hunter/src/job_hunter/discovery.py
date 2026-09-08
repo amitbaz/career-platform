@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.availability import CLOSED
-from job_hunter.ats_registry import ats_board_reference, harvest_ats_board
+from job_hunter.ats_registry import ats_board_reference
 from job_hunter.canonical import (
     CanonicalResolver,
     apply_ats_identity,
@@ -115,6 +115,11 @@ class DiscoveryStats:
     # paid per row.
     newly_discovered: int = 0
     canonical_resolved: int = 0
+    # Of the resolved jobs, how many resolved to exactly what they already
+    # were and so cost no store write. The gap between this and
+    # `canonical_resolved` is what the resolution phase's round trips scale
+    # with; the two being close is the branch working as intended.
+    canonical_unchanged: int = 0
     canonical_unresolved: int = 0
     cross_source_duplicates: int = 0
     canonical_budget_exhausted: int = 0
@@ -363,25 +368,6 @@ def _bump(counts: dict[str, int], key: str) -> None:
     counts[key] = counts.get(key, 0) + 1
 
 
-def _harvest_ats_board_safely(
-    store: PostgresJobStore,
-    job: Job,
-    market_hint: str | None = None,
-    denylist: frozenset[str] = frozenset(),
-) -> bool:
-    """Learn a job's ATS board without letting a registry write drop the job.
-
-    Returns True only when the harvest created a new registry entry.
-    """
-    try:
-        return harvest_ats_board(store, job, market_hint=market_hint, denylist=denylist)
-    except Exception:
-        logger.exception(
-            "ATS board harvesting failed: source=%s", metric_source_label(job.source)
-        )
-        return False
-
-
 def _ats_board_reference_safely(
     job: Job,
     market_hint: str | None = None,
@@ -404,6 +390,39 @@ def _ats_board_reference_safely(
             metric_source_label(job.source),
         )
         return None
+
+
+def _resolution_fingerprint(job: Job) -> tuple:
+    """Everything canonical resolution can change about a job's stored facts.
+
+    Compared before and after resolution, this is how the branch tells a job
+    that resolved to something new from one that was already on its canonical
+    URL and had its own identity restated back to it. Deliberately derived
+    from the job's state rather than from `CanonicalResolution.method`: a
+    redirect, embedded-link or targeted-search resolution that happens to land
+    on the job's own URL has equally nothing to persist, and a `direct`
+    resolution of an aggregator-sourced posting still does (it fetches the
+    authoritative description).
+
+    Every field here is one the writes that follow persist -- `url`,
+    `canonical_url`, the ATS triple, `description` and `content_confidence`
+    all travel in `PostgresJobStore._job_payload` (whose `fingerprint` is
+    itself derived from `url`), and `market_id` is what `set_job_market`
+    writes. `availability` is absent because no job write persists it; a
+    resolution that closes a posting takes the `set_job_status` branch above
+    instead. A future resolution step that mutates some other stored field
+    must be added here, or its change will not be written.
+    """
+    return (
+        job.url,
+        job.canonical_url,
+        job.ats_provider,
+        job.ats_board,
+        job.ats_job_id,
+        job.description,
+        job.content_confidence,
+        job.market_id,
+    )
 
 
 def _record_reattribution(
@@ -751,6 +770,15 @@ def collect_candidates(
                 # URL is stored with its identity and can be matched on the
                 # strongest dedup key this run rather than only on its URL.
                 apply_ats_identity(job)
+                # A job already on a supported ATS URL is already canonical:
+                # this is the same verdict CanonicalResolver.resolve reaches
+                # for it (method="direct", confidence 1.0, the job's own URL),
+                # reached here so the batched persist carries it. Deciding it
+                # once per run in a batch, rather than per job in the
+                # resolution tail, is what leaves that tail with nothing to
+                # write back for these jobs (#160).
+                if not job.canonical_url and job.url and parse_supported_ats_url(job.url):
+                    job.canonical_url = job.url
                 job.content_confidence = content_confidence.infer_content_confidence(
                     job.source, job.description
                 )
@@ -931,6 +959,14 @@ def collect_candidates(
                 shortlist = needing_resolution_ranked[:shortlist_limit]
             shortlisted_ids = {item[0] for item in shortlist}
 
+    # Boards the batched phase already registered this run. A job that reaches
+    # canonical resolution on a URL that already parses is one of them, so the
+    # branch below has nothing to register for it.
+    registered_boards: set[tuple[str, str]] = {
+        (provider, board) for provider, board, _company, _hint in board_sightings
+    }
+    resolved_board_sightings: list[tuple[str, str, str, str]] = []
+
     eligible: list[tuple[str, Job]] = []
     eligible_job_ids: set[str] = set()
     # One entry per eligible job on a supported ATS board; the store collapses
@@ -965,6 +1001,7 @@ def collect_candidates(
                             stats.canonical_unresolved += 1
                         else:
                             stats.canonical_resolved += 1
+                            fingerprint_before = _resolution_fingerprint(job)
                             job.canonical_url = resolution.url
                             job.url = resolution.url
                             if resolution.ats is not None:
@@ -978,8 +1015,22 @@ def collect_candidates(
                                 # Overwriting here would merge this job into that
                                 # posting's stored row on the ATS dedup key.
                                 apply_ats_identity(job, resolution.ats)
-                                if _harvest_ats_board_safely(store, job, denylist=denylist):
-                                    stats.ats_boards_discovered += 1
+                                # The batched phase registered a board for every
+                                # unique job that already referenced one, from the
+                                # same `ats_board_reference` this uses, so a job
+                                # already on a supported ATS URL has nothing left
+                                # to register. Only a board this run has not
+                                # registered yet is collected, and the collection
+                                # is flushed once after the loop.
+                                reference = _ats_board_reference_safely(
+                                    job, denylist=denylist
+                                )
+                                if (
+                                    reference is not None
+                                    and (reference[0], reference[1]) not in registered_boards
+                                ):
+                                    registered_boards.add((reference[0], reference[1]))
+                                    resolved_board_sightings.append(reference)
                                 if job.content_confidence != content_confidence.OFFICIAL_ATS:
                                     authoritative = fetch_authoritative_description(
                                         resolution.ats, resolution.url, http
@@ -998,18 +1049,29 @@ def collect_candidates(
                                 attribute_market(job, policy.markets) if policy.markets else None
                             )
                             _record_reattribution(stats, previous_market_id, job.market_id)
-                            # Late canonicalization may consolidate stored rows; use
-                            # the store's history-preserving survivor ID downstream.
-                            job_id, is_new, _description_changed = store.upsert_logical_job(job)
-                            # Resolution rewrites the job's canonical URL, so this
-                            # upsert resolves identity again and can land on a row
-                            # the earlier two never matched.
-                            stats.newly_discovered += int(is_new)
-                            if job.market_id:
-                                store.set_job_market(job_id, job.market_id)
-                            if not store.needs_evaluation(job_id):
-                                rediscovered_job_ids.append(job_id)
-                                continue
+                            if _resolution_fingerprint(job) == fingerprint_before:
+                                # Resolution decided nothing: the job was already
+                                # on its canonical URL and carried the identity it
+                                # just re-derived. Every write below would restate
+                                # what the batched persistence phase wrote earlier
+                                # in this run, so none of them is made -- the job
+                                # keeps that phase's id and its
+                                # `needs_evaluation_bulk` answer, both still
+                                # correct because nothing about the job changed.
+                                stats.canonical_unchanged += 1
+                            else:
+                                # Late canonicalization may consolidate stored rows; use
+                                # the store's history-preserving survivor ID downstream.
+                                job_id, is_new, _description_changed = store.upsert_logical_job(job)
+                                # Resolution rewrites the job's canonical URL, so this
+                                # upsert resolves identity again and can land on a row
+                                # the earlier two never matched.
+                                stats.newly_discovered += int(is_new)
+                                if job.market_id:
+                                    store.set_job_market(job_id, job.market_id)
+                                if not store.needs_evaluation(job_id):
+                                    rediscovered_job_ids.append(job_id)
+                                    continue
 
             if job_id in eligible_job_ids:
                 continue
@@ -1019,6 +1081,15 @@ def collect_candidates(
             _bump(stats.eligible_by_source, metric_source_label(job.source))
             if job.ats_provider and job.ats_board:
                 eligible_sightings.append((job.ats_provider, job.ats_board))
+
+        # Boards learned from a resolution are registered the same way every
+        # other board in this run is: one batched write, which collapses two
+        # jobs that resolved onto the same new board into one registration.
+        if resolved_board_sightings:
+            with ledger.phase(PHASE_CANONICAL):
+                stats.ats_boards_discovered += store.upsert_ats_boards(
+                    resolved_board_sightings
+                )
 
         # Flushed once, like the status writes the prefilter pass collects.
         # Recording this per job was two round trips each -- roughly 2,700 of
@@ -1054,11 +1125,12 @@ def collect_candidates(
     )
     logger.info(
         "discovery source contribution: %s canonical_resolved=%s "
-        "canonical_unresolved=%s canonical_budget_exhausted=%s "
+        "canonical_unchanged=%s canonical_unresolved=%s canonical_budget_exhausted=%s "
         "canonical_network_attempts=%s canonical_shortlist_limit=%s "
         "cross_source_duplicates=%s availability_rejected=%s",
         _format_source_contribution(stats.per_source),
         stats.canonical_resolved,
+        stats.canonical_unchanged,
         stats.canonical_unresolved,
         stats.canonical_budget_exhausted,
         stats.canonical_network_attempts,
