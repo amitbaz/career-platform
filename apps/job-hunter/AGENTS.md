@@ -147,7 +147,12 @@ Key modules:
   since the difference is work happening around the sources rather than inside them. Time comes
   from the `clock` injected into `collect_candidates`; requests are counted at the shared
   `HttpClient` (`request_count`) and attributed to whichever source is running, so a new adapter
-  is measured without doing anything. Give a new source a `source_label` (`JobSource` declares it):
+  is measured without doing anything. Both are charged per step of the source's iteration, in
+  `_iter_source_jobs`, not around the `discover()` call: since sources yield, that call does no
+  work, and bracketing it would score every source at zero. The caller's own per-job handling
+  happens between steps and is excluded, so the figure keeps meaning "what this source cost" —
+  and the running totals are written after every step, so a caller that stops a source part way
+  still sees what it spent. Give a new source a `source_label` (`JobSource` declares it):
   a class attribute, or a property including the board for adapters configured one instance per
   board. Two caveats when reading the figures. The request count is everything that source sent
   through the shared client, and `cli.py` hands the same client to `SupabaseClient`, so for the

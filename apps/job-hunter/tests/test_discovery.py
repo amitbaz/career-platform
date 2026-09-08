@@ -1947,6 +1947,49 @@ def _costed_job(source: str, job_id: str) -> Job:
     )
 
 
+class IncrementalCostlySource:
+    """A costed source shaped like the real ones: it yields, job by job.
+
+    `CostlySource` above returns a finished list, so it spends everything
+    inside the `discover()` call. Every real source yields instead (issue
+    #122), spending nothing there and everything during iteration -- so a
+    cost measurement wrapped around the call alone would score all of them
+    at zero while `CostlySource` kept passing. This double exists to make
+    that difference visible to the suite.
+    """
+
+    def __init__(self, jobs, clock, http, *, seconds_per_job, label) -> None:
+        self._jobs = jobs
+        self._clock = clock
+        self._http = http
+        self._seconds_per_job = seconds_per_job
+        self.source_label = label
+
+    def discover(self):
+        for job in self._jobs:
+            self._clock.advance(self._seconds_per_job)
+            self._http.get("https://example.test/listing")
+            yield job
+
+
+def test_collect_candidates_costs_a_yielding_source_by_what_it_spends(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    source = IncrementalCostlySource(
+        [_costed_job("incremental", "1"), _costed_job("incremental", "2")],
+        clock,
+        http,
+        seconds_per_job=5.0,
+        label="incremental",
+    )
+
+    result = collect_candidates([source], store, http, policy, clock=clock)
+
+    # Both jobs' work happened during iteration, after discover() returned.
+    assert result.stats.elapsed_by_source == {"incremental": 10.0}
+    assert result.stats.requests_by_source == {"incremental": 2}
+
+
 def test_collect_candidates_records_each_source_elapsed_time_and_requests(store, policy):
     clock = FakeClock()
     http = CountingHttp()
