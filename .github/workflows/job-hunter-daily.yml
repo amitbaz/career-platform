@@ -42,6 +42,13 @@ jobs:
         run: python -m job_hunter sync-gmail
       - name: Run job hunter
         env:
+          # The platform-owned key that funds shared objective extraction
+          # (issue #128). It is a repository secret rather than a per-user
+          # credential because one key reads a posting once for every user.
+          # Unset it and the run still completes -- but it reads no postings,
+          # so no newly discovered job is scored and the digest empties out.
+          # It never falls back to the user's own key.
+          PLATFORM_GEMINI_API_KEY: ${{ secrets.PLATFORM_GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           GEMINI_FREE_RPM: ${{ vars.GEMINI_FREE_RPM }}
           GEMINI_FREE_TPM: ${{ vars.GEMINI_FREE_TPM }}

@@ -372,19 +372,39 @@ def build_gemini_provider(
     http: HttpClient,
     *,
     tracker: AIUsageTracker | None = None,
+    platform_api_key: str | None = None,
+    platform_tracker: AIUsageTracker | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> GeminiProvider:
-    """Wire the adapter for the one call class a user credential may fund.
+    """Wire one adapter with a credential and a ledger for each call class.
 
-    This is the only wiring today: `USER_SUBJECTIVE` gets the user's key and
-    the user's ledger, and `SHARED_EXTRACTION` gets neither -- `#128` adds the
-    platform credential and its own tracker here, and nothing above this line
-    changes when it does.
+    `USER_SUBJECTIVE` gets the user's key and the user's ledger.
+    `SHARED_EXTRACTION` gets the platform key and the platform ledger (#128),
+    and gets nothing at all where no platform key is configured -- a
+    deployment without one does no extraction rather than quietly doing it on
+    somebody's key.
+
+    The two are passed in pairs, and the pairing is enforced here rather than
+    merely documented: a platform key with no platform ledger would spend a
+    credential nobody is metering. A provider wired with *no* trackers at all
+    stays legal -- that is the port's own exemption for a probe or a double --
+    but a metered provider that meters only one of its two keys is a wiring
+    mistake, and wiring is where it is visible.
     """
+    if platform_api_key and platform_tracker is None and tracker is not None:
+        raise ValueError(
+            "a platform credential was supplied with no platform ledger to meter "
+            "it; pass both or neither (see issue #128)"
+        )
+    trackers: dict[CallClass, AIUsageTracker] = {}
+    if tracker is not None:
+        trackers[CallClass.USER_SUBJECTIVE] = tracker
+    if platform_tracker is not None:
+        trackers[CallClass.SHARED_EXTRACTION] = platform_tracker
     return GeminiProvider(
         model,
         http,
-        EnvCredentialResolver(api_key),
-        {CallClass.USER_SUBJECTIVE: tracker} if tracker is not None else {},
+        EnvCredentialResolver(api_key, platform_api_key),
+        trackers,
         sleep_fn=sleep_fn,
     )

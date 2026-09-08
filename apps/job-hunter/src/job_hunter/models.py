@@ -437,6 +437,13 @@ class Settings:
     scheduled_hour: int
     policy: SearchPolicy
     ai_quota: AIQuotaSettings
+    # The platform-owned key that funds shared objective extraction, and its
+    # own allowance (#128). Deliberately not `ai_api_key`'s neighbour in
+    # meaning: it belongs to the deployment, not to this user, and no code
+    # path may substitute one for the other. `None` means this deployment has
+    # no platform key, and therefore does no extraction.
+    platform_ai_api_key: str | None = field(default=None, repr=False)
+    platform_ai_quota: AIQuotaSettings | None = None
     brave_search_api_key: str | None = field(default=None, repr=False)
     dry_run: bool = False
     telegram_bot_token: str | None = field(default=None, repr=False)
@@ -540,8 +547,10 @@ class RunSummary:
     # extraction is failing, and the run is quietly delivering less -- which is
     # why a provider refusal is counted separately below rather than here.
     scoring_skipped_without_facets: int = 0
-    # Jobs left unscored because the shared, non-core reading budget was
-    # exhausted before their posting had ever been read. A provider refusal,
-    # not a failure: the job is queued and scored on a later run, and the run
-    # keeps scoring every job whose posting was already read.
+    # Jobs left unscored because the platform key's allowance for reading
+    # postings was exhausted (or no platform key is configured) before their
+    # posting had ever been read (#128). A provider refusal, not a failure,
+    # and not the user's: the job is queued and scored on a later run, the
+    # run keeps scoring every job whose posting was already read, and nobody
+    # was charged for the postings it did not read.
     scoring_deferred_by_read_budget: int = 0

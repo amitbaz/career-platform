@@ -146,3 +146,118 @@ def test_the_class_selects_the_quota_for_a_call_it_does_fund():
 
     assert user_tracker.preflight_calls == ["job_evaluation"]
     assert user_tracker.success_calls == ["job_evaluation"]
+
+
+def test_an_extraction_call_carries_the_platform_key(monkeypatch):
+    http = FakeHttp()
+    provider = build_gemini_provider(
+        "user-key", "gemini-test", http, platform_api_key="platform-key"
+    )
+
+    provider.generate_text("hi", call_class=CallClass.SHARED_EXTRACTION)
+
+    assert http.calls[0][1]["headers"]["x-goog-api-key"] == "platform-key"
+
+
+@pytest.mark.parametrize(
+    "exhaustion",
+    [
+        AIBudgetExceeded("platform daily budget exceeded"),
+        AIQuotaPaused("paused", paused_until="2026-09-09T00:00:00+00:00", reason="daily_quota"),
+    ],
+    ids=["platform_budget_exhausted", "platform_paused"],
+)
+def test_an_exhausted_platform_quota_is_not_a_route_to_the_user_key(exhaustion):
+    """The branch #128 names as the one that must not exist.
+
+    The platform key is spent, the user's is not, and the work is objective --
+    every ingredient of a fallback that would be invisible to the person
+    billed for it. What happens instead is that the refusal propagates and the
+    user's ledger is never even consulted.
+    """
+    http = FakeHttp()
+    user_tracker = RecordingTracker()
+    platform_tracker = RecordingTracker(preflight_error=exhaustion)
+    provider = build_gemini_provider(
+        "user-key",
+        "gemini-test",
+        http,
+        tracker=user_tracker,
+        platform_api_key="platform-key",
+        platform_tracker=platform_tracker,
+    )
+
+    with pytest.raises(type(exhaustion)):
+        provider.generate_text(
+            "hi", call_class=CallClass.SHARED_EXTRACTION, purpose="job_facets"
+        )
+
+    assert http.calls == []
+    assert platform_tracker.preflight_calls == ["job_facets"]
+    assert user_tracker.preflight_calls == []
+    assert user_tracker.success_calls == []
+
+
+def test_an_exhausted_user_quota_is_not_a_route_to_the_platform_key():
+    """The mirror image, which is a different wrong and equally forbidden.
+
+    A platform key funding a judgement about one person would spend a shared
+    allowance on work only that person benefits from, and the class that
+    selects the credential makes the substitution unreachable in that
+    direction too.
+    """
+    http = FakeHttp()
+    user_tracker = RecordingTracker(preflight_error=AIBudgetExceeded("user budget gone"))
+    platform_tracker = RecordingTracker()
+    provider = build_gemini_provider(
+        "user-key",
+        "gemini-test",
+        http,
+        tracker=user_tracker,
+        platform_api_key="platform-key",
+        platform_tracker=platform_tracker,
+    )
+
+    with pytest.raises(AIBudgetExceeded):
+        provider.generate_text(
+            "hi", call_class=CallClass.USER_SUBJECTIVE, purpose="job_evaluation"
+        )
+
+    assert http.calls == []
+    assert platform_tracker.preflight_calls == []
+
+
+def test_a_platform_key_with_no_platform_ledger_is_refused_at_wiring():
+    """A credential nobody is metering is the accounting hole, not a shortcut.
+
+    Caught where the mistake is -- the wiring -- rather than one call later,
+    because a provider with no trackers at all is a legitimate double and
+    would let the unmetered call through.
+    """
+    with pytest.raises(ValueError):
+        build_gemini_provider(
+            "user-key",
+            "gemini-test",
+            FakeHttp(),
+            tracker=RecordingTracker(),
+            platform_api_key="platform-key",
+        )
+
+
+def test_an_extraction_call_with_no_platform_quota_spends_nothing():
+    """The port's own guarantee, below the wiring: a class with a credential
+    but no quota never reaches the provider."""
+    http = FakeHttp()
+    provider = GeminiProvider(
+        "gemini-test",
+        http,
+        EnvCredentialResolver("user-key", "platform-key"),
+        {CallClass.USER_SUBJECTIVE: RecordingTracker()},
+    )
+
+    with pytest.raises(QuotaUnavailable):
+        provider.generate_text(
+            "hi", call_class=CallClass.SHARED_EXTRACTION, purpose="job_facets"
+        )
+
+    assert http.calls == []

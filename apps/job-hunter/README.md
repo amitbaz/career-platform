@@ -130,6 +130,7 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 | `SUPABASE_URL` | Base URL of the Supabase project. Required. |
 | `SUPABASE_PUBLISHABLE_KEY` | Supabase project's publishable API key, sent as the `apikey` header. Public by design, but required. |
 | `SUPABASE_SIGNING_KEY_B64` | Base64-encoded private ES256 JWK used to mint per-user access tokens. It can mint a token for any user — treat it as the platform's most sensitive secret. Required. |
+| `PLATFORM_GEMINI_API_KEY` | The platform's own Gemini key, which funds shared objective facet extraction for every user (issue #128). Not a user credential, and deliberately not in Relay Profile. **Effectively required for a useful run:** scoring is fed a posting's facets rather than its description (#126), so with this unset no posting is ever read and no newly discovered job can be scored — a run then delivers only what earlier runs already enriched, and soon nothing. It is unset-safe rather than optional: the run completes, logs a warning, queues the jobs it could not read, and never falls back to a user's key. |
 
 **As of this writing the four Supabase secrets above do not exist yet in either GitHub repository settings or
 the Vercel project.** Both the workflows and the Telegram webhook are non-functional until an

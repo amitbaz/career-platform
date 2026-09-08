@@ -181,13 +181,21 @@ Key modules:
   retries it — never record a placeholder, and never let a failure mark a posting
   permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart
   from scoring's own counters, and reported on the `facet_extraction` log line.
-  `job_facets` is a *non-core* AI purpose, so the core reserve refuses a read before
-  it refuses a score. Since #126 that has a consequence:
-  `AIBudgetExceeded` on a read defers only the job whose posting has never been read, and
-  the run keeps scoring every job that has been — unlike `AIQuotaPaused`, which means the
-  model is paused and blocks the run as it always did. The read declares
-  `CallClass.USER_SUBJECTIVE` today because the user's own key still funds it (#73); #128
-  flips that one argument to `SHARED_EXTRACTION` once a platform key exists.
+  The read declares `CallClass.SHARED_EXTRACTION`, which is what funds it from the
+  **platform key** and meters it in the platform ledger rather than the user's (#128).
+  There is no path by which it can reach a user's credential — not on an exhausted
+  allowance, not through configuration — so never "fix" a deployment with no platform key
+  by pointing extraction at the user's. Every platform refusal (spent allowance, an active
+  platform pause, no platform key at all) reaches the pipeline as
+  `PlatformAllowanceExhausted`, which defers *only* the postings nobody has read yet: the
+  run finishes, jobs already carrying facets are still scored, the deferred ones are
+  queued and counted in `RunSummary.scoring_deferred_by_read_budget`, and a later run
+  drains them. It is logged as a deferral, never as an extraction failure, and it must
+  stay countable apart from `facet_extraction_failed` — an exhausted day is a correct run,
+  not a broken extractor. Rolling capacity on the platform key is waited out only
+  `_READ_CAPACITY_WAITS` times before the read gives up the same way: that window is
+  shared with every other user's run, so an unbounded wait there can cost this run its
+  whole digest. Scoring's wait stays unbounded, because it paces against the user's own key.
 - `src/job_hunter/hard_blockers.py` — decides the two objective hard blockers from the facets
   scoring is about to be given, with no provider call (#127): compensation disclosed below the
   user's floor, and a role that is not remote or requires relocation contrary to the user's
@@ -267,15 +275,23 @@ Key modules:
   modules are allowed to know: `AIProvider`, `CallClass` (who funds a call and whether its
   answer is shared), the purposes, and the provider-neutral errors (`AIIncompleteResponse`,
   `AIBudgetExceeded`, `AITemporaryCapacity`, `AIQuotaPaused`). `credentials.py` is the seam a
-  credential comes from — the class alone decides which, and `SHARED_EXTRACTION` is refused a
-  user credential on every branch, including quota exhaustion. `usage.py` is the
-  provider-neutral quota ledger and circuit breaker; `limits.py` holds the published free-tier
-  limits per model, so a run needs only an API key. `gemini.py` is the **only** module that
+  credential comes from — the class alone decides which: `USER_SUBJECTIVE` gets the user's
+  key, `SHARED_EXTRACTION` gets the platform key or nothing, and a user credential is
+  refused for extraction on every branch, including quota exhaustion (#128). `usage.py` is
+  the provider-neutral quota ledger and circuit breaker, over *two* ledgers: the per-user
+  tables, and the global platform ones reached through `PlatformUsageLedger`
+  (`job_hunter_platform_ai_usage`, `job_hunter_platform_ai_quota_state`, which carry no
+  `user_id` because one shared key has one allowance and one day's total). Keep them apart:
+  spending either against the other's ceiling, or pausing one on the other's 429, is the
+  bug the split exists to prevent. `limits.py` holds the published free-tier
+  limits per model, so a run needs only an API key; the platform key takes those same
+  published limits with the core reserve set to zero, since `job_facets` is the only
+  purpose it ever funds. `gemini.py` is the **only** module that
   knows Gemini exists: it builds Google's request, picks the header, and translates a 429 body
   into the port's pause kinds. A second provider is a new file there plus wiring in `cli.py` —
   no core module changes. The paper review behind the interface's shape is
   `docs/superpowers/specs/2026-09-08-ai-provider-port-paper-review.md`.
-- `src/job_hunter/config.py` — loads the user's search profile, provider credentials and source documents (all from Postgres, via `load_settings(store)`) plus the remaining env vars into a `Settings`/`SearchPolicy` (see `models.py`). The Gemini key, the Brave key, the candidate profile and the cover letter template are per-user rows read through RLS and held in memory only — never write them to the repo or logs. A missing Gemini key, CV or cover letter raises `RuntimeConfigurationError` before any provider call.
+- `src/job_hunter/config.py` — loads the user's search profile, provider credentials and source documents (all from Postgres, via `load_settings(store)`) plus the remaining env vars into a `Settings`/`SearchPolicy` (see `models.py`). The Gemini key, the Brave key, the candidate profile and the cover letter template are per-user rows read through RLS and held in memory only — never write them to the repo or logs. A missing Gemini key, CV or cover letter raises `RuntimeConfigurationError` before any provider call. The **platform** key is the one credential that is *not* per-user: it comes from `PLATFORM_GEMINI_API_KEY` in the environment, because it funds work that belongs to no user (#128). Leaving it unset is supported — the run then extracts no facets — and is never a reason to fall back to the user's key.
 - `src/job_hunter/cli.py` — `python -m job_hunter run` entrypoint. `--scheduled` gates execution on `should_run_scheduled` (pipeline.py), comparing current local hour in `settings.timezone` against `settings.scheduled_hour`.
 - `src/job_hunter/preferences.py` extracts a compact preference profile from the candidate profile. When that succeeds, `pipeline.py` uses `rank_jobs(..., preferences)` plus `select_diverse_candidates()` to enforce profile-aware ranking with per-source diversity. The shortlist knobs are `max_jobs_per_run` (code default 35, set to 100 in the user's search profile), `source_minimum_per_run` (0) and `source_max_share` (0.5) — the user's search profile (stored in Postgres) is what a real run uses, so read the values there rather than the code defaults. If preference extraction or shortlist selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
 - Delivery policy is applied after decision classification, so it never changes what `high_priority`, `package_match`, or `possible_match` mean. `match_score_floor` (50 through 95; default 80) withholds lower-scored jobs before they become digest items or consume delivery budget. It withholds every tier, not just offers: a `blocked` job under the floor no longer reaches the "Needs review / blockers" group either, where the old hardcoded floor of 60 would have let it through. Only a withheld *offer* increments `withheld_by_score_floor` — a withheld `skip` or `blocked` stays on `summary.skipped`, because the point of the counter is to show that the floor is set too high, and a job that was never going to be an offer says nothing about that. `daily_offer_limit` (5, 10 or 20; default 10) is the delivery budget on top of that floor: `run_pipeline` walks the selected candidates in rank order and stops evaluating once that many offers — ready-to-apply plus possible-match — have been produced, so Gemini spend follows what the user asked for. Candidates never reached are left unevaluated and are neither queued nor discarded; they rank again on the next run. The `evaluation_capacity` log line reports `match_score_floor`, `withheld_by_score_floor`, `daily_offer_limit`, `delivered_offers`, and `deferred_by_offer_cap` separately from `deferred_by_budget`, because a floor-limited, cap-limited, and market-limited run need telling apart.

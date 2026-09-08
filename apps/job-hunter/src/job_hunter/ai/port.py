@@ -15,10 +15,11 @@ job, identical for every user, and is funded by a platform-owned key.
 `CallClass.USER_SUBJECTIVE` judges fit against one person's profile and runs on
 that person's own key. Every call declares its class, and the class -- not the
 call site, not configuration -- selects the credential and the quota. The
-platform key itself is issue #128; what exists here is an interface in which it
-is expressible and in which the forbidden thing (an extraction-class call
-reaching a user's credential, on any branch, including quota exhaustion) is
-unrepresentable.
+platform key arrived with issue #128, and the forbidden thing (an
+extraction-class call reaching a user's credential, on any branch, including
+quota exhaustion) stays unrepresentable rather than merely avoided: the class
+alone chooses the credential, so there is no argument, setting or fallback
+branch through which extraction could be pointed at a user's key.
 
 **Purpose** is orthogonal to call class: it names *which* piece of work a call
 does, so the ledger and the daily budget can tell an evaluation apart from a
@@ -110,6 +111,23 @@ class QuotaUnavailable(RuntimeError):
     that could obtain a credential but no quota would spend a key nobody is
     metering. Only a provider wired with no trackers at all (a test double, a
     probe) is exempt.
+    """
+
+
+class PlatformAllowanceExhausted(RuntimeError):
+    """The platform key cannot fund another shared-extraction call today.
+
+    Deliberately not an `AIBudgetExceeded`: that exception is a statement
+    about the *user's* budget, and a caller that treats the two alike would
+    stop doing the user's work because work nobody is waiting on ran out of
+    the platform's. This one means only that extraction pauses -- the run
+    finishes, postings already read still score, and the postings that were
+    not read are enriched by a later run.
+
+    It is raised in place of the underlying refusal (an exhausted daily
+    ceiling, an active provider pause, or no platform credential at all)
+    because all three have the same consequence and the same non-consequence:
+    no user is charged, on any of them.
     """
 
 

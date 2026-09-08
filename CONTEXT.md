@@ -78,3 +78,15 @@ locations, currency, salary floor, and remote, relocation and sponsorship rules.
 **Bring-your-own-key** — each user supplies their own AI provider credentials and funds
 their own subjective scoring. Shared objective extraction is the deliberate exception and
 runs on a platform-owned key.
+
+**Platform key** — the deployment's own provider credential, which funds shared objective
+extraction and nothing else (`PLATFORM_GEMINI_API_KEY`). It has its own allowance and its
+own global ledger, held apart from every per-user ledger, so platform-funded and
+user-funded consumption are read separately. A user's key is never a fallback for it: when
+the platform allowance is exhausted, or no platform key is configured, extraction pauses
+for the run and the postings it did not read are enriched by a later one.
+
+**Call class** — which of the two an AI call is, declared per call: `SHARED_EXTRACTION`
+(objective, reusable, platform-funded) or `USER_SUBJECTIVE` (a judgement about one person,
+funded by their key). The class selects the credential and the quota; nothing infers
+either from the call site or from configuration.

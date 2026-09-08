@@ -6,7 +6,7 @@ import logging
 import math
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from .ai.limits import free_tier_quota
@@ -201,6 +201,8 @@ def load_settings(store: "PostgresJobStore") -> Settings:
         scheduled_hour=data.get("scheduled_hour", 9),
         policy=policy,
         ai_quota=_ai_quota(ai_model),
+        platform_ai_api_key=_platform_ai_api_key(),
+        platform_ai_quota=_platform_ai_quota(ai_model),
         brave_search_api_key=credentials.brave_search_api_key,
         dry_run=dry_run,
         telegram_bot_token=telegram_bot_token,
@@ -323,6 +325,37 @@ def _ai_quota(model: str) -> AIQuotaSettings:
         tpm=_optional_positive_int_env("GEMINI_FREE_TPM"),
         rpd=_optional_positive_int_env("GEMINI_FREE_RPD"),
     )
+
+
+def _platform_ai_api_key() -> str | None:
+    """The platform-owned key that funds shared objective extraction (#128).
+
+    It comes from the environment rather than from the per-user credential
+    store because it is not a user's credential: one key funds the reading of
+    postings for everyone, and putting it in a per-user table would make every
+    user look like they had brought their own. An unset or empty value means
+    this deployment has no platform key, and a run then does no extraction
+    rather than falling back to the user's -- see `EnvCredentialResolver`.
+    """
+    return os.environ.get("PLATFORM_GEMINI_API_KEY", "").strip() or None
+
+
+def _platform_ai_quota(model: str) -> AIQuotaSettings:
+    """The platform key's own allowance: the same model's published limits.
+
+    Same model, different key, so the published free-tier figures apply
+    unchanged -- but the core reserve does not. That reserve exists to keep a
+    day's `job_evaluation` calls fundable when other purposes have eaten the
+    budget, and no evaluation is ever funded from this key: `job_facets` is
+    the only purpose it pays for. Leaving the reserve at its per-user default
+    would ceiling extraction at three quarters of the allowance for the
+    benefit of work that cannot happen here.
+
+    The `GEMINI_FREE_*` overrides are deliberately not read: they are one
+    user's statement about the limits on *their* project, and applying them to
+    the platform's key would let a per-user setting resize a shared allowance.
+    """
+    return replace(free_tier_quota(model), core_reserve_ratio=0.0)
 
 
 def _optional_positive_int_env(name: str) -> int | None:

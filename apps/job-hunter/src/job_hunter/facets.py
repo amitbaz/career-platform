@@ -28,7 +28,14 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from job_hunter.ai import CallClass
+from job_hunter.ai import (
+    AIBudgetExceeded,
+    AIQuotaPaused,
+    AITemporaryCapacity,
+    CallClass,
+    CredentialUnavailable,
+    PlatformAllowanceExhausted,
+)
 from job_hunter import content_confidence
 from job_hunter.hiring_scope import (
     ASIA_PACIFIC,
@@ -426,23 +433,45 @@ def extract_facets(posting: PostingFacts, ai: "AIProvider") -> JobFacets:
     Callers must leave the job unenriched on that error rather than recording
     a partial or placeholder answer: an unreadable response says nothing about
     the posting, and the next run has to be free to try again.
+
+    Raises `PlatformAllowanceExhausted` when the platform key cannot fund the
+    call. That is not a failure and must not be handled as one: the posting
+    was never read, so there is nothing to record, and a later run reads it.
     """
     supplied = source_supplied_facets(posting)
     requested = [name for name in FACET_FIELDS if name not in supplied]
 
-    # Facet extraction is objective, shared work, and #128 moves it to the
-    # platform key by changing this one argument to SHARED_EXTRACTION. Until
-    # that key exists it runs, as it does today, on the user's own credential
-    # and quota -- the class names who pays, and today that is still the user.
-    raw = ai.generate_text(
-        _build_facet_prompt(posting, requested),
-        call_class=CallClass.USER_SUBJECTIVE,
-        purpose="job_facets",
-        thinking_level="low",
-        max_output_tokens=4000,
-        json_mode=True,
-        max_attempts=_FACET_MAX_ATTEMPTS,
-    )
+    # Facet extraction is objective, shared work, so it is funded by the
+    # platform key and metered in the platform ledger (#128). The class is the
+    # whole of that decision: it selects the credential and the quota inside
+    # the port, and there is no argument here through which a user's key could
+    # be reached instead.
+    try:
+        raw = ai.generate_text(
+            _build_facet_prompt(posting, requested),
+            call_class=CallClass.SHARED_EXTRACTION,
+            purpose="job_facets",
+            thinking_level="low",
+            max_output_tokens=4000,
+            json_mode=True,
+            max_attempts=_FACET_MAX_ATTEMPTS,
+        )
+    except AITemporaryCapacity:
+        # Rolling capacity, not the allowance: the platform key has budget
+        # left and this call may go through in a moment. The caller decides
+        # whether to wait, so this passes through untranslated.
+        raise
+    except (AIBudgetExceeded, AIQuotaPaused, CredentialUnavailable) as exc:
+        # Three different refusals -- our own daily ceiling, the provider's
+        # persisted pause, and no platform key at all -- with one meaning for
+        # every caller: the platform cannot pay for this posting to be read
+        # today, and nobody else may be asked to. Translating them here, at
+        # the only shared-extraction call site, is what stops a caller from
+        # catching `AIBudgetExceeded` and mistaking the platform's exhaustion
+        # for the user's own.
+        raise PlatformAllowanceExhausted(
+            f"the platform key cannot fund extraction: {exc}"
+        ) from exc
     values = _parse_facets(raw, requested)
     values.update(supplied)
 
