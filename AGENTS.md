@@ -122,6 +122,20 @@ the push.
   worked in parallel, the timestamps are allocated on the issues rather than chosen independently.
   Use the assigned one.
 
+### CI runs on this machine too
+
+Pull-request CI (`job-hunter-ci.yml`, `relay-ci.yml`) runs on a **self-hosted runner on the
+developer's Mac**, because the repository is private and its GitHub Actions minutes are spent.
+The three jobs that need a database do **not** use the shared stack above: each sets
+`SUPABASE_PROJECT_ID` (`career-platform-ci-test`, `-ci-isolation`, `-ci-db`) for its own
+containers and shifts every `543xx` port in its disposable checkout's `config.toml` to `553xx`,
+`563xx` and `573xx` respectively, then stops that stack again on the way out. So a CI run cannot
+read or clobber your stack, and you cannot poison a CI run — but the containers do share this
+machine's memory, so expect a run to be slower when several stacks are up.
+
+The daily digest and cover-letter workflows deliberately stay on GitHub-hosted runners: they
+must fire whether or not this Mac is awake.
+
 ### When another session is in your way
 
 Say so rather than working around it. Deleting, resetting or force-pushing over someone else's

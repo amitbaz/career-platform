@@ -19,7 +19,7 @@ on:
       - '.github/workflows/relay-ci.yml'
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, career-platform]
     steps:
       - uses: actions/checkout@v4
       # Relay's migration tests read supabase/ at the repository root, so the
@@ -40,7 +40,9 @@ jobs:
   db:
     # pgTAP isolation tests for platform migrations. Runs against a
     # throwaway local Supabase stack; nothing touches the hosted project.
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, career-platform]
+    env:
+      SUPABASE_PROJECT_ID: career-platform-ci-db
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -52,6 +54,17 @@ jobs:
         with:
           version: latest
       - run: pnpm install --frozen-lockfile
+      # The runner is a developer machine with a Supabase stack already up on
+      # the default ports, shared by every worktree (see AGENTS.md). This job
+      # takes its own containers, through SUPABASE_PROJECT_ID, and its own
+      # ports, by shifting every 543xx in the disposable checkout's config.
+      - run: perl -pi -e 's/\b543(\d{2})\b/573$1/g' supabase/config.toml
       - run: bash supabase/local-signing-key.sh
       - run: supabase start
       - run: pnpm db:test
+      # Self-hosted runners keep state between runs; a stack left up would
+      # hold its ports and outlive the signing key this run generated.
+      # --project-id keeps this to CI's stack, never --all.
+      - name: Stop this job's Supabase stack
+        if: always()
+        run: supabase stop --project-id career-platform-ci-db --no-backup || true

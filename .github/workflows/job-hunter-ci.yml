@@ -16,7 +16,9 @@ defaults:
     working-directory: apps/job-hunter
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, career-platform]
+    env:
+      SUPABASE_PROJECT_ID: career-platform-ci-test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +29,15 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      # This runner is a developer machine, not an ephemeral VM: a Supabase
+      # stack is already up on the default ports, shared by every worktree
+      # (see AGENTS.md). CI therefore gets its own containers, through
+      # SUPABASE_PROJECT_ID, and its own ports, by shifting every 543xx in the
+      # checked-out config.toml. That checkout is disposable and re-cleaned
+      # each run, so the rewrite is never committed and no developer sees it.
+      - name: Isolate this job's Supabase stack
+        working-directory: .
+        run: perl -pi -e 's/\b543(\d{2})\b/553$1/g' supabase/config.toml
       - name: Generate a throwaway signing key
         working-directory: .
         run: bash supabase/local-signing-key.sh
@@ -45,10 +56,22 @@ jobs:
           cd apps/job-hunter
           pytest -q
 
+      # Self-hosted runners keep state between runs. Left alone, a stack
+      # outlives its job, holds its ports, and then meets the next run's
+      # freshly generated signing key -- which surfaces as an auth failure
+      # rather than as the leak it is. --project-id keeps this to CI's own
+      # stack; never --all, which would take the developer stack down too.
+      - name: Stop this job's Supabase stack
+        if: always()
+        working-directory: .
+        run: supabase stop --project-id career-platform-ci-test --no-backup || true
+
   isolation:
     # Proves a per-user token cannot cross users, against real policies on a
     # throwaway local Supabase stack. Nothing touches the hosted project.
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, career-platform]
+    env:
+      SUPABASE_PROJECT_ID: career-platform-ci-isolation
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,6 +82,15 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      # This runner is a developer machine, not an ephemeral VM: a Supabase
+      # stack is already up on the default ports, shared by every worktree
+      # (see AGENTS.md). CI therefore gets its own containers, through
+      # SUPABASE_PROJECT_ID, and its own ports, by shifting every 543xx in the
+      # checked-out config.toml. That checkout is disposable and re-cleaned
+      # each run, so the rewrite is never committed and no developer sees it.
+      - name: Isolate this job's Supabase stack
+        working-directory: .
+        run: perl -pi -e 's/\b543(\d{2})\b/563$1/g' supabase/config.toml
       - name: Generate a throwaway signing key
         working-directory: .
         run: bash supabase/local-signing-key.sh
@@ -89,3 +121,13 @@ jobs:
           if not ok: print(f'::error::Isolation suite did not run clean ({tests} tests, {skipped} skipped, {failures} failures, {errors} errors). A skipped or uncollected test usually means the Supabase env vars never reached pytest -- that would be a false pass, not proof of isolation.')
           sys.exit(0 if ok else 1)
           "
+
+      # Self-hosted runners keep state between runs. Left alone, a stack
+      # outlives its job, holds its ports, and then meets the next run's
+      # freshly generated signing key -- which surfaces as an auth failure
+      # rather than as the leak it is. --project-id keeps this to CI's own
+      # stack; never --all, which would take the developer stack down too.
+      - name: Stop this job's Supabase stack
+        if: always()
+        working-directory: .
+        run: supabase stop --project-id career-platform-ci-isolation --no-backup || true
