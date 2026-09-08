@@ -24,7 +24,7 @@ import pytest
 from job_hunter.config import SupabaseSettings
 from job_hunter.http import HttpClient
 from job_hunter.supabase_auth import AccessTokenMinter
-from job_hunter.supabase_client import SupabaseClient
+from job_hunter.supabase_client import SupabaseClient, SupabaseError
 
 _REQUIRED = (
     "SUPABASE_TEST_URL",
@@ -106,15 +106,55 @@ def _client_for(user_id: str) -> SupabaseClient:
     )
 
 
+# Postgres SQLSTATE for foreign_key_violation, which PostgREST returns in
+# the body of its 409. See _truncate for why this one is worth naming.
+_FOREIGN_KEY_VIOLATION = "23503"
+
+_CONCURRENT_STACK_HELP = """\
+Cleaning {table} hit a foreign-key violation. The rows this deletes had no
+children a moment earlier, so something inserted one while this run was
+cleaning up -- meaning another session is using the shared local Supabase
+stack right now.
+
+The stack is one instance per machine, not one per worktree, and every
+session's fixtures clean the same two seed users. Two runs at once therefore
+delete each other's rows mid-test, which surfaces as a scatter of unrelated
+failures ("assert [] == ['acme']") rather than as anything pointing here.
+
+Find the other run and let it finish:
+
+    git worktree list                  # other active workspaces
+    ps -eo args | grep '[-]m pytest'   # other pytest runs
+    docker ps                          # whether the stack is up
+
+Then run again. See "Working alongside other sessions" in the repository
+root AGENTS.md -- database-touching suites are meant to be serialised.\
+"""
+
+
 def _truncate(client: SupabaseClient) -> None:
     """Delete every row the client's user owns, in foreign-key-safe order.
 
-    Deliberately does not catch exceptions: a failed delete here means the
+    Deliberately does not swallow failures: a failed delete here means the
     next test starts on a dirty table, which would poison results silently
     across the whole suite. Let it fail loudly instead.
+
+    The one failure worth translating is a foreign-key violation. The
+    delete is a sequence of separate PostgREST calls rather than one
+    transaction, so a row another session inserts between a child's delete
+    and its parent's makes the parent's delete fail here -- and the
+    resulting 409 says nothing about the actual cause, which is a second
+    writer on a stack that is shared per machine.
     """
     for table in _TABLES_CHILD_FIRST:
-        client.delete(table, params={"created_at": "gte.2000-01-01"})
+        try:
+            client.delete(table, params={"created_at": "gte.2000-01-01"})
+        except SupabaseError as exc:
+            if _FOREIGN_KEY_VIOLATION not in str(exc):
+                raise
+            raise RuntimeError(
+                _CONCURRENT_STACK_HELP.format(table=table)
+            ) from exc
 
 
 def _clean_seed_users() -> None:
