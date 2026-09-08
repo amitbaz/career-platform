@@ -47,6 +47,26 @@ describe("/api/profile/credentials", () => {
     expect(mocks.listProviderCredentials).not.toHaveBeenCalled();
   });
 
+  it("PUT requires authentication", async () => {
+    mocks.requireUser.mockRejectedValue(new Error("UNAUTHENTICATED"));
+
+    const response = await put({ provider: "gemini", secret: "a-key" });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Sign in to continue." });
+    expect(mocks.setProviderCredential).not.toHaveBeenCalled();
+  });
+
+  it("DELETE requires authentication", async () => {
+    mocks.requireUser.mockRejectedValue(new Error("UNAUTHENTICATED"));
+
+    const response = await remove({ provider: "gemini" });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Sign in to continue." });
+    expect(mocks.deleteProviderCredential).not.toHaveBeenCalled();
+  });
+
   it("GET returns status metadata only", async () => {
     mocks.listProviderCredentials.mockResolvedValue([
       { provider: "gemini", configured: true, updatedAt: "2026-09-07T12:00:00.000Z" },

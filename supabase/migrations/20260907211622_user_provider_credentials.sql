@@ -1,3 +1,11 @@
+-- Data API exposure is deliberate, not incidental. `config.toml` exposes only
+-- `public` and `graphql_public` through PostgREST, so the three management RPCs
+-- below are reachable from a browser session by virtue of living in `public`,
+-- and everything in `private` -- the credential table and the Vault-deletion
+-- trigger function -- is unreachable over HTTP no matter what its grants say.
+-- Adding a new schema to `[api] schemas` would expose `private` too, so keep the
+-- table and the trigger function out of any exposed schema.
+
 create extension if not exists supabase_vault with schema vault;
 
 create schema if not exists private;
