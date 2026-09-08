@@ -2,6 +2,7 @@ import logging
 
 import pytest
 
+from job_hunter.config import SupabaseSettings
 from job_hunter.models import (
     GeminiQuotaSettings,
     ProviderCredentials,
@@ -9,14 +10,18 @@ from job_hunter.models import (
     Settings,
 )
 from job_hunter.postgres_store import PostgresJobStore
+from job_hunter.supabase_client import SupabaseClient, SupabaseRequestError
+
+
+_UNSET = object()
 
 
 class FakeRuntimeConfigClient:
     """Return controlled runtime rows and record the exact store boundary calls."""
 
-    def __init__(self, *, credential_rows=None, document_rows=None):
-        self.credential_rows = [] if credential_rows is None else credential_rows
-        self.document_rows = [] if document_rows is None else document_rows
+    def __init__(self, *, credential_rows=_UNSET, document_rows=_UNSET):
+        self.credential_rows = [] if credential_rows is _UNSET else credential_rows
+        self.document_rows = [] if document_rows is _UNSET else document_rows
         self.calls = []
 
     def rpc(self, function):
@@ -26,6 +31,40 @@ class FakeRuntimeConfigClient:
     def select(self, table, *, params):
         self.calls.append(("select", table, params))
         return self.document_rows
+
+
+class ErrorResponse:
+    def __init__(self, body):
+        self.status_code = 500
+        self.text = body
+
+
+class ErrorHttp:
+    def __init__(self, body):
+        self.response = ErrorResponse(body)
+
+    def get(self, *args, **kwargs):
+        return self.response
+
+    def post(self, *args, **kwargs):
+        return self.response
+
+
+class FakeMinter:
+    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+
+    def token(self):
+        return "test-token"
+
+
+def _store_with_failed_http_response(body):
+    settings = SupabaseSettings(
+        user_id=FakeMinter.user_id,
+        url="https://example.supabase.co",
+        publishable_key="publishable-key",
+        signing_key_jwk={},
+    )
+    return PostgresJobStore(SupabaseClient(ErrorHttp(body), settings, FakeMinter()))
 
 
 def test_runtime_models_do_not_reveal_secrets_in_representations():
@@ -125,11 +164,6 @@ def test_get_source_documents_returns_latest_cv_and_cover_letter():
                 "content": "latest cover letter",
                 "updated_at": "2026-09-08T11:00:00Z",
             },
-            {
-                "kind": "cv",
-                "content": "older cv",
-                "updated_at": "2026-09-07T12:00:00Z",
-            },
         ]
     )
 
@@ -145,6 +179,60 @@ def test_get_source_documents_returns_latest_cv_and_cover_letter():
     ]
 
 
+@pytest.mark.parametrize(
+    "rows",
+    [
+        None,
+        {"kind": "cv", "content": "private-document-value"},
+        [None],
+        [
+            {
+                "kind": [],
+                "content": "private-document-value",
+                "updated_at": "2026-09-08T12:00:00Z",
+            }
+        ],
+        [
+            {
+                "kind": "other",
+                "content": "private-document-value",
+                "updated_at": "2026-09-08T12:00:00Z",
+            }
+        ],
+        [
+            {
+                "kind": "cv",
+                "content": 123,
+                "updated_at": "2026-09-08T12:00:00Z",
+            }
+        ],
+        [
+            {
+                "kind": "cv",
+                "content": "private-document-value",
+                "updated_at": "2026-09-08T12:00:00Z",
+            },
+            {
+                "kind": "cv",
+                "content": "second-private-document-value",
+                "updated_at": "2026-09-07T12:00:00Z",
+            },
+        ],
+    ],
+)
+def test_get_source_documents_rejects_malformed_material_without_values(
+    rows, caplog
+):
+    client = FakeRuntimeConfigClient(document_rows=rows)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(ValueError) as excinfo:
+        PostgresJobStore(client).get_source_documents()
+
+    assert "private-document-value" not in str(excinfo.value)
+    assert "private-document-value" not in repr(excinfo.value)
+    assert "private-document-value" not in caplog.text
+
+
 def test_get_source_documents_ignores_null_content_but_not_other_users_in_code():
     client = FakeRuntimeConfigClient(
         document_rows=[
@@ -152,11 +240,6 @@ def test_get_source_documents_ignores_null_content_but_not_other_users_in_code()
                 "kind": "cv",
                 "content": None,
                 "updated_at": "2026-09-08T12:00:00Z",
-            },
-            {
-                "kind": "other",
-                "content": "ignored",
-                "updated_at": "2026-09-08T11:00:00Z",
             },
             {
                 "kind": "cv",
@@ -176,3 +259,24 @@ def test_get_source_documents_ignores_null_content_but_not_other_users_in_code()
             {"select": "kind,content,updated_at", "order": "updated_at.desc"},
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("reader", "sensitive_body"),
+    [
+        ("get_provider_credentials", "response contains provider-secret-sentinel"),
+        ("get_source_documents", "response contains document-text-sentinel"),
+    ],
+)
+def test_sensitive_runtime_reads_sanitize_supabase_response_failures(
+    reader, sensitive_body
+):
+    store = _store_with_failed_http_response(sensitive_body)
+
+    with pytest.raises(SupabaseRequestError) as excinfo:
+        getattr(store, reader)()
+
+    assert sensitive_body not in str(excinfo.value)
+    assert sensitive_body not in repr(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None

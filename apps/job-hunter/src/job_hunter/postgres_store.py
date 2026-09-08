@@ -1648,9 +1648,18 @@ class PostgresJobStore:
 
         The RPC is the audited runner-claim security-definer exception. Its
         response is treated as untrusted at this boundary: malformed, unknown,
-        or duplicate rows fail closed without including row values in errors.
+        or duplicate rows fail closed without including row values in errors,
+        and response-bearing client failures are replaced without a chain.
         """
-        rows = self._client.rpc("job_hunter_get_provider_credentials")
+        request_error: SupabaseRequestError | None = None
+        try:
+            rows = self._client.rpc("job_hunter_get_provider_credentials")
+        except SupabaseRequestError:
+            request_error = SupabaseRequestError("provider credential request failed")
+        # Raise after leaving the handler so the response-bearing original is
+        # not retained as this value-free exception's implicit context.
+        if request_error is not None:
+            raise request_error from None
         if not isinstance(rows, list):
             raise ValueError("invalid provider credential response")
 
@@ -1676,17 +1685,45 @@ class PostgresJobStore:
         )
 
     def get_source_documents(self) -> dict[str, str]:
-        """Return the newest non-null CV and cover letter visible through RLS."""
-        rows = self._client.select(
-            "source_documents",
-            params={"select": "kind,content,updated_at", "order": "updated_at.desc"},
-        )
+        """Return the newest non-null CV and cover letter visible through RLS.
+
+        Unknown, duplicate, or malformed material fails closed with a
+        value-free error. Supabase response bodies and their exception chains
+        are also removed at this sensitive boundary.
+        """
+        request_error: SupabaseRequestError | None = None
+        try:
+            rows = self._client.select(
+                "source_documents",
+                params={
+                    "select": "kind,content,updated_at",
+                    "order": "updated_at.desc",
+                },
+            )
+        except SupabaseRequestError:
+            request_error = SupabaseRequestError("source document request failed")
+        # See the credential reader above: raising outside the handler avoids
+        # retaining the original response body through ``__context__``.
+        if request_error is not None:
+            raise request_error from None
+        if not isinstance(rows, list):
+            raise ValueError("invalid source document response")
+
         documents: dict[str, str] = {}
         for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("invalid source document response")
             kind = row.get("kind")
-            content = row.get("content")
-            if kind in {"cv", "cover_letter"} and isinstance(content, str):
-                documents.setdefault(kind, content)
+            if not isinstance(kind, str) or kind not in {"cv", "cover_letter"}:
+                raise ValueError("invalid source document response")
+            if "content" not in row:
+                raise ValueError("invalid source document response")
+            content = row["content"]
+            if content is None:
+                continue
+            if not isinstance(content, str) or kind in documents:
+                raise ValueError("invalid source document response")
+            documents[kind] = content
         return documents
 
     def get_search_profile(self) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
