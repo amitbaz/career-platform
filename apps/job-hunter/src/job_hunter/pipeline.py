@@ -408,15 +408,33 @@ def generate_cover_letter_on_demand(
     """Generate (or resend) one job's cover letter on demand and deliver it.
 
     A repeat call for a job that already has a saved cover letter resends the
-    existing PDF for free instead of calling Gemini again.
+    existing PDF for free instead of calling Gemini again. If the requested
+    job was merged away, all reads and writes follow its redirect to the
+    surviving job. A missing job with no redirect returns False after telling
+    the user that the job is no longer available.
     """
     job = store.get_job(job_id)
-    evaluation = store.get_evaluation(job_id)
+    resolved_job_id = job_id
+    if job is None:
+        survivor_id = store.resolve_merged_job_id(job_id)
+        if survivor_id is None:
+            logger.warning("no job or merge redirect found for job_id=%s", job_id)
+            telegram.send_message(
+                "This job is no longer available, so I can't generate a cover letter for it."
+            )
+            return False
+        resolved_job_id = survivor_id
+        job = store.get_job(resolved_job_id)
+
+    evaluation = store.get_evaluation(resolved_job_id)
     if job is None or evaluation is None:
-        logger.warning("no job/evaluation found for job_id=%s; cannot generate cover letter", job_id)
+        logger.warning(
+            "no job/evaluation found for resolved_job_id=%s; cannot generate cover letter",
+            resolved_job_id,
+        )
         return False
 
-    material = store.get_material(job_id)
+    material = store.get_material(resolved_job_id)
     if material is not None:
         text = material.cover_letter_text
     else:
@@ -438,14 +456,17 @@ def generate_cover_letter_on_demand(
                 f"Couldn't generate a cover letter for {job.company} - {job.title} - something went wrong."
             )
             return False
-        store.save_material(job_id, Material(job_id=job_id, cover_letter_text=text))
+        store.save_material(
+            resolved_job_id,
+            Material(job_id=resolved_job_id, cover_letter_text=text),
+        )
 
     out_dir = cover_letter_output_dir(settings)
     pdf_path = render_cover_letter_pdf(text, job.company, job.title, out_dir)
     caption = f"{job.company} - {job.title} - {evaluation.total_score} - {job.url}"
     document_id = telegram.send_document(pdf_path, caption)
     if document_id is not None:
-        store.mark_delivered(job_id, "telegram_document", document_id)
+        store.mark_delivered(resolved_job_id, "telegram_document", document_id)
     return document_id is not None
 
 
