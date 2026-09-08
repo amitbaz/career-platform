@@ -173,8 +173,11 @@ class SupabaseClient:
     ) -> list[Any]:
         """Call a Postgres function through PostgREST.
 
-        The functions are ``security invoker``, so row-level security still
-        applies and the minted token still decides which rows are visible.
+        Most functions are ``security invoker``, so row-level security still
+        applies and the minted token decides which rows are visible.
+        ``job_hunter_get_provider_credentials`` is the single audited
+        security-definer exception and requires the token's trusted runner
+        claim before it returns the acting user's decrypted provider secrets.
 
         Return type depends on the SQL function:
         - Table-returning functions yield a list of dicts: ``[{'col': value}, ...]``

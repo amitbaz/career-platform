@@ -23,7 +23,10 @@ _REFRESH_MARGIN_SECONDS = 60
 
 
 class AccessTokenMinter:
-    """Issues ES256 access tokens for a single user.
+    """Issues ES256 access tokens for a trusted Job Hunter process.
+
+    These runner-claimed tokens are for server-side Job Hunter processes, not
+    browser sessions. Each token acts for a single user.
 
     The token is cached and reused until it is within
     ``_REFRESH_MARGIN_SECONDS`` of expiry, so a long run re-mints a handful of
@@ -62,6 +65,7 @@ class AccessTokenMinter:
             {
                 "sub": self._user_id,
                 "role": "authenticated",
+                "job_hunter_runner": True,
                 "exp": expires_at,
             },
             self._key,
