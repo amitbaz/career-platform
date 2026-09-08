@@ -647,6 +647,32 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
     assert "PRIVATE_GMAIL_BODY" not in caplog.text
 
 
+def test_pipeline_logs_how_many_discovered_jobs_are_new(store, settings, caplog):
+    with caplog.at_level(logging.INFO):
+        run_pipeline(
+            settings,
+            sources=[FakeSource([_job()])],
+            store=store,
+            gemini=FakeGemini(),
+            telegram=FakeTelegram(),
+        )
+
+    assert "raw=1 unique=1 newly_discovered=1" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        run_pipeline(
+            settings,
+            sources=[FakeSource([_job()])],
+            store=store,
+            gemini=FakeGemini(),
+            telegram=FakeTelegram(),
+        )
+
+    # A run that discovers nothing new reports zero rather than omitting it.
+    assert "raw=1 unique=1 newly_discovered=0" in caplog.text
+
+
 def test_pipeline_logs_when_match_score_is_capped(store, settings, caplog):
     job = _job()
     gemini = FakeGemini(

@@ -45,6 +45,12 @@ everything a source produced; unique is after deduplication; eligible is what su
 the non-AI filters; selected is what was chosen for scoring. All four are reported per
 source every run.
 
+**Newly discovered** — the rows a run inserted, as against the ones it re-saw. Counted
+from what the upsert actually inserted, never estimated from an assumed posting lifetime;
+it is the figure capacity planning is sized against. It counts rows rather than unique
+jobs, and can exceed unique, because deduplication and the store resolve identity by
+different rules and the cost being sized is paid per row.
+
 **Yield** — selected divided by raw, for a source. The value half of a source's
 scorecard; elapsed time and request count are the cost half.
 

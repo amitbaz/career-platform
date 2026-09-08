@@ -301,6 +301,138 @@ def test_collect_candidates_counts_prefilter_rejections(store, policy):
     assert result.rediscovered_job_ids == []
 
 
+def test_collect_candidates_counts_jobs_the_run_actually_inserted(store, policy):
+    jobs = [
+        Job(
+            source="devjobs",
+            source_job_id=str(index),
+            title="Senior Product Engineer",
+            company=f"Acme {index}",
+            description="React TypeScript remote role",
+            remote=True,
+        )
+        for index in (1, 2)
+    ]
+
+    result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+
+    assert result.stats.raw == 2
+    assert result.stats.unique == 2
+    assert result.stats.newly_discovered == 2
+
+
+def test_collect_candidates_reports_zero_when_every_job_is_already_known(store, policy):
+    def posting():
+        # A fresh instance per run: collect_candidates mutates the jobs it is
+        # given, so reusing one would make the second run a different posting.
+        return Job(
+            source="devjobs",
+            source_job_id="1",
+            title="Senior Product Engineer",
+            company="Acme",
+            description="React TypeScript remote role",
+            remote=True,
+        )
+
+    first = collect_candidates([FakeSource([posting()])], store, NoOpHttp(), policy)
+    second = collect_candidates([FakeSource([posting()])], store, NoOpHttp(), policy)
+
+    assert first.stats.newly_discovered == 1
+    # The figure is reported, not omitted, when a run discovers nothing new.
+    assert second.stats.raw == 1
+    assert second.stats.newly_discovered == 0
+
+
+def test_collect_candidates_counts_a_row_canonical_resolution_inserts(
+    store, policy, monkeypatch
+):
+    # Resolution rewrites the job's URL, so the upsert that follows resolves
+    # identity again. With no company there is no fallback identity to match
+    # on, so it lands on no existing row and inserts a second one -- an insert
+    # neither earlier persist saw.
+    job = Job(
+        source="hackernews",
+        title="Senior Product Engineer",
+        url="https://news.ycombinator.com/item?id=1",
+        description="React TypeScript remote role",
+        remote=True,
+    )
+    resolution = CanonicalResolution(
+        url="https://jobs.ashbyhq.com/acme/abc",
+        ats=AtsReference(provider="ashby", board="acme", job_id="abc"),
+        confidence=1.0,
+        method="test",
+    )
+    monkeypatch.setattr(
+        "job_hunter.discovery.fetch_authoritative_description",
+        lambda ats, url, http: "The real authoritative JD",
+    )
+
+    result = collect_candidates(
+        [FakeSource([job])],
+        store,
+        NoOpHttp(),
+        policy,
+        resolver=FakeResolver(resolution),
+    )
+
+    assert result.stats.raw == 1
+    assert result.stats.newly_discovered == 2
+
+
+def test_collect_candidates_counts_a_job_two_sources_found_once(store, policy):
+    jobs = [
+        Job(
+            source="duckduckgo",
+            title="Senior Product Engineer",
+            url="https://jobs.ashbyhq.com/acme/1?utm_source=x",
+        ),
+        Job(
+            source="ashby",
+            source_job_id="1",
+            title="Senior Product Engineer",
+            company="Acme",
+            url="https://jobs.ashbyhq.com/acme/1",
+            description="React TypeScript",
+            remote=True,
+        ),
+    ]
+
+    result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+
+    # Two raw rows, one logical job: only the row the upsert inserted counts.
+    assert result.stats.raw == 2
+    assert result.stats.unique == 1
+    assert result.stats.newly_discovered == 1
+
+
+def test_collect_candidates_does_not_count_a_job_that_could_not_be_persisted(
+    store, policy, monkeypatch
+):
+    jobs = [
+        Job(
+            source="devjobs",
+            source_job_id=str(index),
+            title="Senior Product Engineer",
+            company=f"Acme {index}",
+            description="React TypeScript remote role",
+            remote=True,
+        )
+        for index in (1, 2)
+    ]
+    real_upsert = store.upsert_logical_jobs
+
+    def dropping_first(batch):
+        results = real_upsert(batch)
+        return [None, *results[1:]] if results else results
+
+    monkeypatch.setattr(store, "upsert_logical_jobs", dropping_first)
+
+    result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+
+    assert result.stats.newly_discovered == 1
+
+
 def test_collect_candidates_counts_jobs_by_bounded_source_label(store, policy):
     eligible_job = Job(
         source="devjobs",
