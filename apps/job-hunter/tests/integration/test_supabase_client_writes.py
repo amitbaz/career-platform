@@ -7,17 +7,12 @@ SUPABASE_TEST_SIGNING_KEY_B64 are exported. CI exports them from
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import uuid
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from job_hunter.config import SupabaseSettings
-from job_hunter.http import HttpClient
-from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient
 
 
@@ -36,20 +31,13 @@ pytestmark = [
 
 @pytest.fixture
 def client(supabase_client: SupabaseClient) -> SupabaseClient:
-    """User A's client, with conftest.py's shared truncation around it."""
+    """User A's client, with conftest.py's shared truncation around it.
+
+    Which user that is depends on the pool slot this run claimed
+    (tests/seed_pool.py), so these tests ask the client for its `user_id`
+    rather than naming one.
+    """
     return supabase_client
-
-
-def _client_for(user_id: str) -> SupabaseClient:
-    """Create a client for a specific user."""
-    jwk = json.loads(base64.b64decode(_JWK))
-    settings = SupabaseSettings(
-        user_id=user_id,
-        url=_URL.rstrip("/"),
-        publishable_key=_KEY,
-        signing_key_jwk=jwk,
-    )
-    return SupabaseClient(HttpClient(), settings, AccessTokenMinter(user_id, jwk))
 
 
 # Cleanup between tests is handled by conftest.py's `_cleanup_seed_users`
@@ -58,7 +46,7 @@ def _client_for(user_id: str) -> SupabaseClient:
 
 
 def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     job = client.insert(
         "job_hunter_jobs",
         [{"user_id": user_id, "fingerprint": f"fp-{uuid.uuid4()}", "source": "test", "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
@@ -80,7 +68,7 @@ def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None
 
 
 def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     job = client.insert(
         "job_hunter_jobs",
         [{"user_id": user_id, "fingerprint": f"fp-{uuid.uuid4()}", "source": "test", "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
@@ -105,7 +93,7 @@ def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
 
 
 def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     marker = f"page-{uuid.uuid4()}"
     rows = [
         {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
@@ -120,7 +108,7 @@ def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None
 
 
 def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     marker = f"stable-{uuid.uuid4()}"
     rows = [
         {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
@@ -137,7 +125,7 @@ def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient) -> N
 
 
 def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     marker = f"order-{uuid.uuid4()}"
     # Create rows with a shared sort key so id tiebreaker matters.
     rows = [
@@ -158,14 +146,16 @@ def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseC
     assert ids == sorted(ids), "caller-supplied order must be preserved across pages"
 
 
-def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> None:
+def test_rpc_calls_a_store_function_and_respects_rls(
+    client: SupabaseClient, other_supabase_client: SupabaseClient
+) -> None:
     """Test that RPC functions return correct data and respect row-level security.
 
     Creates a high-scoring job for user A and user B, then calls as user A
     and verifies only user A's job appears in the results.
     """
-    user_a_id = "aaaaaaaa-0000-0000-0000-000000000001"
-    user_b_id = "bbbbbbbb-0000-0000-0000-000000000002"
+    user_a_id = client.user_id
+    user_b_id = other_supabase_client.user_id
     marker = f"rls-test-{uuid.uuid4()}"
 
     # Create a high-scoring job for user A
@@ -186,7 +176,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> 
     )
 
     # Create a high-scoring job for user B using user B's client
-    client_b = _client_for(user_b_id)
+    client_b = other_supabase_client
     job_b = client_b.insert(
         "job_hunter_jobs",
         [{"user_id": user_b_id, "fingerprint": f"fp-b-{uuid.uuid4()}", "source": marker, "url": "https://y", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
@@ -263,7 +253,7 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
     job_hunter_find_job_by_identity returns setof uuid, which PostgREST
     serializes as a JSON array of strings (UUIDs). Verifies the shape is correct.
     """
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     marker = f"setof-test-{uuid.uuid4()}"
 
     # Create a job with distinct company and title so we can find it by identity
@@ -304,7 +294,7 @@ def test_rpc_returns_bare_scalar_values(client: SupabaseClient) -> None:
     job_hunter_merge_jobs returns a bare scalar uuid, which PostgREST
     serializes as a JSON string. _parse wraps it into a one-element list: ['uuid'].
     """
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = client.user_id
     marker = f"merge-test-{uuid.uuid4()}"
 
     # Create two jobs with the same logical identity (company/title/location)
