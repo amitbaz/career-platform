@@ -2487,3 +2487,95 @@ def test_capped_job_is_excluded_from_delivery():
 
     assert [item.job_id for item in deliverable] == [2]
     assert "Forecast GmbH" not in build_digest([capped, plausible])
+
+
+def test_pipeline_records_evaluation_against_survivor_when_job_merged_mid_run(
+    store, settings, monkeypatch
+):
+    """Issue #145: a merge after selection must not strand the evaluation.
+
+    Discovery merges duplicates while it is still building the shortlist, so a
+    job selected early can be deleted by a later canonical resolution in the
+    same run. The pipeline is left holding the duplicate's id, and writing the
+    evaluation against it used to raise a 23503 foreign key violation that
+    aborted the entire run.
+    """
+    discovered = _job()
+    survivor_job = _job(source_job_id="job-survivor", title="Staff Product Engineer")
+    merge = {}
+    real_evaluate = job_hunter.pipeline.evaluate_job
+
+    def evaluate_then_merge(job, *args, **kwargs):
+        evaluation = real_evaluate(job, *args, **kwargs)
+        if not merge:
+            duplicate_id, _, _ = store.upsert_job(job)
+            survivor_id, _, _ = store.upsert_job(survivor_job)
+            # An evaluation is history, and history decides the survivor:
+            # this pins which of the two rows merge_jobs keeps, so the job
+            # the pipeline is holding is always the one that disappears.
+            store.save_evaluation(survivor_id, _evaluation(survivor_id, total_score=55))
+            merge["duplicate"] = duplicate_id
+            merge["survivor"] = store.merge_jobs(survivor_id, duplicate_id)
+        return evaluation
+
+    monkeypatch.setattr(job_hunter.pipeline, "evaluate_job", evaluate_then_merge)
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([discovered])],
+        store=store,
+        gemini=FakeGemini(),
+        telegram=telegram,
+    )
+
+    assert merge["survivor"] != merge["duplicate"]
+    assert summary.errors == 0
+    assert summary.ready_to_apply == 1
+    # The fresh evaluation landed on the surviving row, replacing the score
+    # that was only there to decide the merge.
+    recorded = store.get_evaluation(merge["survivor"])
+    assert recorded is not None
+    assert recorded.total_score == 90
+    # ...and the offer reached the user rather than being silently dropped.
+    assert len(telegram.messages) == 1
+    assert store.has_delivery(merge["survivor"], "telegram_message")
+
+
+def test_pipeline_contains_a_store_write_failure_for_one_job(store, settings, monkeypatch):
+    """Issue #145: one job's store failure must not end the run.
+
+    The per-job guard only covered the Gemini call, so a failing write escaped
+    the evaluation loop and killed the process, discarding every remaining
+    candidate and the digest with them.
+    """
+    doomed = _job(source_job_id="job-doomed", company="Doomed GmbH")
+    healthy = _job(source_job_id="job-healthy", company="Healthy GmbH")
+    real_save_evaluation = store.save_evaluation
+
+    def fail_for_the_doomed_job(job_id, evaluation):
+        job = store.get_job(job_id)
+        if job is not None and job.company == "Doomed GmbH":
+            raise RuntimeError("store write exploded")
+        return real_save_evaluation(job_id, evaluation)
+
+    monkeypatch.setattr(store, "save_evaluation", fail_for_the_doomed_job)
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([doomed, healthy])],
+        store=store,
+        gemini=FakeGemini(),
+        telegram=telegram,
+    )
+
+    assert summary.errors == 1
+    # The rest of the shortlist was still evaluated...
+    assert summary.ready_to_apply == 1
+    healthy_id, _, _ = store.upsert_job(healthy)
+    assert store.get_evaluation(healthy_id) is not None
+    # ...and the digest still went out.
+    assert len(telegram.messages) == 1
+    assert "Healthy GmbH" in telegram.messages[0]
+    assert "Doomed GmbH" not in telegram.messages[0]

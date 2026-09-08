@@ -54,6 +54,12 @@ logger = logging.getLogger(__name__)
 # above this to ever be a delivery candidate.
 _DELIVERABLE_SCORE_FLOOR = 60
 
+# Postgres SQLSTATE for foreign_key_violation, which PostgREST reports in the
+# body of a 409. A write against a job id that `merge_jobs` has already
+# deleted fails with exactly this, and is the one case the store retries
+# somewhere else rather than giving up -- see `_write_following_merges`.
+_FOREIGN_KEY_VIOLATION = "23503"
+
 # The tie-break `pending_delivery_job_ids`'s SQL function and the two
 # "latest row" reads below share: newest `evaluated_at`/`generated_at` wins,
 # with `created_at` then `id` as a deterministic (if practically unreachable
@@ -370,6 +376,57 @@ class PostgresJobStore:
         )
         return result[0]
 
+    def resolve_merged_job_id(self, job_id: str) -> str | None:
+        """Where a merged-away job's records belong now, or None if it still exists.
+
+        `merge_jobs` deletes the duplicate row, so an id captured before a
+        merge names nothing afterwards and the jobs table cannot answer for
+        it. `job_hunter_job_merges` is written inside the merge transaction
+        and keeps that answer. Redirects are flattened when they are written
+        (a row pointing at a job that later becomes a duplicate itself is
+        repointed), so one lookup is always enough -- there is no chain to
+        walk.
+        """
+        rows = self._client.select(
+            "job_hunter_job_merges",
+            params={
+                "duplicate_id": f"eq.{job_id}",
+                "select": "survivor_id",
+                "limit": "1",
+            },
+        )
+        return rows[0]["survivor_id"] if rows else None
+
+    def _write_following_merges(self, job_id: str, write) -> str:
+        """Run a per-job write, retrying against the survivor if the job was merged.
+
+        Returns the job id the write actually landed on, so a caller can keep
+        using an id that still exists. Resolution happens only on the failure,
+        which keeps the ordinary case -- nothing merged -- at exactly one
+        request; a run merges hundreds of jobs, but almost never one the
+        pipeline is still holding.
+
+        Any other failure, including a foreign key violation with no redirect
+        behind it, is left to the caller: retrying it here would only turn a
+        clear error into a confusing one.
+        """
+        try:
+            write(job_id)
+        except SupabaseRequestError as error:
+            if error.code != _FOREIGN_KEY_VIOLATION:
+                raise
+            survivor_id = self.resolve_merged_job_id(job_id)
+            if survivor_id is None:
+                raise
+            logger.info(
+                "job_id=%s was merged away mid-run; writing against survivor_id=%s",
+                job_id,
+                survivor_id,
+            )
+            write(survivor_id)
+            return survivor_id
+        return job_id
+
     def record_job_source(
         self,
         job_id: str,
@@ -677,7 +734,7 @@ class PostgresJobStore:
                 answered[row["job_id"]] = row["needs"]
         return {job_id: answered.get(job_id, True) for job_id in unique_ids}
 
-    def save_evaluation(self, job_id: str, evaluation: Evaluation) -> None:
+    def save_evaluation(self, job_id: str, evaluation: Evaluation) -> str:
         """Translates store.py:2036-2075.
 
         Upserts against `job_hunter_evaluations`'s
@@ -686,7 +743,19 @@ class PostgresJobStore:
         double-write on a transient error. `evaluated_at` is stamped now,
         same as the original's `_now_iso()`; nothing about the evaluation
         itself carries a caller-supplied timestamp to preserve.
+
+        Returns the job id the evaluation was written against. That is the id
+        passed in unless the job was merged away since the caller captured it,
+        in which case the evaluation follows the merge to the surviving job
+        and the caller gets that id back -- everything it does next with the
+        evaluation (delivering it, marking it delivered, promoting the
+        company) has to name a row that still exists.
         """
+        return self._write_following_merges(
+            job_id, lambda target_id: self._write_evaluation(target_id, evaluation)
+        )
+
+    def _write_evaluation(self, job_id: str, evaluation: Evaluation) -> None:
         jobs = self._client.select(
             "job_hunter_jobs",
             params={"id": f"eq.{job_id}", "select": "description_hash,content_confidence"},
@@ -813,8 +882,18 @@ class PostgresJobStore:
 
         Upserts against `job_hunter_deliveries`'s `(user_id, job_id,
         delivery_type, delivered_at)` constraint, never inserts -- same
-        retry-safety reasoning as `save_evaluation`.
+        retry-safety reasoning as `save_evaluation`. It follows a merge the
+        same way too: a job merged away between delivery and this call is
+        recorded as delivered against the surviving job rather than failing.
         """
+        self._write_following_merges(
+            job_id,
+            lambda target_id: self._write_delivery(target_id, delivery_type, telegram_id),
+        )
+
+    def _write_delivery(
+        self, job_id: str, delivery_type: str, telegram_id: str | None
+    ) -> None:
         self._client.upsert(
             "job_hunter_deliveries",
             [
@@ -2413,7 +2492,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "set_job_statuses": None,
     "upsert_ats_boards": "count",
     "backfill_ats_identity": "count",
-    "save_evaluation": None,
+    "save_evaluation": "echo_job_id",
     "save_material": None,
     "mark_delivered": None,
     "upsert_company_watch": "id",
@@ -2463,6 +2542,7 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "needs_evaluation_bulk",
         "get_evaluation",
         "get_material",
+        "resolve_merged_job_id",
         "has_delivery",
         "pending_delivery_job_ids",
         "get_company_watch",
@@ -2515,6 +2595,14 @@ def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
     if shape is None:
         def _write(self, *args: Any, **kwargs: Any) -> None:
             return None
+    elif shape == "echo_job_id":
+        def _write(self, job_id: Any = None, *args: Any, **kwargs: Any) -> Any:
+            # The real method returns the id it actually wrote against, which
+            # differs from the one passed in only when the job was merged away
+            # mid-run (#145). A dry run writes nothing, so nothing can have
+            # moved under it: hand the caller its own id back. Synthesizing a
+            # uuid here instead would put an id naming no row into the digest.
+            return job_id
     elif isinstance(shape, tuple):
         def _write(self, *args: Any, _shape=shape, **kwargs: Any) -> tuple[Any, ...]:
             return tuple(_synthesize(part) for part in _shape)
@@ -2539,7 +2627,9 @@ class DryRunStore:
     never writes: every write method is replaced with a synthetic stand-in
     that fabricates a `uuid4()` string where the real method would return a
     new row's id, `False` for a boolean write outcome, `0` for a row count,
-    and `None` otherwise -- and does so WITHOUT calling the wrapped store,
+    the caller's own job id for a write that reports which row it landed on
+    (`echo_job_id`), and `None` otherwise -- and does so WITHOUT calling the
+    wrapped store,
     so a dry run cannot reach the client on any write path even if the real
     method's implementation changes.
 

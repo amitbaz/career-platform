@@ -40,7 +40,18 @@ class SupabasePermissionError(SupabaseError):
 
 
 class SupabaseRequestError(SupabaseError):
-    """Any other failure status."""
+    """Any other failure status.
+
+    Carries the HTTP status and, when PostgREST returned one, the Postgres
+    SQLSTATE in ``code``. A caller that has to tell one database error from
+    another -- a foreign key violation from a timeout, say -- needs that
+    without matching on the message text.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, code: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
 
 
 class SupabaseClient:
@@ -221,6 +232,23 @@ class SupabaseClient:
             raise ValueError("update and delete require a filter in params")
 
     @staticmethod
+    def _error_code(response) -> str | None:
+        """The Postgres SQLSTATE PostgREST puts in an error body, if there is one.
+
+        Error bodies are not guaranteed to be JSON (a gateway can answer
+        instead of PostgREST), so a body that will not parse is simply no
+        code rather than a second failure on top of the first.
+        """
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            code = payload.get("code")
+            return code if isinstance(code, str) else None
+        return None
+
+    @staticmethod
     def _parse(response) -> list[Any]:
         if response.status_code == 401:
             raise SupabaseAuthError("Supabase rejected the access token (401)")
@@ -230,7 +258,9 @@ class SupabaseClient:
             )
         if response.status_code >= 400:
             raise SupabaseRequestError(
-                f"Supabase request failed with {response.status_code}: {response.text}"
+                f"Supabase request failed with {response.status_code}: {response.text}",
+                status_code=response.status_code,
+                code=SupabaseClient._error_code(response),
             )
         if response.status_code == 204 or not response.text:
             return []

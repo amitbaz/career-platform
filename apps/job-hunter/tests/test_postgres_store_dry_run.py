@@ -144,6 +144,11 @@ def _assert_synthetic(value, shape: str) -> None:
         assert value == 0
     elif shape == "list":
         assert value == []
+    elif shape == "echo_job_id":
+        # The wrapper hands back its first argument; the caller above passes
+        # none, so None is the honest expectation here. The value it echoes
+        # for a real call is covered by its own test below.
+        assert value is None
     else:  # pragma: no cover - defensive
         raise AssertionError(f"unknown shape {shape!r}")
 
@@ -233,3 +238,16 @@ def test_dry_run_store_is_a_context_manager_that_closes_nothing():
     fake = _FakeReadOnlyStore()
     with DryRunStore(fake) as dry_run:
         assert dry_run is not None
+
+
+def test_save_evaluation_echoes_the_job_id_it_was_given():
+    """A dry run writes nothing, so the evaluation cannot have moved.
+
+    The real `save_evaluation` returns the id it wrote against, which is the
+    survivor when the job was merged away mid-run (#145). Under a dry run the
+    caller's own id is the truthful answer, and it has to be a usable id --
+    the pipeline puts it straight into the digest item.
+    """
+    dry_run = DryRunStore(PostgresJobStore(_ExplodingClient()))
+
+    assert dry_run.save_evaluation("job-1", object()) == "job-1"
