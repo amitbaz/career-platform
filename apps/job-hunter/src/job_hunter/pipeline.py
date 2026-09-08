@@ -536,7 +536,7 @@ def _waiting_out_capacity(call, *, doing: str, job_id: str):
     Both provider calls a user is waiting on -- reading the posting and
     scoring it -- wait rather than give up their turn: the run is producing
     this person's digest and there is no later chance today.
-    `the adapter's preflight pacing` has already slept out one window and
+    The adapter's preflight pacing has already slept out one window and
     re-checked before raising, so each pass here is a second, deliberate wait.
 
     The backfill pass deliberately does not use this. Nobody is waiting on it,
@@ -664,7 +664,7 @@ def _backfill_one_job_facets(
     try:
         _extract_and_store_facets(job_id, job, store, ai, summary)
     except AITemporaryCapacity:
-        # `the adapter's preflight pacing` already slept out one rolling
+        # The adapter's preflight pacing already slept out one rolling
         # window and re-checked, so reaching this means capacity is still
         # full. Scoring keeps waiting because a user is waiting on the
         # answer; this job keeps its turn for the next run. It never reached
