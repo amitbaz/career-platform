@@ -15,21 +15,14 @@ single object.
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 
-from job_hunter.config import SupabaseSettings
-from job_hunter.http import HttpClient
-from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient, SupabasePermissionError
 
-USER_A = "aaaaaaaa-0000-0000-0000-000000000001"
-USER_B = "bbbbbbbb-0000-0000-0000-000000000002"
 TABLE = "job_hunter_jobs"
 
 _URL = os.environ.get("SUPABASE_TEST_URL")
@@ -45,25 +38,20 @@ pytestmark = [
 ]
 
 
-def _client_for(user_id: str) -> SupabaseClient:
-    jwk = json.loads(base64.b64decode(_JWK))
-    settings = SupabaseSettings(
-        user_id=user_id,
-        url=_URL.rstrip("/"),
-        publishable_key=_KEY,
-        signing_key_jwk=jwk,
-    )
-    return SupabaseClient(HttpClient(), settings, AccessTokenMinter(user_id, jwk))
+# The two users are whichever pair this run claimed from the pool
+# (tests/seed_pool.py), so a suite running in another worktree proves the
+# same policies against a different pair at the same time. What matters to
+# these assertions is only that A and B are different users.
 
 
 @pytest.fixture
-def as_a() -> SupabaseClient:
-    return _client_for(USER_A)
+def as_a(supabase_client: SupabaseClient) -> SupabaseClient:
+    return supabase_client
 
 
 @pytest.fixture
-def as_b() -> SupabaseClient:
-    return _client_for(USER_B)
+def as_b(other_supabase_client: SupabaseClient) -> SupabaseClient:
+    return other_supabase_client
 
 
 @pytest.fixture
@@ -75,7 +63,7 @@ def a_row(as_a: SupabaseClient):
         TABLE,
         [
             {
-                "user_id": USER_A,
+                "user_id": as_a.user_id,
                 "fingerprint": fingerprint,
                 "title": "Original title",
                 "first_seen_at": now,
@@ -111,7 +99,7 @@ def test_b_cannot_delete_as_row(as_b, a_row):
     assert as_b.delete(TABLE, params={"id": f"eq.{a_row['id']}"}) == []
 
 
-def test_b_cannot_insert_a_row_claiming_a_as_owner(as_b):
+def test_b_cannot_insert_a_row_claiming_a_as_owner(as_a, as_b):
     now = datetime.now(timezone.utc).isoformat()
 
     with pytest.raises(SupabasePermissionError):
@@ -119,7 +107,7 @@ def test_b_cannot_insert_a_row_claiming_a_as_owner(as_b):
             TABLE,
             [
                 {
-                    "user_id": USER_A,
+                    "user_id": as_a.user_id,
                     "fingerprint": f"forged-{uuid.uuid4()}",
                     "first_seen_at": now,
                     "last_seen_at": now,

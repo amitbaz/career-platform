@@ -81,8 +81,9 @@ pnpm db:test            # pgTAP suite against that stack
 pnpm db:reset           # rebuild the local DB from migrations (destructive)
 ```
 
-`pnpm job-hunter:test`, `pnpm db:test` and `pnpm db:reset` serialise against every other session on
-this machine — see [Working alongside other sessions](#working-alongside-other-sessions).
+`pnpm db:test` and `pnpm db:reset` serialise against every other session on this machine;
+`pnpm job-hunter:test` runs alongside other test runs but never alongside a reset — see
+[Working alongside other sessions](#working-alongside-other-sessions).
 
 `supabase start` will not boot until `supabase/signing_keys.json` exists, because `config.toml`
 sets `signing_keys_path`. The file is generated per machine and git-ignored, so a fresh clone has
@@ -103,26 +104,48 @@ here.
 Every worktree's tests connect to the same local database. It is not per-branch and not
 per-worktree.
 
-This is now **enforced, not just advised**: `pnpm job-hunter:test`, `pnpm db:test` and
-`pnpm db:reset` all run through `scripts/stack_lock.py`, which takes a machine-wide `flock` before
-doing anything. A second session queues rather than corrupting the first, and prints who it is
-waiting for. The lockfile lives at `~/.cache/career-platform/stack.lock` — outside every worktree,
-because one inside the tree would give each worktree its own lock and defeat the point.
+Two runs can nonetheless use it at the same time, because they are isolated by `user_id` rather
+than by taking turns. RLS scopes every Job Hunter query by `user_id`, so a run that owns different
+users cannot see — or delete — another run's rows. `supabase/seed.sql` creates a pool of eight user
+pairs; `apps/job-hunter/tests/seed_pool.py` claims one pair for the length of a run and releases it
+at the end. Ownership is an `flock` on `~/.cache/career-platform/seed-slots/slot-N.lock`, so a
+crashed or killed run's slot comes back on its own, with no stale claim to clear by hand.
+
+A ninth concurrent run waits for a slot. That is a slowdown, never a wrong result.
+
+What is still **enforced by `scripts/stack_lock.py`** is everything no user partitioning can make
+safe:
+
+- `pnpm db:reset` and `pnpm db:test` take the lock **exclusively**. A reset drops the database out
+  from under every run regardless of whose users they hold.
+- `pnpm job-hunter:test` takes it **shared**. Any number of suites may hold it at once; none of
+  them can overlap a reset.
+
+A reset that is waiting holds a second, "intent" lockfile beside the first, so suites started
+after it queue behind it rather than slipping in alongside the ones already running. Without that
+a reset could wait forever on a machine that always has some suite in flight.
+
+The lockfile lives at `~/.cache/career-platform/stack.lock` — outside every worktree, because one
+inside the tree would give each worktree its own lock and defeat the point. So does the slot
+directory, for the same reason.
 
 - **Use the pnpm scripts, not the bare commands.** `.venv/bin/python -m pytest` and
-  `supabase db reset` bypass the lock and reintroduce the whole problem. If you need a bare
-  invocation, wrap it: `python3 scripts/stack_lock.py <command>`.
-- **A wait is not a hang.** `stack_lock: waiting for the local Supabase stack (PID ...)` means
-  another session holds it; it reports progress every 30s and gives up after 30 minutes.
-- **What it looks like when the lock is bypassed:** a scatter of unrelated assertion failures
+  `supabase db reset` bypass the lock, so a bare pytest run can be wiped mid-suite by someone
+  else's reset. If you need a bare invocation, wrap it:
+  `python3 scripts/stack_lock.py --shared <command>` (or without `--shared` if it is destructive).
+- **A wait is not a hang.** `stack_lock: waiting for the local Supabase stack (...)` or
+  `seed_pool: all 8 seed user slots are in use` means someone else holds it; both report progress
+  every 30s and give up after 30 minutes.
+- **What it looks like when the pool is bypassed:** a scatter of unrelated assertion failures
   (`assert [] == ['acme']`) or a `RuntimeError` about a foreign-key violation while cleaning seed
-  users. Both mean two runs are sharing the stack, not that the branch is broken. Check
-  `ps aux | grep pytest` and `git worktree list` before believing a red suite.
+  users. Both mean a second writer is on this run's seed users — most likely a worktree sitting on
+  a revision from before the pool existed, which uses the slot-0 pair unconditionally. Check
+  `ps -eo args | grep '[-]m pytest'` and `git worktree list` before believing a red suite.
 
-The underlying cause is that every store-backed test truncates the same two seed users
-(`apps/job-hunter/tests/conftest.py`), so concurrent runs delete each other's rows. Serialising is
-the current answer; giving each run its own user pair so they can run in parallel is tracked
-separately.
+Raising the pool size means editing both `seed_pool.POOL_SIZE` and `supabase/seed.sql`, then
+running `pnpm db:reset` to create the new users — test writes go through PostgREST with a minted
+JWT, which cannot insert into `auth.users`, so the pool cannot grow itself.
+`tests/test_seed_pool.py` fails if the two ever disagree.
 
 ### Migration filenames are allocated across the whole repository
 

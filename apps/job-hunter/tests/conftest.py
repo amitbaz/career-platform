@@ -11,6 +11,12 @@ job_hunter_* table (in foreign-key-safe order) before and after the test
 runs. Every other test in the suite is unaffected. Deletes go through each user's own
 client and token, never a service_role key, so a truncation bug cannot
 reach another user's data.
+
+The two seed users are not fixed. The run claims a pair from the pool in
+`tests/seed_pool.py` for its whole session, so a suite in another worktree
+holds a different pair and the two cannot see -- or delete -- each other's
+rows. That is what lets them run at the same time instead of queueing
+behind `scripts/stack_lock.py`.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from contextlib import ExitStack, contextmanager
 
 import pytest
 
@@ -25,6 +32,7 @@ from job_hunter.config import SupabaseSettings
 from job_hunter.http import HttpClient
 from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient, SupabaseError
+from tests.seed_pool import SeedSlot, claim_slot
 
 _REQUIRED = (
     "SUPABASE_TEST_URL",
@@ -32,11 +40,10 @@ _REQUIRED = (
     "SUPABASE_TEST_SIGNING_KEY_B64",
 )
 
-# The two fixed users supabase/seed.sql creates (also used by the pgTAP
-# isolation suite, supabase/tests/pgtap/job_hunter_isolation.sql). Do not
-# invent different UUIDs: RLS only lets these two see anything at all.
-SEED_USER_A = "aaaaaaaa-0000-0000-0000-000000000001"
-SEED_USER_B = "bbbbbbbb-0000-0000-0000-000000000002"
+# The seed users belong to whichever pool slot this run claimed; ask the
+# `seed_users` fixture rather than naming a UUID. RLS only lets users
+# supabase/seed.sql created see anything at all, so an invented UUID reads
+# and writes nothing.
 
 # Deletion order for every job_hunter_* table, children before parents, so a
 # delete never trips a foreign-key violation. Derived from the actual
@@ -119,22 +126,23 @@ _FOREIGN_KEY_VIOLATION = "23503"
 _CONCURRENT_STACK_HELP = """\
 Cleaning {table} hit a foreign-key violation. The rows this deletes had no
 children a moment earlier, so something inserted one while this run was
-cleaning up -- meaning another session is using the shared local Supabase
-stack right now.
+cleaning up -- meaning another writer is using this run's seed user
+{user_id} right now.
 
-The stack is one instance per machine, not one per worktree, and every
-session's fixtures clean the same two seed users. Two runs at once therefore
-delete each other's rows mid-test, which surfaces as a scatter of unrelated
-failures ("assert [] == ['acme']") rather than as anything pointing here.
+That should be impossible. This run claimed that user, with its partner,
+from the pool in tests/seed_pool.py, and holds an flock on the slot for its
+whole session -- so no other run using the pool can have been given it. Something bypassed
+it: a worktree on a revision from before the pool existed (those use the
+slot-0 pair unconditionally), a hand-run script, or a psql session.
 
-Find the other run and let it finish:
+Find the other writer and let it finish:
 
     git worktree list                  # other active workspaces
     ps -eo args | grep '[-]m pytest'   # other pytest runs
-    docker ps                          # whether the stack is up
+    ls ~/.cache/career-platform/seed-slots  # slots and the PIDs holding them
 
 Then run again. See "Working alongside other sessions" in the repository
-root AGENTS.md -- database-touching suites are meant to be serialised.\
+root AGENTS.md.\
 """
 
 
@@ -159,13 +167,32 @@ def _truncate(client: SupabaseClient) -> None:
             if _FOREIGN_KEY_VIOLATION not in str(exc):
                 raise
             raise RuntimeError(
-                _CONCURRENT_STACK_HELP.format(table=table)
+                _CONCURRENT_STACK_HELP.format(
+                    table=table, user_id=client.user_id
+                )
             ) from exc
 
 
-def _clean_seed_users() -> None:
-    for user_id in (SEED_USER_A, SEED_USER_B):
+def _clean_seed_users(slot: SeedSlot) -> None:
+    for user_id in (slot.user_a, slot.user_b):
         _truncate(_client_for(user_id))
+
+
+@contextmanager
+def _capture_suspended(config: pytest.Config):
+    """Let writes reach the real terminal for the duration of the block.
+
+    `capturemanager` is pytest's own plugin rather than published API, so
+    a version that no longer offers it falls back to staying captured:
+    losing the progress message is a worse experience, never a broken run.
+    """
+    manager = config.pluginmanager.getplugin("capturemanager")
+    disabled = getattr(manager, "global_and_fixture_disabled", None)
+    if disabled is None:
+        yield
+        return
+    with disabled():
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -177,8 +204,31 @@ def _stack_env() -> None:
         )
 
 
+@pytest.fixture(scope="session")
+def seed_users(_stack_env: None, pytestconfig: pytest.Config) -> SeedSlot:
+    """Claim one pool slot for the whole session; release it at the end.
+
+    Session-scoped because the unit of isolation is the run, not the test:
+    a slot claimed per test would churn lockfiles and, worse, let a second
+    run slip into the gap between two of this run's tests and clean rows
+    out from under it.
+
+    Blocks while every slot is taken. That is the behaviour every run had
+    before the pool existed, so a busy machine is slower here and never
+    wrong -- but it has to look like waiting rather than like a hang, and
+    fixture setup runs inside pytest's global capture, which replays what
+    it swallowed only when the item errors. A wait that ends well would
+    therefore print nothing at all. Capture is suspended for the claim so
+    the pool's progress reaches the terminal as it happens.
+    """
+    with ExitStack() as claim:
+        with _capture_suspended(pytestconfig):
+            slot = claim.enter_context(claim_slot())
+        yield slot
+
+
 @pytest.fixture
-def _cleanup_seed_users(_stack_env: None):
+def _cleanup_seed_users(seed_users: SeedSlot):
     """Truncate both seed users' rows before and after a store-backed test.
 
     Depended on by `supabase_client`, `other_supabase_client`, and (via
@@ -187,19 +237,23 @@ def _cleanup_seed_users(_stack_env: None):
     for. Tests that ask for none of them never evaluate this fixture, so
     they never touch the stack and never depend on it being up.
     """
-    _clean_seed_users()
+    _clean_seed_users(seed_users)
     yield
-    _clean_seed_users()
+    _clean_seed_users(seed_users)
 
 
 @pytest.fixture
-def supabase_client(_cleanup_seed_users: None) -> SupabaseClient:
-    return _client_for(SEED_USER_A)
+def supabase_client(
+    _cleanup_seed_users: None, seed_users: SeedSlot
+) -> SupabaseClient:
+    return _client_for(seed_users.user_a)
 
 
 @pytest.fixture
-def other_supabase_client(_cleanup_seed_users: None) -> SupabaseClient:
-    return _client_for(SEED_USER_B)
+def other_supabase_client(
+    _cleanup_seed_users: None, seed_users: SeedSlot
+) -> SupabaseClient:
+    return _client_for(seed_users.user_b)
 
 
 @pytest.fixture

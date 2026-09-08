@@ -1,11 +1,13 @@
 """The store fixtures' cleanup explains the one failure it cannot prevent.
 
-The local Supabase stack is one instance per machine rather than one per
-worktree, and every session's fixtures clean the same two seed users. When
-two runs overlap, the symptom is a scatter of unrelated-looking assertion
-failures in whichever tests happened to be running -- nothing that points at
-the cleanup. These tests pin the translation that turns the one legible
-signal (a foreign-key violation during teardown) into that explanation.
+Runs are meant to be isolated by `user_id`: each claims its own pair of
+seed users from the pool (`tests/seed_pool.py`), and RLS keeps runs on
+different pairs from seeing each other at all. A foreign-key violation
+during teardown means that isolation was defeated -- something is writing
+this run's users while it cleans them -- and the symptom is a scatter of
+unrelated-looking assertion failures elsewhere, nothing that points at the
+cleanup. These tests pin the translation that turns the one legible signal
+into that explanation.
 
 Pure unit tests: they drive `_truncate` with a fake client and never touch
 the stack, so they run in any environment.
@@ -21,6 +23,9 @@ from tests.conftest import _TABLES_CHILD_FIRST, _truncate
 
 class _FakeClient:
     """Records deletes, and fails on one named table."""
+
+    #: Any seed user; `_truncate` only reports it, never routes on it.
+    user_id = "aaaaaaaa-0000-0000-0003-000000000001"
 
     def __init__(self, fail_on: str | None = None, error: Exception | None = None):
         self.fail_on = fail_on
@@ -68,12 +73,19 @@ def test_a_foreign_key_violation_is_explained_as_a_second_writer():
 
     message = str(caught.value)
     assert "job_hunter_jobs" in message
-    assert "another session" in message
+    assert "another writer" in message
     # The reader needs to know why their unrelated-looking failures happened,
     # and what to run to confirm it.
-    assert "one instance per machine" in message
+    assert "seed_pool" in message, (
+        "the pool is what is supposed to prevent this, so it is where the "
+        "reader has to look"
+    )
     assert "git worktree list" in message
     assert "pytest" in message
+    assert client.user_id in message, (
+        "which user is being fought over is the fastest way to find the "
+        "other writer"
+    )
 
 
 def test_the_original_supabase_error_is_kept_as_the_cause():

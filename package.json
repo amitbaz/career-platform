@@ -15,7 +15,7 @@
     "db:test": "python3 scripts/stack_lock.py supabase test db supabase/tests/pgtap",
     "db:reset": "python3 scripts/stack_lock.py supabase db reset",
     "job-hunter:install": "cd apps/job-hunter && python3 -m venv .venv && .venv/bin/python -m pip install -e '.[test,webhook]'",
-    "job-hunter:test": "python3 scripts/stack_lock.py bash -c 'cd apps/job-hunter && .venv/bin/python -m pytest -q \"$@\"' _",
+    "job-hunter:test": "python3 scripts/stack_lock.py --shared bash -c 'cd apps/job-hunter && .venv/bin/python -m pytest -q \"$@\"' _",
     "test": "pnpm run relay:test && pnpm run job-hunter:test"
   }
 }

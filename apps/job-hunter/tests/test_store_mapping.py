@@ -93,7 +93,7 @@ def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient)
     give True/False/None, unlike SQLite's 1/0/None) against an actual
     response rather than a hand-written dict.
     """
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = supabase_client.user_id
     fingerprint = f"fp-{uuid.uuid4()}"
     inserted = supabase_client.insert(
         "job_hunter_jobs",
@@ -144,7 +144,7 @@ def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient)
 
 @pytest.mark.integration
 def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = supabase_client.user_id
     inserted = supabase_client.insert(
         "job_hunter_jobs",
         [
@@ -170,7 +170,7 @@ def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient) 
 
 @pytest.mark.integration
 def test_job_from_row_maps_false_remote(supabase_client: SupabaseClient) -> None:
-    user_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    user_id = supabase_client.user_id
     inserted = supabase_client.insert(
         "job_hunter_jobs",
         [
