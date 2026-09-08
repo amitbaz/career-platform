@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from job_hunter.ats_registry import (
+    ats_board_reference,
     extract_ats_reference,
-    harvest_ats_board,
     select_ats_boards,
 )
 from job_hunter.models import AtsRegistryEntry, Job
@@ -78,7 +78,7 @@ def test_extract_ats_reference_falls_back_to_original_url_last():
     assert (ref.provider, ref.board, ref.job_id) == ("lever", "acme", "abc")
 
 
-def test_harvest_ats_board_persists_supported_reference(store):
+def test_ats_board_reference_registers_a_supported_reference(store):
     job = Job(
         source="feed",
         title="x",
@@ -87,22 +87,21 @@ def test_harvest_ats_board_persists_supported_reference(store):
         url="https://jobs.ashbyhq.com/omnea/123",
     )
 
-    created = harvest_ats_board(store, job)
+    reference = ats_board_reference(job)
 
-    assert created is True
+    assert reference == ("ashby", "omnea", "Omnea", "london")
+    assert store.upsert_ats_boards([reference]) == 1
     assert store.count_ats_boards() == 1
 
 
-def test_harvest_ats_board_returns_false_for_unsupported_url(store):
+def test_ats_board_reference_is_none_for_unsupported_url(store):
     job = Job(source="feed", title="x", url="https://example.com/jobs/1")
 
-    created = harvest_ats_board(store, job)
-
-    assert created is False
+    assert ats_board_reference(job) is None
     assert store.count_ats_boards() == 0
 
 
-def test_harvest_ats_board_refuses_denylisted_board(store):
+def test_ats_board_reference_refuses_denylisted_board(store):
     job = Job(
         source="feed",
         title="x",
@@ -110,13 +109,11 @@ def test_harvest_ats_board_refuses_denylisted_board(store):
         url="https://jobs.lever.co/jobgether/123",
     )
 
-    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
-
-    assert created is False
+    assert ats_board_reference(job, denylist=frozenset({"lever:jobgether"})) is None
     assert store.count_ats_boards() == 0
 
 
-def test_harvest_ats_board_denylist_match_is_case_insensitive(store):
+def test_ats_board_reference_denylist_match_is_case_insensitive(store):
     # A manual_company_watch seed can carry an unnormalized provider, and
     # upsert_ats_board would store it lowercased -- creating the very row
     # the denylist exists to prevent.
@@ -129,13 +126,11 @@ def test_harvest_ats_board_denylist_match_is_case_insensitive(store):
         ats_job_id="1",
     )
 
-    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
-
-    assert created is False
+    assert ats_board_reference(job, denylist=frozenset({"lever:jobgether"})) is None
     assert store.count_ats_boards() == 0
 
 
-def test_harvest_ats_board_admits_board_not_on_denylist(store):
+def test_ats_board_reference_admits_board_not_on_denylist(store):
     job = Job(
         source="feed",
         title="x",
@@ -143,13 +138,14 @@ def test_harvest_ats_board_admits_board_not_on_denylist(store):
         url="https://jobs.ashbyhq.com/omnea/123",
     )
 
-    created = harvest_ats_board(store, job, denylist=frozenset({"lever:jobgether"}))
+    reference = ats_board_reference(job, denylist=frozenset({"lever:jobgether"}))
 
-    assert created is True
+    assert reference is not None
+    assert store.upsert_ats_boards([reference]) == 1
     assert store.count_ats_boards() == 1
 
 
-def test_harvest_ats_board_uses_market_hint_precedence(store):
+def test_ats_board_reference_uses_market_hint_precedence(store):
     job = Job(
         source="feed",
         title="x",
@@ -158,7 +154,10 @@ def test_harvest_ats_board_uses_market_hint_precedence(store):
         url="https://jobs.ashbyhq.com/omnea/123",
     )
 
-    harvest_ats_board(store, job, market_hint="london")
+    reference = ats_board_reference(job, market_hint="london")
+
+    assert reference is not None
+    store.upsert_ats_boards([reference])
 
     due = store.list_due_ats_boards(datetime.now(timezone.utc))
     assert due[0].market_hint == "london"

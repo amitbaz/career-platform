@@ -1803,31 +1803,33 @@ class _PerJobAtsResolver:
         )
 
 
-def test_collect_candidates_resolver_tail_is_not_batched(supabase_client, policy):
+def test_collect_candidates_resolver_tail_costs_only_what_it_resolves(
+    supabase_client, policy
+):
     """Record the cost of the one path `collect_candidates` did NOT batch.
 
     The two request-count tests above pass no resolver, so the whole
     canonical-resolution tail (`discovery.py`'s final loop over
     `prefiltered`) is switched off in them -- while `pipeline.py` always
-    passes one. That tail was deliberately left per-job (see the design's
-    "Out of scope"), and this test exists so a reader of this file learns
-    that it exists and what it costs, rather than inferring from the tests
+    passes one. That tail is still per-job, and this test exists so a reader
+    of this file learns what it costs rather than inferring from the tests
     above that discovery is batched end to end.
 
-    Every job here already carries a supported ATS URL, which is the
-    expensive shape: such jobs bypass the `max_canonical_resolutions_per_run`
-    shortlist entirely (it bounds only jobs that need a *network* resolution),
-    so all of them enter the resolve branch. Each then pays, sequentially:
-    `_harvest_ats_board_safely` (a registry read plus a write),
-    `upsert_logical_job`, optionally `set_job_market`, and
-    `needs_evaluation`. Eligibility recording is no longer among them: #151
-    took it out of the loop and flushes it once for the whole run.
+    Every job here reaches the resolver on a supported ATS URL and is
+    resolved to a *different* board, so identity really changes and the
+    branch must persist it: `upsert_logical_job`, optionally
+    `set_job_market`, and `needs_evaluation`, sequentially per job. Board
+    registration is no longer among them -- #160 flushes it once for the run
+    -- and neither is eligibility recording, which #151 took out of the loop.
+
+    Its counterpart below pins the other half of #160: a job resolved to what
+    it already was costs nothing here at all.
 
     The bounds are deliberately loose. This is a shape assertion, not a
     budget: it fails if the tail gets materially more expensive, and it also
     fails if someone batches it -- in which case the fix is to update this
-    test, the design doc's "Out of scope", and `AGENTS.md`, all of which
-    currently document this path as per-job.
+    test and `apps/job-hunter/AGENTS.md`, which documents this path as
+    per-job.
     """
     from job_hunter.postgres_store import PostgresJobStore
 
@@ -1864,19 +1866,73 @@ def test_collect_candidates_resolver_tail_is_not_batched(supabase_client, policy
     five_jobs = run_with(5)
     marginal_per_job = (five_jobs - one_job) / 4
 
-    assert marginal_per_job >= 3, (
+    assert marginal_per_job >= 1, (
         f"the resolver tail now costs {marginal_per_job} requests per extra "
-        f"job ({five_jobs} for 5 vs {one_job} for 1). If it was batched, "
-        "that is good news -- update this test, the design doc's 'Out of "
-        "scope', and apps/job-hunter/AGENTS.md, which all document this "
-        "path as per-job."
+        f"job that resolved to a new identity ({five_jobs} for 5 vs "
+        f"{one_job} for 1). If it was batched, that is good news -- update "
+        "this test and apps/job-hunter/AGENTS.md, which documents this path "
+        "as per-job."
     )
-    assert marginal_per_job <= 12, (
+    assert marginal_per_job <= 6, (
         f"the resolver tail now costs {marginal_per_job} requests per extra "
-        f"job ({five_jobs} for 5 vs {one_job} for 1), up from the six to "
-        "eight the design records. This path is sequential and ungated for "
-        "already-ATS URLs, so growth here scales straight into the daily "
-        "run's wall clock."
+        f"job ({five_jobs} for 5 vs {one_job} for 1), up from the two #160 "
+        "left it at. This path is sequential and ungated for already-ATS "
+        "URLs, so growth here scales straight into the daily run's wall "
+        "clock."
+    )
+
+
+def test_collect_candidates_resolver_tail_is_free_for_already_canonical_jobs(
+    supabase_client, policy
+):
+    """#160: a job resolved to what it already was costs no request at all.
+
+    Same measurement as the test above, with the one difference that decides
+    the cost: these jobs resolve to their own URL. Everything the branch
+    would write back -- the row, its market, its board, the re-read of
+    `needs_evaluation` -- the batched phases already wrote earlier in the
+    same run, so the marginal cost of another such job is zero.
+
+    All five share one board so board registration stays constant between
+    the two runs and cannot hide a per-job cost in the tail.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> int:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="lever",
+                source_job_id=f"canonical-{job_count}-{i}",
+                title="Senior Product Engineer",
+                company=f"Acme {job_count} {i}",
+                url=f"https://jobs.lever.co/acme/canonical-{job_count}-{i}",
+                description="React TypeScript remote role.",
+                remote=True,
+            )
+            for i in range(job_count)
+        ]
+        result = collect_candidates(
+            [FakeSource(jobs)], store, NoOpHttp(), policy, resolver=_direct_resolver()
+        )
+        assert result.stats.canonical_unchanged == job_count, (
+            "sanity check: every job must reach the resolve branch and change "
+            "nothing, or this test is measuring the wrong path"
+        )
+        assert len(result.eligible) == job_count, (
+            "sanity check: these jobs must become eligible, or this test is "
+            "measuring a shorter path than the one it names"
+        )
+        return len(client.calls)
+
+    one_job = run_with(1)
+    five_jobs = run_with(5)
+
+    assert five_jobs == one_job, (
+        f"five already-canonical jobs cost {five_jobs} requests against "
+        f"{one_job} for one. The resolution phase is meant to scale with the "
+        "jobs that resolved to something new, not with the jobs that reach it."
     )
 
 
@@ -2851,3 +2907,206 @@ def test_a_failure_recording_eligibility_does_not_cost_the_run(store, policy, ca
 
     assert len(result.eligible) == 1
     assert "recording 1 ATS-eligible job(s) failed" in caplog.text
+
+
+class RecordingStore:
+    """Wraps a store and records every method call a run makes through it.
+
+    Discovery's batch methods and the canonical-resolution tail's single-job
+    methods are disjoint sets, so counting calls by name is enough to tell
+    which path did the writing.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def __getattr__(self, name):
+        attribute = getattr(self._inner, name)
+        if not callable(attribute):
+            return attribute
+
+        def recorder(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return attribute(*args, **kwargs)
+
+        return recorder
+
+    def count(self, name: str) -> int:
+        return sum(1 for call_name, _args, _kwargs in self.calls if call_name == name)
+
+    def registered_boards(self) -> list[tuple[str, str]]:
+        """Every ATS board this run registered, batched and single-job paths alike.
+
+        `upsert_ats_boards` collapses its sightings to one registration per
+        distinct board before writing, so counting distinct boards per call is
+        counting registrations.
+        """
+        boards: list[tuple[str, str]] = []
+        for name, args, kwargs in self.calls:
+            if name == "upsert_ats_boards":
+                seen: list[tuple[str, str]] = []
+                for provider, board, _company, _market_hint in args[0]:
+                    if (provider, board) not in seen:
+                        seen.append((provider, board))
+                boards.extend(seen)
+            elif name == "upsert_ats_board":
+                boards.append((kwargs["provider"], kwargs["board_identifier"]))
+        return boards
+
+
+def _direct_resolver() -> CanonicalResolver:
+    """A real resolver whose expensive halves would fail if they were reached."""
+
+    def unreachable_search(job):
+        raise AssertionError("a job already on an ATS URL must not be searched for")
+
+    def unreachable_watch(company):
+        raise AssertionError("a job already on an ATS URL must not consult the watchlist")
+
+    return CanonicalResolver(NoOpHttp(), unreachable_search, unreachable_watch)
+
+
+def test_canonical_resolution_writes_nothing_when_the_url_is_already_canonical(
+    store, policy
+):
+    # The batched persistence phase already wrote this row, registered its
+    # board and answered needs_evaluation for it minutes earlier in the same
+    # run. Resolution decides nothing new, so it must restate none of that.
+    job = Job(
+        source="lever",
+        source_job_id="abc",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://jobs.lever.co/acme/abc",
+        description="React TypeScript remote role.",
+        remote=True,
+    )
+    recording = RecordingStore(store)
+
+    result = collect_candidates(
+        [FakeSource([job])],
+        recording,
+        NoOpHttp(),
+        policy,
+        resolver=_direct_resolver(),
+    )
+
+    assert len(result.eligible) == 1
+    assert result.stats.canonical_resolved == 1
+    assert result.stats.canonical_unchanged == 1
+    assert recording.count("upsert_logical_job") == 0
+    assert recording.count("set_job_market") == 0
+    assert recording.count("needs_evaluation") == 0
+    # Registered once, by the batched phase, and not restated here -- so the
+    # board counts once in the stat too.
+    assert recording.registered_boards() == [("lever", "acme")]
+    assert result.stats.ats_boards_discovered == 1
+
+
+def test_canonical_resolution_registers_each_board_once_per_run(store, policy):
+    # Two postings on one board, one of them reaching the resolver on a URL
+    # that already parses: the board is registered by the batched phase and
+    # never again.
+    jobs = [
+        Job(
+            source="lever",
+            source_job_id=job_id,
+            title="Senior Product Engineer",
+            company=company,
+            url=f"https://jobs.lever.co/acme/{job_id}",
+            description="React TypeScript remote role.",
+            remote=True,
+        )
+        for job_id, company in (("abc", "Acme"), ("def", "Acme Labs"))
+    ]
+    recording = RecordingStore(store)
+
+    collect_candidates(
+        [FakeSource(jobs)],
+        recording,
+        NoOpHttp(),
+        policy,
+        resolver=_direct_resolver(),
+    )
+
+    assert recording.registered_boards() == [("lever", "acme")]
+
+
+def test_canonical_resolution_persists_a_job_that_resolved_to_a_new_url(store, policy):
+    # The other half of the branch: identity really did change here, so every
+    # write the branch makes is still made.
+    job = Job(
+        source="hackernews",
+        source_job_id="hn-1",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://news.ycombinator.com/item?id=1",
+        description="React TypeScript remote role.",
+        remote=True,
+    )
+    resolution = CanonicalResolution(
+        url="https://jobs.lever.co/acme/abc",
+        ats=AtsReference(provider="lever", board="acme", job_id="abc"),
+        confidence=1.0,
+        method="redirect",
+    )
+    recording = RecordingStore(store)
+
+    result = collect_candidates(
+        [FakeSource([job])],
+        recording,
+        NoOpHttp(),
+        policy,
+        resolver=FakeResolver(resolution),
+    )
+
+    assert result.stats.canonical_resolved == 1
+    assert result.stats.canonical_unchanged == 0
+    assert recording.count("upsert_logical_job") == 1
+    assert recording.count("needs_evaluation") == 1
+    assert result.eligible[0][1].url == "https://jobs.lever.co/acme/abc"
+    # The batched phase saw only the Hacker News URL, so this board is new.
+    assert recording.registered_boards() == [("lever", "acme")]
+    assert result.stats.ats_boards_discovered == 1
+
+
+def test_canonical_resolution_registers_a_newly_resolved_board_once_for_two_jobs(
+    store, policy
+):
+    jobs = [
+        Job(
+            source="hackernews",
+            source_job_id=f"hn-{index}",
+            title="Senior Product Engineer",
+            company=f"Acme {index}",
+            url=f"https://news.ycombinator.com/item?id={index}",
+            description="React TypeScript remote role.",
+            remote=True,
+        )
+        for index in (1, 2)
+    ]
+
+    class PerJobResolver:
+        def resolve(self, job):
+            job_id = job.source_job_id.split("-")[-1]
+            return CanonicalResolution(
+                url=f"https://jobs.lever.co/acme/{job_id}",
+                ats=AtsReference(provider="lever", board="acme", job_id=job_id),
+                confidence=1.0,
+                method="redirect",
+            )
+
+    recording = RecordingStore(store)
+
+    result = collect_candidates(
+        [FakeSource(jobs)],
+        recording,
+        NoOpHttp(),
+        policy,
+        resolver=PerJobResolver(),
+    )
+
+    assert result.stats.canonical_resolved == 2
+    assert recording.registered_boards() == [("lever", "acme")]
+    assert result.stats.ats_boards_discovered == 1

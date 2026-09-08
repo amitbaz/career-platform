@@ -9,7 +9,7 @@ for its size alone.
 This detection is the mechanism, and it needs no operator configuration.
 Two lists in the user's search profile are overrides only, never the mechanism:
 `learned_ats_denylist` is an instant kill for a board these signals miss,
-enforced in `ats_registry.harvest_ats_board` (refusing admission) and
+enforced in `ats_registry.ats_board_reference` (refusing admission) and
 `sources/learned_ats.LearnedAtsSource` (rejecting an already-registered
 board before scanning it); `learned_ats_allowlist` is its inverse, naming
 boards that may never be rejected, and is the operator's only way to
