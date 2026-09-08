@@ -526,3 +526,16 @@ class RunSummary:
     # unenriched and the next run retries it, which is recovery, not damage.
     facet_extraction_attempted: int = 0
     facet_extraction_failed: int = 0
+    # Jobs the run declined to score because reading their posting failed,
+    # and scoring now requires the posting's facets (issue #126). Kept apart
+    # from `errors` and from the quota counters: it is neither damage nor a
+    # provider refusal, it is a job that keeps its place in the ranking and is
+    # scored on a later run. A number that stops being near zero means
+    # extraction is failing, and the run is quietly delivering less -- which is
+    # why a provider refusal is counted separately below rather than here.
+    scoring_skipped_without_facets: int = 0
+    # Jobs left unscored because the shared, non-core reading budget was
+    # exhausted before their posting had ever been read. A provider refusal,
+    # not a failure: the job is queued and scored on a later run, and the run
+    # keeps scoring every job whose posting was already read.
+    scoring_deferred_by_read_budget: int = 0

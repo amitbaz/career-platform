@@ -1,6 +1,8 @@
 # Objective facets on jobs (issue #125)
 
-Status: implemented. Parent epic #114; the enrichment split continues in #126.
+Status: implemented, then contracted by #126. Parent epic #114; the enrichment split is
+completed in [#126](2026-09-08-scoring-from-facets-design.md), which is what reads these
+facets back into scoring and removes the combined evaluation described below.
 
 ## What this adds
 
@@ -10,10 +12,10 @@ stated requirements and their depth, disclosed compensation, hiring-eligible reg
 remote and relocation policy, seniority, and stack. They are stored on the job, keyed to
 the description they were read from, and reused by every later run.
 
-Nothing a user sees changes. The existing combined evaluation still runs unchanged and
-still decides what is delivered; facets are written and never read back into scoring. What
-this produces is a corpus that knows things about jobs before anyone has been matched
-against them.
+Nothing a user saw changed when this landed: the combined evaluation still ran unchanged
+and still decided what was delivered, and facets were written and never read back into
+scoring. What it produced was a corpus that knows things about jobs before anyone has been
+matched against them. #126 is what turned that corpus into what scoring reads.
 
 ## The load-bearing constraint: extraction cannot see a candidate
 
@@ -30,9 +32,10 @@ That is enforced by the interface, not by convention:
   only the posting's own fields — and a provider client. There is no parameter a candidate
   could arrive through, so passing one is a `TypeError` rather than a review comment.
 
-`evaluation.py` keeps the combined, candidate-aware path. The two are deliberately separate
-modules: putting objective extraction next to a prompt builder that serialises a candidate
-profile would leave the constraint resting on nothing but care.
+`evaluation.py` keeps the candidate-aware path — the combined one at the time of writing,
+the subjective-scoring half since #126. The two are deliberately separate modules: putting
+objective extraction next to a prompt builder that serialises a candidate profile would
+leave the constraint resting on nothing but care.
 
 ## Structured source data is used before the model is asked
 
@@ -140,9 +143,10 @@ query without loading and parsing every row:
 Stated requirements stay in `requirements_json` — a list of `{requirement, depth, kind}` —
 because they are read as a set, never filtered on individually.
 
-## Cost, deliberately accepted
+## Cost, deliberately accepted — and since removed
 
-Until #126 removes the objective half of the combined evaluation, both calls run against
-the same jobs: roughly 122 provider calls a day against a 500-per-day allowance, from the
-reference run's 61 evaluations. That fits, and facets are charged to the non-core budget so
-they can never starve evaluation, but it is real and short-lived by design.
+While this shipped on its own, both calls ran against the same jobs: roughly 122 provider
+calls a day against a 500-per-day allowance, from the reference run's 61 evaluations. That
+fit, and facets were charged to the non-core budget so they could never starve evaluation,
+but it was real and short-lived by design. #126 ended it: a posting is now read once and
+scored from what that read produced.
