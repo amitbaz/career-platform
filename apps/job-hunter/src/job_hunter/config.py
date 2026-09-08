@@ -146,6 +146,7 @@ def load_settings(store: "PostgresJobStore") -> Settings:
         thresholds=data.get("thresholds", {}),
         max_jobs_per_run=data.get("max_jobs_per_run", 35),
         daily_offer_limit=data.get("daily_offer_limit", 10),
+        match_score_floor=data.get("match_score_floor", 80),
         source_minimum_per_run=data.get("source_minimum_per_run", 0),
         source_max_share=data.get("source_max_share", 0.5),
         search_queries=data.get("search_queries", []),

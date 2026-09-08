@@ -221,6 +221,10 @@ class SearchPolicy:
     #: almost nothing passes still terminates. The allowed values (5, 10, 20)
     #: are enforced where the setting is written, on `SearchProfile`.
     daily_offer_limit: int = 10
+    #: Minimum match score that can become an offer. Decision thresholds keep
+    #: their classification meaning; this separate floor controls delivery.
+    #: The allowed 50..95 range is enforced on `SearchProfile`.
+    match_score_floor: int = 80
     source_minimum_per_run: int = 0
     source_max_share: float = 0.5
     search_queries: list = field(default_factory=list)
@@ -450,6 +454,7 @@ class ReviewItem:
 class RunSummary:
     ready_to_apply: int = 0
     possible_matches: int = 0
+    withheld_by_score_floor: int = 0
     skipped: int = 0
     errors: int = 0
     # Core-evaluation health, distinct from `errors` (which also counts

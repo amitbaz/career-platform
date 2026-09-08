@@ -123,23 +123,20 @@ def test_build_digest_empty_items_returns_placeholder():
     assert digest
 
 
-def test_build_digest_omits_scores_at_or_below_sixty():
+def test_build_digest_renders_low_scores_selected_by_the_engine():
     digest = build_digest([
-        _item(company="Keep", score=61, decision="possible_match"),
-        _item(company="Drop60", score=60, decision="possible_match"),
-        _item(company="DropLow", score=40, decision="blocked"),
+        _item(company="Possible", score=50, decision="possible_match"),
+        _item(company="Blocked", score=40, decision="blocked"),
     ])
-    assert "Keep" in digest
-    assert "Drop60" not in digest
-    assert "DropLow" not in digest
+    assert "Possible" in digest
+    assert "Blocked" in digest
 
 
-def test_select_deliverable_items_keeps_only_scores_above_sixty():
+def test_select_deliverable_items_keeps_only_supported_decisions():
     selected = select_deliverable_items([
-        _item(company="Keep", score=61, decision="high_priority"),
-        _item(company="KeepPossible", score=61, decision="possible_match"),
-        _item(company="DropReady", score=60, decision="high_priority"),
-        _item(company="DropPossible", score=60, decision="possible_match"),
+        _item(company="Keep", score=50, decision="high_priority"),
+        _item(company="KeepPossible", score=50, decision="possible_match"),
+        _item(company="Drop", score=90, decision="skip"),
     ])
     assert [item.company for item in selected] == ["Keep", "KeepPossible"]
 

@@ -22,7 +22,6 @@ _GROUP_HEADERS = {
 }
 _GROUP_ORDER = ("Ready to apply", "Possible matches", "Needs review / blockers")
 _DELIVERABLE_DECISIONS = frozenset(_GROUP_HEADERS)
-_DELIVERABLE_SCORE_FLOOR = 60
 _REVIEW_HEADER = "Gmail activity I couldn't link"
 _REVIEW_EVENT_LABELS = {
     "RECRUITER_CONTACT": "Recruiter contact",
@@ -49,8 +48,6 @@ _REVIEW_FALLBACK_EXPLANATION = (
 def select_deliverable_items(items: Sequence[DigestItem]) -> list[DigestItem]:
     selected = []
     for item in items:
-        if item.score <= _DELIVERABLE_SCORE_FLOOR:
-            continue
         if item.decision == "skip":
             continue
         if item.decision not in _DELIVERABLE_DECISIONS:

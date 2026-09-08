@@ -1221,7 +1221,7 @@ def test_pending_delivery_job_ids_excludes_score_sixty_possible_match(store):
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=60, decision="possible_match"))
 
-    assert store.pending_delivery_job_ids() == []
+    assert store.pending_delivery_job_ids(61) == []
 
 
 def test_pending_delivery_job_ids_excludes_score_sixty_ready_match(store):
@@ -1229,7 +1229,7 @@ def test_pending_delivery_job_ids_excludes_score_sixty_ready_match(store):
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=60, decision="high_priority"))
 
-    assert store.pending_delivery_job_ids() == []
+    assert store.pending_delivery_job_ids(61) == []
 
 
 def test_pending_delivery_job_ids_keeps_score_sixty_one_possible_match_until_message_sent(store):
@@ -1237,10 +1237,27 @@ def test_pending_delivery_job_ids_keeps_score_sixty_one_possible_match_until_mes
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="possible_match"))
 
-    assert store.pending_delivery_job_ids() == [job_id]
+    assert store.pending_delivery_job_ids(61) == [job_id]
 
     store.mark_delivered(job_id, "telegram_message")
-    assert store.pending_delivery_job_ids() == []
+    assert store.pending_delivery_job_ids(61) == []
+
+
+def test_pending_delivery_job_ids_uses_an_inclusive_match_score_floor(store):
+    below = Job(source="x", source_job_id="below", title="Senior Product Engineer")
+    at_floor = Job(source="x", source_job_id="at-floor", title="Senior Product Engineer")
+    below_id, _, _ = store.upsert_job(below)
+    at_floor_id, _, _ = store.upsert_job(at_floor)
+    store.save_evaluation(
+        below_id,
+        _evaluation(below_id, total_score=49, decision="possible_match"),
+    )
+    store.save_evaluation(
+        at_floor_id,
+        _evaluation(at_floor_id, total_score=50, decision="possible_match"),
+    )
+
+    assert store.pending_delivery_job_ids(match_score_floor=50) == [at_floor_id]
 
 
 def test_pending_delivery_job_ids_keeps_score_sixty_one_ready_match_until_message_sent(store):
@@ -1248,10 +1265,10 @@ def test_pending_delivery_job_ids_keeps_score_sixty_one_ready_match_until_messag
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="package_match"))
 
-    assert store.pending_delivery_job_ids() == [job_id]
+    assert store.pending_delivery_job_ids(61) == [job_id]
 
     store.mark_delivered(job_id, "telegram_message")
-    assert store.pending_delivery_job_ids() == []
+    assert store.pending_delivery_job_ids(61) == []
 
 
 def test_pending_delivery_job_ids_excludes_ready_match_with_message_but_no_document(store):
@@ -1260,7 +1277,7 @@ def test_pending_delivery_job_ids_excludes_ready_match_with_message_but_no_docum
     store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="high_priority"))
     store.mark_delivered(job_id, "telegram_message")
 
-    assert store.pending_delivery_job_ids() == []
+    assert store.pending_delivery_job_ids(61) == []
 
 
 def test_get_evaluation_and_material_roundtrip(store):

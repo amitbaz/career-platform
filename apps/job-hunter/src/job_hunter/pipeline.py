@@ -71,7 +71,6 @@ _READY_DECISIONS = {"high_priority", "package_match"}
 #: so does a `blocked` job -- it reaches Telegram only under "Needs review /
 #: blockers", which is a warning about a job, not an offer to act on.
 _OFFER_DECISIONS = _READY_DECISIONS | {"possible_match"}
-_MIN_DELIVERABLE_SCORE = 61
 _NAVIGATION_SESSION_TTL = timedelta(days=30)
 _SUPPORTED_WATCH_ATS_PROVIDERS = frozenset({"ashby", "greenhouse", "lever"})
 _SEARCH_FAILURE_THRESHOLD = 5
@@ -479,10 +478,11 @@ def _requeue_pending_delivery(
     job_id: str,
     store: PostgresJobStore,
     digest_items: list[DigestItem],
+    match_score_floor: int,
 ) -> None:
     """Re-add a rediscovered job's digest entry if it was never delivered."""
     evaluation = store.get_evaluation(job_id)
-    if evaluation is None or evaluation.total_score < _MIN_DELIVERABLE_SCORE:
+    if evaluation is None or evaluation.total_score < match_score_floor:
         return
 
     job = store.get_job(job_id)
@@ -654,6 +654,10 @@ def _evaluate_and_deliver_one_job(
         logger.exception("company watch promotion failed for job_id=%s", job_id)
         summary.errors += 1
 
+    if evaluation.total_score < settings.policy.match_score_floor:
+        summary.withheld_by_score_floor += 1
+        return promoted, False, evaluation.decision, False
+
     item = DigestItem(
         job_id=job_id,
         company=job.company,
@@ -682,15 +686,7 @@ def _evaluate_and_deliver_one_job(
     else:
         summary.skipped += 1
 
-    # An offer the digest would drop anyway must not spend delivery budget:
-    # the score floor in telegram.select_deliverable_items sits below the
-    # `possible` rung, so a profile with a low `possible` threshold can score a
-    # possible_match under it.
-    offered = (
-        not already_delivered
-        and evaluation.decision in _OFFER_DECISIONS
-        and evaluation.total_score >= _MIN_DELIVERABLE_SCORE
-    )
+    offered = not already_delivered and evaluation.decision in _OFFER_DECISIONS
     return promoted, False, evaluation.decision, offered
 
 def _format_gemini_usage_log(summary: GeminiUsageSummary) -> str:
@@ -870,7 +866,12 @@ def run_pipeline(
     )
     companies_promoted = 0
     for job_id in discovery.rediscovered_job_ids:
-        _requeue_pending_delivery(job_id, store, digest_items)
+        _requeue_pending_delivery(
+            job_id,
+            store,
+            digest_items,
+            settings.policy.match_score_floor,
+        )
 
     quota_blocked = candidate_context is None
     if quota_blocked and pending_evaluation_ids:
@@ -965,7 +966,8 @@ def run_pipeline(
     logger.info(
         "evaluation_capacity selected=%s evaluated=%s deferred_by_budget=%s "
         "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
-        "deferred_by_offer_cap=%s",
+        "deferred_by_offer_cap=%s match_score_floor=%s "
+        "withheld_by_score_floor=%s",
         len(selected),
         summary.evaluated,
         deferred_by_budget,
@@ -973,10 +975,21 @@ def run_pipeline(
         offer_limit,
         delivered_offers,
         cap_deferred_count,
+        settings.policy.match_score_floor,
+        summary.withheld_by_score_floor,
     )
 
-    for job_id in set(store.pending_delivery_job_ids()) - queued_job_ids - set(discovery.rediscovered_job_ids):
-        _requeue_pending_delivery(job_id, store, digest_items)
+    for job_id in (
+        set(store.pending_delivery_job_ids(settings.policy.match_score_floor))
+        - queued_job_ids
+        - set(discovery.rediscovered_job_ids)
+    ):
+        _requeue_pending_delivery(
+            job_id,
+            store,
+            digest_items,
+            settings.policy.match_score_floor,
+        )
 
     tracker = getattr(gemini, "_tracker", None)
     usage_summary = tracker.snapshot(datetime.now(timezone.utc)) if tracker is not None else None

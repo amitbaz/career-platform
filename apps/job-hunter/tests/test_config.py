@@ -400,6 +400,7 @@ def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
 
     assert settings.policy.max_jobs_per_run == 35
     assert settings.policy.daily_offer_limit == 10
+    assert settings.policy.match_score_floor == 80
     assert settings.policy.source_minimum_per_run == 0
     assert settings.policy.source_max_share == 0.5
     assert settings.policy.manual_company_watch == []
@@ -414,6 +415,14 @@ def test_load_settings_reads_the_daily_offer_limit(monkeypatch, limit):
     settings = _load(_profile(daily_offer_limit=limit))
 
     assert settings.policy.daily_offer_limit == limit
+
+
+def test_load_settings_reads_the_match_score_floor(monkeypatch):
+    _set_runtime_env(monkeypatch)
+
+    settings = _load(_profile(match_score_floor=70))
+
+    assert settings.policy.match_score_floor == 70
 
 
 def test_load_settings_falls_back_to_defaults_for_empty_ranking_lists(monkeypatch):
