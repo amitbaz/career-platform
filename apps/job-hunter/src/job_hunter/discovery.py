@@ -906,6 +906,9 @@ def collect_candidates(
 
     eligible: list[tuple[str, Job]] = []
     eligible_job_ids: set[str] = set()
+    # One entry per eligible job on a supported ATS board; the store collapses
+    # them to one entry per board before it writes.
+    eligible_sightings: list[tuple[str, str]] = []
 
     with ledger.phase(PHASE_ELIGIBLE):
         for job_id, job in prefiltered:
@@ -984,15 +987,23 @@ def collect_candidates(
             _bump(stats.eligible_by_market, job.market_id or _UNATTRIBUTED)
             _bump(stats.eligible_by_source, metric_source_label(job.source))
             if job.ats_provider and job.ats_board:
-                try:
-                    store.record_ats_eligible_job(
-                        job.ats_provider, job.ats_board, datetime.now(timezone.utc)
-                    )
-                except Exception:
-                    logger.exception(
-                        "recording ATS-eligible job failed: source=%s",
-                        metric_source_label(job.source),
-                    )
+                eligible_sightings.append((job.ats_provider, job.ats_board))
+
+        # Flushed once, like the status writes the prefilter pass collects.
+        # Recording this per job was two round trips each -- roughly 2,700 of
+        # them in run 34201733339 -- to increment a counter on a few dozen
+        # rows. Learning the registry stays opportunistic: a failure is
+        # logged and skipped, and the run continues with its candidates.
+        if eligible_sightings:
+            try:
+                store.record_ats_eligible_jobs(
+                    eligible_sightings, datetime.now(timezone.utc)
+                )
+            except Exception:
+                logger.exception(
+                    "recording %s ATS-eligible job(s) failed",
+                    len(eligible_sightings),
+                )
 
     stats.eligible = len(eligible)
     # The total comes from the ledger's own last reading rather than a fresh
