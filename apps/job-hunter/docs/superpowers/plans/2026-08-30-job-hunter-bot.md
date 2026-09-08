@@ -478,7 +478,7 @@ git commit -m "feat: add gemini evaluation and tailoring"
 ```python
 
 def test_render_pdf_has_pdf_signature(tmp_path):
-    path = render_cover_letter_pdf("Amit Baz\n\nDear Hiring Team,\nHello.", "Acme", "Senior Product Engineer", tmp_path)
+    path = render_cover_letter_pdf("Robin Vance\n\nDear Hiring Team,\nHello.", "Acme", "Senior Product Engineer", tmp_path)
     assert path.name == "Acme_Senior_Product_Engineer_Cover_Letter.pdf"
     assert path.read_bytes().startswith(b"%PDF")
 ```

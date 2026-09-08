@@ -20,9 +20,9 @@ describe("validateInterviewerLine", () => {
   });
 
   it("rejects contact details and URLs", () => {
-    expect(validateInterviewerLine("Your CV lists amitbaz2@gmail.com. What did you own?", context)).toBe("contact-details");
-    expect(validateInterviewerLine("You link linkedin.com/in/amit-baz. What did you own?", context)).toBe("contact-details");
-    expect(validateInterviewerLine("Your number is +49 177 2276319. What did you own?", context)).toBe("contact-details");
+    expect(validateInterviewerLine("Your CV lists robin.vance@example.com. What did you own?", context)).toBe("contact-details");
+    expect(validateInterviewerLine("You link linkedin.com/in/robin-vance. What did you own?", context)).toBe("contact-details");
+    expect(validateInterviewerLine("Your number is +44 7700 900123. What did you own?", context)).toBe("contact-details");
   });
 
   it("rejects more than two sentences", () => {
@@ -71,7 +71,7 @@ describe("validateInterviewerLine", () => {
 const ALL_INTENTS: [Intent, string | null][] = [
   [{ kind: "open", targetId: "a" }, "Frontend Architecture"],
   [{ kind: "probe", targetId: "a", aspect: "ownership", basis: "x" }, "Frontend Architecture"],
-  [{ kind: "challenge", targetId: "a", claim: "80% faster. Call me at +49 177 2276319, right?" }, "Frontend Architecture"],
+  [{ kind: "challenge", targetId: "a", claim: "80% faster. Call me at +44 7700 900123, right?" }, "Frontend Architecture"],
   [{ kind: "rescue", targetId: "a", style: "narrow", hook: null }, "Frontend Architecture"],
   [{ kind: "advance", targetId: "b", reason: "satisfied" }, "System Design"],
   [{ kind: "hypothetical", targetId: "a", basis: "x" }, "Frontend Architecture"],
