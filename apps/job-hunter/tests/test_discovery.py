@@ -6,7 +6,10 @@ import pytest
 from job_hunter.canonical import CanonicalResolver
 from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS, PARTIAL_UNKNOWN
 from job_hunter.discovery import (
+    DISCOVERY_PHASES,
+    DiscoveryStats,
     _dedupe,
+    _format_phase_cost,
     _format_source_cost,
     _merge_fields,
     budget_applied,
@@ -1893,18 +1896,58 @@ class FakeClock:
 
 
 class CountingHttp:
-    """Stands in for the shared `HttpClient`, counting requests as it does."""
+    """Stands in for the shared `HttpClient`, counting requests as it does.
 
-    def __init__(self) -> None:
+    Given a clock, each request also costs `seconds_per_request` on it, which
+    is how a test prices work that discovery does outside any source -- the
+    enrichment fetch in particular, which no source's figure can ever cover.
+    """
+
+    def __init__(self, clock=None, seconds_per_request: float = 0.0) -> None:
         self.request_count = 0
+        self._clock = clock
+        self._seconds_per_request = seconds_per_request
+
+    def _charge(self) -> None:
+        self.request_count += 1
+        if self._clock is not None and self._seconds_per_request:
+            self._clock.advance(self._seconds_per_request)
 
     def get(self, url, **kwargs):
-        self.request_count += 1
+        self._charge()
         return FakeResponse("")
 
     def get_json(self, url, **kwargs):
-        self.request_count += 1
+        self._charge()
         return {}
+
+
+class ClockedStore:
+    """Wraps a real store, pricing chosen methods on the virtual clock.
+
+    Discovery's persistence is where a run's time can hide without any
+    source accounting for it, and the real store against a local stack is
+    too fast to make that visible. This charges the named methods instead,
+    so a test can assert which phase the cost landed in rather than how long
+    a round trip happened to take.
+    """
+
+    def __init__(self, inner, clock, seconds_by_method: dict[str, float]) -> None:
+        self._inner = inner
+        self._clock = clock
+        self._seconds_by_method = seconds_by_method
+
+    def __getattr__(self, name):
+        attribute = getattr(self._inner, name)
+        seconds = self._seconds_by_method.get(name)
+        if seconds is None or not callable(attribute):
+            return attribute
+
+        def charged(*args, **kwargs):
+            self._clock.advance(seconds)
+            return attribute(*args, **kwargs)
+
+        return charged
 
 
 class CostlySource:
@@ -2434,3 +2477,125 @@ def test_a_non_positive_budget_means_no_budget(store, policy):
 
     assert result.stats.raw == 3
     assert result.stats.source_outcomes == {"slow": "completed"}
+
+
+def _undescribed_job(source: str, job_id: str) -> Job:
+    """A job the enrichment pass will fetch: it has a URL and no description."""
+    return Job(
+        source=source,
+        source_job_id=job_id,
+        title="Senior Product Engineer",
+        description="",
+        url=f"https://example.test/jobs/{job_id}",
+        remote=True,
+    )
+
+
+def test_collect_candidates_attributes_every_phase_of_its_own_time(store, policy):
+    """The phases partition the run: they sum to the total, with no remainder.
+
+    This is the property that would have caught the 2671 unattributed
+    seconds in run 34201733339 the moment they appeared.
+    """
+    # A non-zero tick prices the work discovery does between the phases, so
+    # this cannot pass by every phase being free.
+    clock = FakeClock(tick=0.5)
+    http = CountingHttp()
+    source = CostlySource(
+        [_costed_job("a", "1")], clock, http, seconds=10.0, requests=1, label="a"
+    )
+
+    result = collect_candidates([source], store, http, policy, clock=clock)
+
+    stats = result.stats
+    assert set(stats.elapsed_by_phase) == set(DISCOVERY_PHASES)
+    assert sum(stats.elapsed_by_phase.values()) == pytest.approx(
+        stats.total_elapsed_seconds
+    )
+    assert stats.elapsed_by_phase["sources"] >= 10.0
+
+
+def test_collect_candidates_reports_a_phase_that_cost_nothing(store, policy):
+    """A phase absent from the figures is indistinguishable from an unmeasured one."""
+    clock = FakeClock()
+    http = CountingHttp()
+    source = CostlySource(
+        [_costed_job("a", "1")], clock, http, seconds=1.0, requests=0, label="a"
+    )
+
+    result = collect_candidates([source], store, http, policy, clock=clock)
+
+    # No resolver was supplied, so canonical resolution genuinely cost
+    # nothing -- and is still reported.
+    assert result.stats.elapsed_by_phase["canonical"] == 0.0
+    assert set(result.stats.elapsed_by_phase) == set(DISCOVERY_PHASES)
+
+
+def test_collect_candidates_charges_enrichment_rather_than_a_source(store, policy):
+    """The enrichment fetch belongs to no source, and now says so."""
+    clock = FakeClock()
+    http = CountingHttp(clock=clock, seconds_per_request=7.0)
+    source = CostlySource(
+        [_undescribed_job("a", "1")], clock, http, seconds=1.0, requests=0, label="a"
+    )
+
+    result = collect_candidates([source], store, http, policy, clock=clock)
+
+    stats = result.stats
+    # The source cost one second; the fetch discovery made on its behalf,
+    # after the source had finished, cost seven.
+    assert stats.elapsed_by_source == {"a": 1.0}
+    assert stats.elapsed_by_phase["enrich"] >= 7.0
+    assert sum(stats.elapsed_by_phase.values()) == pytest.approx(
+        stats.total_elapsed_seconds
+    )
+
+
+def test_collect_candidates_charges_persistence_to_its_own_phase(store, policy):
+    """The two bulk upserts are separate phases: raw copies, then unique jobs."""
+    clock = FakeClock()
+    http = CountingHttp()
+    clocked = ClockedStore(store, clock, {"upsert_logical_jobs": 4.0})
+    source = CostlySource(
+        [_costed_job("a", "1")], clock, http, seconds=0.0, requests=0, label="a"
+    )
+
+    result = collect_candidates([source], clocked, http, policy, clock=clock)
+
+    stats = result.stats
+    assert stats.elapsed_by_phase["raw_persist"] >= 4.0
+    assert stats.elapsed_by_phase["unique_persist"] >= 4.0
+    assert stats.elapsed_by_source == {"a": 0.0}
+
+
+def test_phase_figures_still_partition_the_run_when_a_source_fails(store, policy):
+    """Failure isolation must not open a hole in the accounting."""
+    clock = FakeClock(tick=0.5)
+    http = CountingHttp()
+    broken = CostlySource(
+        [], clock, http, seconds=5.0, requests=1, label="broken", raises=True
+    )
+    good = CostlySource(
+        [_costed_job("good", "1")], clock, http, seconds=1.0, requests=1, label="good"
+    )
+
+    result = collect_candidates([broken, good], store, http, policy, clock=clock)
+
+    stats = result.stats
+    assert sum(stats.elapsed_by_phase.values()) == pytest.approx(
+        stats.total_elapsed_seconds
+    )
+    assert stats.elapsed_by_phase["sources"] >= 6.0
+
+
+def test_format_phase_cost_renders_every_phase_dearest_first():
+    stats = DiscoveryStats()
+    stats.elapsed_by_phase = {phase: 0.0 for phase in DISCOVERY_PHASES}
+    stats.elapsed_by_phase["enrich"] = 1500.0
+    stats.elapsed_by_phase["eligible"] = 900.0
+
+    rendered = _format_phase_cost(stats)
+
+    assert rendered.startswith("enrich=1500.0s eligible=900.0s")
+    # A free phase is still rendered: a missing one would read as unmeasured.
+    assert "dedupe=0.0s" in rendered
