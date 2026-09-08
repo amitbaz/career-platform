@@ -1216,31 +1216,37 @@ def test_has_delivery_filters_by_type(store):
     assert store.has_delivery(job_id) is True
 
 
-def test_pending_delivery_job_ids_excludes_score_sixty_possible_match(store):
+#: An arbitrary delivery floor for the tests below. Scores are written
+#: relative to it (`_FLOOR - 1` is withheld, `_FLOOR` is delivered) so the
+#: inclusive boundary is visible without hunting for a bare literal.
+_FLOOR = 61
+
+
+def test_pending_delivery_job_ids_excludes_a_possible_match_below_the_floor(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=60, decision="possible_match"))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=_FLOOR - 1, decision="possible_match"))
 
-    assert store.pending_delivery_job_ids(61) == []
+    assert store.pending_delivery_job_ids(_FLOOR) == []
 
 
-def test_pending_delivery_job_ids_excludes_score_sixty_ready_match(store):
+def test_pending_delivery_job_ids_excludes_a_ready_match_below_the_floor(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=60, decision="high_priority"))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=_FLOOR - 1, decision="high_priority"))
 
-    assert store.pending_delivery_job_ids(61) == []
+    assert store.pending_delivery_job_ids(_FLOOR) == []
 
 
-def test_pending_delivery_job_ids_keeps_score_sixty_one_possible_match_until_message_sent(store):
+def test_pending_delivery_job_ids_keeps_a_possible_match_at_the_floor_until_message_sent(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="possible_match"))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=_FLOOR, decision="possible_match"))
 
-    assert store.pending_delivery_job_ids(61) == [job_id]
+    assert store.pending_delivery_job_ids(_FLOOR) == [job_id]
 
     store.mark_delivered(job_id, "telegram_message")
-    assert store.pending_delivery_job_ids(61) == []
+    assert store.pending_delivery_job_ids(_FLOOR) == []
 
 
 def test_pending_delivery_job_ids_uses_an_inclusive_match_score_floor(store):
@@ -1260,24 +1266,24 @@ def test_pending_delivery_job_ids_uses_an_inclusive_match_score_floor(store):
     assert store.pending_delivery_job_ids(match_score_floor=50) == [at_floor_id]
 
 
-def test_pending_delivery_job_ids_keeps_score_sixty_one_ready_match_until_message_sent(store):
+def test_pending_delivery_job_ids_keeps_a_ready_match_at_the_floor_until_message_sent(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="package_match"))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=_FLOOR, decision="package_match"))
 
-    assert store.pending_delivery_job_ids(61) == [job_id]
+    assert store.pending_delivery_job_ids(_FLOOR) == [job_id]
 
     store.mark_delivered(job_id, "telegram_message")
-    assert store.pending_delivery_job_ids(61) == []
+    assert store.pending_delivery_job_ids(_FLOOR) == []
 
 
-def test_pending_delivery_job_ids_excludes_ready_match_with_message_but_no_document(store):
+def test_pending_delivery_job_ids_excludes_a_ready_match_with_message_but_no_document(store):
     job = Job(source="x", source_job_id="1", title="Senior Product Engineer")
     job_id, _, _ = store.upsert_job(job)
-    store.save_evaluation(job_id, _evaluation(job_id, total_score=61, decision="high_priority"))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=_FLOOR, decision="high_priority"))
     store.mark_delivered(job_id, "telegram_message")
 
-    assert store.pending_delivery_job_ids(61) == []
+    assert store.pending_delivery_job_ids(_FLOOR) == []
 
 
 def test_get_evaluation_and_material_roundtrip(store):

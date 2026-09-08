@@ -204,7 +204,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(client: SupabaseClient) -> 
     )
 
     # Call as user A and verify only user A's job appears
-    result = client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 0})
+    result = client.rpc("job_hunter_pending_delivery_jobs", {"p_match_score_floor": 0})
     assert isinstance(result, list)
     assert len(result) >= 1, "User A's job should appear in results"
     job_ids = [item["job_id"] for item in result]
@@ -242,7 +242,7 @@ def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
     call_count = 0
     with patch.object(client._http._session, 'request', side_effect=mock_502_once):
         try:
-            client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 0}, retry=False)
+            client.rpc("job_hunter_pending_delivery_jobs", {"p_match_score_floor": 0}, retry=False)
         except Exception:
             pass  # Expected to fail; we just care about call count
         assert call_count == 1, f"With retry=False, exactly 1 request should be made, but got {call_count}"
@@ -251,7 +251,7 @@ def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
     call_count = 0
     with patch.object(client._http._session, 'request', side_effect=mock_502_once):
         try:
-            client.rpc("job_hunter_pending_delivery_jobs", {"p_score_floor": 0}, retry=True)
+            client.rpc("job_hunter_pending_delivery_jobs", {"p_match_score_floor": 0}, retry=True)
         except Exception:
             pass  # Expected to fail after retries; we just care about call count
         assert call_count == max_retries_plus_one, f"With retry=True, {max_retries_plus_one} requests should be made, but got {call_count}"

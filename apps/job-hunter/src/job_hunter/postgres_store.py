@@ -926,14 +926,14 @@ class PostgresJobStore:
         evaluation" join, the score floor, the decision filter, and the
         anti-join against a sent `telegram_message` delivery -- as one SQL
         function, rather than fetching every job/evaluation pair into
-        Python and filtering there. The SQL predicate is strictly greater
-        than its parameter, so subtract one to make the profile's floor
-        inclusive. It `returns table (job_id uuid)`, so
+        Python and filtering there. The SQL predicate is `>=`, matching the
+        profile's inclusive floor, so the value passes through unchanged
+        (migration 20260908150000). It `returns table (job_id uuid)`, so
         `rpc` hands back `[{'job_id': '...'}, ...]`; unwrap the single key.
         """
         rows = self._client.rpc(
             "job_hunter_pending_delivery_jobs",
-            {"p_score_floor": match_score_floor - 1},
+            {"p_match_score_floor": match_score_floor},
         )
         return [row["job_id"] for row in rows]
 

@@ -368,6 +368,19 @@ def _evaluation_payload(scores, decision):
     }
 
 
+def _decision_for(store, company: str) -> str | None:
+    """The decision the run stored for `company`'s job, by company name.
+
+    The pipeline assigns job ids itself, so a test that wants to assert a
+    tier has to find the row back through the one field it controls.
+    """
+    for row in store.list_jobs_for_matching():
+        if row["company"] == company:
+            evaluation = store.get_evaluation(row["id"])
+            return evaluation.decision if evaluation else None
+    return None
+
+
 def _jobs_for_source(source: str, count: int, *, title="Senior Product Engineer", description="React TypeScript remote role"):
     return [
         _job(
@@ -2089,10 +2102,12 @@ def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settin
         settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
     )
 
-    # Every other candidate scores below the match-score floor, so reaching
-    # five offers costs nine evaluations rather than five.
+    # Every other candidate scores about 30 -- below the `possible` rung,
+    # so a decision-ladder skip rather than a job the floor took away.
+    # Reaching five offers costs nine evaluations rather than five.
     assert summary.ready_to_apply == 5
-    assert summary.withheld_by_score_floor == 4
+    assert summary.skipped == 4
+    assert summary.withheld_by_score_floor == 0
     assert gemini.eval_calls == 9
 
 
@@ -2159,6 +2174,14 @@ def test_pipeline_withholds_offers_below_the_match_score_floor(store, settings):
     assert summary.ready_to_apply == 1
     assert summary.possible_matches == 0
     assert summary.withheld_by_score_floor == 2
+    # The spec's named case: the third job scores 70, which clears the
+    # `possible` rung of 65 and so would have been delivered as a possible
+    # match before the floor existed. Asserting the tier, not just the
+    # count, keeps the case alive if a threshold moves.
+    assert _decision_for(store, jobs[2].company) == "possible_match"
+    # A withheld offer is not a decision-ladder skip. Nothing here scored
+    # below `possible`, so `skipped` must stay empty.
+    assert summary.skipped == 0
 
 
 def test_pipeline_sends_nothing_when_no_offer_clears_the_match_score_floor(store, settings):

@@ -480,7 +480,13 @@ def _requeue_pending_delivery(
     digest_items: list[DigestItem],
     match_score_floor: int,
 ) -> None:
-    """Re-add a rediscovered job's digest entry if it was never delivered."""
+    """Re-add a rediscovered job's digest entry if it was never delivered.
+
+    `match_score_floor` is the profile's inclusive delivery floor. A retry
+    is held to the same floor as a first delivery, so lowering the floor
+    releases previously withheld jobs and raising it withdraws them,
+    rather than letting the retry path deliver what a fresh run would not.
+    """
     evaluation = store.get_evaluation(job_id)
     if evaluation is None or evaluation.total_score < match_score_floor:
         return
@@ -655,7 +661,15 @@ def _evaluate_and_deliver_one_job(
         summary.errors += 1
 
     if evaluation.total_score < settings.policy.match_score_floor:
-        summary.withheld_by_score_floor += 1
+        # The floor withholds every tier, warnings included -- but only an
+        # offer that the floor took away is a signal that the floor is set
+        # too high. A `skip` or a `blocked` was never going to be an offer,
+        # so it stays on the decision-ladder counter it has always used;
+        # counting it here would drown the number this exists to expose.
+        if evaluation.decision in _OFFER_DECISIONS:
+            summary.withheld_by_score_floor += 1
+        else:
+            summary.skipped += 1
         return promoted, False, evaluation.decision, False
 
     item = DigestItem(

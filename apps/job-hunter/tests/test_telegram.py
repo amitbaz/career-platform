@@ -124,6 +124,14 @@ def test_build_digest_empty_items_returns_placeholder():
 
 
 def test_build_digest_renders_low_scores_selected_by_the_engine():
+    """Score eligibility is the pipeline's, not the digest's.
+
+    `match_score_floor` is applied in `run_pipeline` before a `DigestItem`
+    exists, and `run_pipeline` is the only producer of the list this takes.
+    So these inputs are not what a real run renders -- they are the proof
+    that the surface no longer holds a floor of its own, which is what let
+    the old hardcoded 60 disagree with the profile.
+    """
     digest = build_digest([
         _item(company="Possible", score=50, decision="possible_match"),
         _item(company="Blocked", score=40, decision="blocked"),
@@ -133,6 +141,7 @@ def test_build_digest_renders_low_scores_selected_by_the_engine():
 
 
 def test_select_deliverable_items_keeps_only_supported_decisions():
+    """Decision is the only filter left here; see the digest test above."""
     selected = select_deliverable_items([
         _item(company="Keep", score=50, decision="high_priority"),
         _item(company="KeepPossible", score=50, decision="possible_match"),
