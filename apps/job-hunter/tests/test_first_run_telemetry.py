@@ -87,7 +87,7 @@ def test_targeted_search_stats_report_attempts_successes_and_results_after_disco
         _Backend(),
         [SearchQuery('"senior frontend engineer" London', market_id="london")],
     )
-    source.discover()
+    list(source.discover())
 
     planned, attempted, succeeded, results = _aggregate_targeted_search_stats([source])
 

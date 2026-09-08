@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -384,6 +384,81 @@ def _format_source_contribution(per_source: dict[str, int]) -> str:
     )
 
 
+def _iter_source_jobs(
+    source,
+    http: HttpClient,
+    stats: DiscoveryStats,
+    label: str,
+    clock: Callable[[], float],
+) -> Iterator[Job]:
+    """Yield one source's jobs, recording its cost and isolating its failures.
+
+    Sources hand jobs back incrementally, so both of this function's jobs --
+    failure isolation and cost accounting -- have to follow the work into the
+    iteration rather than sitting around the call that starts it.
+
+    *Failures* can now surface at any point during iteration. The iterator is
+    therefore driven by hand: that keeps the `except` around the source's own
+    work alone, so a bug in the caller's per-job handling still propagates
+    instead of being mistaken for a dead source. Jobs the source produced
+    before it failed have already been handed over and stay handed over --
+    handled exactly as they are when the source succeeds. That is a
+    deliberate reading of "unchanged" from issue #122: before sources
+    yielded, a source raising part way contributed nothing, because its whole
+    list was discarded. No source in the tree can reach that path today --
+    each either catches its own errors or raises on its first request, before
+    yielding -- so no run's job set changes. Keeping the prefix is the
+    behaviour the per-source budget (issue #120) needs.
+
+    *Cost* is charged per `next()`, not per `discover()` call, which after
+    #122 does no work at all and would have measured every source at zero.
+    Only time spent inside the source counts: the caller's own per-job
+    handling happens between `next()` calls and is deliberately excluded, so
+    the figure still means "what this source cost". The running totals are
+    written to `stats` after every step rather than once at the end, so a
+    caller that abandons the drain part way -- which is the whole point of
+    #122 -- still sees what the source spent before it stopped.
+    """
+    elapsed = 0.0
+    requests = 0
+
+    def bracket(step):
+        """Run one step of the source's own work, charging it to `label`."""
+        nonlocal elapsed, requests
+        started_at = clock()
+        requests_before = _client_request_count(http)
+        try:
+            return step()
+        finally:
+            elapsed += max(0.0, clock() - started_at)
+            requests += max(0, _client_request_count(http) - requests_before)
+            # Written every step, and always at least once, so a source that
+            # yields nothing -- or raises immediately -- is still reported
+            # rather than missing from the cost table.
+            stats.elapsed_by_source[label] = elapsed
+            stats.requests_by_source[label] = requests
+
+    try:
+        jobs = bracket(lambda: iter(source.discover()))
+    except Exception:
+        # Failure isolation is unchanged -- the run continues with the next
+        # source -- but what this one spent before failing is still reported,
+        # since a source that burns the run and then raises is exactly what
+        # the cost figures exist to expose.
+        logger.exception("source discovery failed: %r", source)
+        return
+
+    while True:
+        try:
+            job = bracket(lambda: next(jobs))
+        except StopIteration:
+            return
+        except Exception:
+            logger.exception("source discovery failed: %r", source)
+            return
+        yield job
+
+
 def collect_candidates(
     sources: list,
     store: PostgresJobStore,
@@ -415,24 +490,7 @@ def collect_candidates(
 
     for source in sources:
         label = _distinct_label(source, taken_labels)
-        source_started_at = clock()
-        requests_before = _client_request_count(http)
-        try:
-            jobs = source.discover()
-        except Exception:
-            logger.exception("source discovery failed: %r", source)
-            # Failure isolation is unchanged -- the source contributes no
-            # jobs and the run continues -- but what it spent before failing
-            # is still reported, since a source that burns the run and then
-            # raises is exactly what this measures.
-            jobs = []
-        finally:
-            stats.elapsed_by_source[label] = max(0.0, clock() - source_started_at)
-            stats.requests_by_source[label] = max(
-                0, _client_request_count(http) - requests_before
-            )
-
-        for job in jobs:
+        for job in _iter_source_jobs(source, http, stats, label, clock):
             stats.raw += 1
             stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
             if job.url:

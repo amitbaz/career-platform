@@ -41,7 +41,7 @@ class _RaisingHttp:
 
 def test_greenhouse_404_logs_compact_without_traceback(caplog):
     with caplog.at_level(logging.INFO):
-        jobs = GreenhouseSource("dead-token", _RaisingHttp(_http_error(404))).discover()
+        jobs = list(GreenhouseSource("dead-token", _RaisingHttp(_http_error(404))).discover())
     assert jobs == []
     records = [r for r in caplog.records if "dead-token" in r.getMessage()]
     assert len(records) == 1
@@ -50,7 +50,7 @@ def test_greenhouse_404_logs_compact_without_traceback(caplog):
 
 def test_greenhouse_unexpected_error_logs_full_traceback(caplog):
     with caplog.at_level(logging.WARNING):
-        jobs = GreenhouseSource("acme", _RaisingHttp(RuntimeError("boom"))).discover()
+        jobs = list(GreenhouseSource("acme", _RaisingHttp(RuntimeError("boom"))).discover())
     assert jobs == []
     records = [r for r in caplog.records if "acme" in r.getMessage()]
     assert len(records) == 1
@@ -59,7 +59,7 @@ def test_greenhouse_unexpected_error_logs_full_traceback(caplog):
 
 def test_lever_404_logs_compact_without_traceback(caplog):
     with caplog.at_level(logging.INFO):
-        jobs = LeverSource("dead-site", _RaisingHttp(_http_error(404))).discover()
+        jobs = list(LeverSource("dead-site", _RaisingHttp(_http_error(404))).discover())
     assert jobs == []
     records = [r for r in caplog.records if "dead-site" in r.getMessage()]
     assert len(records) == 1
@@ -68,7 +68,7 @@ def test_lever_404_logs_compact_without_traceback(caplog):
 
 def test_ashby_404_logs_compact_without_traceback(caplog):
     with caplog.at_level(logging.INFO):
-        jobs = AshbySource("dead-board", _RaisingHttp(_http_error(404))).discover()
+        jobs = list(AshbySource("dead-board", _RaisingHttp(_http_error(404))).discover())
     assert jobs == []
     records = [r for r in caplog.records if "dead-board" in r.getMessage()]
     assert len(records) == 1
@@ -94,7 +94,7 @@ def test_lever_populates_ats_identity():
             },
         ]
     )
-    job = LeverSource("acme", http).discover()[0]
+    job = list(LeverSource("acme", http).discover())[0]
     assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("lever", "acme", "abc-123")
 
 
@@ -111,7 +111,7 @@ def test_ashby_populates_ats_identity():
             ]
         }
     )
-    job = AshbySource("acme", http).discover()[0]
+    job = list(AshbySource("acme", http).discover())[0]
     assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("ashby", "acme", "xyz")
 
 
@@ -128,7 +128,7 @@ def test_greenhouse_populates_ats_identity():
             ]
         }
     )
-    job = GreenhouseSource("acme", http).discover()[0]
+    job = list(GreenhouseSource("acme", http).discover())[0]
     assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("greenhouse", "acme", "456")
 
 
@@ -148,7 +148,7 @@ def test_greenhouse_falls_back_to_its_own_board_for_unparseable_urls():
             ]
         }
     )
-    job = GreenhouseSource("acme", http).discover()[0]
+    job = list(GreenhouseSource("acme", http).discover())[0]
     assert (job.ats_provider, job.ats_board, job.ats_job_id) == ("greenhouse", "acme", "456")
 
 
@@ -166,7 +166,7 @@ def test_adapter_identity_matches_the_url_when_the_two_disagree():
             },
         ]
     )
-    job = LeverSource("ACME", http).discover()[0]
+    job = list(LeverSource("ACME", http).discover())[0]
     assert job.ats_board == "acme"
 
 

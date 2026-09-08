@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -61,8 +62,14 @@ class WellfoundSource:
         self.listings = listings
         self._max_jobs_per_listing = max_jobs_per_listing
 
-    def discover(self) -> list[Job]:
-        jobs: list[Job] = []
+    def discover(self) -> Iterator[Job]:
+        """Yield each posting as its detail page is parsed, listing by listing.
+
+        A listing walk is the longest single piece of work any source does
+        here -- one listing page plus up to `max_jobs_per_listing` detail
+        fetches -- so yielding per detail fetch is what makes it possible to
+        stop the walk without throwing away the postings already parsed.
+        """
         seen_job_ids: set[str] = set()
         for listing in self.listings:
             response = self._get_response(
@@ -79,8 +86,7 @@ class WellfoundSource:
                 seen_job_ids.add(job_id)
                 job = self._fetch_job(job_id, detail_url, listing.market_id)
                 if job is not None:
-                    jobs.append(job)
-        return jobs
+                    yield job
 
     def _get_response(self, url: str, *, kind: str, target: str):
         try:

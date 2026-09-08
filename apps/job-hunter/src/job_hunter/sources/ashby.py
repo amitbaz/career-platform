@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from job_hunter.canonical import apply_ats_identity
 from job_hunter.models import AtsReference, Job
 from job_hunter.normalize import canonicalize_url
@@ -18,7 +20,7 @@ class AshbySource:
     def source_label(self) -> str:
         return f"ashby:{self._board}"
 
-    def discover(self) -> list[Job]:
+    def discover(self) -> Iterator[Job]:
         try:
             data = self._http.get_json(_URL_TEMPLATE.format(board=self._board))
         except Exception as exc:
@@ -28,9 +30,8 @@ class AshbySource:
                 logger.warning(
                     "ashby discovery failed for board %s", self._board, exc_info=True
                 )
-            return []
+            return
 
-        jobs = []
         for item in data.get("jobs", []):
             job_id = item.get("id")
             description = item.get("descriptionPlain") or item.get("descriptionHtml", "")
@@ -52,8 +53,7 @@ class AshbySource:
                     job_id=str(job_id) if job_id is not None else None,
                 ),
             )
-            jobs.append(job)
-        return jobs
+            yield job
 
 
 def fetch_description(board: str, target_url: str, http) -> str | None:

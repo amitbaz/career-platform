@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -28,8 +29,8 @@ class DevJobsSource:
         self._http = http
         self._max_jobs_per_category = max_jobs_per_category
 
-    def discover(self) -> list[Job]:
-        jobs: list[Job] = []
+    def discover(self) -> Iterator[Job]:
+        """Yield each posting as its detail page is parsed, category by category."""
         seen_job_ids: set[str] = set()
         for category in _CATEGORIES:
             try:
@@ -49,8 +50,7 @@ class DevJobsSource:
                 seen_job_ids.add(job_id)
                 job = self._fetch_job(job_id)
                 if job is not None:
-                    jobs.append(job)
-        return jobs
+                    yield job
 
     def _fetch_job(self, job_id: str) -> Job | None:
         detail_url = _DETAIL_URL.format(job_id=job_id)

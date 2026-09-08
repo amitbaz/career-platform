@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from job_hunter.models import Job
 from job_hunter.normalize import canonicalize_url
 
@@ -15,26 +17,24 @@ class JobicySource:
         self._http = http
         self._max_pages = max_pages
 
-    def discover(self) -> list[Job]:
+    def discover(self) -> Iterator[Job]:
         # Jobicy's v2 feed returns the current public catalogue in one
         # response and rejects pagination parameters. Keep ``max_pages`` in
         # the constructor for a stable source interface, but do not send it
         # to the API or manufacture duplicate requests.
         if self._max_pages <= 0:
-            return []
+            return
 
         try:
             data = self._http.get_json(_URL)
         except Exception:
             logger.warning("jobicy discovery failed", exc_info=True)
-            return []
+            return
 
-        jobs: list[Job] = []
         for item in data.get("jobs", []) if isinstance(data, dict) else []:
             job = self._to_job(item)
             if job is not None:
-                jobs.append(job)
-        return jobs
+                yield job
 
     def _to_job(self, item) -> Job | None:
         if not isinstance(item, dict):

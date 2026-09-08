@@ -1366,7 +1366,7 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(sto
     persisted_job = store.get_job(only_job_id)
     assert persisted_job is not None
     assert persisted_job.source == "ashby"
-    assert GmailStagedSource(store).discover() == []
+    assert list(GmailStagedSource(store).discover()) == []
 
     run_pipeline(
         settings,

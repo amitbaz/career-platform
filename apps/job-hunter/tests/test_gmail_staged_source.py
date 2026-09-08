@@ -28,7 +28,7 @@ def test_staged_source_returns_stable_gmail_job_identity(store, tmp_path):
         ),
     )
 
-    jobs = GmailStagedSource(store).discover()
+    jobs = list(GmailStagedSource(store).discover())
 
     assert len(jobs) == 1
     job = jobs[0]
@@ -58,7 +58,7 @@ def test_staged_source_normalizes_linkedin_hiring_page_title():
         ]
     )
 
-    [job] = GmailStagedSource(store).discover()
+    [job] = list(GmailStagedSource(store).discover())
 
     assert job.title == "Senior Frontend Engineer"
     assert job.company == "Magentic"
@@ -84,7 +84,7 @@ def test_staged_source_keeps_existing_linkedin_metadata_over_page_title():
         ]
     )
 
-    [job] = GmailStagedSource(store).discover()
+    [job] = list(GmailStagedSource(store).discover())
 
     assert job.title == "Senior Frontend Engineer"
     assert job.company == "Magentic GmbH"
@@ -107,7 +107,7 @@ def test_staged_source_does_not_guess_from_an_unrecognized_linkedin_title():
         ]
     )
 
-    [job] = GmailStagedSource(store).discover()
+    [job] = list(GmailStagedSource(store).discover())
 
     assert job.title == "Magentic jobs | LinkedIn"
     assert job.company == ""
@@ -140,7 +140,7 @@ def test_same_canonical_url_on_unevaluated_public_job_is_still_emitted(store):
         )
     )
 
-    [job] = GmailStagedSource(store).discover()
+    [job] = list(GmailStagedSource(store).discover())
 
     assert job.source == "gmail:linkedin"
     assert job.source_job_id == "linkedin:job-123"
@@ -169,7 +169,7 @@ def test_same_canonical_url_on_closed_public_job_is_not_emitted(store):
     )
     store.set_job_status(job_id, "closed")
 
-    assert GmailStagedSource(store).discover() == []
+    assert list(GmailStagedSource(store).discover()) == []
 
 
 def test_same_identity_on_unevaluated_public_job_is_still_emitted(store):
@@ -195,7 +195,7 @@ def test_same_identity_on_unevaluated_public_job_is_still_emitted(store):
         )
     )
 
-    [job] = GmailStagedSource(store).discover()
+    [job] = list(GmailStagedSource(store).discover())
 
     assert job.source == "gmail:linkedin"
     assert job.source_job_id == "linkedin:job-123"
@@ -229,4 +229,4 @@ def test_same_identity_on_closed_public_job_is_not_emitted(store):
     )
     store.set_job_status(job_id, "closed")
 
-    assert GmailStagedSource(store).discover() == []
+    assert list(GmailStagedSource(store).discover()) == []

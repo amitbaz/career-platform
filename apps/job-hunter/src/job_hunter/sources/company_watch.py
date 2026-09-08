@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -78,10 +78,15 @@ class CompanyWatchSource:
         self._http = http
         self._now = now
 
-    def discover(self) -> list[Job]:
-        """Return jobs from due watches while isolating per-company failures."""
+    def discover(self) -> Iterator[Job]:
+        """Yield jobs watch by watch, isolating per-company failures.
+
+        A watch stays the unit of work: its endpoint either answers or it
+        does not, and that verdict is what the health write records, so a
+        watch's jobs are gathered before any of them is handed out. A caller
+        that stops between watches keeps every job the earlier ones gave.
+        """
         checked_at = self._now()
-        discovered: list[Job] = []
         for watch in self._store.list_due_company_watches(checked_at):
             if not _has_endpoint(watch):
                 # A company-only watch is a placeholder awaiting endpoint
@@ -106,7 +111,6 @@ class CompanyWatchSource:
                     )
                 continue
 
-            discovered.extend(jobs)
             try:
                 self._store.record_watch_success(watch["id"], checked_at)
             except Exception:
@@ -115,15 +119,24 @@ class CompanyWatchSource:
                     watch["company_name"],
                     exc_info=True,
                 )
-        return discovered
+            yield from jobs
 
     def _discover_watch(self, watch) -> list[Job]:
+        """Return one watch's jobs, raising if its endpoint failed.
+
+        Materialised on purpose: the caller's per-watch failure isolation
+        only works if the whole check has either succeeded or raised by the
+        time it returns.
+        """
         provider = watch["ats_provider"]
         identifier = watch["ats_identifier"]
         source_type = _ATS_SOURCE_TYPES.get(provider)
         if source_type is not None and identifier:
             tracked_http = _HealthTrackingHttp(self._http)
-            jobs = source_type(identifier, tracked_http).discover()
+            # The adapter fails open, so its request error only surfaces
+            # through the tracking client; draining the scan first is what
+            # makes that check meaningful.
+            jobs = list(source_type(identifier, tracked_http).discover())
             if tracked_http.error is not None:
                 raise tracked_http.error
             for job in jobs:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from job_hunter.models import Job
 from job_hunter.normalize import canonicalize_url
 
@@ -15,8 +17,8 @@ class HimalayasSource:
         self._http = http
         self._max_pages = max_pages
 
-    def discover(self) -> list[Job]:
-        jobs: list[Job] = []
+    def discover(self) -> Iterator[Job]:
+        """Yield each page's jobs before requesting the page after it."""
         cursor: str | None = None
 
         for page in range(self._max_pages):
@@ -25,18 +27,16 @@ class HimalayasSource:
                 data = self._http.get_json(_URL, params=params) if params else self._http.get_json(_URL)
             except Exception:
                 logger.warning("himalayas discovery failed", exc_info=True)
-                break
+                return
 
             for item in data.get("jobs", []):
                 job = self._to_job(item)
                 if job is not None:
-                    jobs.append(job)
+                    yield job
 
             cursor = data.get("nextCursor")
             if not cursor:
-                break
-
-        return jobs
+                return
 
     def _to_job(self, item) -> Job | None:
         if not isinstance(item, dict):

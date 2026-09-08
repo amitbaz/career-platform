@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from job_hunter.canonical import apply_ats_identity
 from job_hunter.models import AtsReference, Job
 from job_hunter.normalize import canonicalize_url
@@ -21,7 +23,7 @@ class LeverSource:
     def source_label(self) -> str:
         return f"lever:{self._site}"
 
-    def discover(self) -> list[Job]:
+    def discover(self) -> Iterator[Job]:
         try:
             data = self._http.get_json(_URL_TEMPLATE.format(site=self._site))
         except Exception as exc:
@@ -31,9 +33,8 @@ class LeverSource:
                 logger.warning(
                     "lever discovery failed for site %s", self._site, exc_info=True
                 )
-            return []
+            return
 
-        jobs = []
         for item in data:
             categories = item.get("categories", {}) or {}
             workplace_type = (item.get("workplaceType") or "").lower()
@@ -64,8 +65,7 @@ class LeverSource:
                     job_id=str(job_id) if job_id is not None else None,
                 ),
             )
-            jobs.append(job)
-        return jobs
+            yield job
 
 
 def fetch_description(site: str, target_url: str, http) -> str | None:

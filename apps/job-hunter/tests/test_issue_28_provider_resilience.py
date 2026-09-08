@@ -75,7 +75,7 @@ def test_wellfound_detail_429_is_single_attempt_compact_and_non_fatal(
     )
 
     with caplog.at_level(logging.WARNING):
-        jobs = source.discover()
+        jobs = list(source.discover())
 
     assert [job.source_job_id for job in jobs] == ["2"]
     assert sum("/jobs/1-" in url for url in calls) == 1
@@ -114,7 +114,7 @@ def test_wellfound_listing_429_does_not_block_later_listing(monkeypatch, caplog)
     )
 
     with caplog.at_level(logging.WARNING):
-        jobs = source.discover()
+        jobs = list(source.discover())
 
     assert [job.source_job_id for job in jobs] == ["2"]
     assert jobs[0].market_hint == "germany_eu"
@@ -149,11 +149,13 @@ def test_shared_open_search_circuit_logs_once_and_makes_no_provider_calls(caplog
 
     with caplog.at_level(logging.WARNING):
         for index in range(8):
-            jobs = TargetedSearchSource(
-                backend,
-                [f"canonical query {index}"],
-                breaker=breaker,
-            ).discover()
+            jobs = list(
+                TargetedSearchSource(
+                    backend,
+                    [f"canonical query {index}"],
+                    breaker=breaker,
+                ).discover()
+            )
             assert jobs == []
 
     assert backend.calls == 0
@@ -180,11 +182,13 @@ def test_brave_budget_exhaustion_does_not_trip_shared_search_circuit(caplog):
     breaker = CircuitBreaker(failure_threshold=1)
 
     with caplog.at_level(logging.INFO):
-        jobs = TargetedSearchSource(
-            backend,
-            ["q1", "q2"],
-            breaker=breaker,
-        ).discover()
+        jobs = list(
+            TargetedSearchSource(
+                backend,
+                ["q1", "q2"],
+                breaker=breaker,
+            ).discover()
+        )
 
     assert jobs == []
     assert backend.calls == 1

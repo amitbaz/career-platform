@@ -101,7 +101,11 @@ def _targeted_canonical_candidates(
         enable_brave=brave_budget is not None,
         on_brave_attempt=brave_budget.reserve if brave_budget is not None else None,
     )
-    candidates = TargetedSearchSource(backend, [query], breaker=breaker).discover()
+    # Materialised: this returns a list its callers measure and re-read, and
+    # the search is one bounded query rather than an open-ended harvest.
+    candidates = list(
+        TargetedSearchSource(backend, [query], breaker=breaker).discover()
+    )
     for candidate in candidates:
         ats = parse_supported_ats_url(candidate.url)
         if ats is not None and (
