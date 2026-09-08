@@ -45,7 +45,7 @@ Cover letter generation + PDF rendering happens on demand, not as part of the da
 - `src/job_hunter/sources/` — public job discovery adapters: Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source fails open: if one adapter errors, the run continues with the rest.
 - The user's search profile (stored in Postgres) supports role families, query templates, ATS domains, and `max_search_queries_per_run`; DuckDuckGo queries expand each role/template pair across the configured ATS domains before deduping.
 - Only software/product-engineering professions reach Gemini. The default evaluation budget is 35 jobs per run, with source-diverse selection (`source_minimum_per_run: 2`, `source_max_share: 0.5`) when profile extraction succeeds.
-- `src/job_hunter/preferences.py` extracts a compact preference profile from `CANDIDATE_PROFILE_B64`; `src/job_hunter/ranking.py` then uses preferred roles, seniority, must-have signals, location fit, avoid signals, and source quality to rank eligible jobs before Gemini. If profile extraction or diversity selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
+- `src/job_hunter/preferences.py` extracts a compact preference profile from the CV stored in Relay Profile; `src/job_hunter/ranking.py` then uses preferred roles, seniority, must-have signals, location fit, avoid signals, and source quality to rank eligible jobs before Gemini. If profile extraction or diversity selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
 - `skip` evaluations are persisted but never sent to Telegram. Telegram sections are ordered by effective match score descending, unknown decisions are omitted, and only scores strictly greater than 60 are eligible for digest or retry delivery.
 - `src/job_hunter/prefilter.py` — cheap deterministic filtering before spending Gemini calls.
 - `src/job_hunter/evaluation.py` / `gemini.py` — Gemini-based scoring and rationale.
@@ -120,11 +120,8 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 
 | Secret | Purpose |
 | --- | --- |
-| `GEMINI_API_KEY` | Gemini API key used for evaluation and cover letter drafting |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
 | `TELEGRAM_CHAT_ID` | Telegram chat id to deliver the digest/PDFs to |
-| `CANDIDATE_PROFILE_B64` | Base64-encoded plain-text candidate profile/CV |
-| `COVER_LETTER_TEMPLATE_B64` | Base64-encoded plain-text cover letter template |
 | `GMAIL_CLIENT_ID` | OAuth client ID used only by the Gmail intelligence sync |
 | `GMAIL_CLIENT_SECRET` | OAuth client secret used only by the Gmail intelligence sync |
 | `GMAIL_REFRESH_TOKEN` | Refresh token printed by the local Gmail OAuth bootstrap |
@@ -133,9 +130,11 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 | `SUPABASE_PUBLISHABLE_KEY` | Supabase project's publishable API key, sent as the `apikey` header. Public by design, but required. |
 | `SUPABASE_SIGNING_KEY_B64` | Base64-encoded private ES256 JWK used to mint per-user access tokens. It can mint a token for any user — treat it as the platform's most sensitive secret. Required. |
 
-**As of this writing these four secrets do not exist yet in either GitHub repository settings or
+**As of this writing the four Supabase secrets above do not exist yet in either GitHub repository settings or
 the Vercel project.** Both the workflows and the Telegram webhook are non-functional until an
 operator creates them — see [Cutover runbook](#cutover-runbook-order-matters) below.
+
+The Gemini API key, the Brave Search API key, and your CV and cover letter text are **not** repository secrets. They belong to the user a run acts for and are saved in Relay — see [CV, cover letter, and provider keys in Relay Profile](#cv-cover-letter-and-provider-keys-in-relay-profile).
 
 ## Cutover runbook (order matters)
 
@@ -171,16 +170,16 @@ The bot enforces its own ceiling at 80% of each of these three values, and both 
 
 `GEMINI_RUN_ID` is not something you configure: the workflow supplies it automatically as `${{ github.run_id }}` on both Gemini-using steps, so the Gmail sync process and the main pipeline process share one GitHub Actions run id and are accounted against one usage ledger for that run.
 
-Never commit your CV or cover letter template text in plain form. Encode them locally and paste only the base64 output into the GitHub secret:
+## CV, cover letter, and provider keys in Relay Profile
 
-```bash
-base64 -i candidate_profile.txt | tr -d '\n'
-base64 -i cover_letter_template.txt | tr -d '\n'
-```
+Your CV text, your cover letter text, and your Gemini and Brave Search API keys are per-user values. They are not repository secrets and are never encoded into the environment. Save them in Relay while signed in as the account whose UUID is `JOB_HUNTER_USER_ID`; every run reads the current values from Postgres.
 
-(On Linux, `base64 -w0 candidate_profile.txt` produces the same single-line output.)
+- **CV and cover letter.** Open **Profile** and use **Replace source information** to save or replace your CV text (or upload a CV PDF) and the career narrative text the bot uses as its cover letter template. Relay stores both as your source documents, so replacing the text in Profile is the only step needed to change what the next run reads. Relay treats the career narrative as optional for its own features, but Job Hunter requires both: a run stops at startup with `Missing per-user Job Hunter configuration:` naming whichever of `cv` and `cover_letter` is empty.
+- **Provider keys.** The **Provider credentials** panel on the same Profile page has one control per provider. Enter a key and press **Save** (**Replace** once one is stored) to store it, or **Delete** to remove it. Stored keys are write-only: the panel shows only whether a provider is configured and when it was last updated, never the key itself.
+  - **Gemini is required.** Without a stored Gemini key a run stops at startup with `Missing per-user Job Hunter configuration: gemini`.
+  - **Brave Search is optional.** Without a stored Brave key the run skips Brave-backed source discovery and search falls back to DuckDuckGo, which needs no key. `BRAVE_MONTHLY_QUERY_LIMIT` stays an environment variable: it caps how much of a stored Brave key's monthly quota a run may spend, and configures nothing on its own.
 
-Paste the resulting string as the secret value. The bot decodes it in memory at runtime; it is never written back to the repo.
+Relay's own server-side Gemini API key (see `apps/relay/.env.example`) is a separate, deployment-level setting used by Relay's interview features. It is unrelated to the per-user key above and is unchanged.
 
 ## Telegram bot setup
 
@@ -195,7 +194,7 @@ This bot is designed to run entirely on the Gemini API free tier, at €0 cost. 
 
 1. **Keep the Job Hunter Gemini Google Cloud project unlinked from Cloud Billing.** This is an operator-enforced deployment gate, not something the bot's code can verify or turn off. The bot's 80% usage ceilings and its 429 circuit breaker (see below) reduce how much of the free-tier quota gets used, but they cannot make overspending impossible: those guardrails run in application code and have no way to detect or block a linked billing account. If Cloud Billing is ever linked to this project, quota limits can stop being a hard wall and calls could be billed instead of rejected. Confirm "No billing account" in Google Cloud Console's **Billing** page for the project behind your API key, not just in AI Studio.
 2. Create a free-tier API key for that unbilled project at [Google AI Studio](https://aistudio.google.com/).
-3. Store the key as the `GEMINI_API_KEY` GitHub Actions **secret**.
+3. Save the key in Relay under **Profile -> Provider credentials -> Gemini**, signed in as the account whose UUID is `JOB_HUNTER_USER_ID`. It is stored per user, not as a repository secret.
 4. In AI Studio, open **Rate Limits** for the same project and for the model configured via the `GEMINI_MODEL` environment variable (defaulting to `gemini-3.6-flash` if unset; override it as a repo secret or variable, or in your local `.env`, to point at a different model). Read off the RPM (requests/minute), input TPM (tokens/minute), and RPD (requests/day) values shown there.
 5. Copy those three numbers into the GitHub Actions **variables** `GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, and `GEMINI_FREE_RPD` (see [Required GitHub Actions variables](#required-github-actions-variables)). Both Gemini-using workflow steps read these and enforce an 80%-of-quota ceiling before ever calling Gemini.
 6. Whenever the Gemini project changes or `GEMINI_MODEL` changes, return to AI Studio's Rate Limits page first and refresh all three variables before the next run — free-tier limits differ per model and per project, and a stale, too-high value would let the app under-protect itself against the real provider limit.
@@ -204,7 +203,7 @@ This bot is designed to run entirely on the Gemini API free tier, at €0 cost. 
 
 ## Local dry run
 
-Copy `.env.example` to `.env`, fill in `GEMINI_API_KEY`, `CANDIDATE_PROFILE_B64`, and `COVER_LETTER_TEMPLATE_B64`, and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode):
+Copy `.env.example` to `.env`, fill in the Supabase and Gemini free-tier quota values, and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode). Your Gemini key and your CV and cover letter text are read from Relay for `JOB_HUNTER_USER_ID`, not from `.env`:
 
 ```bash
 python -m venv .venv
@@ -232,7 +231,7 @@ python scripts/gmail_oauth_bootstrap.py
 
 The bootstrap opens the Google consent flow and prints a refresh token. Store that printed value as the GitHub Actions secret `GMAIL_REFRESH_TOKEN`; also add `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` as GitHub secrets. Never commit any of these values.
 
-Use the following local commands after loading those Gmail variables and `GEMINI_API_KEY`:
+The Gmail OAuth variables stay environment-backed; only they are needed in your shell. The sync's Gemini calls use the Gemini key stored in Relay Profile for `JOB_HUNTER_USER_ID`, the same key the main pipeline uses. Use the following local commands after loading the Gmail variables:
 
 ```bash
 python -m job_hunter sync-gmail --dry-run
