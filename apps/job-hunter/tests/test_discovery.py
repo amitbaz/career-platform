@@ -24,6 +24,7 @@ from job_hunter.models import (
     Job,
     SearchPolicy,
 )
+from job_hunter.postgres_store import DryRunStore
 from tests.market_fixtures import make_market_policy
 
 
@@ -62,6 +63,20 @@ class BrokenSource:
 class NoOpHttp:
     def get(self, url, **kwargs):
         raise AssertionError(f"unexpected enrichment fetch for {url!r}")
+
+
+class DryRunDiscoveryStore:
+    """Only the read that one no-resolver discovery run is allowed to use."""
+
+    def __init__(self):
+        self.evaluation_job_ids = []
+
+    def needs_evaluation_bulk(self, job_ids):
+        self.evaluation_job_ids.extend(job_ids)
+        return {job_id: True for job_id in job_ids}
+
+    def __getattr__(self, name):
+        raise AssertionError(f"unexpected wrapped-store access: {name}")
 
 
 class FakeResponse:
@@ -130,6 +145,28 @@ def test_collect_candidates_continues_after_source_failure(store, policy):
     result = collect_candidates([broken, good], store, NoOpHttp(), policy)
     assert result.stats.raw == 1
     assert len(result.eligible) == 1
+
+
+def test_collect_candidates_completes_with_dry_run_store_and_one_job(policy):
+    job = Job(
+        source="test",
+        source_job_id="1",
+        title="Senior Product Engineer",
+        description="React TypeScript",
+        remote=True,
+    )
+    backing_store = DryRunDiscoveryStore()
+
+    result = collect_candidates(
+        [FakeSource([job])],
+        DryRunStore(backing_store),
+        NoOpHttp(),
+        policy,
+    )
+
+    assert len(result.eligible) == 1
+    assert result.stats.newly_discovered == 0
+    assert backing_store.evaluation_job_ids == [result.eligible[0][0]]
 
 
 def test_collect_candidates_collapses_same_canonical_url(store, policy):

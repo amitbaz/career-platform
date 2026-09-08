@@ -801,9 +801,9 @@ def collect_candidates(
         persisted: list[tuple[str, Job, str | None]] = []
         skipped_count = 0
         # strict=True: these three lists are built one entry per unique job
-        # and must stay that way. A store whose batch upsert returns a
-        # shorter list (DryRunStore._synthesize("list") returns []) would
-        # otherwise make collect_candidates silently return zero candidates.
+        # and must stay that way. A store whose batch upsert returns a shorter
+        # list would otherwise make collect_candidates silently return zero
+        # candidates.
         for job, observed_market_id, result in zip(
             unique_jobs, observed_markets, upserted, strict=True
         ):
