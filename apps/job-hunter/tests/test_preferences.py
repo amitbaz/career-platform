@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
+from job_hunter.ai.usage import AIBudgetExceeded, AIQuotaPaused
 from job_hunter.models import CandidatePreferences, SearchPolicy
 from job_hunter.preferences import extract_candidate_preferences
 
@@ -18,6 +18,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,
@@ -145,17 +146,17 @@ def test_extract_candidate_preferences_caches_across_calls(store):
 
 def test_extract_candidate_preferences_propagates_gemini_budget_exceeded(store):
     policy = make_policy()
-    gemini = FakeGemini(exception=GeminiBudgetExceeded("over budget"))
+    gemini = FakeGemini(exception=AIBudgetExceeded("over budget"))
 
-    with pytest.raises(GeminiBudgetExceeded):
+    with pytest.raises(AIBudgetExceeded):
         extract_candidate_preferences("candidate profile text", gemini, policy, store)
 
 
-def test_extract_candidate_preferences_propagates_gemini_quota_paused(store):
+def test_extract_candidate_preferences_propagates_ai_quota_paused(store):
     policy = make_policy()
     gemini = FakeGemini(
-        exception=GeminiQuotaPaused("paused", paused_until="2026-01-01T00:00:00+00:00", reason="daily_quota")
+        exception=AIQuotaPaused("paused", paused_until="2026-01-01T00:00:00+00:00", reason="daily_quota")
     )
 
-    with pytest.raises(GeminiQuotaPaused):
+    with pytest.raises(AIQuotaPaused):
         extract_candidate_preferences("candidate profile text", gemini, policy, store)

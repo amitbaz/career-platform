@@ -16,7 +16,7 @@ also needs ``application_events.id``, so that map is built too.
 Three legacy tables are skipped outright rather than migrated, because nothing
 depends on their historical content and the next real run rebuilds them from
 scratch: ``pending_ai_work`` (a retry queue -- stale entries would just be
-retried again), ``gemini_quota_state`` (a pause timer that should start fresh
+retried again), ``ai_quota_state`` (a pause timer that should start fresh
 rather than resume a stale pause from a different runtime), and
 ``candidate_context_cache`` (a cache keyed by a profile hash that would need
 revalidating anyway).
@@ -82,7 +82,7 @@ from job_hunter.supabase_client import SupabaseClient
 logger = logging.getLogger(__name__)
 
 #: Rebuilt by the next real run; migrating stale rows would be actively wrong.
-_SKIPPED_TABLES = ("pending_ai_work", "gemini_quota_state", "candidate_context_cache")
+_SKIPPED_TABLES = ("pending_ai_work", "ai_quota_state", "candidate_context_cache")
 
 
 def _iso(table: str, column: str, value: str | None) -> str | None:
@@ -623,7 +623,7 @@ def _migrate_gemini_usage(
     """Carry the AI accounting ledger across (`gemini_usage` -> `job_hunter_ai_usage`).
 
     The destination is the renamed table from issue #70: one row per model
-    call, read back by `gemini_usage_rows` to pace against Gemini's rolling
+    call, read back by `ai_usage_rows` to pace against Gemini's rolling
     per-minute, per-day and token limits. Dropping it would leave those
     windows empty, so a migration part-way through a day would let the run
     exceed the free-tier daily cap it had already partly spent -- the same
@@ -631,7 +631,7 @@ def _migrate_gemini_usage(
 
     `run_id` is nullable in the legacy schema but NOT NULL in Postgres, so a
     missing one becomes `'unknown'`, matching both the backfill in migration
-    202609060003 and `PostgresJobStore.record_gemini_usage`'s own fallback.
+    202609060003 and `PostgresJobStore.record_ai_usage`'s own fallback.
     `provider` does not exist in the legacy table, which predates any second
     provider; every row it holds is Gemini.
     """

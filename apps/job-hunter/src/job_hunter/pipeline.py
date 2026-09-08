@@ -18,12 +18,12 @@ from job_hunter.cover_letter import generate_cover_letter
 from job_hunter.discovery import collect_candidates, metric_source_label
 from job_hunter.evaluation import evaluate_job
 from job_hunter.facets import PostingFacts, extract_facets
-from job_hunter.gemini import GeminiClient
-from job_hunter.gemini_usage import (
-    GEMINI_PURPOSES,
-    GeminiBudgetExceeded,
-    GeminiQuotaPaused,
-    GeminiTemporaryCapacity,
+from job_hunter.ai import (
+    AI_PURPOSES,
+    AIBudgetExceeded,
+    AIProvider,
+    AIQuotaPaused,
+    AITemporaryCapacity,
 )
 from job_hunter.hard_blockers import (
     BlockingThresholds,
@@ -37,7 +37,7 @@ from job_hunter.models import (
     AtsReference,
     CandidateContext,
     DigestItem,
-    GeminiUsageSummary,
+    AIUsageSummary,
     Job,
     JobFacets,
     Material,
@@ -64,7 +64,7 @@ from job_hunter.sources.learned_ats import LearnedAtsStats
 from job_hunter.telegram import (
     TelegramClient,
     build_digest,
-    build_gemini_pause_warning,
+    build_ai_pause_warning,
     build_gmail_review_digest_chunks,
     select_deliverable_items,
 )
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 _AVAILABILITY_WARNING = "⚠️ Availability not verified - check the posting before applying"
 _READY_DECISIONS = {"high_priority", "package_match"}
 #: The outcomes the daily offer limit counts: the offers themselves, ready to
-#: apply or possible. A `skip` costs a Gemini call but no delivery budget, and
+#: apply or possible. A `skip` costs a model call but no delivery budget, and
 #: so does a `blocked` job -- it reaches Telegram only under "Needs review /
 #: blockers", which is a warning about a job, not an offer to act on.
 _OFFER_DECISIONS = _READY_DECISIONS | {"possible_match"}
@@ -410,13 +410,13 @@ def generate_cover_letter_on_demand(
     job_id: str,
     *,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     telegram: TelegramClient,
 ) -> bool:
     """Generate (or resend) one job's cover letter on demand and deliver it.
 
     A repeat call for a job that already has a saved cover letter resends the
-    existing PDF for free instead of calling Gemini again. If the requested
+    existing PDF for free instead of calling the model again. If the requested
     job was merged away, all reads and writes follow its redirect to the
     surviving job. A missing job with no redirect returns False after telling
     the user that the job is no longer available.
@@ -447,15 +447,15 @@ def generate_cover_letter_on_demand(
         text = material.cover_letter_text
     else:
         try:
-            candidate_context = get_candidate_context(settings.candidate_profile, settings.policy, gemini, store)
+            candidate_context = get_candidate_context(settings.candidate_profile, settings.policy, ai, store)
             text = generate_cover_letter(
-                job, evaluation, candidate_context, settings.cover_letter_template, gemini, date.today()
+                job, evaluation, candidate_context, settings.cover_letter_template, ai, date.today()
             )
-        except (GeminiBudgetExceeded, GeminiQuotaPaused):
-            logger.warning("cover letter generation deferred by Gemini quota for job_id=%s", job_id)
+        except (AIBudgetExceeded, AIQuotaPaused):
+            logger.warning("cover letter generation deferred by AI quota for job_id=%s", job_id)
             telegram.send_message(
                 f"Couldn't generate a cover letter for {job.company} - {job.title} right now "
-                "(Gemini quota limit) - try again later."
+                "(AI quota limit) - try again later."
             )
             return False
         except Exception:
@@ -535,7 +535,7 @@ def _waiting_out_capacity(call, *, doing: str, job_id: str):
     Both provider calls a user is waiting on -- reading the posting and
     scoring it -- wait rather than give up their turn: the run is producing
     this person's digest and there is no later chance today.
-    `GeminiClient._preflight_with_pacing` has already slept out one window and
+    `the adapter's preflight pacing` has already slept out one window and
     re-checked before raising, so each pass here is a second, deliberate wait.
 
     The backfill pass deliberately does not use this. Nobody is waiting on it,
@@ -544,9 +544,9 @@ def _waiting_out_capacity(call, *, doing: str, job_id: str):
     while True:
         try:
             return call()
-        except GeminiTemporaryCapacity as exc:
+        except AITemporaryCapacity as exc:
             logger.info(
-                "Gemini temporary capacity reached; waiting %.2fs before %s for job_id=%s",
+                "AI temporary capacity reached; waiting %.2fs before %s for job_id=%s",
                 exc.retry_after_seconds,
                 doing,
                 job_id,
@@ -558,7 +558,7 @@ def _extract_and_store_facets(
     job_id: str,
     job: Job,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     summary: RunSummary,
 ) -> JobFacets | None:
     """Read one job's objective facets and store them, returning them.
@@ -579,8 +579,8 @@ def _extract_and_store_facets(
     up its turn -- so neither answer belongs here.
     """
     try:
-        facets = extract_facets(PostingFacts.from_job(job), gemini)
-    except (GeminiTemporaryCapacity, GeminiBudgetExceeded, GeminiQuotaPaused):
+        facets = extract_facets(PostingFacts.from_job(job), ai)
+    except (AITemporaryCapacity, AIBudgetExceeded, AIQuotaPaused):
         raise
     except Exception:
         logger.exception("facet extraction failed for job_id=%s", job_id)
@@ -601,7 +601,7 @@ def _facets_for_scoring(
     job_id: str,
     job: Job,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     summary: RunSummary,
     needs_facets: set[str],
 ) -> JobFacets | None:
@@ -635,7 +635,7 @@ def _facets_for_scoring(
         logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
 
     facets = _waiting_out_capacity(
-        lambda: _extract_and_store_facets(job_id, job, store, gemini, summary),
+        lambda: _extract_and_store_facets(job_id, job, store, ai, summary),
         doing="reading the posting",
         job_id=job_id,
     )
@@ -651,7 +651,7 @@ def _backfill_one_job_facets(
     job_id: str,
     job: Job,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     summary: RunSummary,
 ) -> str:
     """One step of the run's backfill pass over jobs nothing is waiting on.
@@ -661,9 +661,9 @@ def _backfill_one_job_facets(
     jobs those calls did not need.
     """
     try:
-        _extract_and_store_facets(job_id, job, store, gemini, summary)
-    except GeminiTemporaryCapacity:
-        # `GeminiClient._preflight_with_pacing` already slept out one rolling
+        _extract_and_store_facets(job_id, job, store, ai, summary)
+    except AITemporaryCapacity:
+        # `the adapter's preflight pacing` already slept out one rolling
         # window and re-checked, so reaching this means capacity is still
         # full. Scoring keeps waiting because a user is waiting on the
         # answer; this job keeps its turn for the next run. It never reached
@@ -672,7 +672,7 @@ def _backfill_one_job_facets(
         # pressure would burn its whole allowance extracting nothing.
         logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
         return _FACET_SKIPPED
-    except (GeminiBudgetExceeded, GeminiQuotaPaused):
+    except (AIBudgetExceeded, AIQuotaPaused):
         logger.info("facet extraction deferred by provider quota for job_id=%s", job_id)
         return _FACET_QUOTA_BLOCKED
     return _FACET_EXTRACTED
@@ -682,7 +682,7 @@ def _extract_facets_for_run(
     run_candidates: list[tuple[str, Job | None]],
     backfill_ids: list[str],
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     summary: RunSummary,
     *,
     limit: int,
@@ -757,7 +757,7 @@ def _extract_facets_for_run(
                     continue
             if job is None:
                 continue
-            outcome = _backfill_one_job_facets(job_id, job, store, gemini, summary)
+            outcome = _backfill_one_job_facets(job_id, job, store, ai, summary)
             if outcome == _FACET_QUOTA_BLOCKED:
                 quota_blocked = True
             elif outcome == _FACET_SKIPPED:
@@ -793,7 +793,7 @@ def _evaluate_and_deliver_job(
     candidate_context: CandidateContext,
     settings: Settings,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     digest_items: list[DigestItem],
     summary: RunSummary,
     queued_job_ids: set[str],
@@ -802,7 +802,7 @@ def _evaluate_and_deliver_job(
     """Evaluate one job and add it to the digest, containing its failures.
 
     No single job may end a run. The inner function already catches a failed
-    Gemini call, but everything after it -- persisting the evaluation,
+    model call, but everything after it -- persisting the evaluation,
     promoting the company, building the digest item -- could still raise out
     of the evaluation loop and kill the process, discarding every remaining
     candidate and the digest with them (#145). This wrapper is the guarantee
@@ -817,7 +817,7 @@ def _evaluate_and_deliver_job(
             candidate_context,
             settings,
             store,
-            gemini,
+            ai,
             digest_items,
             summary,
             queued_job_ids,
@@ -871,7 +871,7 @@ def _evaluate_and_deliver_one_job(
     candidate_context: CandidateContext,
     settings: Settings,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     digest_items: list[DigestItem],
     summary: RunSummary,
     queued_job_ids: set[str],
@@ -881,7 +881,7 @@ def _evaluate_and_deliver_one_job(
 
     Returns (promoted, blocked, decision, offered, scored). `summary.evaluation_attempted`
     is incremented here rather than reported back, so it counts the fresh
-    Gemini evaluations actually made (not the already-evaluated shortcut
+    model evaluations actually made (not the already-evaluated shortcut
     below) even when a later step for the same job fails and the caller never
     sees a return value. `offered` is True when this job will reach the user
     as an offer, which is what the daily offer limit counts. `scored` is False
@@ -895,16 +895,16 @@ def _evaluate_and_deliver_one_job(
     # Scoring is handed the posting's facets, not its description (#126), so
     # a posting nobody has read yet is read here, once, before it is scored.
     try:
-        facets = _facets_for_scoring(job_id, job, store, gemini, summary, needs_facets)
-    except GeminiQuotaPaused:
+        facets = _facets_for_scoring(job_id, job, store, ai, summary, needs_facets)
+    except AIQuotaPaused:
         # The model is paused, so the scoring call would not have gone through
         # either. Queue the job exactly as a paused scoring call does.
         logger.warning(
-            "reading the posting for job_id=%s was paused by Gemini quota", job_id
+            "reading the posting for job_id=%s was paused by AI quota", job_id
         )
         store.enqueue_ai_work("job_evaluation", job_id)
         return False, True, None, False, False
-    except GeminiBudgetExceeded:
+    except AIBudgetExceeded:
         # The *non-core* daily budget is out, not evaluation's reserve: a job
         # whose posting was already read still scores this run, so this must
         # not block the run the way a paused model does. Only a posting nobody
@@ -949,14 +949,14 @@ def _evaluate_and_deliver_one_job(
                     facets,
                     candidate_context,
                     settings.policy,
-                    gemini,
+                    ai,
                 ),
                 doing="scoring",
                 job_id=job_id,
             )
-        except (GeminiBudgetExceeded, GeminiQuotaPaused):
+        except (AIBudgetExceeded, AIQuotaPaused):
             logger.warning(
-                "job evaluation deferred by Gemini quota for job_id=%s",
+                "job evaluation deferred by AI quota for job_id=%s",
                 job_id,
             )
             store.enqueue_ai_work("job_evaluation", job_id)
@@ -1067,15 +1067,15 @@ def _evaluate_and_deliver_one_job(
     return promoted, False, evaluation.decision, offered, scored
 
 
-def _format_gemini_usage_log(summary: GeminiUsageSummary) -> str:
+def _format_ai_usage_log(summary: AIUsageSummary) -> str:
     """One structured log line at run completion: totals plus per-purpose counts."""
     purposes = ",".join(
         f"{purpose}:{summary.purpose_counts[purpose]}"
-        for purpose in GEMINI_PURPOSES
+        for purpose in AI_PURPOSES
         if purpose in summary.purpose_counts
     )
     return (
-        f"gemini_usage run_calls={summary.requests_today} "
+        f"ai_usage run_calls={summary.requests_today} "
         f"rpd_pct={summary.rpd_percent:.1f} "
         f"rpm_peak_pct={summary.rpm_peak_percent:.1f} "
         f"tpm_peak_pct={summary.tpm_peak_percent:.1f} "
@@ -1115,7 +1115,7 @@ def run_pipeline(
     *,
     sources=None,
     store: PostgresJobStore,
-    gemini: GeminiClient,
+    ai: AIProvider,
     telegram: TelegramClient | None = None,
     http: HttpClient | None = None,
 ) -> RunSummary:
@@ -1177,11 +1177,11 @@ def run_pipeline(
     summary = RunSummary()
     digest_items: list[DigestItem] = []
     try:
-        candidate_context = get_candidate_context(settings.candidate_profile, settings.policy, gemini, store)
-    except (GeminiBudgetExceeded, GeminiQuotaPaused):
+        candidate_context = get_candidate_context(settings.candidate_profile, settings.policy, ai, store)
+    except (AIBudgetExceeded, AIQuotaPaused):
         candidate_context = None
         logger.warning(
-            "candidate context load deferred by Gemini quota; evaluation and cover letters "
+            "candidate context load deferred by AI quota; evaluation and cover letters "
             "will be deferred this run"
         )
     else:
@@ -1290,7 +1290,7 @@ def run_pipeline(
             candidate_context,
             settings,
             store,
-            gemini,
+            ai,
             digest_items,
             summary,
             queued_job_ids,
@@ -1339,7 +1339,7 @@ def run_pipeline(
             candidate_context,
             settings,
             store,
-            gemini,
+            ai,
             digest_items,
             summary,
             queued_job_ids,
@@ -1373,8 +1373,8 @@ def run_pipeline(
     #
     # It runs *after* every scoring call, and that ordering is still what keeps
     # it unable to cost the user a digest. A provider 429 persists a pause
-    # against the *model*, not the purpose (`GeminiUsageTracker.record_429`),
-    # and the scoring loops treat `GeminiQuotaPaused` as blocking for the rest
+    # against the *model*, not the purpose (`AIUsageTracker.record_429`),
+    # and the scoring loops treat `AIQuotaPaused` as blocking for the rest
     # of the run -- so a 429 tripped by a backfill call made first would defer
     # every score behind it and deliver nothing. The run's own reads happen
     # inline, only for jobs it is about to score, and are the unavoidable
@@ -1387,7 +1387,7 @@ def run_pipeline(
         + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
         discovery.rediscovered_job_ids,
         store,
-        gemini,
+        ai,
         summary,
         limit=max(0, settings.policy.max_jobs_per_run - summary.facet_extraction_attempted),
     )
@@ -1425,10 +1425,10 @@ def run_pipeline(
             settings.policy.match_score_floor,
         )
 
-    tracker = getattr(gemini, "_tracker", None)
+    tracker = getattr(ai, "_tracker", None)
     usage_summary = tracker.snapshot(datetime.now(timezone.utc)) if tracker is not None else None
     if usage_summary is not None:
-        logger.info(_format_gemini_usage_log(usage_summary))
+        logger.info(_format_ai_usage_log(usage_summary))
 
     delivered_by_market: dict[str, int] = {}
     delivered_by_source: dict[str, int] = {}
@@ -1484,12 +1484,12 @@ def run_pipeline(
                 store.mark_review_delivered(event_ids, review_message_id)
 
         if usage_summary is not None:
-            warning = build_gemini_pause_warning(usage_summary)
+            warning = build_ai_pause_warning(usage_summary)
             if warning is not None:
                 try:
                     telegram.send_message(warning)
                 except Exception:
-                    logger.exception("failed to send Gemini pause warning to Telegram")
+                    logger.exception("failed to send AI pause warning to Telegram")
 
         if deliverable_items and supports_navigation:
             now = datetime.now(timezone.utc)

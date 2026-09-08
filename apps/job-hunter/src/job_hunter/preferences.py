@@ -6,7 +6,7 @@ from job_hunter.models import CandidatePreferences, SearchPolicy
 from job_hunter.normalize import normalize_text
 
 if TYPE_CHECKING:
-    from job_hunter.gemini import GeminiClient
+    from job_hunter.ai import AIProvider
     from job_hunter.postgres_store import PostgresJobStore
 
 _SENIORITY_WORDS = ("intern", "junior", "mid", "senior", "staff", "lead", "principal", "head")
@@ -81,13 +81,13 @@ def _build_fallback_preferences(policy: SearchPolicy) -> CandidatePreferences:
 
 def extract_candidate_preferences(
     profile: str,
-    gemini: "GeminiClient",
+    ai: "AIProvider",
     policy: SearchPolicy,
     store: "PostgresJobStore",
 ) -> CandidatePreferences:
     """Compatibility helper: the preferences slice of the cached CandidateContext.
 
-    No longer runs its own per-run Gemini extraction — it delegates to
+    No longer runs its own per-run model extraction — it delegates to
     job_hunter.candidate_context.get_candidate_context, which extracts once
     per (profile, model, schema version) and caches the result in `store`.
     Imported lazily to avoid a circular import (candidate_context reuses
@@ -95,10 +95,10 @@ def extract_candidate_preferences(
     """
     from job_hunter.candidate_context import get_candidate_context
 
-    return get_candidate_context(profile, policy, gemini, store).preferences
+    return get_candidate_context(profile, policy, ai, store).preferences
 
 
 def preferences_source(preferences: CandidatePreferences) -> str:
     if preferences.summary == FALLBACK_PREFERENCES_SUMMARY:
         return "fallback"
-    return "gemini"
+    return "ai"

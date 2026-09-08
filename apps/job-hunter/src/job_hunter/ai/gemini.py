@@ -1,35 +1,46 @@
+"""The Gemini adapter: the only module that knows Gemini exists.
+
+It owns three provider-specific jobs and nothing else: building Google's
+request body, choosing the credential header, and translating Gemini's error
+bodies into the port's errors -- `_classify_429` in particular, which maps a
+429 body onto the port's three pause kinds. Everything above it (backoff,
+budget ceilings, the persisted pause, the ledger) is provider-neutral and
+lives in `job_hunter.ai.usage`.
+"""
+
 from __future__ import annotations
 
 import logging
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import requests
 
-from job_hunter.gemini_usage import GeminiQuotaPaused, GeminiTemporaryCapacity
+from job_hunter.ai.credentials import CredentialResolver, EnvCredentialResolver
+from job_hunter.ai.port import (
+    AIError,
+    AIIncompleteResponse,
+    AIPurpose,
+    AIQuotaPaused,
+    AITemporaryCapacity,
+    CallClass,
+    PauseKind,
+    QuotaUnavailable,
+)
 
 if TYPE_CHECKING:
-    from job_hunter.gemini_usage import GeminiPauseKind, GeminiPurpose, GeminiUsageTracker
+    from job_hunter.ai.usage import AIUsageTracker
     from job_hunter.http import HttpClient
 
 logger = logging.getLogger(__name__)
 
+#: The provider name written to every ledger and pause row this adapter makes.
+PROVIDER = "gemini"
+
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 _RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 _TRANSIENT_RETRY_DELAY_SECONDS = 2.0
-
-
-class GeminiError(RuntimeError):
-    pass
-
-
-class GeminiIncompleteResponse(GeminiError):
-    """Gemini stopped generation before completing the requested response."""
-
-    def __init__(self, finish_reason: str) -> None:
-        super().__init__(f"Gemini response incomplete: finish_reason={finish_reason}")
-        self.finish_reason = finish_reason
 
 
 def _now() -> datetime:
@@ -65,7 +76,7 @@ def _finish_reason(data: object) -> str | None:
     return reason if isinstance(reason, str) else None
 
 
-def _classify_429(response: requests.Response) -> tuple[GeminiPauseKind, str | None]:
+def _classify_429(response: requests.Response) -> tuple[PauseKind, str | None]:
     """Classify a Gemini 429 body into one of the design spec's three pause kinds."""
     try:
         body = response.json()
@@ -105,34 +116,44 @@ def _classify_429(response: requests.Response) -> tuple[GeminiPauseKind, str | N
     return "unknown", error_code
 
 
-class GeminiClient:
+class GeminiProvider:
+    """An `AIProvider` backed by Google's Generative Language API.
+
+    `credentials` and `trackers` are both keyed by call class, and both are
+    consulted per call: the class decides which credential funds a call and
+    which quota governs it. A class with no tracker is unaccounted, which is
+    why the credential is resolved *first* -- a class with no credential never
+    reaches a quota, a request, or a ledger row.
+    """
+
     def __init__(
         self,
-        api_key: str,
         model: str,
         http: HttpClient,
-        tracker: GeminiUsageTracker | None = None,
+        credentials: CredentialResolver,
+        trackers: Mapping[CallClass, AIUsageTracker] | None = None,
         *,
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._api_key = api_key
         self.model = model
         self._http = http
-        self._tracker = tracker
+        self._credentials = credentials
+        self._trackers = dict(trackers or {})
         self._sleep_fn = sleep_fn
 
     def _preflight_with_pacing(
         self,
-        purpose: GeminiPurpose | None,
+        tracker: AIUsageTracker | None,
+        purpose: AIPurpose | None,
         prompt: str,
     ) -> datetime:
         now = _now()
-        if self._tracker is None:
+        if tracker is None:
             return now
 
         try:
-            self._tracker.preflight(purpose, prompt, now)
-        except GeminiTemporaryCapacity as exc:
+            tracker.preflight(purpose, prompt, now)
+        except AITemporaryCapacity as exc:
             logger.info(
                 "Gemini rolling capacity full; waiting %.2fs before retry: purpose=%s",
                 exc.retry_after_seconds,
@@ -140,14 +161,15 @@ class GeminiClient:
             )
             self._sleep_fn(exc.retry_after_seconds)
             now = _now()
-            self._tracker.preflight(purpose, prompt, now)
+            tracker.preflight(purpose, prompt, now)
         return now
 
     def generate_text(
         self,
         prompt: str,
         *,
-        purpose: GeminiPurpose | None = None,
+        call_class: CallClass,
+        purpose: AIPurpose | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
         json_mode: bool = False,
@@ -162,6 +184,12 @@ class GeminiClient:
         reply means the model is still working rather than that something is
         broken -- a cover letter is the one such call today.
 
+        `call_class` selects the credential and the quota, in that order: the
+        credential is resolved before any pacing, request or ledger row, so a
+        class with no credential of its own can never borrow another's -- not
+        on the first attempt, not on a retry, and not when a quota is
+        exhausted.
+
         `max_attempts` bounds retries for HTTP 5xx responses and network
         timeouts only (`_RETRYABLE_STATUS_CODES` / `requests.Timeout`) —
         the failures a production run showed to be safe to retry. Every
@@ -170,9 +198,16 @@ class GeminiClient:
         other 4xx, and malformed response bodies never consume retry budget:
         they are permanent or already handled by the quota pause path.
         """
+        credential = self._credentials.resolve(call_class)
+        tracker = self._trackers.get(call_class)
+        if tracker is None and self._trackers:
+            raise QuotaUnavailable(
+                f"no quota is configured for call class {call_class.value!r}"
+            )
+
         url = f"{_BASE_URL}/{self.model}:generateContent"
         headers = {
-            "x-goog-api-key": self._api_key,
+            "x-goog-api-key": credential.secret,
             "Content-Type": "application/json",
         }
         payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -191,7 +226,7 @@ class GeminiClient:
         attempt = 0
         while True:
             attempt += 1
-            now = self._preflight_with_pacing(purpose, prompt)
+            now = self._preflight_with_pacing(tracker, purpose, prompt)
 
             try:
                 post_kwargs: dict[str, Any] = {}
@@ -206,8 +241,8 @@ class GeminiClient:
                     **post_kwargs,
                 )
             except requests.RequestException as exc:
-                if self._tracker is not None:
-                    self._tracker.record_error(
+                if tracker is not None:
+                    tracker.record_error(
                         purpose,
                         prompt,
                         now,
@@ -227,20 +262,20 @@ class GeminiClient:
 
             if response.status_code == 429:
                 kind, error_code = _classify_429(response)
-                if self._tracker is not None:
-                    paused_until, reason = self._tracker.record_429(
+                if tracker is not None:
+                    paused_until, reason = tracker.record_429(
                         purpose, prompt, now, kind=kind, error_code=error_code
                     )
-                    raise GeminiQuotaPaused(
+                    raise AIQuotaPaused(
                         f"Gemini {self.model} is paused until {paused_until} ({reason})",
                         paused_until=paused_until,
                         reason=reason,
                     )
-                raise GeminiError(f"Gemini API error 429: {response.text}")
+                raise AIError(f"Gemini API error 429: {response.text}")
 
             if response.status_code >= 400:
-                if self._tracker is not None:
-                    self._tracker.record_error(
+                if tracker is not None:
+                    tracker.record_error(
                         purpose, prompt, now, http_status=response.status_code
                     )
                 if response.status_code in _RETRYABLE_STATUS_CODES and attempt < max_attempts:
@@ -254,7 +289,7 @@ class GeminiClient:
                     )
                     self._sleep_fn(_TRANSIENT_RETRY_DELAY_SECONDS)
                     continue
-                raise GeminiError(f"Gemini API error {response.status_code}: {response.text}")
+                raise AIError(f"Gemini API error {response.status_code}: {response.text}")
 
             break
 
@@ -264,8 +299,8 @@ class GeminiClient:
         try:
             data = response.json()
         except ValueError as exc:
-            self._record_response_failure(purpose, prompt, now, None, "invalid_json")
-            raise GeminiError("Gemini response missing content") from exc
+            self._record_response_failure(tracker, purpose, prompt, now, None, "invalid_json")
+            raise AIError("Gemini response missing content") from exc
 
         usage = data.get("usageMetadata") if isinstance(data, dict) else None
         finish_reason = _finish_reason(data)
@@ -280,33 +315,36 @@ class GeminiClient:
             parts = candidate["content"]["parts"]
             text = "".join(part.get("text", "") for part in parts)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            self._record_response_failure(purpose, prompt, now, usage, no_content_code)
-            raise GeminiError("Gemini response missing content") from exc
+            self._record_response_failure(tracker, purpose, prompt, now, usage, no_content_code)
+            raise AIError("Gemini response missing content") from exc
 
         if not text:
-            self._record_response_failure(purpose, prompt, now, usage, no_content_code)
-            raise GeminiError("Gemini response missing content")
+            self._record_response_failure(tracker, purpose, prompt, now, usage, no_content_code)
+            raise AIError("Gemini response missing content")
 
         if finish_reason == "MAX_TOKENS":
-            self._record_response_failure(purpose, prompt, now, usage, finish_reason)
-            raise GeminiIncompleteResponse(finish_reason)
+            self._record_response_failure(tracker, purpose, prompt, now, usage, finish_reason)
+            raise AIIncompleteResponse(
+                "max_output_tokens", provider_finish_reason=finish_reason
+            )
 
-        if self._tracker is not None:
+        if tracker is not None:
             if usage:
-                self._tracker.record_success(purpose, prompt, now, **_usage_tokens(usage))
+                tracker.record_success(purpose, prompt, now, **_usage_tokens(usage))
             else:
                 logger.warning(
                     "Gemini response for purpose %r missing usageMetadata; "
                     "recording estimated input tokens only",
                     purpose,
                 )
-                self._tracker.record_success(purpose, prompt, now)
+                tracker.record_success(purpose, prompt, now)
 
         return text
 
     def _record_response_failure(
         self,
-        purpose: GeminiPurpose | None,
+        tracker: AIUsageTracker | None,
+        purpose: AIPurpose | None,
         prompt: str,
         now: datetime,
         usage: dict | None,
@@ -317,12 +355,36 @@ class GeminiClient:
         The provider still billed the request, so any `usageMetadata` it did
         report is carried onto the error row rather than dropped.
         """
-        if self._tracker is None:
+        if tracker is None:
             return
-        self._tracker.record_error(
+        tracker.record_error(
             purpose,
             prompt,
             now,
             error_code=error_code,
             **(_usage_tokens(usage) if usage else {}),
         )
+
+
+def build_gemini_provider(
+    api_key: str,
+    model: str,
+    http: HttpClient,
+    *,
+    tracker: AIUsageTracker | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> GeminiProvider:
+    """Wire the adapter for the one call class a user credential may fund.
+
+    This is the only wiring today: `USER_SUBJECTIVE` gets the user's key and
+    the user's ledger, and `SHARED_EXTRACTION` gets neither -- `#128` adds the
+    platform credential and its own tracker here, and nothing above this line
+    changes when it does.
+    """
+    return GeminiProvider(
+        model,
+        http,
+        EnvCredentialResolver(api_key),
+        {CallClass.USER_SUBJECTIVE: tracker} if tracker is not None else {},
+        sleep_fn=sleep_fn,
+    )

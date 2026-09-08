@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from job_hunter.ai import CallClass
 from job_hunter import content_confidence
 from job_hunter.market_eligibility import evaluate_market_eligibility
 from job_hunter.market_policy import market_by_id, salary_floor_for_job
@@ -33,7 +34,7 @@ from job_hunter.models import (
 )
 
 if TYPE_CHECKING:
-    from job_hunter.gemini import GeminiClient
+    from job_hunter.ai import AIProvider
 
 SCORE_MAXIMA = {
     "role_seniority": 30,
@@ -46,8 +47,8 @@ SCORE_MAXIMA = {
 
 HIGH_PRIORITY_THRESHOLD = 85
 
-# One retry for transient Gemini 5xx/timeout failures during evaluation; see
-# GeminiClient.generate_text's max_attempts docstring for what qualifies.
+# One retry for transient provider 5xx/timeout failures during evaluation; see
+# the adapter's generate_text max_attempts docstring for what qualifies.
 _EVALUATION_MAX_ATTEMPTS = 2
 
 _VALID_SUPPORT = {"supported", "partial", "unsupported", "unknown"}
@@ -131,7 +132,7 @@ def _serialize_context(context: CandidateContext) -> str:
 _FULL_STACK_TITLE_MARKERS = ("full stack", "full-stack")
 
 # Verbatim per the market-driven search strategy plan: the candidate is a
-# senior frontend engineer, not a senior backend engineer, and Gemini must
+# senior frontend engineer, not a senior backend engineer, and the model must
 # not credit backend seniority it has no evidence for.
 _FULL_STACK_BACKEND_RAMP_PARAGRAPH = (
     "The candidate is a senior frontend engineer but is earlier than junior-level "
@@ -379,7 +380,7 @@ def evaluate_job(
     facets: JobFacets | None,
     context: CandidateContext,
     policy: SearchPolicy,
-    gemini: "GeminiClient",
+    ai: "AIProvider",
 ) -> Evaluation:
     """Score `job` for this candidate from the facets already read from it.
 
@@ -399,8 +400,9 @@ def evaluate_job(
 
     market = market_by_id(policy, job.market_id) if job.market_id and policy.markets else None
 
-    raw = gemini.generate_text(
+    raw = ai.generate_text(
         _build_evaluation_prompt(job, facets, context, policy, market),
+        call_class=CallClass.USER_SUBJECTIVE,
         purpose="job_evaluation",
         thinking_level="medium",
         max_output_tokens=5000,
@@ -412,10 +414,10 @@ def evaluate_job(
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise EvaluationError(f"Gemini returned invalid JSON: {exc}") from exc
+        raise EvaluationError(f"the model returned invalid JSON: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise EvaluationError("Gemini response must be a JSON object")
+        raise EvaluationError("the model's response must be a JSON object")
 
     scores = data.get("scores")
     if not isinstance(scores, dict) or set(scores.keys()) != set(SCORE_MAXIMA.keys()):
@@ -486,7 +488,7 @@ def evaluate_job(
         salary_note=data.get("salary_note", "") or "",
         location_note=data.get("location_note", "") or "",
         rationale=data.get("rationale", "") or "",
-        model=gemini.model,
+        model=ai.model,
         market_id=job.market_id or "",
         content_confidence=job.content_confidence or content_confidence.PARTIAL_UNKNOWN,
         requirements={"must_have": must_have, "preferred": preferred},

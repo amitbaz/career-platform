@@ -151,7 +151,7 @@ def test_load_settings_reads_documents_and_provider_keys_from_store(monkeypatch)
 
     settings = _load(_profile())
 
-    assert settings.gemini_api_key == "stored-gemini"
+    assert settings.ai_api_key == "stored-gemini"
     assert settings.brave_search_api_key == "stored-brave"
     assert settings.candidate_profile == "stored profile"
     assert settings.cover_letter_template == "stored template"
@@ -166,7 +166,7 @@ def test_load_settings_does_not_read_four_legacy_environment_variables(monkeypat
 
     settings = _load(_profile())
 
-    assert settings.gemini_api_key == "stored-gemini"
+    assert settings.ai_api_key == "stored-gemini"
     assert settings.brave_search_api_key == "stored-brave"
     assert settings.candidate_profile == "stored profile"
     assert settings.cover_letter_template == "stored template"
@@ -211,24 +211,74 @@ def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch):
     bot_settings = load_settings(store)
     gmail_settings = load_gmail_settings(store)
 
-    assert bot_settings.gemini_quota == gmail_settings.gemini_quota
-    assert bot_settings.gemini_quota.rpm == 10
-    assert bot_settings.gemini_quota.tpm == 250000
-    assert bot_settings.gemini_quota.rpd == 500
-    assert bot_settings.gemini_quota.ceiling_ratio == 0.80
-    assert bot_settings.gemini_quota.core_reserve_ratio == 0.25
-    assert bot_settings.gemini_quota.rate_pause_seconds == 90
+    assert bot_settings.ai_quota == gmail_settings.ai_quota
+    assert bot_settings.ai_quota.rpm == 10
+    assert bot_settings.ai_quota.tpm == 250000
+    assert bot_settings.ai_quota.rpd == 500
+    assert bot_settings.ai_quota.ceiling_ratio == 0.80
+    assert bot_settings.ai_quota.core_reserve_ratio == 0.25
+    assert bot_settings.ai_quota.rate_pause_seconds == 90
+
+
+def test_a_run_starts_with_an_api_key_alone_and_takes_the_published_limits(
+    monkeypatch,
+):
+    """A user supplies a key; the free-tier limits are defaults in code (#73)."""
+    _set_runtime_env(monkeypatch)
+    for name in ("GEMINI_FREE_RPM", "GEMINI_FREE_TPM", "GEMINI_FREE_RPD"):
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+    settings = _load(_profile())
+
+    assert (settings.ai_quota.rpm, settings.ai_quota.tpm, settings.ai_quota.rpd) == (
+        15,
+        250_000,
+        500,
+    )
 
 
 @pytest.mark.parametrize(
-    "name", ["GEMINI_FREE_RPM", "GEMINI_FREE_TPM", "GEMINI_FREE_RPD"]
+    ("name", "attribute", "value"),
+    [
+        ("GEMINI_FREE_RPM", "rpm", 3),
+        ("GEMINI_FREE_TPM", "tpm", 111_000),
+        ("GEMINI_FREE_RPD", "rpd", 7),
+    ],
 )
-def test_gemini_free_tier_limit_is_required(monkeypatch, name):
+def test_each_free_tier_variable_overrides_only_its_own_default(
+    monkeypatch, name, attribute, value
+):
     _set_runtime_env(monkeypatch)
-    monkeypatch.delenv(name)
+    for other in ("GEMINI_FREE_RPM", "GEMINI_FREE_TPM", "GEMINI_FREE_RPD"):
+        monkeypatch.delenv(other)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    monkeypatch.setenv(name, str(value))
 
-    with pytest.raises(ValueError, match=name):
-        _load(_profile())
+    quota = _load(_profile()).ai_quota
+
+    published = {"rpm": 15, "tpm": 250_000, "rpd": 500}
+    published[attribute] = value
+    assert (quota.rpm, quota.tpm, quota.rpd) == (
+        published["rpm"],
+        published["tpm"],
+        published["rpd"],
+    )
+
+
+def test_a_model_absent_from_the_defaults_table_runs_conservatively_and_says_so(
+    monkeypatch, caplog
+):
+    _set_runtime_env(monkeypatch)
+    for name in ("GEMINI_FREE_RPM", "GEMINI_FREE_TPM", "GEMINI_FREE_RPD"):
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-9.9-imaginary")
+
+    with caplog.at_level("WARNING"):
+        quota = _load(_profile()).ai_quota
+
+    assert (quota.rpm, quota.rpd) == (5, 100)
+    assert "gemini-9.9-imaginary" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -239,7 +289,9 @@ def test_gemini_free_tier_limit_is_required(monkeypatch, name):
         ("GEMINI_FREE_RPD", "not-an-integer"),
     ],
 )
-def test_gemini_free_tier_limit_must_be_a_positive_integer(monkeypatch, name, value):
+def test_a_free_tier_override_that_was_typed_on_purpose_must_be_usable(
+    monkeypatch, name, value
+):
     _set_runtime_env(monkeypatch)
     monkeypatch.setenv(name, value)
 
@@ -257,7 +309,7 @@ def test_load_gmail_settings_reads_gemini_from_store_without_loading_documents(
 
     settings = load_gmail_settings(store)
 
-    assert settings.gemini_api_key == "stored-gemini"
+    assert settings.ai_api_key == "stored-gemini"
     assert store.document_reads == 0
 
 

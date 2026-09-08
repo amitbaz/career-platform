@@ -6,14 +6,14 @@ import logging
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
-from job_hunter.gemini import GeminiIncompleteResponse
-from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
+from job_hunter.ai import AIIncompleteResponse, CallClass
+from job_hunter.ai import AIBudgetExceeded, AIQuotaPaused
 from job_hunter.models import CandidateContext, CandidatePreferences, SearchPolicy
 from job_hunter.normalize import normalize_text
 from job_hunter.preferences import _build_fallback_preferences
 
 if TYPE_CHECKING:
-    from job_hunter.gemini import GeminiClient
+    from job_hunter.ai import AIProvider
     from job_hunter.postgres_store import PostgresJobStore
 
 logger = logging.getLogger(__name__)
@@ -217,7 +217,7 @@ def _parse_context(raw: str) -> CandidateContext:
     return CandidateContext(
         preferences=_parse_preferences(data.get("preferences")),
         evaluation_summary=evaluation_summary,
-        source="gemini",
+        source="ai",
         **evidence,
     )
 
@@ -259,9 +259,10 @@ def _fallback_after_error(policy: SearchPolicy, exc: Exception, *, reason: str =
     return _fallback_context(policy, source="fallback_error", load_error=error_name)
 
 
-def _extract(gemini: "GeminiClient", prompt: str, max_output_tokens: int) -> str:
-    return gemini.generate_text(
+def _extract(ai: "AIProvider", prompt: str, max_output_tokens: int) -> str:
+    return ai.generate_text(
         prompt,
+        call_class=CallClass.USER_SUBJECTIVE,
         purpose="candidate_context",
         thinking_level="medium",
         max_output_tokens=max_output_tokens,
@@ -273,7 +274,7 @@ def _extract(gemini: "GeminiClient", prompt: str, max_output_tokens: int) -> str
 def get_candidate_context(
     profile: str,
     policy: SearchPolicy,
-    gemini: "GeminiClient",
+    ai: "AIProvider",
     store: "PostgresJobStore",
 ) -> CandidateContext:
     """Return the cached candidate context, extracting and caching it once if needed."""
@@ -281,7 +282,7 @@ def get_candidate_context(
         return _fallback_context(policy, source="fallback_empty_profile")
 
     profile_hash = _hash(profile)
-    cache_key = _cache_key(profile_hash, gemini.model, CANDIDATE_CONTEXT_SCHEMA_VERSION)
+    cache_key = _cache_key(profile_hash, ai.model, CANDIDATE_CONTEXT_SCHEMA_VERSION)
 
     cached = store.get_candidate_context(cache_key)
     if cached is not None:
@@ -290,20 +291,25 @@ def get_candidate_context(
     prompt = _build_extraction_prompt(profile)
     try:
         try:
-            raw = _extract(gemini, prompt, _INITIAL_OUTPUT_TOKENS)
-        except GeminiIncompleteResponse as exc:
+            raw = _extract(ai, prompt, _INITIAL_OUTPUT_TOKENS)
+        except AIIncompleteResponse as exc:
             logger.warning(
-                "candidate context generation incomplete; retrying once: category=provider_truncation finish_reason=%s",
-                exc.finish_reason,
+                "candidate context generation incomplete; retrying once: "
+                "category=provider_truncation reason=%s finish_reason=%s",
+                exc.reason,
+                exc.provider_finish_reason,
             )
-            raw = _extract(gemini, prompt, _RETRY_OUTPUT_TOKENS)
-    except (GeminiBudgetExceeded, GeminiQuotaPaused):
+            raw = _extract(ai, prompt, _RETRY_OUTPUT_TOKENS)
+    except (AIBudgetExceeded, AIQuotaPaused):
         raise
-    except GeminiIncompleteResponse as exc:
+    except AIIncompleteResponse as exc:
         return _fallback_after_error(
             policy,
             exc,
-            reason=f"category=provider_truncation finish_reason={exc.finish_reason} retry_exhausted=true",
+            reason=(
+                f"category=provider_truncation reason={exc.reason} "
+                f"finish_reason={exc.provider_finish_reason} retry_exhausted=true"
+            ),
         )
     except Exception as exc:
         return _fallback_after_error(policy, exc)
@@ -322,7 +328,7 @@ def get_candidate_context(
     store.save_candidate_context(
         cache_key=cache_key,
         profile_hash=profile_hash,
-        model=gemini.model,
+        model=ai.model,
         schema_version=CANDIDATE_CONTEXT_SCHEMA_VERSION,
         context=asdict(context),
     )

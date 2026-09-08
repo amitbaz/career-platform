@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from job_hunter.candidate_context import get_candidate_context
-from job_hunter.gemini_usage import GeminiUsageTracker
-from job_hunter.models import GeminiQuotaSettings, SearchPolicy
+from job_hunter.ai.usage import AIUsageTracker
+from job_hunter.models import AIQuotaSettings, SearchPolicy
 
 
 def _policy() -> SearchPolicy:
@@ -62,18 +62,18 @@ def test_candidate_context_fallback_exposes_source_and_sanitized_error(store, ca
 
 
 def test_rolling_rpm_pressure_is_temporary_capacity_not_daily_exhaustion(store):
-    gemini_usage = importlib.import_module("job_hunter.gemini_usage")
-    temporary_capacity = getattr(gemini_usage, "GeminiTemporaryCapacity", None)
+    ai_usage = importlib.import_module("job_hunter.ai.usage")
+    temporary_capacity = getattr(ai_usage, "AITemporaryCapacity", None)
     assert temporary_capacity is not None
 
-    quota = GeminiQuotaSettings(rpm=15, tpm=250000, rpd=500)
-    tracker = GeminiUsageTracker(store, quota, "gemini-test", run_id="run-1")
+    quota = AIQuotaSettings(rpm=15, tpm=250000, rpd=500)
+    tracker = AIUsageTracker(store, quota, "gemini-test", provider="gemini")
     now = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)
 
     for index in range(12):
-        store.record_gemini_usage(
+        store.record_ai_usage(
             occurred_at=(now - timedelta(seconds=30 - index)).isoformat(),
-            run_id="previous",
+            provider="gemini",
             model="gemini-test",
             purpose="job_evaluation",
             status="success",
@@ -88,9 +88,10 @@ def test_rolling_rpm_pressure_is_temporary_capacity_not_daily_exhaustion(store):
         tracker.preflight("job_evaluation", "small prompt", now)
 
     assert 29 <= exc_info.value.retry_after_seconds <= 31
-    rows = store.gemini_usage_rows(
+    rows = store.ai_usage_rows(
         (now - timedelta(minutes=1)).isoformat(),
         (now + timedelta(minutes=1)).isoformat(),
+        provider="gemini",
         model="gemini-test",
     )
     assert all(row["status"] != "blocked_budget" for row in rows)

@@ -48,7 +48,8 @@ Cover letter generation + PDF rendering happens on demand, not as part of the da
 - `src/job_hunter/preferences.py` extracts a compact preference profile from the CV stored in Relay Profile; `src/job_hunter/ranking.py` then uses preferred roles, seniority, must-have signals, location fit, avoid signals, and source quality to rank eligible jobs before Gemini. If profile extraction or diversity selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
 - `skip` evaluations are persisted but never sent to Telegram. Telegram sections are ordered by effective match score descending, unknown decisions are omitted, and only scores strictly greater than 60 are eligible for digest or retry delivery.
 - `src/job_hunter/prefilter.py` — cheap deterministic filtering before spending Gemini calls.
-- `src/job_hunter/evaluation.py` / `gemini.py` — Gemini-based scoring and rationale.
+- `src/job_hunter/evaluation.py` — model-based scoring and rationale, through the AI provider port.
+- `src/job_hunter/ai/` — the AI provider port: `port.py` (the vocabulary core modules use, including the call class that decides which credential and quota fund a call), `credentials.py`, `usage.py` (quota ledger and 429 circuit breaker), `limits.py` (published free-tier limits per model), and `gemini.py` — the only module that knows Gemini exists.
 - `src/job_hunter/cover_letter.py` / `pdf.py` — cover letter drafting and PDF rendering, triggered on demand per job via the "Gen CL" Telegram button.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`: dedup, evaluation cache, delivery tracking) against the shared Supabase project.
 - `src/job_hunter/telegram.py` — outbound-only Telegram Bot API delivery (digest message + PDF documents).
@@ -156,19 +157,19 @@ The Gemini API key, the Brave Search API key, and your CV and cover letter text 
 6. **Only then** let the artifact expire naturally. Do not delete it by hand, and do not skip
    ahead to this step before 1-5 are verified.
 
-## Required GitHub Actions variables
+## Optional GitHub Actions variables
 
-Set these under **Settings -> Secrets and variables -> Actions -> Variables** tab. They are your free-tier rate limits, not credentials, so they belong in Variables, not Secrets:
+**Nothing here is required.** A run needs a Gemini API key and nothing else: the published free-tier limits for each supported model are defaults in code (`src/job_hunter/ai/limits.py`), and a model with no entry there runs under the most conservative known limits and logs that it did so.
+
+Set these under **Settings -> Secrets and variables -> Actions -> Variables** tab only if you need to override a default. They are rate limits, not credentials, so they belong in Variables, not Secrets:
 
 | Variable | Purpose |
 | --- | --- |
-| `GEMINI_FREE_RPM` | Gemini free-tier requests-per-minute limit, copied from the AI Studio Rate Limits page |
-| `GEMINI_FREE_TPM` | Gemini free-tier input-tokens-per-minute limit, copied from the AI Studio Rate Limits page |
-| `GEMINI_FREE_RPD` | Gemini free-tier requests-per-day limit, copied from the AI Studio Rate Limits page |
+| `GEMINI_FREE_RPM` | Override the requests-per-minute default for `GEMINI_MODEL` |
+| `GEMINI_FREE_TPM` | Override the input-tokens-per-minute default |
+| `GEMINI_FREE_RPD` | Override the requests-per-day default |
 
-The bot enforces its own ceiling at 80% of each of these three values, and both Gemini-using workflow steps (`sync-gmail` and `run`) fail closed at startup if any of the three is unset. See [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup) below for exactly where to read these values and how often to refresh them.
-
-`GEMINI_RUN_ID` is not something you configure: the workflow supplies it automatically as `${{ github.run_id }}` on both Gemini-using steps, so the Gmail sync process and the main pipeline process share one GitHub Actions run id and are accounted against one usage ledger for that run.
+Each overrides only the dimension it names; the other two keep their published defaults. The bot enforces its own ceiling at 80% of whichever value is in force. Set one when your project's limits are not the published ones, or when the table in code has gone stale — and see [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup) below for where to read the real numbers.
 
 ## CV, cover letter, and provider keys in Relay Profile
 
@@ -195,15 +196,15 @@ This bot is designed to run entirely on the Gemini API free tier, at €0 cost. 
 1. **Keep the Job Hunter Gemini Google Cloud project unlinked from Cloud Billing.** This is an operator-enforced deployment gate, not something the bot's code can verify or turn off. The bot's 80% usage ceilings and its 429 circuit breaker (see below) reduce how much of the free-tier quota gets used, but they cannot make overspending impossible: those guardrails run in application code and have no way to detect or block a linked billing account. If Cloud Billing is ever linked to this project, quota limits can stop being a hard wall and calls could be billed instead of rejected. Confirm "No billing account" in Google Cloud Console's **Billing** page for the project behind your API key, not just in AI Studio.
 2. Create a free-tier API key for that unbilled project at [Google AI Studio](https://aistudio.google.com/).
 3. Save the key in Relay under **Profile -> Provider credentials -> Gemini**, signed in as the account whose UUID is `JOB_HUNTER_USER_ID`. It is stored per user, not as a repository secret.
-4. In AI Studio, open **Rate Limits** for the same project and for the model configured via the `GEMINI_MODEL` environment variable (defaulting to `gemini-3.6-flash` if unset; override it as a repo secret or variable, or in your local `.env`, to point at a different model). Read off the RPM (requests/minute), input TPM (tokens/minute), and RPD (requests/day) values shown there.
-5. Copy those three numbers into the GitHub Actions **variables** `GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, and `GEMINI_FREE_RPD` (see [Required GitHub Actions variables](#required-github-actions-variables)). Both Gemini-using workflow steps read these and enforce an 80%-of-quota ceiling before ever calling Gemini.
-6. Whenever the Gemini project changes or `GEMINI_MODEL` changes, return to AI Studio's Rate Limits page first and refresh all three variables before the next run — free-tier limits differ per model and per project, and a stale, too-high value would let the app under-protect itself against the real provider limit.
-7. Each normal bot run logs one structured `gemini_usage` line (RPD/RPM peak/TPM peak percentages, call count, and token totals) to the GitHub Actions run output. Those percentages are of your actual provider quota (the `GEMINI_FREE_RPD`/`RPM`/`TPM` values above), not of some smaller internal number — read them directly against 100%. Because the app stops itself at 80% of quota and the Gemini project stays unbilled, this line is diagnostic only; there is no matching Telegram message.
+4. That is the whole required setup. The free-tier limits for `GEMINI_MODEL` (defaulting to `gemini-3.5-flash-lite` if unset) come from the table in `src/job_hunter/ai/limits.py`, and a model missing from it runs under the most conservative known limits with a warning in the log. The 429 circuit breaker below is the real safety net either way.
+5. Optional: if your project's limits differ from the published ones, open **Rate Limits** in AI Studio for the same project and model, read off RPM (requests/minute), input TPM (tokens/minute) and RPD (requests/day), and set whichever of `GEMINI_FREE_RPM`, `GEMINI_FREE_TPM` and `GEMINI_FREE_RPD` you need as GitHub Actions **variables** (see [Optional GitHub Actions variables](#optional-github-actions-variables)). Each overrides only its own dimension.
+6. Whenever the Gemini project or `GEMINI_MODEL` changes, re-check any override you set — a stale, too-high value would let the app under-protect itself against the real provider limit. Overrides you have not set need no attention: they follow the model.
+7. Each normal bot run logs one structured `ai_usage` line (RPD/RPM peak/TPM peak percentages, call count, and token totals) to the GitHub Actions run output. Those percentages are of the provider quota in force (the model's defaults, or your overrides), not of some smaller internal number — read them directly against 100%. Because the app stops itself at 80% of quota and the Gemini project stays unbilled, this line is diagnostic only; there is no matching Telegram message.
 8. If Gemini returns HTTP 429 (quota exceeded), the bot does not retry that call automatically and does not fall back to any paid path. It records a pause, defers or skips the affected work for the rest of that run, and Telegram carries a warning; the deferred work is picked up again on a later run once the provider's quota window has reset. Free tier is the only mode this bot runs in — a 429 means "wait," never "switch to paid."
 
 ## Local dry run
 
-Copy `.env.example` to `.env` and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode). `.env.example` is grouped by the surface each variable serves, and a dry run needs two of those groups: the Supabase group listed below, and the three Gemini free-tier quota values (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`), which are required and have no default — see [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup) for where to read them. Leave the "Optional overrides" group blank: each of those takes the code default stated in its comment, so copying a default into a value there only creates something to drift. The webhook group is for the Vercel deployment and is not read by a run.
+Copy `.env.example` to `.env` and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode). `.env.example` is grouped by the surface each variable serves, and a dry run needs one of those groups: the Supabase group listed below. The three Gemini free-tier limits have code defaults and need not be set at all — see [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup). Leave the "Optional overrides" group blank: each of those takes the code default stated in its comment, so copying a default into a value there only creates something to drift. The webhook group is for the Vercel deployment and is not read by a run.
 
 Your Gemini key and your CV and cover letter text are read from Relay for `JOB_HUNTER_USER_ID`, not from `.env`:
 

@@ -7,7 +7,7 @@ from email.utils import parseaddr
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from job_hunter.gemini_usage import GeminiBudgetExceeded, GeminiQuotaPaused
+from job_hunter.ai import AIBudgetExceeded, AIQuotaPaused, CallClass
 from job_hunter.gmail_models import (
     AUTO_CONFIDENCE_THRESHOLD,
     SUPPORTED_KINDS,
@@ -18,7 +18,7 @@ from job_hunter.gmail_models import (
 from job_hunter.normalize import canonicalize_url, normalize_text
 
 if TYPE_CHECKING:
-    from job_hunter.gemini import GeminiClient
+    from job_hunter.ai import AIProvider
 
 _VISIBLE_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _LINKEDIN_JOB_ID_PATTERN = re.compile(r"/(?:comm/)?jobs/view/(\d+)(?:/|$)", re.IGNORECASE)
@@ -453,13 +453,14 @@ def _build_semantic_prompt(
 
 def _generate_semantic_text(
     message: GmailMessage,
-    gemini: GeminiClient,
+    ai: AIProvider,
     *,
     extract_job_alert: bool,
 ) -> str:
     prompt = _build_semantic_prompt(message, extract_job_alert=extract_job_alert)
-    return gemini.generate_text(
+    return ai.generate_text(
         prompt,
+        call_class=CallClass.USER_SUBJECTIVE,
         purpose="gmail_semantic",
         thinking_level="minimal",
         max_output_tokens=5000,
@@ -469,7 +470,7 @@ def _generate_semantic_text(
 
 
 def classify_email(
-    message: GmailMessage, gemini: GeminiClient, *, is_fresh: bool = True
+    message: GmailMessage, ai: AIProvider, *, is_fresh: bool = True
 ) -> GmailClassification:
     if not is_probably_job_related(message):
         return GmailClassification(
@@ -490,7 +491,7 @@ def classify_email(
             )
         )
     )
-    # A stale job alert is never worth a Gemini call. This gate runs before
+    # A stale job alert is never worth a model call. This gate runs before
     # extraction is requested, not after, so a 15+ day backfill alert costs
     # zero generate_text calls. Lifecycle messages don't reach here at all
     # (extract_job_alert is only set for JOB_ALERT), so their deterministic-
@@ -501,13 +502,13 @@ def classify_email(
     try:
         raw = _generate_semantic_text(
             message,
-            gemini,
+            ai,
             extract_job_alert=extract_job_alert,
         )
-    except (GeminiBudgetExceeded, GeminiQuotaPaused):
+    except (AIBudgetExceeded, AIQuotaPaused):
         raise
     except Exception as exc:
-        raise SemanticClassificationError("gemini_error") from exc
+        raise SemanticClassificationError("ai_error") from exc
 
     try:
         classification = _parse_semantic_classification(raw)

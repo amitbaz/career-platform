@@ -2,9 +2,18 @@ from datetime import datetime, timezone
 
 import pytest
 
-from job_hunter.gemini import GeminiClient, GeminiError, GeminiIncompleteResponse
-from job_hunter.gemini_usage import GeminiUsageTracker
-from job_hunter.models import GeminiQuotaSettings
+from job_hunter.ai import AIError, CallClass
+from job_hunter.ai.gemini import build_gemini_provider, AIIncompleteResponse
+from job_hunter.ai.usage import AIUsageTracker
+from job_hunter.models import AIQuotaSettings
+
+
+def _generate(provider, prompt, **kwargs):
+    """Every adapter test is a user-subjective call; the class itself is
+    exercised in tests/test_ai_call_class.py."""
+    return provider.generate_text(prompt, call_class=CallClass.USER_SUBJECTIVE, **kwargs)
+
+
 
 _USAGE_METADATA = {
     "promptTokenCount": 100,
@@ -78,9 +87,10 @@ class FakeTracker:
 
 
 def _ledger_rows(store):
-    return store.gemini_usage_rows(
+    return store.ai_usage_rows(
         "2026-09-03T00:00:00+00:00",
         "2026-09-04T00:00:00+00:00",
+        provider="gemini",
         model="gemini-test",
     )
 
@@ -88,18 +98,18 @@ def _ledger_rows(store):
 @pytest.fixture
 def frozen_now(monkeypatch):
     now = datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("job_hunter.gemini._now", lambda: now)
+    monkeypatch.setattr("job_hunter.ai.gemini._now", lambda: now)
     return now
 
 
 def test_max_tokens_is_recorded_as_an_error_with_provider_usage(frozen_now):
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-test", FakeHttp(_max_tokens_response()), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(_max_tokens_response()), tracker=tracker)
 
-    with pytest.raises(GeminiIncompleteResponse) as excinfo:
-        client.generate_text("profile prompt", purpose="candidate_context", max_output_tokens=1800)
+    with pytest.raises(AIIncompleteResponse) as excinfo:
+        _generate(client, "profile prompt", purpose="candidate_context", max_output_tokens=1800)
 
-    assert excinfo.value.finish_reason == "MAX_TOKENS"
+    assert excinfo.value.provider_finish_reason == "MAX_TOKENS"
     assert tracker.success_calls == []
     assert len(tracker.error_calls) == 1
     purpose, prompt, recorded_at, usage = tracker.error_calls[0]
@@ -113,9 +123,9 @@ def test_max_tokens_is_recorded_as_an_error_with_provider_usage(frozen_now):
 
 def test_completed_response_is_recorded_as_a_single_success(frozen_now):
     tracker = FakeTracker()
-    client = GeminiClient("key", "gemini-test", FakeHttp(_completed_response()), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(_completed_response()), tracker=tracker)
 
-    text = client.generate_text("profile prompt", purpose="candidate_context")
+    text = _generate(client, "profile prompt", purpose="candidate_context")
 
     assert text == '{"complete": true}'
     assert tracker.error_calls == []
@@ -136,10 +146,10 @@ def test_structurally_incomplete_response_is_recorded_as_an_error(frozen_now):
             "usageMetadata": dict(_USAGE_METADATA),
         }
     )
-    client = GeminiClient("key", "gemini-test", FakeHttp(response), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(response), tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("profile prompt", purpose="candidate_context")
+    with pytest.raises(AIError):
+        _generate(client, "profile prompt", purpose="candidate_context")
 
     assert tracker.success_calls == []
     assert len(tracker.error_calls) == 1
@@ -160,10 +170,10 @@ def test_truncation_that_left_no_text_is_attributed_to_max_tokens(frozen_now):
             "usageMetadata": dict(_USAGE_METADATA),
         }
     )
-    client = GeminiClient("key", "gemini-test", FakeHttp(response), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(response), tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("profile prompt", purpose="candidate_context")
+    with pytest.raises(AIError):
+        _generate(client, "profile prompt", purpose="candidate_context")
 
     assert tracker.success_calls == []
     assert len(tracker.error_calls) == 1
@@ -181,26 +191,26 @@ def test_truncated_candidate_without_content_is_attributed_to_max_tokens(frozen_
             "usageMetadata": dict(_USAGE_METADATA),
         }
     )
-    client = GeminiClient("key", "gemini-test", FakeHttp(response), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(response), tracker=tracker)
 
-    with pytest.raises(GeminiError):
-        client.generate_text("profile prompt", purpose="candidate_context")
+    with pytest.raises(AIError):
+        _generate(client, "profile prompt", purpose="candidate_context")
 
     assert len(tracker.error_calls) == 1
     assert tracker.error_calls[0][3]["error_code"] == "MAX_TOKENS"
 
 
 def test_max_tokens_ledger_row_has_error_status(store, frozen_now):
-    tracker = GeminiUsageTracker(
+    tracker = AIUsageTracker(
         store,
-        GeminiQuotaSettings(rpm=10, tpm=100000, rpd=100),
+        AIQuotaSettings(rpm=10, tpm=100000, rpd=100),
         "gemini-test",
-        run_id="run-1",
+        provider="gemini",
     )
-    client = GeminiClient("key", "gemini-test", FakeHttp(_max_tokens_response()), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(_max_tokens_response()), tracker=tracker)
 
-    with pytest.raises(GeminiIncompleteResponse):
-        client.generate_text("profile prompt", purpose="candidate_context")
+    with pytest.raises(AIIncompleteResponse):
+        _generate(client, "profile prompt", purpose="candidate_context")
 
     rows = _ledger_rows(store)
     assert [row["status"] for row in rows] == ["error"]
@@ -212,15 +222,15 @@ def test_max_tokens_ledger_row_has_error_status(store, frozen_now):
 
 
 def test_completed_ledger_row_has_success_status(store, frozen_now):
-    tracker = GeminiUsageTracker(
+    tracker = AIUsageTracker(
         store,
-        GeminiQuotaSettings(rpm=10, tpm=100000, rpd=100),
+        AIQuotaSettings(rpm=10, tpm=100000, rpd=100),
         "gemini-test",
-        run_id="run-1",
+        provider="gemini",
     )
-    client = GeminiClient("key", "gemini-test", FakeHttp(_completed_response()), tracker)
+    client = build_gemini_provider("key", "gemini-test", FakeHttp(_completed_response()), tracker=tracker)
 
-    client.generate_text("profile prompt", purpose="candidate_context")
+    _generate(client, "profile prompt", purpose="candidate_context")
 
     rows = _ledger_rows(store)
     assert [row["status"] for row in rows] == ["success"]

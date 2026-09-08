@@ -2,7 +2,7 @@ from unittest.mock import Mock, patch
 
 from job_hunter.gmail_models import GmailSettings
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
-from job_hunter.models import GeminiQuotaSettings
+from job_hunter.models import AIQuotaSettings
 
 
 def test_token_provider_refreshes_expired_credentials_and_reuses_token():
@@ -14,7 +14,7 @@ def test_token_provider_refreshes_expired_credentials_and_reuses_token():
         "secret",
         "refresh",
         "gemini",
-        GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     with (

@@ -36,6 +36,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,
@@ -92,7 +93,7 @@ def _gemini_for(payload_overrides=None):
 
 def test_extract_facets_has_no_parameter_a_candidate_could_arrive_through():
     parameters = set(inspect.signature(extract_facets).parameters)
-    assert parameters == {"posting", "gemini"}
+    assert parameters == {"posting", "ai"}
 
 
 def test_posting_facts_carries_only_the_postings_own_fields():

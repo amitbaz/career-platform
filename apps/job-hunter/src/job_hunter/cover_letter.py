@@ -4,11 +4,11 @@ import logging
 from datetime import date
 from typing import TYPE_CHECKING
 
-from job_hunter.gemini import GeminiIncompleteResponse
+from job_hunter.ai import AIIncompleteResponse, CallClass
 from job_hunter.models import CandidateContext, Evaluation, Job
 
 if TYPE_CHECKING:
-    from job_hunter.gemini import GeminiClient
+    from job_hunter.ai import AIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def generate_cover_letter(
     evaluation: Evaluation,
     context: CandidateContext,
     template: str,
-    gemini: "GeminiClient",
+    ai: "AIProvider",
     today: date,
 ) -> str:
     prompt = _build_cover_letter_prompt(job, evaluation, context, template, today)
@@ -82,19 +82,20 @@ def generate_cover_letter(
     last_finish_reason: str | None = None
     for attempt, max_output_tokens in enumerate(_OUTPUT_TOKEN_BUDGETS, start=1):
         try:
-            text = gemini.generate_text(
+            text = ai.generate_text(
                 prompt,
+                call_class=CallClass.USER_SUBJECTIVE,
                 purpose="cover_letter",
                 thinking_level="low",
                 max_output_tokens=max_output_tokens,
                 read_timeout=_READ_TIMEOUT_SECONDS,
             )
-        except GeminiIncompleteResponse as exc:
-            last_finish_reason = exc.finish_reason
+        except AIIncompleteResponse as exc:
+            last_finish_reason = exc.provider_finish_reason
             retrying = attempt < len(_OUTPUT_TOKEN_BUDGETS)
             logger.warning(
                 "cover letter hit finish_reason=%s at max_output_tokens=%s (attempt %s/%s); %s",
-                exc.finish_reason,
+                exc.provider_finish_reason or exc.reason,
                 max_output_tokens,
                 attempt,
                 len(_OUTPUT_TOKEN_BUDGETS),
@@ -104,12 +105,14 @@ def generate_cover_letter(
         break
 
     if text is None:
-        raise GeminiIncompleteResponse(last_finish_reason or "MAX_TOKENS")
+        raise AIIncompleteResponse(
+            "max_output_tokens", provider_finish_reason=last_finish_reason
+        )
 
     text = text.strip()
 
     if not text:
-        raise ValueError("Gemini returned an empty cover letter")
+        raise ValueError("the model returned an empty cover letter")
 
     lowered = text.lower()
     for placeholder in _KNOWN_PLACEHOLDERS:

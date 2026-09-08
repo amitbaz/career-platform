@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .models import GeminiQuotaSettings
+from .models import AIQuotaSettings
 
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -28,18 +28,18 @@ LEGACY_SEMANTIC_FAILURE_RATIONALE = "semantic classification unavailable or inva
 class GmailSettings:
     """Gmail sync configuration.
 
-    The OAuth secrets and the user's Gemini key are kept out of ``repr()`` (via
+    The OAuth secrets and the user's AI provider key are kept out of ``repr()`` (via
     ``field(repr=False)``), so a stray ``logger.info(settings)`` cannot print
-    them. The Gemini key is the per-user value read from the credential store,
+    them. The provider key is the per-user value read from the credential store,
     not a repository secret.
     """
 
     client_id: str
     client_secret: str = field(repr=False)
     refresh_token: str = field(repr=False)
-    gemini_api_key: str = field(repr=False)
-    gemini_quota: GeminiQuotaSettings
-    gemini_model: str = "gemini-3.6-flash"
+    ai_api_key: str = field(repr=False)
+    ai_quota: AIQuotaSettings
+    ai_model: str = "gemini-3.5-flash-lite"
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from .ai.limits import free_tier_quota
 from .gmail_models import GmailSettings
 from .normalize import ats_board_key
 from .models import (
@@ -20,7 +21,7 @@ from .models import (
     DEFAULT_SOURCE_TIME_BUDGET_SECONDS,
     DEFAULT_SPECIALIST_BOARD_HOSTS,
     CompanyWatchSeed,
-    GeminiQuotaSettings,
+    AIQuotaSettings,
     ProviderCredentials,
     SearchPolicy,
     Settings,
@@ -33,6 +34,12 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+#: The model a run calls when `GEMINI_MODEL` is unset. It is a model the
+#: free-tier limits table knows (see `job_hunter.ai.limits`), so a run that
+#: configures nothing but an API key still gets that model's real limits
+#: rather than the conservative fallback.
+_DEFAULT_AI_MODEL = "gemini-3.5-flash-lite"
 
 _REMOTE_POLICIES = {"preferred", "required", "allowed"}
 _RELOCATION_POLICIES = {"none", "selective", "allowed"}
@@ -90,17 +97,14 @@ def load_gmail_settings(store: "PostgresJobStore") -> GmailSettings:
         raise RuntimeConfigurationError(
             "Missing per-user Job Hunter configuration: gemini"
         )
+    ai_model = _ai_model()
     return GmailSettings(
         client_id=_require_env("GMAIL_CLIENT_ID"),
         client_secret=_require_env("GMAIL_CLIENT_SECRET"),
         refresh_token=_require_env("GMAIL_REFRESH_TOKEN"),
-        gemini_api_key=credentials.gemini_api_key,
-        gemini_quota=GeminiQuotaSettings(
-            rpm=_require_positive_int_env("GEMINI_FREE_RPM"),
-            tpm=_require_positive_int_env("GEMINI_FREE_TPM"),
-            rpd=_require_positive_int_env("GEMINI_FREE_RPD"),
-        ),
-        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
+        ai_api_key=credentials.gemini_api_key,
+        ai_quota=_ai_quota(ai_model),
+        ai_model=ai_model,
     )
 
 
@@ -188,23 +192,20 @@ def load_settings(store: "PostgresJobStore") -> Settings:
         markets=_parse_markets(data.get("markets", [])),
     )
 
+    ai_model = _ai_model()
     return Settings(
-        gemini_api_key=credentials.gemini_api_key,
+        ai_api_key=credentials.gemini_api_key,
         candidate_profile=candidate_profile,
         cover_letter_template=cover_letter_template,
         timezone=data.get("timezone", "Europe/Berlin"),
         scheduled_hour=data.get("scheduled_hour", 9),
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(
-            rpm=_require_positive_int_env("GEMINI_FREE_RPM"),
-            tpm=_require_positive_int_env("GEMINI_FREE_TPM"),
-            rpd=_require_positive_int_env("GEMINI_FREE_RPD"),
-        ),
+        ai_quota=_ai_quota(ai_model),
         brave_search_api_key=credentials.brave_search_api_key,
         dry_run=dry_run,
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
-        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
+        ai_model=ai_model,
         output_dir=os.environ.get("JOB_HUNTER_OUTPUT_DIR", "var"),
     )
 
@@ -292,6 +293,49 @@ def _require_env(name: str) -> str:
     if not val:
         raise ValueError(f"Required environment variable {name!r} is not set")
     return val
+
+
+def _ai_model() -> str:
+    """The model this run calls. `gemini-3.5-flash-lite` is the free-tier default."""
+    return os.environ.get("GEMINI_MODEL", _DEFAULT_AI_MODEL)
+
+
+def _ai_quota(model: str) -> AIQuotaSettings:
+    """The model's published free-tier limits, with any environment override.
+
+    A run needs an API key and nothing else: the limits are defaults in code
+    (`job_hunter.ai.limits`), keyed by model. The three `GEMINI_FREE_*`
+    variables remain as an optional per-user override for a project whose
+    limits are not the published ones, or for a table entry that has gone
+    stale; each overrides only the dimension it names. An empty value is
+    treated as unset, because that is what an unconfigured GitHub Actions
+    variable expands to.
+    """
+    return free_tier_quota(
+        model,
+        rpm=_optional_positive_int_env("GEMINI_FREE_RPM"),
+        tpm=_optional_positive_int_env("GEMINI_FREE_TPM"),
+        rpd=_optional_positive_int_env("GEMINI_FREE_RPD"),
+    )
+
+
+def _optional_positive_int_env(name: str) -> int | None:
+    """Read an optional positive-integer override, or `None` when unset.
+
+    A value that is set but unusable still raises: it was typed on purpose,
+    and silently ignoring it would run under limits the operator believes are
+    not in force.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def _require_positive_int_env(name: str) -> int:

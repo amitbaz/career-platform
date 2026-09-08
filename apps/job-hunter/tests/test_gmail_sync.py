@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 
-from job_hunter.gemini_usage import GeminiQuotaPaused
+from job_hunter.ai.usage import AIQuotaPaused
 from job_hunter.gmail_client import (
     GmailHistoryExpired,
     GmailHistoryPage,
@@ -51,6 +51,7 @@ class FakeGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
@@ -68,6 +69,7 @@ class ResponseGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
@@ -88,6 +90,7 @@ class SequencedGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
@@ -146,7 +149,7 @@ class FakeGmail:
 
 
 def _service(store, gmail: FakeGmail) -> GmailSyncService:
-    return GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
+    return GmailSyncService(gmail=gmail, ai=FakeGemini(), store=store)
 
 
 def _save_completed_state(
@@ -215,7 +218,7 @@ def test_backfill_limits_unprocessed_messages_and_defers_remaining(store, tmp_pa
     )
     service = GmailSyncService(
         gmail=gmail,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         store=store,
         backfill_batch_size=2,
     )
@@ -238,7 +241,7 @@ def test_failed_backfill_attempt_consumes_the_sole_batch_slot(store, tmp_path):
     )
     service = GmailSyncService(
         gmail=gmail,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         store=store,
         backfill_batch_size=1,
     )
@@ -258,7 +261,7 @@ def test_default_backfill_processes_only_first_100_unprocessed_messages(store, t
         message_ids=message_ids,
         messages={message_id: _message(message_id) for message_id in message_ids},
     )
-    service = GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
+    service = GmailSyncService(gmail=gmail, ai=FakeGemini(), store=store)
 
     summary = service.sync(NOW)
 
@@ -281,7 +284,7 @@ def test_backfill_resumes_and_marks_complete_after_final_batch(store, tmp_path):
     )
     service = GmailSyncService(
         gmail=gmail,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         store=store,
         backfill_batch_size=2,
     )
@@ -320,7 +323,7 @@ def test_processed_ids_do_not_consume_backfill_batch_allowance(store, tmp_path):
     )
     service = GmailSyncService(
         gmail=gmail,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         store=store,
         backfill_batch_size=2,
     )
@@ -347,7 +350,7 @@ def test_incremental_sync_is_not_limited_by_backfill_batch_size(store, tmp_path)
     _save_completed_state(store, history_id="100")
     service = GmailSyncService(
         gmail=gmail,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         store=store,
         backfill_batch_size=1,
     )
@@ -371,7 +374,7 @@ def test_forced_backfill_uses_same_batch_limit(store, tmp_path):
     _save_completed_state(store)
     service = GmailSyncService(
         gmail=gmail,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         store=store,
         backfill_batch_size=2,
     )
@@ -567,7 +570,7 @@ def test_generic_job_board_alert_is_semantically_extracted_and_staged(store, tmp
         }
     )
 
-    summary = GmailSyncService(gmail=gmail, gemini=gemini, store=store).sync(NOW)
+    summary = GmailSyncService(gmail=gmail, ai=gemini, store=store).sync(NOW)
 
     candidates = store.client.select(
         "job_hunter_inbound_job_candidates",
@@ -645,7 +648,7 @@ def test_fresh_backfill_job_alert_still_uses_semantic_extraction(store, tmp_path
             "rationale": "Job-board alert with one frontend opening.",
         }
     )
-    service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
+    service = GmailSyncService(gmail=gmail, ai=gemini, store=store)
 
     summary = service.sync(NOW)
 
@@ -691,14 +694,14 @@ def test_quota_pause_stops_backfill_batch_and_leaves_remainder_unprocessed(store
                 "jobs": [],
                 "rationale": "generic alert",
             },
-            GeminiQuotaPaused(
+            AIQuotaPaused(
                 "paused",
                 paused_until="2026-09-02T00:00:00+00:00",
                 reason="daily_quota",
             ),
         ]
     )
-    service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
+    service = GmailSyncService(gmail=gmail, ai=gemini, store=store)
 
     summary = service.sync(NOW)
 
@@ -737,7 +740,7 @@ def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(sto
                 "jobs": [],
                 "rationale": "generic alert",
             },
-            GeminiQuotaPaused(
+            AIQuotaPaused(
                 "paused",
                 paused_until="2026-09-02T00:00:00+00:00",
                 reason="daily_quota",
@@ -745,7 +748,7 @@ def test_quota_pause_during_incremental_sync_does_not_advance_history_cursor(sto
         ]
     )
     _save_completed_state(store, history_id="old-cursor")
-    service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
+    service = GmailSyncService(gmail=gmail, ai=gemini, store=store)
 
     summary = service.sync(NOW)
 
@@ -780,7 +783,7 @@ def test_stale_message_does_not_block_incremental_cursor_advance(store, tmp_path
         ]
     )
     _save_completed_state(store, history_id="old-cursor")
-    service = GmailSyncService(gmail=gmail, gemini=gemini, store=store)
+    service = GmailSyncService(gmail=gmail, ai=gemini, store=store)
 
     summary = service.sync(NOW)
 
@@ -796,7 +799,7 @@ def test_non_404_message_failure_still_blocks_cursor_advance(store, tmp_path):
     gmail = FakeGmail(messages={"m1": RuntimeError("HTTP 500")})
     gmail.history_pages = {None: GmailHistoryPage(["m1"], "new-cursor", None)}
     _save_completed_state(store, history_id="old-cursor")
-    service = GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store)
+    service = GmailSyncService(gmail=gmail, ai=FakeGemini(), store=store)
 
     summary = service.sync(NOW)
 
@@ -834,7 +837,7 @@ def test_semantic_gmail_job_description_is_not_persisted(store, tmp_path, monkey
     gmail = FakeGmail(message_ids=[alert.message_id], messages={alert.message_id: alert})
     monkeypatch.setattr("job_hunter.gmail_sync.classify_email", lambda *_, **__: classification)
 
-    GmailSyncService(gmail=gmail, gemini=FakeGemini(), store=store).sync(NOW)
+    GmailSyncService(gmail=gmail, ai=FakeGemini(), store=store).sync(NOW)
 
     persisted = store.client.select(
         "job_hunter_inbound_job_candidates",

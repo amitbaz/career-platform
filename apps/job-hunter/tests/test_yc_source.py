@@ -1,4 +1,4 @@
-from job_hunter.models import GeminiQuotaSettings, SearchPolicy, Settings
+from job_hunter.models import AIQuotaSettings, SearchPolicy, Settings
 
 
 class FakeResponse:
@@ -77,7 +77,7 @@ def test_build_sources_includes_yc_for_configured_public_pages():
     from job_hunter.sources import build_sources
 
     settings = Settings(
-        gemini_api_key="g",
+        ai_api_key="g",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
@@ -90,7 +90,7 @@ def test_build_sources_includes_yc_for_configured_public_pages():
             thresholds={},
             yc_job_pages=["https://www.ycombinator.com/jobs/role"],
         ),
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
     sources = build_sources(settings, FakeHttp({}))

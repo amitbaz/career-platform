@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from job_hunter.cover_letter import generate_cover_letter
-from job_hunter.gemini import GeminiIncompleteResponse
+from job_hunter.ai.gemini import AIIncompleteResponse
 from job_hunter.models import CandidateContext, CandidatePreferences, Evaluation, Job
 
 
@@ -17,6 +17,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,
@@ -30,7 +31,7 @@ class FakeGemini:
 
 
 class TruncatingThenSucceedingGemini(FakeGemini):
-    """Raises GeminiIncompleteResponse on the first call, then succeeds."""
+    """Raises AIIncompleteResponse on the first call, then succeeds."""
 
     def __init__(self, final_text):
         super().__init__()
@@ -43,12 +44,12 @@ class TruncatingThenSucceedingGemini(FakeGemini):
             (prompt, kwargs.get("purpose"), kwargs.get("thinking_level"), kwargs.get("max_output_tokens"), kwargs.get("json_mode", False))
         )
         if self.calls == 1:
-            raise GeminiIncompleteResponse("MAX_TOKENS")
+            raise AIIncompleteResponse("MAX_TOKENS")
         return self._final_text
 
 
 class AlwaysTruncatingGemini(FakeGemini):
-    """Raises GeminiIncompleteResponse on every call."""
+    """Raises AIIncompleteResponse on every call."""
 
     def __init__(self):
         super().__init__()
@@ -59,7 +60,7 @@ class AlwaysTruncatingGemini(FakeGemini):
         self.prompts.append(
             (prompt, kwargs.get("purpose"), kwargs.get("thinking_level"), kwargs.get("max_output_tokens"), kwargs.get("json_mode", False))
         )
-        raise GeminiIncompleteResponse("MAX_TOKENS")
+        raise AIIncompleteResponse("MAX_TOKENS")
 
 
 @pytest.fixture
@@ -187,7 +188,7 @@ def test_cover_letter_recovers_from_max_tokens_with_larger_budget(job, evaluatio
 def test_cover_letter_repeated_max_tokens_raises_cleanly(job, evaluation, context):
     gemini = AlwaysTruncatingGemini()
 
-    with pytest.raises(GeminiIncompleteResponse):
+    with pytest.raises(AIIncompleteResponse):
         generate_cover_letter(job, evaluation, context, "template", gemini, date(2026, 8, 30))
 
     # Bounded: exactly two attempts, never unbounded retrying.

@@ -1,70 +1,42 @@
-"""Enforce Gemini free-tier budgets before any HTTP call reaches Google.
+"""Enforce a provider's free-tier budgets before any HTTP call leaves the process.
 
-`GeminiUsageTracker` is the sole gatekeeper between the pipeline and the
-Gemini API: `preflight` decides whether an attempt is allowed against our own
+`AIUsageTracker` is the sole gatekeeper between an adapter and its provider:
+`preflight` decides whether an attempt is allowed against our own
 80%-of-provider ceilings (with a reserve for `job_evaluation`) and against any
 persisted provider-quota pause, and the `record_*` methods log what actually
 happened so future preflight checks and `snapshot` stay accurate.
+
+One tracker governs one `(provider, model)` pair, and the port picks the
+tracker by call class -- so a call's class decides which quota governs it just
+as it decides which credential funds it. `provider` is supplied by the adapter
+that owns the tracker, never inferred from a column default.
 """
 
 from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from zoneinfo import ZoneInfo
 
-from job_hunter.models import GeminiQuotaSettings, GeminiUsageSummary
+from job_hunter.ai.port import (
+    AI_PURPOSES,
+    CORE_PURPOSE,
+    AIBudgetExceeded,
+    AIPurpose,
+    AIQuotaPaused,
+    AITemporaryCapacity,
+    PauseKind,
+)
+from job_hunter.models import AIQuotaSettings, AIUsageSummary
 
 if TYPE_CHECKING:
     from job_hunter.postgres_store import PostgresJobStore
 
-GeminiPurpose = Literal[
-    "gmail_semantic", "candidate_context", "job_evaluation", "job_facets", "cover_letter"
-]
-GEMINI_PURPOSES: tuple[GeminiPurpose, ...] = (
-    "gmail_semantic",
-    "candidate_context",
-    "job_evaluation",
-    # Objective facet extraction (issue #125). Deliberately *not* the core
-    # purpose: a posting's facts are shared and reusable, and reading a
-    # posting nobody has read yet can wait for tomorrow's run, while scoring a
-    # job whose posting has already been read cannot. Since #126 the two are
-    # in sequence -- a job cannot be scored before its posting is read -- so
-    # exhausting this budget defers exactly the jobs whose postings are still
-    # unread, and leaves every other job scoreable out of the core reserve.
-    "job_facets",
-    "cover_letter",
-)
-_CORE_PURPOSE: GeminiPurpose = "job_evaluation"
-
-GeminiPauseKind = Literal["daily_quota", "rate_limit", "unknown"]
-
 _PACIFIC = ZoneInfo("America/Los_Angeles")
 _ROLLING_WINDOW = timedelta(seconds=60)
 _ROLLING_SAFETY_SECONDS = 0.05
-
-
-class GeminiBudgetExceeded(RuntimeError):
-    """Our own internal daily ceiling or core reserve refused this call."""
-
-
-class GeminiTemporaryCapacity(GeminiBudgetExceeded):
-    """Rolling RPM/TPM capacity is temporarily full but will free shortly."""
-
-    def __init__(self, message: str, *, retry_after_seconds: float) -> None:
-        super().__init__(message)
-        self.retry_after_seconds = retry_after_seconds
-
-
-class GeminiQuotaPaused(RuntimeError):
-    """A persisted circuit-breaker pause from a real provider 429 is active."""
-
-    def __init__(self, message: str, *, paused_until: str, reason: str) -> None:
-        super().__init__(message)
-        self.paused_until = paused_until
-        self.reason = reason
 
 
 def estimate_input_tokens(prompt: str) -> int:
@@ -103,6 +75,12 @@ def _row_total_tokens(row: dict[str, Any]) -> int:
     + cached`. A row with no `usageMetadata` at all has no `total_tokens`
     either; its reconstruction below intentionally mirrors that same formula
     (input estimate + output + thinking, no cached) rather than inventing one.
+
+    A second adapter must respect the same shape. Anthropic reports no total at
+    all and no separate thinking count -- thinking is billed inside
+    `output_tokens` -- so such an adapter leaves `thinking_tokens` NULL and
+    lets this reconstruction stand, rather than copying `output_tokens` into
+    it and double-counting.
     """
     if row["total_tokens"] is not None:
         return row["total_tokens"]
@@ -174,40 +152,40 @@ def _retry_after_for_rolling_capacity(
     )
 
 
-class GeminiUsageTracker:
-    """Preflight budget checks and usage recording for one Gemini model."""
+class AIUsageTracker:
+    """Preflight budget checks and usage recording for one provider model."""
 
     def __init__(
         self,
         store: PostgresJobStore,
-        quota: GeminiQuotaSettings,
+        quota: AIQuotaSettings,
         model: str,
         *,
-        run_id: str | None = None,
+        provider: str,
     ) -> None:
         self._store = store
         self._quota = quota
         self._model = model
-        self._run_id = run_id
+        self._provider = provider
 
-    def preflight(self, purpose: GeminiPurpose, prompt: str, now: datetime) -> None:
+    def preflight(self, purpose: AIPurpose, prompt: str, now: datetime) -> None:
         """Raise before any HTTP call if this attempt would exceed a budget.
 
         Persisted provider pauses and daily/internal reserve exhaustion remain
         hard blockers. Rolling RPM/TPM pressure is temporary: callers receive
-        `GeminiTemporaryCapacity` with the earliest safe retry delay and no
+        `AITemporaryCapacity` with the earliest safe retry delay and no
         blocked-budget ledger row is written merely for waiting.
         """
-        if purpose not in GEMINI_PURPOSES:
-            raise ValueError(f"unknown Gemini purpose: {purpose!r}")
+        if purpose not in AI_PURPOSES:
+            raise ValueError(f"unknown AI purpose: {purpose!r}")
         now = _normalize_utc(now)
 
-        pause = self._store.get_gemini_pause(self._model)
+        pause = self._store.get_ai_pause(self._provider, self._model)
         if pause is not None and pause["paused_until"] is not None:
             paused_until = datetime.fromisoformat(pause["paused_until"])
             if paused_until > now:
-                raise GeminiQuotaPaused(
-                    f"Gemini {self._model} is paused until "
+                raise AIQuotaPaused(
+                    f"{self._provider} {self._model} is paused until "
                     f"{pause['paused_until']} ({pause['reason']})",
                     paused_until=pause["paused_until"],
                     reason=pause["reason"],
@@ -219,21 +197,21 @@ class GeminiUsageTracker:
         tpm_ceiling = math.floor(quota.tpm * quota.ceiling_ratio)
         core_reserve = math.floor(rpd_ceiling * quota.core_reserve_ratio)
         non_core_daily_limit = rpd_ceiling - core_reserve
-        daily_limit = rpd_ceiling if purpose == _CORE_PURPOSE else non_core_daily_limit
+        daily_limit = rpd_ceiling if purpose == CORE_PURPOSE else non_core_daily_limit
 
         day_start, day_end = _pacific_day_bounds(now)
         day_rows = self._provider_rows(day_start, day_end)
         if len(day_rows) + 1 > daily_limit:
             self._record_blocked(purpose, prompt, now)
-            raise GeminiBudgetExceeded(
-                f"Gemini {self._model} daily budget exceeded for purpose {purpose!r}"
+            raise AIBudgetExceeded(
+                f"{self._provider} {self._model} daily budget exceeded for purpose {purpose!r}"
             )
 
         proposed_input_tokens = estimate_input_tokens(prompt)
         if proposed_input_tokens > tpm_ceiling:
             self._record_blocked(purpose, prompt, now)
-            raise GeminiBudgetExceeded(
-                f"Gemini {self._model} prompt exceeds internal TPM ceiling for purpose {purpose!r}"
+            raise AIBudgetExceeded(
+                f"{self._provider} {self._model} prompt exceeds internal TPM ceiling for purpose {purpose!r}"
             )
 
         minute_start = now - _ROLLING_WINDOW
@@ -252,14 +230,14 @@ class GeminiUsageTracker:
                 tpm_ceiling=tpm_ceiling,
                 proposed_input_tokens=proposed_input_tokens,
             )
-            raise GeminiTemporaryCapacity(
-                f"Gemini {self._model} rolling capacity temporarily full for purpose {purpose!r}",
+            raise AITemporaryCapacity(
+                f"{self._provider} {self._model} rolling capacity temporarily full for purpose {purpose!r}",
                 retry_after_seconds=retry_after,
             )
 
     def record_success(
         self,
-        purpose: GeminiPurpose,
+        purpose: AIPurpose,
         prompt: str,
         now: datetime,
         *,
@@ -271,9 +249,9 @@ class GeminiUsageTracker:
     ) -> None:
         """Log a successful attempt with exact `usageMetadata` where available."""
         now = _normalize_utc(now)
-        self._store.record_gemini_usage(
+        self._store.record_ai_usage(
             occurred_at=now.isoformat(),
-            run_id=self._run_id,
+            provider=self._provider,
             model=self._model,
             purpose=purpose,
             status="success",
@@ -287,7 +265,7 @@ class GeminiUsageTracker:
 
     def record_error(
         self,
-        purpose: GeminiPurpose,
+        purpose: AIPurpose,
         prompt: str,
         now: datetime,
         *,
@@ -308,9 +286,9 @@ class GeminiUsageTracker:
         HTTP failure has no such metadata and leaves them `None`.
         """
         now = _normalize_utc(now)
-        self._store.record_gemini_usage(
+        self._store.record_ai_usage(
             occurred_at=now.isoformat(),
-            run_id=self._run_id,
+            provider=self._provider,
             model=self._model,
             purpose=purpose,
             status="error",
@@ -326,11 +304,11 @@ class GeminiUsageTracker:
 
     def record_429(
         self,
-        purpose: GeminiPurpose,
+        purpose: AIPurpose,
         prompt: str,
         now: datetime,
         *,
-        kind: GeminiPauseKind,
+        kind: PauseKind,
         error_code: str | None = None,
     ) -> tuple[str, str]:
         """Log a 429 and trip the persisted pause matching what Google reported.
@@ -341,10 +319,10 @@ class GeminiUsageTracker:
         `rate_pause_seconds` rather than assuming the shorter or longer case.
 
         Returns the exact `(paused_until_iso, reason)` pair just persisted, so
-        a caller can raise `GeminiQuotaPaused` directly from these values.
+        a caller can raise `AIQuotaPaused` directly from these values.
         Do not re-derive the pause by calling `preflight` again afterward: that
         re-runs the daily budget check, which counts the `quota_429` row this
-        method just wrote and can trip `GeminiBudgetExceeded` instead — the
+        method just wrote and can trip `AIBudgetExceeded` instead — the
         wrong exception type for a call that indisputably reached Google.
         """
         now = _normalize_utc(now)
@@ -354,10 +332,10 @@ class GeminiUsageTracker:
             paused_until = now + timedelta(seconds=self._quota.rate_pause_seconds)
 
         paused_until_iso = paused_until.isoformat()
-        self._store.set_gemini_pause(self._model, paused_until_iso, kind)
-        self._store.record_gemini_usage(
+        self._store.set_ai_pause(self._provider, self._model, paused_until_iso, kind)
+        self._store.record_ai_usage(
             occurred_at=now.isoformat(),
-            run_id=self._run_id,
+            provider=self._provider,
             model=self._model,
             purpose=purpose,
             status="quota_429",
@@ -367,15 +345,16 @@ class GeminiUsageTracker:
         )
         return paused_until_iso, kind
 
-    def snapshot(
-        self, now: datetime, run_id: str | None = None
-    ) -> GeminiUsageSummary:
+    def snapshot(self, now: datetime) -> AIUsageSummary:
         """Return today's (Pacific) usage against provider limits."""
         now = _normalize_utc(now)
         quota = self._quota
         day_start, day_end = _pacific_day_bounds(now)
-        rows = self._store.gemini_usage_rows(
-            day_start.isoformat(), day_end.isoformat(), model=self._model, run_id=run_id
+        rows = self._store.ai_usage_rows(
+            day_start.isoformat(),
+            day_end.isoformat(),
+            provider=self._provider,
+            model=self._model,
         )
         provider_rows = [row for row in rows if row["status"] != "blocked_budget"]
 
@@ -396,14 +375,14 @@ class GeminiUsageTracker:
         core_reserve = math.floor(rpd_ceiling * quota.core_reserve_ratio)
         non_core_daily_limit = rpd_ceiling - core_reserve
 
-        pause = self._store.get_gemini_pause(self._model)
+        pause = self._store.get_ai_pause(self._provider, self._model)
         provider_paused = (
             pause is not None
             and pause["paused_until"] is not None
             and datetime.fromisoformat(pause["paused_until"]) > now
         )
 
-        return GeminiUsageSummary(
+        return AIUsageSummary(
             requests_today=requests_today,
             rpd_percent=requests_today / quota.rpd * 100,
             rpm_peak_percent=peak_requests / quota.rpm * 100,
@@ -418,10 +397,10 @@ class GeminiUsageTracker:
             provider_paused=provider_paused,
         )
 
-    def _record_blocked(self, purpose: GeminiPurpose, prompt: str, now: datetime) -> None:
-        self._store.record_gemini_usage(
+    def _record_blocked(self, purpose: AIPurpose, prompt: str, now: datetime) -> None:
+        self._store.record_ai_usage(
             occurred_at=now.isoformat(),
-            run_id=self._run_id,
+            provider=self._provider,
             model=self._model,
             purpose=purpose,
             status="blocked_budget",
@@ -429,7 +408,7 @@ class GeminiUsageTracker:
         )
 
     def _provider_rows(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
-        rows = self._store.gemini_usage_rows(
-            start.isoformat(), end.isoformat(), model=self._model
+        rows = self._store.ai_usage_rows(
+            start.isoformat(), end.isoformat(), provider=self._provider, model=self._model
         )
         return [row for row in rows if row["status"] != "blocked_budget"]

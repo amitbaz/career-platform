@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import job_hunter.pipeline
-from job_hunter.gemini_usage import (
-    GeminiBudgetExceeded,
-    GeminiQuotaPaused,
-    GeminiTemporaryCapacity,
+from job_hunter.ai import CallClass
+from job_hunter.ai.usage import (
+    AIBudgetExceeded,
+    AIQuotaPaused,
+    AITemporaryCapacity,
 )
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.models import (
@@ -20,8 +21,8 @@ from job_hunter.models import (
     Compensation,
     DigestItem,
     Evaluation,
-    GeminiQuotaSettings,
-    GeminiUsageSummary,
+    AIQuotaSettings,
+    AIUsageSummary,
     Job,
     Material,
     RunSummary,
@@ -31,7 +32,7 @@ from job_hunter.models import (
 from job_hunter.pipeline import run_pipeline, should_run_scheduled
 from job_hunter.sources import GmailStagedSource, LearnedAtsSource
 from job_hunter.sources.company_watch import CompanyWatchSource
-from job_hunter.telegram import build_digest, build_gemini_pause_warning, select_deliverable_items
+from job_hunter.telegram import build_digest, build_ai_pause_warning, select_deliverable_items
 from job_hunter.watchlist import promote_company as persist_promoted_company
 from tests.facet_fixtures import REACT_MUST_HAVE, make_facets
 from tests.market_fixtures import make_market_policy
@@ -79,6 +80,7 @@ class FakeGemini:
         self.facet_calls = 0
         self.facet_prompts = []
         self.cover_letter_calls = 0
+        self.call_classes = []
         self.preference_payload = preference_payload
         self.evaluation_payload = evaluation_payload
         self.facet_payload = facet_payload
@@ -87,6 +89,7 @@ class FakeGemini:
         self,
         prompt,
         *,
+        call_class,
         purpose=None,
         thinking_level=None,
         max_output_tokens=None,
@@ -95,6 +98,7 @@ class FakeGemini:
         max_attempts=1,
         read_timeout=None,
     ):
+        self.call_classes.append((purpose, call_class))
         if purpose == "candidate_context":
             self.preference_calls += 1
             payload = self.preference_payload or {
@@ -274,7 +278,7 @@ class OrderedNavigatorTelegram:
 
 
 class FakeUsageTracker:
-    """Stands in for `GeminiUsageTracker`: returns a fixed summary, once per call."""
+    """Stands in for `AIUsageTracker`: returns a fixed summary, once per call."""
 
     def __init__(self, summary):
         self.summary = summary
@@ -303,7 +307,7 @@ def _usage_summary(**overrides):
         provider_paused=False,
     )
     defaults.update(overrides)
-    return GeminiUsageSummary(**defaults)
+    return AIUsageSummary(**defaults)
 
 
 class FakeSource:
@@ -382,11 +386,11 @@ class RaisingGemini(FakeGemini):
 
 
 def _budget_exceeded():
-    return GeminiBudgetExceeded("Gemini gemini-test budget exceeded for purpose 'job_evaluation'")
+    return AIBudgetExceeded("Gemini gemini-test budget exceeded for purpose 'job_evaluation'")
 
 
 def _quota_paused():
-    return GeminiQuotaPaused(
+    return AIQuotaPaused(
         "Gemini gemini-test is paused until 2026-09-03T00:00:00+00:00 (daily_quota)",
         paused_until="2026-09-03T00:00:00+00:00",
         reason="daily_quota",
@@ -549,13 +553,13 @@ def policy():
 @pytest.fixture
 def settings(policy):
     return Settings(
-        gemini_api_key="key",
+        ai_api_key="key",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",
@@ -582,7 +586,7 @@ def test_pipeline_delivers_strong_match_and_dedupes_within_run(store, settings):
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[source], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[source], store=store, ai=gemini, telegram=telegram)
 
     assert summary.ready_to_apply == 1
     assert len(telegram.documents) == 0
@@ -593,8 +597,32 @@ def test_pipeline_delivers_strong_match_and_dedupes_within_run(store, settings):
 
     # Second run rediscovers the same, unchanged job: no re-evaluation.
     source2 = FakeSource([strong_job])
-    run_pipeline(settings, sources=[source2], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[source2], store=store, ai=gemini, telegram=telegram)
     assert gemini.eval_calls == 1
+
+
+def test_every_pipeline_call_declares_the_user_subjective_class(store, settings):
+    """The port's call class is declared at the seam, not inferred (#73).
+
+    Every call a run makes today is a judgement about this one user, funded by
+    this user's own key. Facet extraction is objective work, but until #128
+    gives it a platform credential it is still the user who pays for it, so it
+    declares the same class as the rest.
+    """
+    ai = FakeGemini()
+    telegram = FakeTelegram()
+
+    run_pipeline(
+        settings, sources=[FakeSource([_job()])], store=store, ai=ai, telegram=telegram
+    )
+
+    assert ai.call_classes, "the run made no model calls at all"
+    assert {call_class for _, call_class in ai.call_classes} == {
+        CallClass.USER_SUBJECTIVE
+    }
+    assert {"candidate_context", "job_evaluation", "job_facets"} <= {
+        purpose for purpose, _ in ai.call_classes
+    }
 
 
 def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
@@ -678,7 +706,7 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
             settings,
             sources=[FakeSource([job])],
             store=store,
-            gemini=gemini,
+            ai=gemini,
             telegram=FakeTelegram(),
             http=WatchHttp(),
         )
@@ -708,7 +736,7 @@ def test_pipeline_logs_how_many_discovered_jobs_are_new(store, settings, caplog)
             settings,
             sources=[FakeSource([_job()])],
             store=store,
-            gemini=FakeGemini(),
+            ai=FakeGemini(),
             telegram=FakeTelegram(),
         )
 
@@ -720,7 +748,7 @@ def test_pipeline_logs_how_many_discovered_jobs_are_new(store, settings, caplog)
             settings,
             sources=[FakeSource([_job()])],
             store=store,
-            gemini=FakeGemini(),
+            ai=FakeGemini(),
             telegram=FakeTelegram(),
         )
 
@@ -766,7 +794,7 @@ def test_pipeline_logs_when_match_score_is_capped(store, settings, caplog):
             settings,
             sources=[FakeSource([job])],
             store=store,
-            gemini=gemini,
+            ai=gemini,
             telegram=FakeTelegram(),
         )
 
@@ -798,7 +826,7 @@ def test_pipeline_aggregates_untrusted_gmail_source_labels_in_logs(store, settin
             settings,
             sources=[],
             store=store,
-            gemini=FakeGemini(),
+            ai=FakeGemini(),
             telegram=FakeTelegram(),
         )
 
@@ -845,7 +873,7 @@ def test_pipeline_counts_only_meaningful_company_watch_promotions(store, setting
             settings,
             sources=[FakeSource(jobs)],
             store=store,
-            gemini=FakeGemini(),
+            ai=FakeGemini(),
             telegram=FakeTelegram(),
         )
 
@@ -881,7 +909,7 @@ def test_pipeline_counts_a_failed_expired_watch_retry_as_a_new_pause(store, sett
             settings,
             sources=[],
             store=store,
-            gemini=FakeGemini(),
+            ai=FakeGemini(),
             telegram=FakeTelegram(),
             http=FailingWatchHttp(),
         )
@@ -932,7 +960,7 @@ def test_pipeline_does_not_promote_possible_match(store, settings, monkeypatch):
         settings,
         sources=[FakeSource([_job()])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=FakeTelegram(),
     )
 
@@ -973,7 +1001,7 @@ def test_pipeline_passes_configured_package_threshold_to_promotion(
         settings,
         sources=[FakeSource([_job()])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=FakeTelegram(),
     )
 
@@ -999,7 +1027,7 @@ def test_pipeline_isolates_company_watch_source_failure(
         settings,
         sources=[FakeSource([_job()])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=FakeTelegram(),
     )
 
@@ -1018,7 +1046,7 @@ def test_pipeline_syncs_structured_manual_watch_seeds(store, settings):
         settings,
         sources=[],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=FakeTelegram(),
     )
 
@@ -1037,7 +1065,7 @@ def test_pipeline_injects_resolver_for_direct_ats_canonical_metadata(store, sett
         settings,
         sources=[FakeSource([job])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=FakeTelegram(),
         http=ExplodingHttp(),
     )
@@ -1099,7 +1127,7 @@ def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
             )
         ],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=FakeTelegram(),
         http=http,
     )
@@ -1159,7 +1187,7 @@ def test_pipeline_rejects_targeted_ats_result_for_wrong_company(store, settings)
             )
         ],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=FakeTelegram(),
         http=WrongCompanySearchHttp(),
     )
@@ -1195,7 +1223,7 @@ def test_pipeline_counts_promotion_failure_but_continues_delivery(
         settings,
         sources=[FakeSource([_job()])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -1227,7 +1255,7 @@ def test_pipeline_marks_evaluation_attempted_but_not_evaluated_on_failure(
         settings,
         sources=[FakeSource([_job()])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=FakeTelegram(),
     )
 
@@ -1245,7 +1273,7 @@ def test_pipeline_isolates_broken_source(store, settings):
         settings,
         sources=[BrokenSource(), FakeSource([good_job])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -1255,20 +1283,20 @@ def test_pipeline_isolates_broken_source(store, settings):
 
 def test_pipeline_dry_run_persists_but_does_not_deliver(store, settings, policy):
     dry_settings = Settings(
-        gemini_api_key=settings.gemini_api_key,
+        ai_api_key=settings.ai_api_key,
         candidate_profile=settings.candidate_profile,
         cover_letter_template=settings.cover_letter_template,
         timezone=settings.timezone,
         scheduled_hour=settings.scheduled_hour,
         policy=policy,
-        gemini_quota=settings.gemini_quota,
+        ai_quota=settings.ai_quota,
         dry_run=True,
     )
     job = _job()
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    summary = run_pipeline(dry_settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(dry_settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     assert summary.ready_to_apply == 1
     assert len(telegram.messages) == 0
@@ -1291,7 +1319,7 @@ def test_pipeline_delivers_all_pending_gmail_reviews_in_one_message(store, setti
     )
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[], store=store, gemini=FakeGemini(), telegram=telegram)
+    run_pipeline(settings, sources=[], store=store, ai=FakeGemini(), telegram=telegram)
 
     assert telegram.messages == [
         "Gmail activity I couldn't link\n\n"
@@ -1321,12 +1349,12 @@ def test_pipeline_retries_gmail_reviews_after_a_failed_telegram_send(store, sett
     )
     telegram = FlakyTelegram(fail_message_times=1)
 
-    run_pipeline(settings, sources=[], store=store, gemini=FakeGemini(), telegram=telegram)
+    run_pipeline(settings, sources=[], store=store, ai=FakeGemini(), telegram=telegram)
 
     assert [row["id"] for row in store.pending_review_events()] == [event_id]
     assert telegram.messages == []
 
-    run_pipeline(settings, sources=[], store=store, gemini=FakeGemini(), telegram=telegram)
+    run_pipeline(settings, sources=[], store=store, ai=FakeGemini(), telegram=telegram)
 
     assert store.pending_review_events() == []
     assert telegram.messages == [
@@ -1352,7 +1380,7 @@ def test_pipeline_marks_each_review_chunk_before_retrying_partial_failure(store,
     )
     telegram = FailOnSecondMessageTelegram()
 
-    run_pipeline(settings, sources=[], store=store, gemini=FakeGemini(), telegram=telegram)
+    run_pipeline(settings, sources=[], store=store, ai=FakeGemini(), telegram=telegram)
 
     assert len(telegram.attempts) == 2
     assert all(len(message) <= 3900 for message in telegram.attempts)
@@ -1362,7 +1390,7 @@ def test_pipeline_marks_each_review_chunk_before_retrying_partial_failure(store,
     )
     assert {row["event_id"] for row in delivered} == {first_event_id}
 
-    run_pipeline(settings, sources=[], store=store, gemini=FakeGemini(), telegram=telegram)
+    run_pipeline(settings, sources=[], store=store, ai=FakeGemini(), telegram=telegram)
 
     assert len(telegram.attempts) == 3
     assert "A" * 2000 not in telegram.attempts[2]
@@ -1384,7 +1412,7 @@ def test_pipeline_sends_gmail_reviews_after_normal_job_delivery_without_scoring_
         settings,
         sources=[FakeSource([_job()])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -1421,7 +1449,7 @@ def test_pipeline_evaluates_staged_gmail_job_through_normal_discovery(store, set
         settings,
         sources=[],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -1466,7 +1494,7 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(sto
         settings,
         sources=[FakeSource([public_job])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -1482,7 +1510,7 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(sto
         settings,
         sources=[],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -1499,7 +1527,7 @@ def test_pipeline_prefilters_non_matching_jobs(store, settings):
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource([irrelevant_job])], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource([irrelevant_job])], store=store, ai=gemini, telegram=telegram)
 
     assert summary.ready_to_apply == 0
     assert summary.skipped == 1
@@ -1523,7 +1551,7 @@ def test_pipeline_does_not_reenrich_job_with_existing_description(store, setting
         settings,
         sources=[FakeSource([job])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
         http=ExplodingHttp(),
     )
@@ -1537,14 +1565,14 @@ def test_pipeline_retries_failed_telegram_delivery_on_next_run(store, settings):
     telegram = FlakyTelegram(fail_message_times=1)
 
     # Run 1: evaluation succeeds, message Telegram send fails.
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     job_id, _, _ = store.upsert_job(job)
     assert store.has_delivery(job_id, "telegram_message") is False
     assert len(telegram.messages) == 0
 
     # Run 2: same job rediscovered, Telegram now works -> retry succeeds.
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     assert len(telegram.messages) == 1
     assert store.has_delivery(job_id, "telegram_message") is True
@@ -1555,11 +1583,11 @@ def test_pipeline_retry_does_not_call_gemini_again(store, settings):
     gemini = FakeGemini()
     telegram = FlakyTelegram(fail_message_times=1)
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
     assert gemini.eval_calls == 1
     assert gemini.cover_letter_calls == 0
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     # Retry must reuse the persisted evaluation, not call Gemini again.
     assert gemini.eval_calls == 1
@@ -1571,12 +1599,12 @@ def test_pipeline_no_duplicate_sends_after_successful_delivery(store, settings):
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
     assert len(telegram.messages) == 1
     assert len(telegram.documents) == 0
 
     # Job rediscovered on a later run after delivery already succeeded.
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     assert len(telegram.messages) == 1
     assert len(telegram.documents) == 0
@@ -1598,7 +1626,7 @@ def test_pipeline_loads_candidate_context_once_without_logging_profile(store, se
     monkeypatch.setattr("job_hunter.pipeline.get_candidate_context", fake_get_context)
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     # Exactly one load: no redundant second (candidate_context vs.
     # preferences) call, unlike the pre-Task-8 pipeline.
@@ -1625,7 +1653,7 @@ def test_pipeline_passes_loaded_preferences_into_discovery(store, settings, monk
         "job_hunter.pipeline.collect_candidates", capturing_collect_candidates
     )
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     assert captured["preferences"] is not None
     assert captured["preferences"] == _candidate_context().preferences
@@ -1636,7 +1664,7 @@ def test_pipeline_defers_evaluation_when_budget_exceeded(store, settings):
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded())
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     job_id, _, _ = store.upsert_job(job)
     assert store.get_evaluation(job_id) is None
@@ -1653,7 +1681,7 @@ def test_pipeline_defers_evaluation_when_quota_paused(store, settings):
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_quota_paused())
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     job_id, _, _ = store.upsert_job(job)
     assert store.get_evaluation(job_id) is None
@@ -1679,7 +1707,7 @@ def test_pipeline_waits_and_retries_when_gemini_capacity_is_temporary(
                 and not self.temporary_limit_raised
             ):
                 self.temporary_limit_raised = True
-                raise GeminiTemporaryCapacity(
+                raise AITemporaryCapacity(
                     "temporary Gemini RPM capacity reached",
                     retry_after_seconds=2.5,
                 )
@@ -1699,7 +1727,7 @@ def test_pipeline_waits_and_retries_when_gemini_capacity_is_temporary(
         settings,
         sources=[FakeSource([job])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -1718,7 +1746,7 @@ def test_pipeline_defers_remaining_candidates_after_first_quota_exception(store,
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded(), allow=1)
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram)
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
     evaluated = [job_id for job_id in job_ids if store.get_evaluation(job_id) is not None]
@@ -1740,7 +1768,7 @@ def test_pipeline_retries_pending_evaluation_before_new_candidates(store, settin
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded(), allow=1)
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([new_job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([new_job])], store=store, ai=gemini, telegram=telegram)
 
     new_job_id, _, _ = store.upsert_job(new_job)
 
@@ -1766,7 +1794,7 @@ def test_pipeline_delivered_card_warns_when_availability_check_fails(store, sett
         settings,
         sources=[FakeSource([job])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
         http=TimingOutHttp(),
     )
@@ -1781,7 +1809,7 @@ def test_pipeline_delivered_card_has_no_warning_for_a_normal_posting(store, sett
     gemini = FakeGemini()
     telegram = OrderedNavigatorTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     cards = [text for kind, text in telegram.events if kind == "card"]
     assert len(cards) == 1
@@ -1796,7 +1824,7 @@ def test_pipeline_retries_pending_evaluation_and_delivers_it(store, settings):
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource([])], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource([])], store=store, ai=gemini, telegram=telegram)
 
     assert store.get_evaluation(job_id) is not None
     assert store.list_pending_ai_work("job_evaluation") == []
@@ -1817,7 +1845,7 @@ def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(sto
     telegram = FakeTelegram()
 
     # Run 1: fully evaluate and deliver the job normally.
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
     job_id, _, _ = store.upsert_job(job)
     assert store.get_evaluation(job_id) is not None
     assert store.has_delivery(job_id, "telegram_message") is True
@@ -1831,7 +1859,7 @@ def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(sto
     store.enqueue_ai_work("job_evaluation", job_id)
 
     # Run 2: no new candidates, only the stale pending row to process.
-    run_pipeline(settings, sources=[FakeSource([])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([])], store=store, ai=gemini, telegram=telegram)
 
     assert store.list_pending_ai_work("job_evaluation") == []
     # Zero wasted Gemini evaluation calls...
@@ -1880,7 +1908,7 @@ def test_generate_cover_letter_on_demand_calls_gemini_when_no_material(store, se
     telegram = FakeTelegram()
 
     delivered = job_hunter.pipeline.generate_cover_letter_on_demand(
-        settings, job_id, store=store, gemini=gemini, telegram=telegram
+        settings, job_id, store=store, ai=gemini, telegram=telegram
     )
 
     assert delivered is True
@@ -1899,7 +1927,7 @@ def test_generate_cover_letter_on_demand_resends_without_regenerating(store, set
     telegram = FakeTelegram()
 
     delivered = job_hunter.pipeline.generate_cover_letter_on_demand(
-        settings, job_id, store=store, gemini=gemini, telegram=telegram
+        settings, job_id, store=store, ai=gemini, telegram=telegram
     )
 
     assert delivered is True
@@ -1915,7 +1943,7 @@ def test_generate_cover_letter_on_demand_missing_job_returns_false(store, settin
         settings,
         "00000000-0000-0000-0000-000000000999",
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -1947,7 +1975,7 @@ def test_generate_cover_letter_on_demand_follows_a_job_merged_since_delivery(
     telegram = FakeTelegram()
 
     delivered = job_hunter.pipeline.generate_cover_letter_on_demand(
-        settings, duplicate_id, store=store, gemini=gemini, telegram=telegram
+        settings, duplicate_id, store=store, ai=gemini, telegram=telegram
     )
 
     assert delivered is True
@@ -1981,7 +2009,7 @@ def test_generate_cover_letter_on_demand_resends_a_merged_job_letter_for_free(
     telegram = FakeTelegram()
 
     delivered = job_hunter.pipeline.generate_cover_letter_on_demand(
-        settings, duplicate_id, store=store, gemini=gemini, telegram=telegram
+        settings, duplicate_id, store=store, ai=gemini, telegram=telegram
     )
 
     assert delivered is True
@@ -2006,7 +2034,7 @@ def test_generate_cover_letter_on_demand_tells_the_user_when_the_job_is_gone(sto
         settings,
         "00000000-0000-0000-0000-000000000999",
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -2029,7 +2057,7 @@ def test_generate_cover_letter_on_demand_notifies_on_quota_block(store, settings
     telegram = FakeTelegram()
 
     delivered = job_hunter.pipeline.generate_cover_letter_on_demand(
-        settings, job_id, store=store, gemini=gemini, telegram=telegram
+        settings, job_id, store=store, ai=gemini, telegram=telegram
     )
 
     assert delivered is False
@@ -2043,7 +2071,7 @@ def test_pipeline_defers_all_evaluations_when_context_load_is_quota_blocked(stor
     gemini = RaisingGemini(raise_on_purpose="candidate_context", exception=_budget_exceeded())
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram)
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
     pending = {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
@@ -2064,7 +2092,7 @@ def test_pipeline_evaluates_all_eligible_jobs_when_under_budget(store, settings)
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram)
 
     assert summary.ready_to_apply == 18
     assert gemini.eval_calls == 18
@@ -2084,7 +2112,7 @@ def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(store, settings, 
             settings,
             sources=[FakeSource(ashby_jobs), FakeSource(remotive_jobs)],
             store=store,
-            gemini=gemini,
+            ai=gemini,
             telegram=telegram,
         )
 
@@ -2108,7 +2136,7 @@ def test_pipeline_delivers_at_most_the_daily_offer_limit(store, settings, limit)
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert summary.ready_to_apply == limit
@@ -2145,7 +2173,7 @@ def test_pipeline_delivers_the_highest_ranked_offers_when_the_cap_bites(store, s
         settings,
         sources=[FakeSource(strong + weak)],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
     )
 
@@ -2159,7 +2187,7 @@ def test_pipeline_delivers_what_it_found_when_the_pool_is_smaller_than_the_cap(s
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert summary.ready_to_apply == 3
@@ -2180,7 +2208,7 @@ def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settin
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     # Every other candidate scores about 30 -- below the `possible` rung,
@@ -2207,7 +2235,7 @@ def test_pipeline_does_not_spend_the_cap_on_offers_below_the_match_score_floor(s
     telegram = FakeTelegram()
 
     run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert _digest_offer_count(telegram.messages[0]) == 5
@@ -2248,7 +2276,7 @@ def test_pipeline_withholds_offers_below_the_match_score_floor(store, settings):
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert _digest_companies(telegram.messages[0]) == {jobs[0].company}
@@ -2283,7 +2311,7 @@ def test_pipeline_sends_nothing_when_no_offer_clears_the_match_score_floor(store
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert telegram.messages == []
@@ -2309,7 +2337,7 @@ def test_pipeline_delivers_an_offer_at_a_lower_configured_match_score_floor(stor
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert _digest_companies(telegram.messages[0]) == {jobs[0].company}
@@ -2341,7 +2369,7 @@ def test_pipeline_fills_the_daily_cap_after_withholding_lower_scored_jobs(store,
     telegram = FakeTelegram()
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     assert _digest_offer_count(telegram.messages[0]) == 5
@@ -2364,7 +2392,7 @@ def test_pipeline_does_not_retry_delivery_below_the_current_match_score_floor(st
         settings,
         sources=[FakeSource([])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -2392,7 +2420,7 @@ def test_pipeline_logs_the_match_score_floor_and_withheld_count(store, settings,
             settings,
             sources=[FakeSource(jobs)],
             store=store,
-            gemini=gemini,
+            ai=gemini,
             telegram=FakeTelegram(),
         )
 
@@ -2406,7 +2434,7 @@ def test_pipeline_leaves_candidates_beyond_the_cap_for_the_next_run(store, setti
     telegram = FakeTelegram()
 
     run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     first_run_companies = _digest_companies(telegram.messages[0])
@@ -2415,7 +2443,7 @@ def test_pipeline_leaves_candidates_beyond_the_cap_for_the_next_run(store, setti
     assert store.list_pending_ai_work("job_evaluation") == []
 
     summary = run_pipeline(
-        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+        settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     second_run_companies = _digest_companies(telegram.messages[1])
@@ -2432,7 +2460,7 @@ def test_pipeline_logs_the_offer_cap_and_what_it_deferred(store, settings, caplo
 
     with caplog.at_level(logging.INFO):
         run_pipeline(
-            settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+            settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
         )
 
     # Deferred by the cap is kept apart from deferred by the ranking budget:
@@ -2452,7 +2480,7 @@ def test_pipeline_logs_profile_fallback_without_private_content(store, settings,
     telegram = FakeTelegram()
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     assert "profile extraction: source=fallback" in caplog.text
     assert "eligible sources: ashby=1" in caplog.text
@@ -2483,7 +2511,7 @@ def test_pipeline_logs_per_market_metrics_and_bounds_fresh_gemini_calls(store, s
             settings,
             sources=[FakeSource(jobs)],
             store=store,
-            gemini=gemini,
+            ai=gemini,
             telegram=telegram,
         )
 
@@ -2562,7 +2590,7 @@ def test_pipeline_logs_source_quality_and_ats_registry_metrics(store, settings, 
             settings,
             sources=[FakeSource([devjobs_job]), learned_source],
             store=store,
-            gemini=gemini,
+            ai=gemini,
             telegram=telegram,
         )
 
@@ -2619,7 +2647,7 @@ def test_pipeline_sends_no_message_events_when_navigator_supported(store, settin
     gemini._tracker = FakeUsageTracker(summary)
     telegram = OrderedNavigatorTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     kinds = [kind for kind, _payload in telegram.events]
     # With navigator support, the digest is delivered via the interactive
@@ -2634,7 +2662,7 @@ def test_pipeline_surfaces_evaluation_location_note_in_navigator_card(store, set
     gemini = FakeGemini()
     telegram = OrderedNavigatorTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     card_events = [payload for kind, payload in telegram.events if kind == "card"]
     assert card_events
@@ -2648,9 +2676,9 @@ def test_pipeline_sends_gemini_pause_warning_as_last_message(store, settings):
     gemini._tracker = FakeUsageTracker(summary)
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
-    expected_warning = build_gemini_pause_warning(summary)
+    expected_warning = build_ai_pause_warning(summary)
     assert expected_warning is not None
     assert telegram.messages[-1] == expected_warning
 
@@ -2662,9 +2690,9 @@ def test_pipeline_sends_no_warning_when_usage_is_healthy(store, settings):
     gemini._tracker = FakeUsageTracker(summary)
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
-    assert build_gemini_pause_warning(summary) is None
+    assert build_ai_pause_warning(summary) is None
     # Only the digest message was sent — no warning, no usage status.
     assert len(telegram.messages) == 1
 
@@ -2679,19 +2707,19 @@ def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(s
     gemini._tracker = FakeUsageTracker(_usage_summary(internal_budget_exhausted=True))
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram)
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
     pending = {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
     assert len(pending) == 4  # confirms many calls were in fact locally blocked
 
-    expected_warning = build_gemini_pause_warning(_usage_summary(internal_budget_exhausted=True))
+    expected_warning = build_ai_pause_warning(_usage_summary(internal_budget_exhausted=True))
     warning_occurrences = [msg for msg in telegram.messages if msg == expected_warning]
     assert len(warning_occurrences) == 1
     assert gemini._tracker.snapshot_calls == 1
 
 
-def test_pipeline_logs_structured_gemini_usage_line(store, settings, caplog):
+def test_pipeline_logs_structured_ai_usage_line(store, settings, caplog):
     job = _job()
     summary = _usage_summary(
         requests_today=21,
@@ -2713,9 +2741,9 @@ def test_pipeline_logs_structured_gemini_usage_line(store, settings, caplog):
     telegram = FakeTelegram()
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
-    assert "gemini_usage run_calls=21" in caplog.text
+    assert "ai_usage run_calls=21" in caplog.text
     assert "rpd_pct=34.0" in caplog.text
     assert "rpm_peak_pct=20.0" in caplog.text
     assert "tpm_peak_pct=17.0" in caplog.text
@@ -2751,7 +2779,7 @@ def test_pipeline_log_total_does_not_double_count_cached_tokens(store, settings,
     telegram = FakeTelegram()
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     assert "input=1000" in caplog.text
     assert "output=200" in caplog.text
@@ -2760,7 +2788,7 @@ def test_pipeline_log_total_does_not_double_count_cached_tokens(store, settings,
     assert log_total == summary.total_tokens_today == 1250
 
 
-def test_pipeline_logs_gemini_usage_even_in_dry_run(store, settings, caplog):
+def test_pipeline_logs_ai_usage_even_in_dry_run(store, settings, caplog):
     dry_settings = dataclasses.replace(settings, dry_run=True)
     job = _job()
     summary = _usage_summary()
@@ -2768,9 +2796,9 @@ def test_pipeline_logs_gemini_usage_even_in_dry_run(store, settings, caplog):
     gemini._tracker = FakeUsageTracker(summary)
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(dry_settings, sources=[FakeSource([job])], store=store, gemini=gemini)
+        run_pipeline(dry_settings, sources=[FakeSource([job])], store=store, ai=gemini)
 
-    assert "gemini_usage run_calls=21" in caplog.text
+    assert "ai_usage run_calls=21" in caplog.text
     assert gemini._tracker.snapshot_calls == 1
 
 
@@ -2780,7 +2808,7 @@ def test_pipeline_without_gemini_tracker_sends_no_usage_status(store, settings):
     gemini = FakeGemini()  # no `_tracker` attribute at all
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
 
     # Only the digest message was sent -- no usage status, no crash.
     assert len(telegram.messages) == 1
@@ -2811,7 +2839,7 @@ def test_run_pipeline_forwards_store_to_build_sources_when_sources_not_given(
 
     monkeypatch.setattr(pipeline_module, "build_sources", fake_build_sources)
 
-    run_pipeline(settings, store=store, gemini=gemini, telegram=telegram)
+    run_pipeline(settings, store=store, ai=gemini, telegram=telegram)
 
     assert captured["store"] is store
 
@@ -2841,13 +2869,13 @@ def test_run_pipeline_builds_brave_backed_source_when_configured(
     from job_hunter.sources import build_sources as real_build_sources
 
     settings = Settings(
-        gemini_api_key="key",
+        ai_api_key="key",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=make_market_policy(),
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
         brave_search_api_key="brave-key",
         dry_run=False,
         telegram_bot_token="token",
@@ -2868,7 +2896,7 @@ def test_run_pipeline_builds_brave_backed_source_when_configured(
     run_pipeline(
         settings,
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=telegram,
         http=_NetworkFreeHttp(),
     )
@@ -2938,7 +2966,7 @@ def test_pipeline_records_evaluation_against_survivor_when_job_merged_mid_run(
         settings,
         sources=[FakeSource([discovered])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -2984,7 +3012,7 @@ def test_pipeline_contains_a_store_write_failure_for_one_job(store, settings, mo
         settings,
         sources=[FakeSource([doomed, healthy])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -3032,7 +3060,7 @@ def test_pipeline_does_not_offer_a_job_merged_into_an_already_delivered_one(
         settings,
         sources=[FakeSource([discovered])],
         store=store,
-        gemini=FakeGemini(),
+        ai=FakeGemini(),
         telegram=telegram,
     )
 
@@ -3053,7 +3081,7 @@ def test_pipeline_extracts_facets_for_a_job_it_evaluates(store, settings):
     job = _job()
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     job_id, _, _ = store.upsert_job(job)
@@ -3073,9 +3101,9 @@ def test_pipeline_extracts_a_posting_once(store, settings):
     job = _job()
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.facet_calls == 1
@@ -3084,11 +3112,11 @@ def test_pipeline_extracts_a_posting_once(store, settings):
 def test_a_changed_description_triggers_re_extraction(store, settings):
     gemini = FakeGemini()
     run_pipeline(settings, sources=[FakeSource([_job(description="React role.")])],
-                 store=store, gemini=gemini, telegram=FakeTelegram())
+                 store=store, ai=gemini, telegram=FakeTelegram())
     assert gemini.facet_calls == 1
 
     changed = _job(description="Rewritten posting: React and Node, hybrid in Berlin.")
-    run_pipeline(settings, sources=[FakeSource([changed])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([changed])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.facet_calls == 2
@@ -3101,7 +3129,7 @@ def test_a_job_the_non_ai_filters_reject_is_never_extracted(store, settings):
     rejected = _job(title="Junior Product Engineer", source_job_id="junior-1")
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([rejected])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([rejected])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.facet_calls == 0
@@ -3137,7 +3165,7 @@ def test_facet_extraction_cannot_see_the_person_being_matched(store, settings):
         "evaluation_summary": sentinel,
     })
 
-    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.eval_prompts and sentinel in gemini.eval_prompts[0]
@@ -3151,7 +3179,7 @@ def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(s
     failing = FakeGemini(facet_payload={"seniority": "extremely senior"})
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=failing, telegram=FakeTelegram())
+                           ai=failing, telegram=FakeTelegram())
 
     job_id, _, _ = store.upsert_job(job)
     assert store.get_job_facets(job_id) is None
@@ -3170,7 +3198,7 @@ def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(s
 
     recovering = FakeGemini()
     recovered = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                             gemini=recovering, telegram=FakeTelegram())
+                             ai=recovering, telegram=FakeTelegram())
     assert recovering.facet_calls == 1
     assert store.get_job_facets(job_id) is not None
     # ...and the job the earlier run could not read is delivered now.
@@ -3185,7 +3213,7 @@ def test_a_posting_that_cannot_be_read_is_not_counted_as_a_failed_evaluation(sto
     failing = FakeGemini(facet_payload={"seniority": "extremely senior"})
 
     summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
-                           gemini=failing, telegram=FakeTelegram())
+                           ai=failing, telegram=FakeTelegram())
 
     assert summary.facet_extraction_failed == 1
     assert summary.scoring_skipped_without_facets == 1
@@ -3208,7 +3236,7 @@ def test_one_unreadable_posting_does_not_cost_the_rest_of_the_run(store, setting
         settings,
         sources=[FakeSource([_job(), _job(source_job_id="job-2", company="Globex")])],
         store=store,
-        gemini=UnreadableGlobex(),
+        ai=UnreadableGlobex(),
         telegram=telegram,
     )
 
@@ -3227,7 +3255,7 @@ def test_facets_record_what_the_source_supplied_without_the_model(store, setting
     })
 
     run_pipeline(settings, sources=[FakeSource([_job(source="ashby", remote=True)])],
-                 store=store, gemini=gemini, telegram=FakeTelegram())
+                 store=store, ai=gemini, telegram=FakeTelegram())
 
     job_id, _, _ = store.upsert_job(_job(source="ashby", remote=True))
     facets = store.get_job_facets(job_id)
@@ -3244,7 +3272,7 @@ def test_running_out_of_shared_budget_only_defers_the_unread_posting(store, sett
     class BudgetOnOne(FakeGemini):
         def generate_text(self, prompt, *, purpose=None, **kwargs):
             if purpose == "job_facets" and "Globex" in prompt:
-                raise GeminiBudgetExceeded("no budget for shared work")
+                raise AIBudgetExceeded("no budget for shared work")
             return super().generate_text(prompt, purpose=purpose, **kwargs)
 
     gemini = BudgetOnOne()
@@ -3252,7 +3280,7 @@ def test_running_out_of_shared_budget_only_defers_the_unread_posting(store, sett
         settings,
         sources=[FakeSource([_job(), _job(source_job_id="job-2", company="Globex")])],
         store=store,
-        gemini=gemini,
+        ai=gemini,
         telegram=FakeTelegram(),
     )
 
@@ -3303,7 +3331,7 @@ def test_a_rediscovered_job_is_backfilled_without_being_re_scored(store, setting
     assert store.get_job_facets(job_id) is None
 
     gemini = FakeGemini()
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.eval_calls == 0
@@ -3326,7 +3354,7 @@ def test_the_scoring_call_never_receives_the_job_description(store, settings):
     gemini = FakeGemini()
 
     run_pipeline(settings, sources=[FakeSource([_job(description=description)])],
-                 store=store, gemini=gemini, telegram=FakeTelegram())
+                 store=store, ai=gemini, telegram=FakeTelegram())
 
     assert gemini.eval_prompts
     for prompt in gemini.eval_prompts:
@@ -3340,7 +3368,7 @@ def test_the_scoring_call_never_receives_the_job_description(store, settings):
 def test_the_scoring_call_receives_the_extracted_requirements(store, settings):
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     prompt = gemini.eval_prompts[0]
@@ -3355,7 +3383,7 @@ def test_a_posting_is_read_once_and_scored_once(store, settings):
     # afterwards.
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.facet_calls == 1
@@ -3371,7 +3399,7 @@ def test_a_posting_already_read_is_scored_without_being_read_again(store, settin
     gemini = FakeGemini()
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
+                           ai=gemini, telegram=FakeTelegram())
 
     assert gemini.facet_calls == 0
     assert gemini.eval_calls == 1
@@ -3385,7 +3413,7 @@ def test_a_job_scored_from_facets_still_produces_a_whole_evaluation(store, setti
     telegram = FakeTelegram()
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=FakeGemini(), telegram=telegram)
+                           ai=FakeGemini(), telegram=telegram)
 
     job_id, _, _ = store.upsert_job(job)
     evaluation = store.get_evaluation(job_id)
@@ -3422,7 +3450,7 @@ def test_a_scoring_response_missing_a_support_verdict_is_not_partially_read(stor
     gemini = FakeGemini(evaluation_payload=payload)
 
     summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
+                           ai=gemini, telegram=FakeTelegram())
 
     job_id, _, _ = store.upsert_job(_job())
     assert store.get_evaluation(job_id) is None
@@ -3477,7 +3505,7 @@ def test_rolling_capacity_skips_do_not_consume_the_runs_facet_budget(store, sett
         def generate_text(self, prompt, *, purpose=None, **kwargs):
             if purpose == "job_facets" and self.refusals < 2:
                 self.refusals += 1
-                raise GeminiTemporaryCapacity("full", retry_after_seconds=0)
+                raise AITemporaryCapacity("full", retry_after_seconds=0)
             return super().generate_text(prompt, purpose=purpose, **kwargs)
 
     ids = [store.upsert_job(_job(source_job_id=f"cap-{i}", company=f"Cap {i}"))[0]
@@ -3496,14 +3524,14 @@ def test_rolling_capacity_skips_do_not_consume_the_runs_facet_budget(store, sett
 
 def test_a_provider_pause_during_the_backfill_cannot_cost_the_run_its_digest(store, settings):
     # A 429 persists a pause against the model, not the purpose, and the
-    # scoring loops treat GeminiQuotaPaused as blocking for the rest of the
+    # scoring loops treat AIQuotaPaused as blocking for the rest of the
     # run. The backfill therefore still runs after every scoring call: by the
     # time it can trip a pause, the digest is already built. The run's own
     # reads happen inline and are the unavoidable cost of scoring at all.
     class PauseOnFacets(FakeGemini):
         def generate_text(self, prompt, *, purpose=None, **kwargs):
             if purpose == "job_facets":
-                raise GeminiQuotaPaused(
+                raise AIQuotaPaused(
                     "paused", paused_until="2099-01-01T00:00:00+00:00", reason="rate_limit"
                 )
             return super().generate_text(prompt, purpose=purpose, **kwargs)
@@ -3520,7 +3548,7 @@ def test_a_provider_pause_during_the_backfill_cannot_cost_the_run_its_digest(sto
 
     telegram = FakeTelegram()
     summary = run_pipeline(settings, sources=[FakeSource([scored, rediscovered])],
-                           store=store, gemini=PauseOnFacets(), telegram=telegram)
+                           store=store, ai=PauseOnFacets(), telegram=telegram)
 
     assert summary.ready_to_apply == 1
     assert telegram.messages
@@ -3556,7 +3584,7 @@ def test_pay_below_the_users_floor_blocks_a_job_without_a_scoring_call(store, se
     gemini = FakeGemini()
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
+                           ai=gemini, telegram=FakeTelegram())
 
     assert gemini.eval_calls == 0
     evaluation = store.get_evaluation(job_id)
@@ -3571,7 +3599,7 @@ def test_a_role_that_is_not_remote_blocks_without_a_scoring_call(store, settings
     job_id = _seed_facets(store, job, remote_policy="onsite")
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.eval_calls == 0
@@ -3583,7 +3611,7 @@ def test_a_role_requiring_relocation_blocks_without_a_scoring_call(store, settin
     job_id = _seed_facets(store, job, remote_policy="remote", relocation_policy="required")
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.eval_calls == 0
@@ -3600,7 +3628,7 @@ def test_a_posting_read_this_run_can_be_blocked_in_the_same_run(store, settings)
     gemini = FakeGemini(facet_payload={**FACET_PAYLOAD, "remote_policy": "onsite"})
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
+                           ai=gemini, telegram=FakeTelegram())
 
     assert gemini.facet_calls == 1
     assert gemini.eval_calls == 0
@@ -3613,7 +3641,7 @@ def test_a_job_whose_relevant_facets_are_unknown_is_scored_rather_than_blocked(s
     job_id = _seed_facets(store, job, remote_policy="unknown", relocation_policy="unknown")
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
     assert gemini.eval_calls == 1
@@ -3630,7 +3658,7 @@ def test_facets_read_from_thin_content_do_not_block(store, settings):
     gemini = FakeGemini()
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
+                           ai=gemini, telegram=FakeTelegram())
 
     assert gemini.eval_calls == 1
     assert summary.blocked_by_facets == 0
@@ -3651,7 +3679,7 @@ def test_facets_that_disqualify_nothing_reach_scoring_unchanged(store, settings)
     telegram = FakeTelegram()
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=FakeGemini(), telegram=telegram)
+                           ai=FakeGemini(), telegram=telegram)
 
     assert summary.ready_to_apply == 1
     assert telegram.messages
@@ -3677,10 +3705,10 @@ def test_the_block_is_decided_against_this_users_own_floor(store, policy, settin
 
     strict_gemini = FakeGemini()
     run_pipeline(strict, sources=[FakeSource([blocked_job])], store=store,
-                 gemini=strict_gemini, telegram=FakeTelegram())
+                 ai=strict_gemini, telegram=FakeTelegram())
     lenient_gemini = FakeGemini()
     run_pipeline(lenient, sources=[FakeSource([scored_job])], store=store,
-                 gemini=lenient_gemini, telegram=FakeTelegram())
+                 ai=lenient_gemini, telegram=FakeTelegram())
 
     assert strict_gemini.eval_calls == 0
     assert store.get_evaluation(blocked_id).decision == "blocked"
@@ -3696,7 +3724,7 @@ def test_a_facet_block_is_not_counted_as_an_evaluation(store, settings):
     _seed_facets(store, job, remote_policy="onsite")
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=FakeGemini(), telegram=FakeTelegram())
+                           ai=FakeGemini(), telegram=FakeTelegram())
 
     assert summary.blocked_by_facets == 1
     assert summary.evaluation_attempted == 0
@@ -3711,7 +3739,7 @@ def test_a_blocked_job_is_never_delivered(store, settings):
     telegram = FakeTelegram()
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=FakeGemini(), telegram=telegram)
+                           ai=FakeGemini(), telegram=telegram)
     assert summary.ready_to_apply == 1
 
     blocked = _job(source_job_id="job-2", company="Globex")
@@ -3719,7 +3747,7 @@ def test_a_blocked_job_is_never_delivered(store, settings):
     second = FakeTelegram()
 
     summary = run_pipeline(settings, sources=[FakeSource([blocked])], store=store,
-                           gemini=FakeGemini(), telegram=second)
+                           ai=FakeGemini(), telegram=second)
 
     assert summary.ready_to_apply == 0
     assert summary.blocked_by_facets == 1
@@ -3744,7 +3772,7 @@ def test_a_block_is_counted_only_once_it_is_stored(store, settings):
             raise RuntimeError("write failed")
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=FailingSave(store),
-                           gemini=FakeGemini(), telegram=FakeTelegram())
+                           ai=FakeGemini(), telegram=FakeTelegram())
 
     assert summary.blocked_by_facets == 0
     assert summary.errors == 1

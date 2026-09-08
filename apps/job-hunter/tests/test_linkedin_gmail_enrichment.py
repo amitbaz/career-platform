@@ -23,6 +23,7 @@ class ResponseGemini:
         self,
         prompt: str,
         *,
+        call_class,
         purpose: str | None = None,
         thinking_level: str | None = None,
         max_output_tokens: int | None = None,
@@ -314,7 +315,7 @@ def test_writable_sync_reopens_completed_backfill_after_blank_linkedin_cleanup(s
     gmail = EmptyGmail()
     service = GmailSyncService(
         gmail=gmail,
-        gemini=ResponseGemini(_semantic_linkedin_response("https://example.com/unused")),
+        ai=ResponseGemini(_semantic_linkedin_response("https://example.com/unused")),
         store=store,
     )
 
@@ -343,7 +344,7 @@ def test_dry_run_does_not_release_legacy_blank_linkedin_state(store, tmp_path):
     gmail = EmptyGmail()
     service = GmailSyncService(
         gmail=gmail,
-        gemini=ResponseGemini(_semantic_linkedin_response("https://example.com/unused")),
+        ai=ResponseGemini(_semantic_linkedin_response("https://example.com/unused")),
         store=store,
     )
 

@@ -3,7 +3,7 @@ from pathlib import Path
 from job_hunter.config import load_gmail_settings as load_database_gmail_settings
 from job_hunter.gmail_models import GmailSettings, GmailSyncSummary
 from job_hunter.models import (
-    GeminiQuotaSettings,
+    AIQuotaSettings,
     ProviderCredentials,
     RunSummary,
     SearchPolicy,
@@ -39,13 +39,13 @@ def _settings(tmp_path, **overrides):
         thresholds={"package": 75, "possible": 65},
     )
     defaults = dict(
-        gemini_api_key="key",
+        ai_api_key="key",
         candidate_profile="profile",
         cover_letter_template="template",
         timezone="Europe/Berlin",
         scheduled_hour=9,
         policy=policy,
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
         dry_run=True,
         output_dir=str(tmp_path / "var"),
     )
@@ -230,8 +230,8 @@ def _gmail_settings():
         client_id="client",
         client_secret="secret",
         refresh_token="refresh",
-        gemini_api_key="gemini",
-        gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        ai_api_key="gemini",
+        ai_quota=AIQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
 
@@ -249,7 +249,7 @@ def _patch_gmail_sync_dependencies(monkeypatch, run):
     monkeypatch.setattr(cli, "HttpClient", object, raising=False)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda settings: object(), raising=False)
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object(), raising=False)
-    monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object(), raising=False)
+    monkeypatch.setattr(cli, "GeminiProvider", lambda api_key, model, http, tracker=None: object(), raising=False)
     _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", SyncService, raising=False)
 
@@ -320,13 +320,13 @@ def test_sync_gmail_uses_provider_credentials_without_loading_candidate_document
         def get_source_documents(self):
             raise AssertionError("Gmail sync must not load candidate documents")
 
-    class Gemini:
-        def __init__(self, api_key, model, http, tracker=None):
-            captured["api_key"] = api_key
+    def build(api_key, model, http, *, tracker=None):
+        captured["api_key"] = api_key
+        return object()
 
     monkeypatch.setattr(cli, "PostgresJobStore", Store)
     monkeypatch.setattr(cli, "load_gmail_settings", load_database_gmail_settings)
-    monkeypatch.setattr(cli, "GeminiClient", Gemini)
+    monkeypatch.setattr(cli, "build_gemini_provider", build)
 
     assert cli.main(["sync-gmail"]) == 0
     assert captured["api_key"] == "stored-gemini"
@@ -363,7 +363,7 @@ def test_sync_gmail_dry_run_wraps_the_store_in_a_dry_run_store(monkeypatch, tmp_
     captured = {}
 
     class InspectingService:
-        def __init__(self, *, store, gemini, **kwargs):
+        def __init__(self, *, store, ai, **kwargs):
             captured["store"] = store
 
         def sync(self, now, *, dry_run, force_backfill):
@@ -371,15 +371,17 @@ def test_sync_gmail_dry_run_wraps_the_store_in_a_dry_run_store(monkeypatch, tmp_
             return GmailSyncSummary()
 
     class InspectingTracker:
-        def __init__(self, store, quota, model, *, run_id=None):
+        def __init__(self, store, quota, model, *, provider):
             captured["tracker_store"] = store
 
     monkeypatch.setattr(cli, "load_gmail_settings", lambda store: settings)
     monkeypatch.setattr(cli, "HttpClient", object)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
-    monkeypatch.setattr(cli, "GeminiClient", lambda api_key, model, http, tracker=None: object())
-    monkeypatch.setattr(cli, "GeminiUsageTracker", InspectingTracker)
+    monkeypatch.setattr(
+        cli, "build_gemini_provider", lambda api_key, model, http, *, tracker=None: object()
+    )
+    monkeypatch.setattr(cli, "AIUsageTracker", InspectingTracker)
     _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", InspectingService)
 
@@ -391,48 +393,47 @@ def test_sync_gmail_dry_run_wraps_the_store_in_a_dry_run_store(monkeypatch, tmp_
 class _CapturingTracker:
     instances = []
 
-    def __init__(self, store, quota, model, *, run_id=None):
+    def __init__(self, store, quota, model, *, provider):
         self.store = store
         self.quota = quota
         self.model = model
-        self.run_id = run_id
+        self.provider = provider
         type(self).instances.append(self)
 
 
-class _CapturingGemini:
+class _CapturingProvider:
     instances = []
 
-    def __init__(self, api_key, model, http, tracker=None):
+    def __init__(self, api_key, model, http, *, tracker=None):
         self.api_key = api_key
         self.model = model
         self.tracker = tracker
         type(self).instances.append(self)
 
 
-def test_run_constructs_one_tracked_gemini_client_sharing_run_id(monkeypatch, tmp_path):
+def test_run_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
     monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: RunSummary())
-    monkeypatch.setattr(cli, "GeminiUsageTracker", _CapturingTracker)
-    monkeypatch.setattr(cli, "GeminiClient", _CapturingGemini)
+    monkeypatch.setattr(cli, "AIUsageTracker", _CapturingTracker)
+    monkeypatch.setattr(cli, "build_gemini_provider", _CapturingProvider)
     _patch_build_client(monkeypatch)
-    monkeypatch.setenv("GEMINI_RUN_ID", "run-123")
     _CapturingTracker.instances.clear()
-    _CapturingGemini.instances.clear()
+    _CapturingProvider.instances.clear()
 
     assert cli.main(["run"]) == 0
 
     assert len(_CapturingTracker.instances) == 1
-    assert len(_CapturingGemini.instances) == 1
+    assert len(_CapturingProvider.instances) == 1
     tracker = _CapturingTracker.instances[0]
-    gemini = _CapturingGemini.instances[0]
-    assert tracker.run_id == "run-123"
-    assert tracker.model == settings.gemini_model
-    assert tracker.quota == settings.gemini_quota
-    assert gemini.tracker is tracker
+    provider = _CapturingProvider.instances[0]
+    assert tracker.provider == "gemini"
+    assert tracker.model == settings.ai_model
+    assert tracker.quota == settings.ai_quota
+    assert provider.tracker is tracker
 
 
-def test_sync_gmail_constructs_one_tracked_gemini_client_sharing_run_id(monkeypatch, tmp_path):
+def test_sync_gmail_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):
     settings = _gmail_settings()
 
     class SyncService:
@@ -446,24 +447,23 @@ def test_sync_gmail_constructs_one_tracked_gemini_client_sharing_run_id(monkeypa
     monkeypatch.setattr(cli, "HttpClient", object)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
-    monkeypatch.setattr(cli, "GeminiUsageTracker", _CapturingTracker)
-    monkeypatch.setattr(cli, "GeminiClient", _CapturingGemini)
+    monkeypatch.setattr(cli, "AIUsageTracker", _CapturingTracker)
+    monkeypatch.setattr(cli, "build_gemini_provider", _CapturingProvider)
     _patch_build_client(monkeypatch)
     monkeypatch.setattr(cli, "GmailSyncService", SyncService)
-    monkeypatch.setenv("GEMINI_RUN_ID", "run-123")
     _CapturingTracker.instances.clear()
-    _CapturingGemini.instances.clear()
+    _CapturingProvider.instances.clear()
 
     assert cli.main(["sync-gmail"]) == 0
 
     assert len(_CapturingTracker.instances) == 1
-    assert len(_CapturingGemini.instances) == 1
+    assert len(_CapturingProvider.instances) == 1
     tracker = _CapturingTracker.instances[0]
-    gemini = _CapturingGemini.instances[0]
-    assert tracker.run_id == "run-123"
-    assert tracker.model == settings.gemini_model
-    assert tracker.quota == settings.gemini_quota
-    assert gemini.tracker is tracker
+    provider = _CapturingProvider.instances[0]
+    assert tracker.provider == "gemini"
+    assert tracker.model == settings.ai_model
+    assert tracker.quota == settings.ai_quota
+    assert provider.tracker is tracker
 
 
 def test_parser_accepts_generate_cover_letter_job_id():

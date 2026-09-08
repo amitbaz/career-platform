@@ -2,7 +2,7 @@ import json
 import logging
 
 from job_hunter.candidate_context import get_candidate_context
-from job_hunter.gemini import GeminiIncompleteResponse
+from job_hunter.ai.gemini import AIIncompleteResponse
 from job_hunter.models import SearchPolicy
 
 
@@ -60,13 +60,13 @@ def _valid_json():
 
 
 def test_candidate_context_retries_once_after_provider_truncation_and_caches(store, caplog):
-    gemini = FakeGemini([GeminiIncompleteResponse("MAX_TOKENS"), _valid_json()])
+    gemini = FakeGemini([AIIncompleteResponse("MAX_TOKENS"), _valid_json()])
 
     with caplog.at_level(logging.WARNING):
         first = get_candidate_context("candidate profile", _policy(), gemini, store)
         second = get_candidate_context("candidate profile", _policy(), gemini, store)
 
-    assert first.source == "gemini"
+    assert first.source == "ai"
     assert second.source == "cache"
     assert len(gemini.calls) == 2
     assert gemini.calls[0][1]["max_output_tokens"] == 1800
@@ -77,14 +77,14 @@ def test_candidate_context_retries_once_after_provider_truncation_and_caches(sto
 
 def test_candidate_context_falls_back_after_second_provider_truncation(store, caplog):
     gemini = FakeGemini(
-        [GeminiIncompleteResponse("MAX_TOKENS"), GeminiIncompleteResponse("MAX_TOKENS")]
+        [AIIncompleteResponse("MAX_TOKENS"), AIIncompleteResponse("MAX_TOKENS")]
     )
 
     with caplog.at_level(logging.WARNING):
         context = get_candidate_context("candidate profile", _policy(), gemini, store)
 
     assert context.source == "fallback_error"
-    assert context.load_error == "GeminiIncompleteResponse"
+    assert context.load_error == "AIIncompleteResponse"
     assert len(gemini.calls) == 2
     assert "retry_exhausted=true" in caplog.text
     assert "candidate profile" not in caplog.text

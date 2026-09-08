@@ -104,7 +104,7 @@ def test_unresolved_lifecycle_persists_original_event_type(store, tmp_path, monk
         lambda *_: JobMatch(job_id=None, reason="unresolved", ambiguous=False),
     )
 
-    result = GmailSyncService(gmail=None, gemini=None, store=store).process_message(
+    result = GmailSyncService(gmail=None, ai=None, store=store).process_message(
         message, dry_run=False
     )
 
@@ -148,7 +148,7 @@ def test_low_confidence_lifecycle_persists_original_event_type(store, tmp_path, 
         lambda *_: JobMatch(job_id=job_id, reason="company_and_title", ambiguous=False),
     )
 
-    result = GmailSyncService(gmail=None, gemini=None, store=store).process_message(
+    result = GmailSyncService(gmail=None, ai=None, store=store).process_message(
         message, dry_run=False
     )
 
