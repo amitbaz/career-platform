@@ -63,6 +63,28 @@ Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 Read `docs/marketing-and-brand.md` before marketing, landing-page, or visual-identity work.
 It records agreed direction, exploratory proposals, and open decisions.
 
+### Memory (MemPalace)
+
+Cross-session memory lives in a MemPalace **shared-brain hub**, wing `career_platform` —
+one palace shared by Claude Code (`mac-claude`) and Codex (`mac-codex`). See
+`docs/agents/memory.md` for the topology and full protocol. The short version:
+
+- **Read before answering** about a past decision, a prior measurement, or why something
+  is the way it is: `mempalace_search` for verbatim drawers, `mempalace_kg_query` for facts
+  that have a validity window. Do not answer such questions from model memory.
+- **Write at the end of substantive work**: `mempalace_diary_write` (agent `claude-code`,
+  wing `career_platform`), plus `mempalace_add_drawer` for a durable decision. The capture
+  hooks file the raw transcript; the diary is for what the transcript does not say — what was
+  decided and why.
+- **Facts that can change** (measurements, required checks, chosen models, counts) go in the
+  knowledge graph. When one changes, `mempalace_kg_supersede` — never invalidate-then-add,
+  which leaves both values true at the boundary.
+- **Do not mine source code into the palace.** The repo is already searchable with grep and
+  the file tools, and a mined chunk is a snapshot that goes stale silently. Prose that is not
+  in the repo is what the palace is for.
+- **`mempalace_sync` before trusting a stale-looking result**, and read its dry run before
+  passing `apply`.
+
 ## Commands
 
 Run from the repository root:
