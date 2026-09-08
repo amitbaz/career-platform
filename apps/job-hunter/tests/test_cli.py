@@ -9,6 +9,7 @@ from job_hunter.models import (
     SearchPolicy,
     Settings,
 )
+from job_hunter.ai.usage import PlatformUsageLedger
 from job_hunter.postgres_store import DryRunStore
 from job_hunter import cli
 
@@ -404,10 +405,21 @@ class _CapturingTracker:
 class _CapturingProvider:
     instances = []
 
-    def __init__(self, api_key, model, http, *, tracker=None):
+    def __init__(
+        self,
+        api_key,
+        model,
+        http,
+        *,
+        tracker=None,
+        platform_api_key=None,
+        platform_tracker=None,
+    ):
         self.api_key = api_key
         self.model = model
         self.tracker = tracker
+        self.platform_api_key = platform_api_key
+        self.platform_tracker = platform_tracker
         type(self).instances.append(self)
 
 
@@ -440,6 +452,58 @@ def test_run_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch
     # The run reports what it spent from the same ledger the provider writes
     # to; reaching into the provider for it is what silently broke once.
     assert pipeline_kwargs["usage"] is tracker
+    # No platform key is configured here, so extraction has neither a
+    # credential nor a ledger -- and the user's are not offered in their place.
+    assert provider.platform_api_key is None
+    assert provider.platform_tracker is None
+    assert pipeline_kwargs["platform_usage"] is None
+
+
+def test_run_gives_extraction_the_platform_key_and_its_own_ledger(monkeypatch, tmp_path):
+    """The two halves are funded and metered apart (#128).
+
+    The user's tracker and the platform's are distinct objects over distinct
+    ledgers, so neither run's spend can be counted against the other's
+    ceiling, and the provider is handed the platform key for the class that
+    the user's key may never fund.
+    """
+    settings = _settings(
+        tmp_path,
+        platform_ai_api_key="platform-key",
+        platform_ai_quota=AIQuotaSettings(
+            rpm=10, tpm=250000, rpd=500, core_reserve_ratio=0.0
+        ),
+    )
+    pipeline_kwargs = {}
+
+    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    monkeypatch.setattr(
+        cli, "run_pipeline", lambda s, **kwargs: pipeline_kwargs.update(kwargs) or RunSummary()
+    )
+    monkeypatch.setattr(cli, "AIUsageTracker", _CapturingTracker)
+    monkeypatch.setattr(cli, "build_gemini_provider", _CapturingProvider)
+    _patch_build_client(monkeypatch)
+    _CapturingTracker.instances.clear()
+    _CapturingProvider.instances.clear()
+
+    assert cli.main(["run"]) == 0
+
+    user_tracker, platform_tracker = _CapturingTracker.instances
+    provider = _CapturingProvider.instances[0]
+
+    assert provider.api_key == "key"
+    assert provider.platform_api_key == "platform-key"
+    assert provider.tracker is user_tracker
+    assert provider.platform_tracker is platform_tracker
+    assert user_tracker is not platform_tracker
+    # The platform ledger is a different store entirely, not the user's with a
+    # flag on it: that is what makes the two allowances separately readable.
+    assert isinstance(platform_tracker.store, PlatformUsageLedger)
+    assert not isinstance(user_tracker.store, PlatformUsageLedger)
+    assert platform_tracker.quota is settings.platform_ai_quota
+
+    assert pipeline_kwargs["usage"] is user_tracker
+    assert pipeline_kwargs["platform_usage"] is platform_tracker
 
 
 def test_sync_gmail_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):

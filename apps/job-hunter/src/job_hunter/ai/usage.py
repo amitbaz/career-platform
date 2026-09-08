@@ -6,17 +6,23 @@
 persisted provider-quota pause, and the `record_*` methods log what actually
 happened so future preflight checks and `snapshot` stay accurate.
 
-One tracker governs one `(provider, model)` pair, and the port picks the
-tracker by call class -- so a call's class decides which quota governs it just
-as it decides which credential funds it. `provider` is supplied by the adapter
-that owns the tracker, never inferred from a column default.
+One tracker governs one `(provider, model)` pair *in one ledger*, and the port
+picks the tracker by call class -- so a call's class decides which quota
+governs it just as it decides which credential funds it. `provider` is supplied
+by the adapter that owns the tracker, never inferred from a column default.
+
+The ledger is a parameter, not the store, because there are two of them: the
+per-user ledger a user's own key is metered in, and the platform key's global
+ledger (`PlatformUsageLedger`, issue #128). Both answer the same four
+questions, so the budget arithmetic below is written once and neither ledger
+can be spent against the other's ceiling.
 """
 
 from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from zoneinfo import ZoneInfo
 
@@ -152,12 +158,81 @@ def _retry_after_for_rolling_capacity(
     )
 
 
+class UsageLedger(Protocol):
+    """Where one tracker's attempts are recorded and read back from.
+
+    `PostgresJobStore` satisfies this directly for the per-user ledger; the
+    platform key's ledger is reached through `PlatformUsageLedger`.
+    """
+
+    def record_ai_usage(
+        self,
+        *,
+        occurred_at: str,
+        provider: str,
+        model: str,
+        purpose: str,
+        status: str,
+        estimated_input_tokens: int,
+        prompt_tokens: int | None = None,
+        output_tokens: int | None = None,
+        thinking_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        total_tokens: int | None = None,
+        http_status: int | None = None,
+        error_code: str | None = None,
+    ) -> None: ...
+
+    def ai_usage_rows(
+        self, start_at: str, end_at: str, *, provider: str, model: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def get_ai_pause(self, provider: str, model: str) -> dict[str, Any] | None: ...
+
+    def set_ai_pause(
+        self, provider: str, model: str, paused_until: str | None, reason: str
+    ) -> None: ...
+
+
+class PlatformUsageLedger:
+    """The platform key's global ledger, in the tracker's own vocabulary.
+
+    Shared objective extraction is funded by a platform-owned key (#128), and
+    what that key has spent is not one user's business: the rows carry no
+    `user_id`, so every run reads the same day. This adapter exists so the
+    tracker never has to know which ledger it governs -- the alternative, an
+    `account=` flag branching inside every method, is the shape in which a
+    platform call eventually gets counted against a user's ceiling.
+    """
+
+    def __init__(self, store: PostgresJobStore) -> None:
+        self._store = store
+
+    def record_ai_usage(self, **kwargs: Any) -> None:
+        self._store.record_platform_ai_usage(**kwargs)
+
+    def ai_usage_rows(
+        self, start_at: str, end_at: str, *, provider: str, model: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self._store.platform_ai_usage_rows(
+            start_at, end_at, provider=provider, model=model
+        )
+
+    def get_ai_pause(self, provider: str, model: str) -> dict[str, Any] | None:
+        return self._store.get_platform_ai_pause(provider, model)
+
+    def set_ai_pause(
+        self, provider: str, model: str, paused_until: str | None, reason: str
+    ) -> None:
+        self._store.set_platform_ai_pause(provider, model, paused_until, reason)
+
+
 class AIUsageTracker:
     """Preflight budget checks and usage recording for one provider model."""
 
     def __init__(
         self,
-        store: PostgresJobStore,
+        store: UsageLedger,
         quota: AIQuotaSettings,
         model: str,
         *,

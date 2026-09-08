@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from job_hunter.config import load_gmail_settings, load_settings, load_supabase_settings
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
-from job_hunter.ai.usage import AIUsageTracker
+from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
 from job_hunter.gmail_client import GmailClient
 from job_hunter.gmail_sync import GmailSyncService
@@ -100,11 +100,52 @@ def _run(args: argparse.Namespace) -> int:
     tracker = AIUsageTracker(
         store, settings.ai_quota, settings.ai_model, provider=PROVIDER
     )
+    # The platform key funds shared objective extraction and is metered in its
+    # own global ledger (#128). Both are built here or neither is: a key with
+    # no ledger would spend an allowance nobody is watching, and a ledger with
+    # no key would meter calls that never happen. Where the deployment has no
+    # platform key, extraction is simply off for the run -- the user's key is
+    # never offered in its place.
+    platform_key = None
+    platform_tracker = None
+    if settings.platform_ai_api_key and settings.platform_ai_quota is not None:
+        platform_key = settings.platform_ai_api_key
+        platform_tracker = AIUsageTracker(
+            PlatformUsageLedger(store),
+            settings.platform_ai_quota,
+            settings.ai_model,
+            provider=PROVIDER,
+        )
+    else:
+        # Loud, because the consequence is larger than "no enrichment". Since
+        # #126 a job cannot be scored before its posting has been read, so
+        # without a platform key every job that has no stored facets yet --
+        # which is every newly discovered job -- goes unscored. A deployment
+        # that never sets PLATFORM_GEMINI_API_KEY delivers only what earlier
+        # runs already enriched, and then nothing. It is still not a reason to
+        # reach for the user's key.
+        logger.warning(
+            "no platform AI key is configured (PLATFORM_GEMINI_API_KEY): no posting "
+            "will be read this run, so no job without stored facets can be scored. "
+            "The user's own key is not used in its place."
+        )
     ai = build_gemini_provider(
-        settings.ai_api_key, settings.ai_model, http, tracker=tracker
+        settings.ai_api_key,
+        settings.ai_model,
+        http,
+        tracker=tracker,
+        platform_api_key=platform_key,
+        platform_tracker=platform_tracker,
     )
 
-    summary = run_pipeline(settings, store=store, ai=ai, usage=tracker, http=http)
+    summary = run_pipeline(
+        settings,
+        store=store,
+        ai=ai,
+        usage=tracker,
+        platform_usage=platform_tracker,
+        http=http,
+    )
     logger.info(
         "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
         "blocked_by_facets=%d facets_extracted=%d facets_failed=%d",

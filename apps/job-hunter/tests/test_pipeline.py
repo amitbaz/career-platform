@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -8,10 +9,13 @@ import pytest
 
 import job_hunter.pipeline
 from job_hunter.ai import CallClass
+from job_hunter.ai.gemini import build_gemini_provider
 from job_hunter.ai.usage import (
     AIBudgetExceeded,
     AIQuotaPaused,
     AITemporaryCapacity,
+    AIUsageTracker,
+    PlatformUsageLedger,
 )
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.models import (
@@ -602,12 +606,13 @@ def test_pipeline_delivers_strong_match_and_dedupes_within_run(store, settings):
 
 
 def test_every_pipeline_call_declares_the_user_subjective_class(store, settings):
-    """The port's call class is declared at the seam, not inferred (#73).
+    """The port's call class is declared at the seam, not inferred (#73, #128).
 
-    Every call a run makes today is a judgement about this one user, funded by
-    this user's own key. Facet extraction is objective work, but until #128
-    gives it a platform credential it is still the user who pays for it, so it
-    declares the same class as the rest.
+    Who pays is a property of the work, and the run states it per call. A
+    judgement about this one user is funded by this user's key; reading a
+    posting is objective work every user reuses, so it is funded by the
+    platform key. Nothing infers this from the purpose, the call site or a
+    setting -- the class is passed, and it is what selects the credential.
     """
     ai = FakeGemini()
     telegram = FakeTelegram()
@@ -617,12 +622,11 @@ def test_every_pipeline_call_declares_the_user_subjective_class(store, settings)
     )
 
     assert ai.call_classes, "the run made no model calls at all"
-    assert {call_class for _, call_class in ai.call_classes} == {
-        CallClass.USER_SUBJECTIVE
-    }
-    assert {"candidate_context", "job_evaluation", "job_facets"} <= {
-        purpose for purpose, _ in ai.call_classes
-    }
+    by_purpose = dict(ai.call_classes)
+    assert {"candidate_context", "job_evaluation", "job_facets"} <= set(by_purpose)
+    assert by_purpose["candidate_context"] is CallClass.USER_SUBJECTIVE
+    assert by_purpose["job_evaluation"] is CallClass.USER_SUBJECTIVE
+    assert by_purpose["job_facets"] is CallClass.SHARED_EXTRACTION
 
 
 def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
@@ -2743,7 +2747,7 @@ def test_pipeline_logs_structured_ai_usage_line(store, settings, caplog):
     with caplog.at_level(logging.INFO):
         run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, usage=usage, telegram=telegram)
 
-    assert "ai_usage run_calls=21" in caplog.text
+    assert "ai_usage account=user run_calls=21" in caplog.text
     assert "rpd_pct=34.0" in caplog.text
     assert "rpm_peak_pct=20.0" in caplog.text
     assert "tpm_peak_pct=17.0" in caplog.text
@@ -2754,6 +2758,39 @@ def test_pipeline_logs_structured_ai_usage_line(store, settings, caplog):
     assert "job_evaluation:13" in caplog.text
     assert "cover_letter:2" in caplog.text
     assert "candidate_context:1" in caplog.text
+
+
+def test_pipeline_reports_the_two_ledgers_apart(store, settings, caplog):
+    """Platform-funded and user-funded consumption are read apart (#128).
+
+    They are two keys with two ceilings, so they are two log lines. Summing
+    them, or reporting only the one the user holds, would hide the shared key
+    approaching its own limit -- which is the number that decides how many
+    people can be invited.
+    """
+    usage = FakeUsageTracker(_usage_summary(requests_today=21, rpd_percent=34.0))
+    platform_usage = FakeUsageTracker(
+        _usage_summary(
+            requests_today=140,
+            rpd_percent=35.0,
+            purpose_counts={"job_facets": 140},
+        )
+    )
+
+    with caplog.at_level(logging.INFO):
+        run_pipeline(
+            settings,
+            sources=[FakeSource([_job()])],
+            store=store,
+            ai=FakeGemini(),
+            usage=usage,
+            platform_usage=platform_usage,
+            telegram=FakeTelegram(),
+        )
+
+    assert "ai_usage account=user run_calls=21" in caplog.text
+    assert "ai_usage account=platform run_calls=140" in caplog.text
+    assert "job_facets:140" in caplog.text
 
 
 def test_pipeline_log_total_does_not_double_count_cached_tokens(store, settings, caplog):
@@ -2804,7 +2841,7 @@ def test_pipeline_logs_ai_usage_even_in_dry_run(store, settings, caplog):
             usage=usage,
         )
 
-    assert "ai_usage run_calls=21" in caplog.text
+    assert "ai_usage account=user run_calls=21" in caplog.text
     assert usage.snapshot_calls == 1
 
 
@@ -3782,3 +3819,286 @@ def test_a_block_is_counted_only_once_it_is_stored(store, settings):
 
     assert summary.blocked_by_facets == 0
     assert summary.errors == 1
+
+
+# --- Extraction is funded by the platform key (#128) ------------------------------
+#
+# These tests wire the *real* Gemini adapter over a fake transport rather than
+# the `FakeGemini` double the rest of this file uses. The claim under test is
+# about which credential leaves the process, and a double that never resolves
+# one cannot make that claim: only the adapter chooses a key, and it chooses it
+# from the call class.
+
+_FACET_PROMPT_MARKER = "You are recording objective facts about a single job posting"
+_CONTEXT_PROMPT_MARKER = "Extract a compact, rich candidate context"
+
+_USER_KEY = "user-key-never-for-extraction"
+_PLATFORM_KEY = "platform-key"
+
+
+class _GeminiTransport:
+    """Answers like Google, recording the API key each request carried."""
+
+    def __init__(self):
+        self.calls = []  # (api_key, prompt)
+        self._answers = FakeGemini()
+
+    def post(self, url, *, json, headers, **kwargs):
+        prompt = json["contents"][0]["parts"][0]["text"]
+        self.calls.append((headers["x-goog-api-key"], prompt))
+        if _FACET_PROMPT_MARKER in prompt:
+            purpose = "job_facets"
+        elif _CONTEXT_PROMPT_MARKER in prompt:
+            purpose = "candidate_context"
+        else:
+            purpose = "job_evaluation"
+        text = self._answers.generate_text(
+            prompt,
+            call_class=CallClass.USER_SUBJECTIVE,
+            purpose=purpose,
+            json_mode=True,
+        )
+        return _GeminiTransportResponse(text)
+
+    def timeout_for_read(self, seconds):
+        return (5.0, seconds)
+
+    def prompts_for(self, api_key):
+        return [prompt for key, prompt in self.calls if key == api_key]
+
+    @property
+    def facet_prompts(self):
+        return [
+            (key, prompt) for key, prompt in self.calls if _FACET_PROMPT_MARKER in prompt
+        ]
+
+
+class _GeminiTransportResponse:
+    status_code = 200
+
+    def __init__(self, text):
+        self._text = text
+
+    def json(self):
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": self._text}]}, "finishReason": "STOP"}
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "totalTokenCount": 15,
+            },
+        }
+
+
+def _real_provider(store, *, platform_rpd, model):
+    """The adapter as `cli.py` wires it: two keys, two ledgers, one provider."""
+    transport = _GeminiTransport()
+    user_tracker = AIUsageTracker(
+        store, AIQuotaSettings(rpm=100, tpm=250000, rpd=500), model, provider="gemini"
+    )
+    platform_tracker = AIUsageTracker(
+        PlatformUsageLedger(store),
+        AIQuotaSettings(
+            rpm=100, tpm=250000, rpd=platform_rpd, core_reserve_ratio=0.0
+        ),
+        model,
+        provider="gemini",
+    )
+    ai = build_gemini_provider(
+        _USER_KEY,
+        model,
+        transport,
+        tracker=user_tracker,
+        platform_api_key=_PLATFORM_KEY,
+        platform_tracker=platform_tracker,
+    )
+    return ai, transport, user_tracker, platform_tracker
+
+
+def _purposes_in(rows):
+    return [row["purpose"] for row in rows]
+
+
+def test_extraction_spends_the_platform_key_and_scoring_the_users(store, settings):
+    """The split the whole issue is about, observed at the wire.
+
+    Not "the right call class was passed" -- that is `FakeGemini`'s business.
+    This asserts on the header that actually left the process: reading a
+    posting was paid for by the platform, judging it was paid for by the user,
+    and the two ledgers say the same.
+    """
+    model = f"gemini-platform-{uuid.uuid4()}"
+    ai, transport, _user_tracker, _platform_tracker = _real_provider(
+        store, platform_rpd=500, model=model
+    )
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([_job()])],
+        store=store,
+        ai=ai,
+        telegram=FakeTelegram(),
+    )
+
+    assert summary.ready_to_apply == 1
+    assert transport.facet_prompts, "the run never read the posting"
+    assert all(key == _PLATFORM_KEY for key, _ in transport.facet_prompts)
+    # And nothing else went out on the platform key: it funds objective
+    # extraction, not everything the run happens to do.
+    assert transport.prompts_for(_PLATFORM_KEY) == [
+        prompt for _key, prompt in transport.facet_prompts
+    ]
+    assert transport.prompts_for(_USER_KEY), "scoring did not run on the user's key"
+    assert not any(
+        _FACET_PROMPT_MARKER in prompt for prompt in transport.prompts_for(_USER_KEY)
+    )
+
+    day = ("2000-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00")
+    user_rows = store.ai_usage_rows(*day, provider="gemini", model=model)
+    platform_rows = store.platform_ai_usage_rows(*day, provider="gemini", model=model)
+    # Reportable apart, and neither ledger holds the other's work.
+    assert "job_facets" not in _purposes_in(user_rows)
+    assert "job_evaluation" in _purposes_in(user_rows)
+    assert set(_purposes_in(platform_rows)) == {"job_facets"}
+
+
+def test_an_exhausted_platform_allowance_defers_extraction_and_a_later_run_drains_it(
+    store, settings, caplog
+):
+    """The acceptance path: pause, not failure, and nobody else's key (#128).
+
+    A platform allowance of one request ceilings at zero attempts (80% of 1),
+    so extraction is refused before any request is built -- the state a real
+    key reaches late in a busy day.
+    """
+    model = f"gemini-platform-{uuid.uuid4()}"
+    job = _job()
+    ai, transport, _user_tracker, _platform_tracker = _real_provider(
+        store, platform_rpd=1, model=model
+    )
+
+    with caplog.at_level(logging.INFO):
+        summary = run_pipeline(
+            settings,
+            sources=[FakeSource([job])],
+            store=store,
+            ai=ai,
+            telegram=FakeTelegram(),
+        )
+
+    # The run completed and delivered what it could.
+    assert summary.errors == 0
+    assert summary.facet_extraction_failed == 0
+    assert summary.scoring_deferred_by_read_budget == 1
+
+    # The job is persisted, and persisted *without* facets: nothing partial or
+    # placeholder was recorded for a posting nobody read.
+    job_id, _, _ = store.upsert_job(job)
+    assert store.get_job_facets(job_id) is None
+    assert store.get_evaluation(job_id) is None
+    assert job_id in {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
+
+    # No user credential was used for extraction -- not on the exhausted path,
+    # which is the branch on which borrowing one would be invisible.
+    assert transport.facet_prompts == []
+    assert not any(
+        _FACET_PROMPT_MARKER in prompt for prompt in transport.prompts_for(_USER_KEY)
+    )
+    day = ("2000-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00")
+    user_rows = store.ai_usage_rows(*day, provider="gemini", model=model)
+    assert "job_facets" not in _purposes_in(user_rows)
+
+    # Exhaustion reads as exhaustion, not as a broken extractor.
+    assert "not read" in caplog.text
+    assert "facet extraction failed" not in caplog.text
+
+    # The backlog drains on its own: the next run, with allowance, enriches the
+    # job and scores it. Nothing was done by hand in between.
+    caplog.clear()
+    ai, transport, _user_tracker, _platform_tracker = _real_provider(
+        store, platform_rpd=500, model=f"gemini-platform-{uuid.uuid4()}"
+    )
+    second = run_pipeline(
+        settings,
+        sources=[FakeSource([job])],
+        store=store,
+        ai=ai,
+        telegram=FakeTelegram(),
+    )
+
+    assert store.get_job_facets(job_id) is not None
+    assert store.get_evaluation(job_id) is not None
+    assert second.scoring_deferred_by_read_budget == 0
+    assert all(key == _PLATFORM_KEY for key, _ in transport.facet_prompts)
+
+
+def test_a_run_with_no_platform_key_extracts_nothing_and_borrows_nobodys_key(
+    store, settings
+):
+    """No platform credential is a stop, never a fallback.
+
+    The tempting reading of "the platform key is not configured" is "so use the
+    one we do have". This asserts the opposite: the run finishes, the posting
+    stays unread, and the user's key is never offered for it.
+    """
+    model = f"gemini-platform-{uuid.uuid4()}"
+    transport = _GeminiTransport()
+    ai = build_gemini_provider(
+        _USER_KEY,
+        model,
+        transport,
+        tracker=AIUsageTracker(
+            store, AIQuotaSettings(rpm=100, tpm=250000, rpd=500), model, provider="gemini"
+        ),
+    )
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([_job()])],
+        store=store,
+        ai=ai,
+        telegram=FakeTelegram(),
+    )
+
+    assert summary.errors == 0
+    assert summary.facet_extraction_failed == 0
+    assert summary.scoring_deferred_by_read_budget == 1
+    assert transport.facet_prompts == []
+    assert transport.prompts_for(_USER_KEY), "the user's own work still ran"
+
+
+def test_the_inline_read_gives_up_rather_than_waiting_out_a_shared_window(
+    store, settings, monkeypatch
+):
+    """Rolling capacity on the platform key is not this run's alone to clear.
+
+    Scoring waits indefinitely because it paces against the user's own key.
+    Reading a posting paces against the shared one, where two overlapping runs
+    can hold each other over the ceiling for as long as they both keep
+    waiting -- so the read gives up its turn and the run finishes.
+    """
+    slept = []
+    monkeypatch.setattr(job_hunter.pipeline.time, "sleep", slept.append)
+
+    class AlwaysFull(FakeGemini):
+        def generate_text(self, prompt, *, call_class, purpose=None, **kwargs):
+            if purpose == "job_facets":
+                raise AITemporaryCapacity("rpm full", retry_after_seconds=1.0)
+            return super().generate_text(
+                prompt, call_class=call_class, purpose=purpose, **kwargs
+            )
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([_job()])],
+        store=store,
+        ai=AlwaysFull(),
+        telegram=FakeTelegram(),
+    )
+
+    assert summary.errors == 0
+    assert summary.scoring_deferred_by_read_budget == 1
+    # Bounded: it waited, it did not wait forever.
+    assert len(slept) == job_hunter.pipeline._READ_CAPACITY_WAITS

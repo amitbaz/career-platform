@@ -1794,6 +1794,125 @@ class PostgresJobStore:
             params={"provider": f"eq.{provider}", "model": f"eq.{model}"},
         )
 
+    # --- The platform key's own ledger (issue #128) ---------------------------
+    #
+    # Objective facet extraction is funded by a platform-owned key, and the
+    # four methods below are the same four the per-user ledger offers, against
+    # tables that carry no `user_id`. They are separate methods rather than an
+    # `account=` argument on the ones above for the reason the tables are
+    # separate: a shared allowance whose rows were filtered by the acting user
+    # would read as untouched to every run, and the one thing this ledger
+    # exists to answer is how close the shared key is to its ceiling.
+    #
+    # There is no `clear_platform_ai_pause`. `set_platform_ai_pause` with
+    # `paused_until=None` is how a pause is lifted, and the tables carry no
+    # delete policy at all -- see the migration.
+
+    def record_platform_ai_usage(
+        self,
+        *,
+        occurred_at: str,
+        provider: str,
+        model: str,
+        purpose: str,
+        status: str,
+        estimated_input_tokens: int,
+        prompt_tokens: int | None = None,
+        output_tokens: int | None = None,
+        thinking_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        total_tokens: int | None = None,
+        http_status: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Record one attempt made on the platform key.
+
+        The upsert target is the table's own unique constraint, `(provider,
+        model, purpose, occurred_at)`, so a retried POST converges instead of
+        double-counting a call. No prompt or response content is written here,
+        exactly as `record_ai_usage` writes none.
+        """
+        self._client.upsert(
+            "job_hunter_platform_ai_usage",
+            [
+                {
+                    "provider": provider,
+                    "occurred_at": occurred_at,
+                    "model": model,
+                    "purpose": purpose,
+                    "status": status,
+                    "estimated_input_tokens": estimated_input_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "output_tokens": output_tokens,
+                    "thinking_tokens": thinking_tokens,
+                    "cached_tokens": cached_tokens,
+                    "total_tokens": total_tokens,
+                    "http_status": http_status,
+                    "error_code": error_code,
+                }
+            ],
+            on_conflict="provider,model,purpose,occurred_at",
+        )
+
+    def platform_ai_usage_rows(
+        self,
+        start_at: str,
+        end_at: str,
+        *,
+        provider: str,
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the platform ledger's rows in the half-open range [start_at, end_at).
+
+        The selected columns are exactly those `ai_usage_rows` returns minus
+        `run_id`, which the platform ledger never had: the tracker reads
+        `occurred_at`, the token columns and `status`, and nothing else.
+        """
+        params: dict[str, str] = {
+            "provider": f"eq.{provider}",
+            "and": f"(occurred_at.gte.{start_at},occurred_at.lt.{end_at})",
+            "select": (
+                "id,occurred_at,model,purpose,status,estimated_input_tokens,"
+                "prompt_tokens,output_tokens,thinking_tokens,cached_tokens,"
+                "total_tokens,http_status,error_code"
+            ),
+            "order": "occurred_at.asc",
+        }
+        if model is not None:
+            params["model"] = f"eq.{model}"
+        return self._client.select("job_hunter_platform_ai_usage", params=params)
+
+    def set_platform_ai_pause(
+        self, provider: str, model: str, paused_until: str | None, reason: str
+    ) -> None:
+        """Persist the platform key's active quota pause for one provider model."""
+        self._client.upsert(
+            "job_hunter_platform_ai_quota_state",
+            [
+                touch(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "paused_until": paused_until,
+                        "reason": reason,
+                    }
+                )
+            ],
+            on_conflict="provider,model",
+        )
+
+    def get_platform_ai_pause(self, provider: str, model: str) -> dict[str, Any] | None:
+        """Return the platform key's persisted pause for a provider model, if present."""
+        rows = self._client.select(
+            "job_hunter_platform_ai_quota_state",
+            params={
+                "provider": f"eq.{provider}",
+                "model": f"eq.{model}",
+                "limit": "1",
+            },
+        )
+        return rows[0] if rows else None
+
     def get_candidate_context(self, cache_key: str) -> CandidateContextCacheEntry | None:
         """Return a cached candidate context, decoding its stored JSON payload.
 
@@ -2703,6 +2822,8 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "record_ai_usage": None,
     "set_ai_pause": None,
     "clear_ai_pause": None,
+    "record_platform_ai_usage": None,
+    "set_platform_ai_pause": None,
     "save_candidate_context": None,
     "enqueue_ai_work": None,
     "complete_ai_work": None,
@@ -2750,6 +2871,8 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "count_ats_boards",
         "ai_usage_rows",
         "get_ai_pause",
+        "platform_ai_usage_rows",
+        "get_platform_ai_pause",
         "get_candidate_context",
         "list_pending_ai_work",
         "has_processed_gmail_message",

@@ -23,6 +23,7 @@ from job_hunter.ai.port import (
     CallClass,
     IncompleteReason,
     PauseKind,
+    PlatformAllowanceExhausted,
     QuotaUnavailable,
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "EnvCredentialResolver",
     "IncompleteReason",
     "PauseKind",
+    "PlatformAllowanceExhausted",
     "QuotaUnavailable",
 ]

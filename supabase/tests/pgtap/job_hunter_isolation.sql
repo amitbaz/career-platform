@@ -243,13 +243,29 @@ end $$;
 
 -- Run ------------------------------------------------------------------------
 
+-- The two tables this file deliberately does not cover. The platform key's
+-- ledger and pause (issue #128) hold no user_id at all: they meter one
+-- globally shared key, so per-user isolation is not the property they have.
+-- They are checked in job_hunter_platform_ai_usage.sql, which asserts the
+-- property they do have -- reachable only with the job_hunter_runner claim.
+-- Naming them here rather than loosening the guard below keeps "a new table
+-- with no test fails" true.
+create view pg_temp.job_hunter_platform_tables as
+select unnest(array[
+  'job_hunter_platform_ai_usage',
+  'job_hunter_platform_ai_quota_state'
+]) as table_name;
+
 -- Guard: every job_hunter_ table in the schema is in the list under test,
 -- so a table added to the migration without a test fails here.
 select is(
   (select array_agg(tablename::text order by tablename)
      from pg_tables where schemaname = 'public' and tablename like 'job\_hunter\_%'),
-  (select array_agg(table_name order by table_name) from pg_temp.job_hunter_tables),
-  'every public.job_hunter_* table is covered by the isolation check');
+  (select array_agg(table_name order by table_name) from (
+     select table_name from pg_temp.job_hunter_tables
+     union all
+     select table_name from pg_temp.job_hunter_platform_tables) as covered),
+  'every public.job_hunter_* table is covered by an isolation check');
 
 select is(
   (select count(*)::int from pg_temp.job_hunter_tables), 22,

@@ -24,6 +24,7 @@ from job_hunter.ai import (
     AIProvider,
     AIQuotaPaused,
     AITemporaryCapacity,
+    PlatformAllowanceExhausted,
 )
 from job_hunter.ai.usage import AIUsageTracker
 from job_hunter.hard_blockers import (
@@ -530,8 +531,20 @@ _FACET_SKIPPED = "skipped"
 _FACET_QUOTA_BLOCKED = "quota_blocked"
 
 
-def _waiting_out_capacity(call, *, doing: str, job_id: str):
-    """Run `call`, waiting out the provider's rolling window as often as needed.
+#: How many rolling windows the inline read of a posting will wait out before
+#: giving up its turn. Scoring waits without a bound because it paces against
+#: the user's own key, where the only other claimant is this run. Reading a
+#: posting paces against the *platform* key (#128), which every user's run
+#: shares: two overlapping runs can hold each other over the rolling ceiling
+#: indefinitely, and a run that waits for that to clear delivers nothing at
+#: all. Three windows is long enough to ride out a burst and short enough that
+#: the run still finishes; a posting not read by then is deferred like any
+#: other the platform could not pay for.
+_READ_CAPACITY_WAITS = 3
+
+
+def _waiting_out_capacity(call, *, doing: str, job_id: str, max_waits: int | None = None):
+    """Run `call`, waiting out the provider's rolling window.
 
     Both provider calls a user is waiting on -- reading the posting and
     scoring it -- wait rather than give up their turn: the run is producing
@@ -539,13 +552,29 @@ def _waiting_out_capacity(call, *, doing: str, job_id: str):
     The adapter's preflight pacing has already slept out one window and
     re-checked before raising, so each pass here is a second, deliberate wait.
 
+    `max_waits` bounds that patience where the capacity being waited on is not
+    this run's alone to clear; `None` waits as long as it takes, and re-raises
+    nothing. The last `AITemporaryCapacity` propagates when the bound is spent,
+    for the caller to turn into whatever giving up means to it.
+
     The backfill pass deliberately does not use this. Nobody is waiting on it,
     so it gives up its turn instead of holding the run open.
     """
+    waits = 0
     while True:
         try:
             return call()
         except AITemporaryCapacity as exc:
+            if max_waits is not None and waits >= max_waits:
+                logger.info(
+                    "AI temporary capacity still full after %s waits; giving up on "
+                    "%s for job_id=%s",
+                    waits,
+                    doing,
+                    job_id,
+                )
+                raise
+            waits += 1
             logger.info(
                 "AI temporary capacity reached; waiting %.2fs before %s for job_id=%s",
                 exc.retry_after_seconds,
@@ -574,14 +603,18 @@ def _extract_and_store_facets(
     still returned, so the run can score with them, and the job is extracted
     again next time because nothing was persisted.
 
-    Provider capacity and quota exceptions propagate. What to do about them
-    differs between the two callers -- a job waiting to be scored must wait
-    for capacity, while the backfill pass, which nobody is waiting on, gives
-    up its turn -- so neither answer belongs here.
+    Rolling capacity and an exhausted platform allowance both propagate, and
+    neither is counted here. What to do about capacity differs between the two
+    callers -- a job waiting to be scored must wait for it, while the backfill
+    pass, which nobody is waiting on, gives up its turn -- so that answer does
+    not belong here. An exhausted allowance is not a failure at all: the
+    posting was never read, nothing was spent, and no user was charged (#128),
+    so counting it as an extraction failure would make a run that behaved
+    correctly look unhealthy.
     """
     try:
         facets = extract_facets(PostingFacts.from_job(job), ai)
-    except (AITemporaryCapacity, AIBudgetExceeded, AIQuotaPaused):
+    except (AITemporaryCapacity, PlatformAllowanceExhausted):
         raise
     except Exception:
         logger.exception("facet extraction failed for job_id=%s", job_id)
@@ -635,11 +668,22 @@ def _facets_for_scoring(
         # there now. Read the posting again rather than score it blind.
         logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
 
-    facets = _waiting_out_capacity(
-        lambda: _extract_and_store_facets(job_id, job, store, ai, summary),
-        doing="reading the posting",
-        job_id=job_id,
-    )
+    try:
+        facets = _waiting_out_capacity(
+            lambda: _extract_and_store_facets(job_id, job, store, ai, summary),
+            doing="reading the posting",
+            job_id=job_id,
+            max_waits=_READ_CAPACITY_WAITS,
+        )
+    except AITemporaryCapacity as exc:
+        # The platform key's rolling window stayed full, which for this run is
+        # indistinguishable from having no allowance: the posting is not read
+        # today. Raised as the same exhaustion every other platform refusal
+        # raises, so the caller has one thing to handle and the job keeps its
+        # turn -- `needs_facets.discard` below is not reached.
+        raise PlatformAllowanceExhausted(
+            "the platform key's rolling capacity stayed full while reading a posting"
+        ) from exc
     # A turn is spent once the provider has actually answered -- including an
     # answer that could not be read, which cost a call. A refusal that never
     # reached the provider raises out of here instead, leaving the job in the
@@ -673,8 +717,14 @@ def _backfill_one_job_facets(
         # pressure would burn its whole allowance extracting nothing.
         logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
         return _FACET_SKIPPED
-    except (AIBudgetExceeded, AIQuotaPaused):
-        logger.info("facet extraction deferred by provider quota for job_id=%s", job_id)
+    except PlatformAllowanceExhausted as exc:
+        # Not an extraction failure, and logged so that it cannot be read as
+        # one: the platform key is spent (or absent), the posting is untouched
+        # in the corpus, and the next run reads it. Nothing about this run is
+        # wrong, so nothing here raises or counts.
+        logger.info(
+            "facet extraction deferred for job_id=%s: %s", job_id, exc
+        )
         return _FACET_QUOTA_BLOCKED
     return _FACET_EXTRACTED
 
@@ -897,22 +947,17 @@ def _evaluate_and_deliver_one_job(
     # a posting nobody has read yet is read here, once, before it is scored.
     try:
         facets = _facets_for_scoring(job_id, job, store, ai, summary, needs_facets)
-    except AIQuotaPaused:
-        # The model is paused, so the scoring call would not have gone through
-        # either. Queue the job exactly as a paused scoring call does.
+    except PlatformAllowanceExhausted as exc:
+        # The platform key is out, not the user's (#128). That distinction is
+        # the whole of this branch: this must not block the run the way a
+        # paused user model does, because the user's own key is untouched and
+        # every job whose posting has already been read still scores. Only a
+        # posting nobody has read yet waits for tomorrow, and it waits in the
+        # queue, unenriched and undamaged.
         logger.warning(
-            "reading the posting for job_id=%s was paused by AI quota", job_id
-        )
-        store.enqueue_ai_work("job_evaluation", job_id)
-        return False, True, None, False, False
-    except AIBudgetExceeded:
-        # The *non-core* daily budget is out, not evaluation's reserve: a job
-        # whose posting was already read still scores this run, so this must
-        # not block the run the way a paused model does. Only a posting nobody
-        # has read yet has to wait for tomorrow.
-        logger.warning(
-            "no shared budget left to read the posting for job_id=%s; not scored this run",
+            "the posting for job_id=%s was not read; not scored this run: %s",
             job_id,
+            exc,
         )
         summary.scoring_deferred_by_read_budget += 1
         store.enqueue_ai_work("job_evaluation", job_id)
@@ -1068,15 +1113,23 @@ def _evaluate_and_deliver_one_job(
     return promoted, False, evaluation.decision, offered, scored
 
 
-def _format_ai_usage_log(summary: AIUsageSummary) -> str:
-    """One structured log line at run completion: totals plus per-purpose counts."""
+def _format_ai_usage_log(summary: AIUsageSummary, account: str) -> str:
+    """One structured log line per ledger at run completion.
+
+    `account` names which key the numbers are about -- `user` for the one the
+    person running this owns, `platform` for the shared key that funds
+    objective extraction (#128). The two are reported side by side and never
+    summed: they have separate ceilings, and an average of the two would hide
+    either of them approaching its own.
+    """
     purposes = ",".join(
         f"{purpose}:{summary.purpose_counts[purpose]}"
         for purpose in AI_PURPOSES
         if purpose in summary.purpose_counts
     )
     return (
-        f"ai_usage run_calls={summary.requests_today} "
+        f"ai_usage account={account} "
+        f"run_calls={summary.requests_today} "
         f"rpd_pct={summary.rpd_percent:.1f} "
         f"rpm_peak_pct={summary.rpm_peak_percent:.1f} "
         f"tpm_peak_pct={summary.tpm_peak_percent:.1f} "
@@ -1118,14 +1171,18 @@ def run_pipeline(
     store: PostgresJobStore,
     ai: AIProvider,
     usage: AIUsageTracker | None = None,
+    platform_usage: AIUsageTracker | None = None,
     telegram: TelegramClient | None = None,
     http: HttpClient | None = None,
 ) -> RunSummary:
     """Run one discovery-to-delivery pass.
 
-    `usage` is the ledger governing `ai`'s calls, passed in rather than read
-    off the provider: what a run spent is the ledger's question, not the text
-    generation port's, and a run given no ledger simply reports no usage.
+    `usage` is the ledger governing the user-funded half of `ai`'s calls,
+    passed in rather than read off the provider: what a run spent is the
+    ledger's question, not the text generation port's, and a run given no
+    ledger simply reports no usage. `platform_usage` is the same for the
+    platform key that funds shared extraction (#128); a deployment with no
+    platform key has none, and does no extraction.
     """
     http = http or HttpClient()
     try:
@@ -1379,14 +1436,13 @@ def run_pipeline(
     # so on the run that first evaluated it -- so this pass never spends a
     # provider call on a posting the prefilter or the profession gate rejected.
     #
-    # It runs *after* every scoring call, and that ordering is still what keeps
-    # it unable to cost the user a digest. A provider 429 persists a pause
-    # against the *model*, not the purpose (`AIUsageTracker.record_429`),
-    # and the scoring loops treat `AIQuotaPaused` as blocking for the rest
-    # of the run -- so a 429 tripped by a backfill call made first would defer
-    # every score behind it and deliver nothing. The run's own reads happen
-    # inline, only for jobs it is about to score, and are the unavoidable
-    # cost of scoring them at all.
+    # It runs *after* every scoring call. Since #128 the two halves cannot
+    # take each other's budget at all -- extraction spends the platform key
+    # and its own ledger, scoring spends the user's -- so a 429 tripped here
+    # pauses the platform model row and leaves every score untouched. The
+    # ordering survives for the remaining reason: this pass is given what the
+    # run's inline reads left of the budget, which is not known until they are
+    # done.
     #
     # The run's whole facet budget is `max_jobs_per_run`, and the inline reads
     # have already spent part of it, so the backfill gets what is left.
@@ -1433,11 +1489,26 @@ def run_pipeline(
             settings.policy.match_score_floor,
         )
 
-    usage_summary = (
-        usage.snapshot(datetime.now(timezone.utc)) if usage is not None else None
-    )
+    now_for_usage = datetime.now(timezone.utc)
+    usage_summary = usage.snapshot(now_for_usage) if usage is not None else None
     if usage_summary is not None:
-        logger.info(_format_ai_usage_log(usage_summary))
+        logger.info(_format_ai_usage_log(usage_summary, "user"))
+    if platform_usage is not None:
+        # Reported, never warned about over Telegram: an exhausted platform
+        # key is the operator's problem and there is nothing the person
+        # reading the digest could do about it. The user-funded warning below
+        # stays about the key that user actually holds.
+        #
+        # Contained, because this is a *report* and the digest has not been
+        # sent yet. It reads two tables that a deployment which has not run
+        # the #128 migration does not have, and losing a whole run's delivered
+        # work to a failed log line would be the worst possible trade.
+        try:
+            logger.info(
+                _format_ai_usage_log(platform_usage.snapshot(now_for_usage), "platform")
+            )
+        except Exception:
+            logger.exception("could not read platform AI usage for this run")
 
     delivered_by_market: dict[str, int] = {}
     delivered_by_source: dict[str, int] = {}

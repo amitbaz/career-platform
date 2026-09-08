@@ -12,6 +12,14 @@ import json
 import pytest
 
 from job_hunter import facets as facets_module
+from job_hunter.ai import (
+    AIBudgetExceeded,
+    AIQuotaPaused,
+    AITemporaryCapacity,
+    CallClass,
+    CredentialUnavailable,
+    PlatformAllowanceExhausted,
+)
 from job_hunter.content_confidence import OFFICIAL_ATS
 from job_hunter.facets import (
     FacetExtractionError,
@@ -356,3 +364,65 @@ def test_a_fractional_pay_figure_is_not_silently_rounded():
                                            "period": "year"}})
     with pytest.raises(FacetExtractionError):
         extract_facets(PostingFacts.from_job(_job()), gemini)
+
+
+# --- Who pays (#128) -------------------------------------------------------------
+
+
+def test_extraction_declares_itself_platform_funded():
+    """The call class is the whole of the funding decision.
+
+    Nothing downstream reads a setting or the purpose to decide which key to
+    use, so this one argument is what routes extraction to the platform
+    credential and away from the user's.
+    """
+
+    class ClassRecordingGemini(FakeGemini):
+        def generate_text(self, prompt, *, call_class, **kwargs):
+            self.call_class = call_class
+            return super().generate_text(prompt, call_class=call_class, **kwargs)
+
+    gemini = ClassRecordingGemini(json.dumps(_payload()))
+    extract_facets(PostingFacts.from_job(_job()), gemini)
+
+    assert gemini.call_class is CallClass.SHARED_EXTRACTION
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        AIBudgetExceeded("platform daily ceiling reached"),
+        AIQuotaPaused("paused", paused_until="2026-09-09T00:00:00+00:00", reason="daily_quota"),
+        CredentialUnavailable("no platform credential is configured"),
+    ],
+    ids=["allowance_spent", "provider_paused", "no_platform_key"],
+)
+def test_every_platform_refusal_reads_as_one_thing_to_callers(refusal):
+    """Three refusals, one consequence: the posting is not read today.
+
+    They are translated here, at the only shared-extraction call site, so that
+    no caller can catch `AIBudgetExceeded` and mistake the platform's
+    exhaustion for the user's own -- and stop doing the user's work over it.
+    """
+
+    class RefusingGemini(FakeGemini):
+        def generate_text(self, prompt, **kwargs):
+            raise refusal
+
+    with pytest.raises(PlatformAllowanceExhausted):
+        extract_facets(PostingFacts.from_job(_job()), RefusingGemini())
+
+
+def test_rolling_capacity_is_not_translated():
+    """Waiting is not exhaustion: the allowance is intact and the call may go.
+
+    Callers that wait out a rolling window must still see the exception that
+    carries the delay, so this one passes through unchanged.
+    """
+
+    class BusyGemini(FakeGemini):
+        def generate_text(self, prompt, **kwargs):
+            raise AITemporaryCapacity("rpm full", retry_after_seconds=1.5)
+
+    with pytest.raises(AITemporaryCapacity):
+        extract_facets(PostingFacts.from_job(_job()), BusyGemini())
