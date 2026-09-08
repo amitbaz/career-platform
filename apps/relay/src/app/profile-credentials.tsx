@@ -15,6 +15,7 @@ const providerCopy = {
 
 const providers = Object.keys(providerCopy) as ProviderCredential[];
 const emptySecrets: Record<ProviderCredential, string> = { gemini: "", brave: "" };
+type PendingRequest = "loading" | { action: "save" | "delete"; provider: ProviderCredential };
 
 function statusLabel(status: ProviderCredentialStatus): string {
   if (!status.configured) return "Not configured";
@@ -42,7 +43,7 @@ function replaceStatus(
 export function ProfileCredentials() {
   const [statuses, setStatuses] = useState<ProviderCredentialStatus[] | null>(null);
   const [secrets, setSecrets] = useState(emptySecrets);
-  const [pending, setPending] = useState<ProviderCredential | null>(null);
+  const [pending, setPending] = useState<PendingRequest | null>("loading");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -51,6 +52,9 @@ export function ProfileCredentials() {
       .then((next) => { if (active) setStatuses(next); })
       .catch((caught: unknown) => {
         if (active) setError(caught instanceof Error ? caught.message : "Could not load provider credentials.");
+      })
+      .finally(() => {
+        if (active) setPending(null);
       });
     return () => { active = false; };
   }, []);
@@ -61,13 +65,14 @@ export function ProfileCredentials() {
 
   async function save(provider: ProviderCredential, event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (pending) return;
     const secret = secrets[provider];
     if (!secret.trim()) {
       setError(`Enter a ${providerCopy[provider].label} API key before saving.`);
       return;
     }
 
-    setPending(provider);
+    setPending({ action: "save", provider });
     setError("");
     try {
       updateStatus(await saveProviderCredential(provider, secret));
@@ -81,13 +86,15 @@ export function ProfileCredentials() {
   }
 
   async function remove(provider: ProviderCredential) {
-    setPending(provider);
+    if (pending) return;
+    setPending({ action: "delete", provider });
     setError("");
     try {
       updateStatus(await removeProviderCredential(provider));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not remove this provider credential.");
     } finally {
+      setSecrets((current) => ({ ...current, [provider]: "" }));
       setPending(null);
     }
   }
@@ -100,8 +107,10 @@ export function ProfileCredentials() {
       {providers.map((provider) => {
         const status = statuses?.find((item) => item.provider === provider);
         const configured = status?.configured ?? false;
-        const loading = statuses === null;
-        const isPending = pending === provider;
+        const loading = pending === "loading";
+        const activeRequest = pending !== null && typeof pending === "object" ? pending : null;
+        const isPending = activeRequest?.provider === provider;
+        const controlsDisabled = pending !== null;
         return <fieldset key={provider} className="border-t border-[var(--line)] pt-5 first:border-t-0 first:pt-0">
           <legend className="text-sm font-semibold">{providerCopy[provider].label}</legend>
           <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">{providerCopy[provider].help}</p>
@@ -113,13 +122,13 @@ export function ProfileCredentials() {
                 autoComplete="new-password"
                 value={secrets[provider]}
                 onChange={(event) => setSecrets((current) => ({ ...current, [provider]: event.target.value }))}
-                disabled={isPending}
+                disabled={controlsDisabled}
                 className="mt-2 w-full rounded-xl border border-[var(--line)] bg-white px-3 py-3 text-sm outline-none focus:border-[var(--pine)] disabled:opacity-50"
               />
             </label>
             <div className="mt-3 flex flex-wrap gap-3">
-              <button disabled={isPending} className="rounded-full bg-[var(--pine)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{isPending ? "Saving…" : configured ? "Replace" : "Save"}</button>
-              {configured && <button type="button" onClick={() => remove(provider)} disabled={isPending} className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-semibold disabled:opacity-50">Delete</button>}
+              <button disabled={controlsDisabled} className="rounded-full bg-[var(--pine)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{isPending ? activeRequest?.action === "delete" ? "Deleting…" : "Saving…" : configured ? "Replace" : "Save"}</button>
+              {configured && <button type="button" onClick={() => remove(provider)} disabled={controlsDisabled} className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-semibold disabled:opacity-50">Delete</button>}
             </div>
           </form>
         </fieldset>;

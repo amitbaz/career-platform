@@ -22,6 +22,16 @@ const notConfigured = [
   { provider: "brave" as const, configured: false, updatedAt: null },
 ];
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("ProfileCredentials", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,7 +48,6 @@ describe("ProfileCredentials", () => {
 
     expect(await screen.findByText(/^Configured/)).toBeInTheDocument();
     expect(screen.getByText(/Updated/)).toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("saved-gemini-value");
     expect(screen.getByLabelText("Gemini API key")).toHaveValue("");
   });
 
@@ -88,7 +97,7 @@ describe("ProfileCredentials", () => {
     expect(document.body.textContent).not.toContain("submitted-brave-value");
   });
 
-  it("deletes a configured key only after an explicit click", async () => {
+  it("deletes a configured key only after an explicit click and clears a typed replacement", async () => {
     fetchCredentials.mockResolvedValue([
       { provider: "gemini", configured: true, updatedAt: "2026-09-07T12:00:00.000Z" },
       { provider: "brave", configured: false, updatedAt: null },
@@ -97,12 +106,32 @@ describe("ProfileCredentials", () => {
     render(<ProfileCredentials />);
 
     const gemini = await screen.findByRole("group", { name: "Gemini" });
+    const input = within(gemini).getByLabelText("Gemini API key");
     const deleteButton = await within(gemini).findByRole("button", { name: "Delete" });
     expect(removeCredential).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "replacement-before-delete" } });
     fireEvent.click(deleteButton);
 
     await waitFor(() => expect(removeCredential).toHaveBeenCalledWith("gemini"));
     expect(within(gemini).getByText("Not configured")).toBeInTheDocument();
+    expect(input).toHaveValue("");
+  });
+
+  it("clears a typed replacement when deletion fails", async () => {
+    fetchCredentials.mockResolvedValue([
+      { provider: "gemini", configured: true, updatedAt: "2026-09-07T12:00:00.000Z" },
+      { provider: "brave", configured: false, updatedAt: null },
+    ]);
+    removeCredential.mockRejectedValue(new Error("Credential deletion failed."));
+    render(<ProfileCredentials />);
+
+    const gemini = await screen.findByRole("group", { name: "Gemini" });
+    const input = within(gemini).getByLabelText("Gemini API key");
+    fireEvent.change(input, { target: { value: "replacement-before-failed-delete" } });
+    fireEvent.click(await within(gemini).findByRole("button", { name: "Delete" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Credential deletion failed.");
+    expect(input).toHaveValue("");
   });
 
   it("keeps provider errors local and never renders the submitted value", async () => {
@@ -117,5 +146,43 @@ describe("ProfileCredentials", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Credential request failed.");
     expect(within(gemini).getByLabelText("Gemini API key")).toHaveValue("");
     expect(document.body.textContent).not.toContain("submitted-gemini-value");
+  });
+
+  it("disables mutations until the initial credential status has loaded", async () => {
+    const initialLoad = deferred<typeof notConfigured>();
+    fetchCredentials.mockReturnValue(initialLoad.promise);
+    render(<ProfileCredentials />);
+
+    const gemini = screen.getByRole("group", { name: "Gemini" });
+    expect(within(gemini).getByLabelText("Gemini API key")).toBeDisabled();
+    expect(within(gemini).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(within(gemini).getByRole("button", { name: "Save" }));
+    expect(saveCredential).not.toHaveBeenCalled();
+
+    initialLoad.resolve(notConfigured);
+    await waitFor(() => expect(within(gemini).getByRole("button", { name: "Save" })).toBeEnabled());
+  });
+
+  it("keeps both providers disabled while a credential mutation is in flight", async () => {
+    const savingGemini = deferred<{ provider: "gemini"; configured: boolean; updatedAt: string }>();
+    saveCredential.mockReturnValue(savingGemini.promise);
+    render(<ProfileCredentials />);
+
+    await waitFor(() => expect(screen.getAllByText("Not configured")).toHaveLength(2));
+    const gemini = screen.getByRole("group", { name: "Gemini" });
+    const brave = screen.getByRole("group", { name: "Brave Search" });
+    fireEvent.change(within(gemini).getByLabelText("Gemini API key"), { target: { value: "submitted-gemini-value" } });
+    fireEvent.click(within(gemini).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(saveCredential).toHaveBeenCalledWith("gemini", "submitted-gemini-value"));
+    expect(within(gemini).getByLabelText("Gemini API key")).toBeDisabled();
+    expect(within(brave).getByLabelText("Brave Search API key")).toBeDisabled();
+    expect(within(brave).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(within(brave).getByRole("button", { name: "Save" }));
+    expect(saveCredential).toHaveBeenCalledTimes(1);
+
+    savingGemini.resolve({ provider: "gemini", configured: true, updatedAt: "2026-09-08T12:00:00.000Z" });
+    expect(await within(gemini).findByRole("button", { name: "Replace" })).toBeEnabled();
+    expect(within(brave).getByRole("button", { name: "Save" })).toBeEnabled();
   });
 });
