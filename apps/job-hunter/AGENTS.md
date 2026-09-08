@@ -32,7 +32,11 @@ Migration rules:
    (A later migration, `202609070004_job_hunter_upsert_job_distinct_timestamps.sql`, re-creates
    `job_hunter_upsert_job` rather than adding a new function; so does
    `20260908120000_job_hunter_job_merge_redirects.sql` with `job_hunter_merge_jobs`, which now
-   records where a deleted duplicate went in `job_hunter_job_merges`.) Job Hunter's runtime reads and writes these tables through
+   records where a deleted duplicate went in `job_hunter_job_merges`;
+   `20260908170000_job_hunter_job_facets.sql` adds `job_hunter_job_facets`, one row per job
+   holding the objective facets `facets.py` extracts, with dedicated columns and indexes
+   because hiring-eligible regions, remote policy, seniority and compensation have to be
+   filterable in a query rather than parsed out of every row.) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
    `tests/integration/test_supabase_isolation.py` proves those policies hold by writing and
@@ -134,6 +138,7 @@ Pipeline, in `pipeline.py::run_pipeline`:
 all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or profile-aware rank
   -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
   -> Gemini -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
+  -> objective facet extraction (facets.py, once per posting, candidate-blind, after every evaluation)
   -> Telegram digest delivery (telegram.py)
 ```
 
@@ -142,6 +147,34 @@ Cover letter generation + PDF rendering (`cover_letter.py`/`pdf.py`) is not part
 Key modules:
 - `src/job_hunter/sources/` — one adapter per job source, all implementing a common `discover()` interface (`base.py`), which **yields jobs as it finds them** rather than returning a finished list. Built-ins now include Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, and DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source **fails open**: an exception during discovery is caught in `discovery.py::_iter_source_jobs`, logged, and the rest of that source is abandoned — the jobs it had already yielded are kept, and later sources still run. `LearnedAtsSource` and `CompanyWatchSource` fetch a whole board / a whole watch at a time, because their aggregator verdict is computed over the entire board; every other source yields per posting, page or query. Their postings are still yielded one at a time, so a caller can stop inside a board — which is why their health writes (`record_ats_scan_success`, `record_watch_success`) and their raw counts happen **after** the postings have been handed over, not before. Writing them first would stamp `last_checked_at` on a board that was never finished, demoting it in the oldest-first ranking, and claim a harvest nothing received. An unfinished board is left untouched and comes up again next run. Each source is also bounded by a wall-clock budget (`JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS`, default 1800s): `_iter_source_jobs` checks it *between* those units and never mid-request, so a source that overruns is cut off at a unit boundary, the jobs it already yielded are kept and flow through the pipeline normally, and later sources still run. A source whose own unit outlasts the whole budget cannot be bounded by it — the request timeout is what bounds that one — and `discovery.budget_applied` derives that from the source's longest observed unit rather than from a per-adapter declaration, so it stays true for an adapter nobody annotated.
 - `src/job_hunter/discovery.py`, `discovery_queries.py`, `ranking.py` — aggregate, generate expanded search queries, and rank candidates before Gemini. `generate_search_queries()` expands each role/template across configured ATS domains.
+- `src/job_hunter/facets.py` — objective extraction (#125): reads a posting's **facets** — the
+  requirements it states and the depth each demands, its disclosed compensation, its
+  hiring-eligible regions, its remote and relocation policy, its seniority, its stack — once per
+  posting, and `PostgresJobStore.save_job_facets` stores them on the job. Facets are properties
+  of the posting, identical for every user, so one extraction serves every later run. That
+  sharing is load-bearing and enforced by the interface, not by convention: `extract_facets`
+  takes a frozen `PostingFacts` built from the `Job` alone, the module imports nothing per-user,
+  and `tests/test_facets.py` fails if it ever does. Keep the candidate-aware prompt in
+  `evaluation.py` and this one here; merging them would put the constraint back on care alone.
+  Two facets never reach the model: Ashby's structured `isRemote` supplies `remote_policy`
+  directly (a *false* flag does not — it separates neither hybrid nor onsite; and Greenhouse is
+  deliberately excluded, because its adapter derives `remote` from the substring "remote" in the
+  location label, so "Hybrid Remote" would be pinned as fully remote forever), and
+  `hiring_scope.determine_hiring_scope` supplies `hiring_regions` when the posting states an
+  explicit scope. `source_supplied` records which came free. Invalidation is
+  `job_hunter_jobs.description_hash`, the same mechanism that gates re-evaluation — there is no
+  second notion of a changed posting. Extraction is run from
+  `pipeline.py::_extract_facets_for_run`, over this run's shortlist and retry queue first and
+  then rediscovered jobs, every one of which survived the non-AI filters; it is bounded per run
+  by `max_jobs_per_run`, which is what makes the existing corpus drain over consecutive runs
+  with no migration script. A failure of any kind leaves the job unenriched with **no** marker,
+  so a later run retries it — never record a placeholder, and never let a failure mark a posting
+  permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart from
+  evaluation's counters, and reported on the `facet_extraction` log line. Facets are written and
+  never read back into scoring: until #126 lands, the combined evaluation still decides
+  everything, and both calls run against the same jobs (roughly 122 provider calls a day against
+  a 500 allowance). `job_facets` is a *non-core* Gemini purpose, so the core reserve refuses
+  facets before it refuses an evaluation.
 - `src/job_hunter/hiring_scope.py` — reads a posting's *explicitly stated* hiring regions ("open to candidates based in the US and Europe") from its text alone. It is deliberately self-contained: no market, no candidate, no scoring. `market_policy.py::attribute_market` consumes it as a bonus that outranks a listing variant's location label, and as a filter that drops markets the posting's stated regions exclude. Keep it that way — a posting's eligible regions are a shared, cacheable property of the posting, whereas whether a given candidate may work there is per-user, and only the first belongs in this module.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
 - `DiscoveryStats.newly_discovered` counts the rows a run inserted, and is reported as

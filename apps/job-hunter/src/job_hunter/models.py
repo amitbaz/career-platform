@@ -128,6 +128,59 @@ class Job:
 
 
 @dataclass(slots=True)
+class Compensation:
+    """What a posting discloses about pay, and nothing more.
+
+    `disclosed` is False whenever the posting says nothing determinate; the
+    other fields are then empty. A posting that states only one end of a range
+    carries that end and leaves the other `None` -- an absent bound is not
+    zero.
+    """
+
+    disclosed: bool = False
+    currency: str = ""
+    minimum: int | None = None
+    maximum: int | None = None
+    #: One of "hour", "day", "month", "year", or "" when undisclosed.
+    period: str = ""
+
+
+@dataclass(slots=True)
+class JobFacets:
+    """The objective facts a posting states about itself (issue #125).
+
+    A facet is identical for every user -- it is a property of the posting,
+    not of anyone reading it -- so facets are extracted once per posting and
+    reused by every later run. See `facets.py` for the extraction, which is
+    deliberately unable to see anything per-user, and CONTEXT.md for the
+    objective-extraction / subjective-scoring split this is one half of.
+
+    Every field has an "it did not say" value: "unknown", an empty list, or
+    undisclosed compensation. None of them means "no", and callers must not
+    read them that way.
+    """
+
+    seniority: str = "unknown"
+    remote_policy: str = "unknown"
+    relocation_policy: str = "unknown"
+    #: Regions the posting states it will hire in, in `hiring_scope`'s
+    #: vocabulary. Empty means it stated none, never "eligible nowhere".
+    hiring_regions: list[str] = field(default_factory=list)
+    stack: list[str] = field(default_factory=list)
+    compensation: Compensation = field(default_factory=Compensation)
+    #: [{"requirement": str, "depth": str, "kind": "must_have"|"preferred"}]
+    requirements: list[dict[str, str]] = field(default_factory=list)
+    #: Facet names taken from structured source data or deterministic code
+    #: rather than from the model, so the split can be measured.
+    source_supplied: list[str] = field(default_factory=list)
+    #: The description hash these facets were read at. Stamped by the store
+    #: from the job row, so invalidation reuses exactly the mechanism that
+    #: gates re-evaluation rather than inventing a second one.
+    description_hash_at_extraction: str = ""
+    model: str = ""
+
+
+@dataclass(slots=True)
 class AtsReference:
     provider: str
     board: str
@@ -465,3 +518,11 @@ class RunSummary:
     # catastrophic when jobs were attempted but none produced a decision.
     evaluation_attempted: int = 0
     evaluated: int = 0
+    # Objective facet extraction (issue #125), counted separately from
+    # evaluation on purpose: the two are different calls against different
+    # jobs' worth of work, and a run where facets are failing while
+    # evaluation is healthy needs telling apart from the reverse. A failed
+    # extraction is not an `errors` entry either -- it leaves the job
+    # unenriched and the next run retries it, which is recovery, not damage.
+    facet_extraction_attempted: int = 0
+    facet_extraction_failed: int = 0

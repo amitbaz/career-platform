@@ -35,14 +35,40 @@ from job_hunter.watchlist import promote_company as persist_promoted_company
 from tests.market_fixtures import make_market_policy
 
 
+#: A well-formed objective-facet response, in the vocabulary `facets.py`
+#: validates against. Facet extraction is a distinct provider purpose, so the
+#: fake answers it distinctly rather than handing back an evaluation.
+FACET_PAYLOAD = {
+    "seniority": "senior",
+    "remote_policy": "remote",
+    "relocation_policy": "not_offered",
+    "hiring_regions": ["europe"],
+    "stack": ["react", "typescript"],
+    "compensation": {
+        "disclosed": False,
+        "currency": "",
+        "minimum": None,
+        "maximum": None,
+        "period": "",
+    },
+    "requirements": [
+        {"requirement": "React", "depth": "experience", "kind": "must_have"}
+    ],
+}
+
+
 class FakeGemini:
-    def __init__(self, *, preference_payload=None, evaluation_payload=None):
+    def __init__(self, *, preference_payload=None, evaluation_payload=None, facet_payload=None):
         self.model = "gemini-test"
         self.preference_calls = 0
         self.eval_calls = 0
+        self.eval_prompts = []
+        self.facet_calls = 0
+        self.facet_prompts = []
         self.cover_letter_calls = 0
         self.preference_payload = preference_payload
         self.evaluation_payload = evaluation_payload
+        self.facet_payload = facet_payload
 
     def generate_text(
         self,
@@ -80,8 +106,14 @@ class FakeGemini:
                 "evaluation_summary": "Remote product-oriented frontend engineer.",
             }
             return json.dumps(payload)
+        if purpose == "job_facets":
+            self.facet_calls += 1
+            self.facet_prompts.append(prompt)
+            payload = self.facet_payload if self.facet_payload is not None else FACET_PAYLOAD
+            return json.dumps(payload)
         if json_mode:
             self.eval_calls += 1
+            self.eval_prompts.append(prompt)
             payload = self.evaluation_payload or {
                 "scores": {
                     "role_seniority": 28,
@@ -433,7 +465,12 @@ class AlternatingDecisionGemini(FakeGemini):
     }
 
     def generate_text(self, prompt, **kwargs):
-        if kwargs.get("purpose") == "candidate_context" or not kwargs.get("json_mode"):
+        # Facet extraction runs against the same jobs under its own purpose;
+        # it must not advance the alternation the evaluations are counted by.
+        if (
+            kwargs.get("purpose") in {"candidate_context", "job_facets"}
+            or not kwargs.get("json_mode")
+        ):
             return super().generate_text(prompt, **kwargs)
         self.eval_calls += 1
         scores = self._STRONG if self.eval_calls % 2 == 1 else self._WEAK
@@ -448,7 +485,12 @@ class ScoreSequenceGemini(FakeGemini):
         self._scores_by_evaluation = scores_by_evaluation
 
     def generate_text(self, prompt, **kwargs):
-        if kwargs.get("purpose") == "candidate_context" or not kwargs.get("json_mode"):
+        # Objective facet extraction is a separate purpose against the same
+        # jobs, so it must not consume an entry of the evaluation sequence.
+        if (
+            kwargs.get("purpose") in {"candidate_context", "job_facets"}
+            or not kwargs.get("json_mode")
+        ):
             return super().generate_text(prompt, **kwargs)
         scores = self._scores_by_evaluation[self.eval_calls]
         self.eval_calls += 1
@@ -2983,3 +3025,324 @@ def test_pipeline_does_not_offer_a_job_merged_into_an_already_delivered_one(
     assert merge["survivor"] == delivered_id
     assert summary.errors == 0
     assert telegram.messages == []
+
+
+# --- Objective facets (issue #125) ------------------------------------------------
+#
+# Extraction is wired in at this seam, so this is where the acceptance criteria
+# are checked: once per posting, only on jobs the non-AI filters let through,
+# invalidated by the existing description hash, and unable to change what the
+# run delivers.
+
+
+def test_pipeline_extracts_facets_for_a_job_it_evaluates(store, settings):
+    job = _job()
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    job_id, _, _ = store.upsert_job(job)
+    facets = store.get_job_facets(job_id)
+    assert gemini.facet_calls == 1
+    assert facets is not None
+    assert facets.seniority == "senior"
+    assert facets.remote_policy == "remote"
+    assert facets.hiring_regions == ["europe"]
+    assert facets.stack == ["react", "typescript"]
+    assert facets.requirements == [
+        {"requirement": "React", "depth": "experience", "kind": "must_have"}
+    ]
+
+
+def test_pipeline_extracts_a_posting_once(store, settings):
+    job = _job()
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 1
+
+
+def test_a_changed_description_triggers_re_extraction(store, settings):
+    gemini = FakeGemini()
+    run_pipeline(settings, sources=[FakeSource([_job(description="React role.")])],
+                 store=store, gemini=gemini, telegram=FakeTelegram())
+    assert gemini.facet_calls == 1
+
+    changed = _job(description="Rewritten posting: React and Node, hybrid in Berlin.")
+    run_pipeline(settings, sources=[FakeSource([changed])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 2
+
+
+def test_a_job_the_non_ai_filters_reject_is_never_extracted(store, settings):
+    # "junior" is a blocked title keyword, so the prefilter drops this before
+    # anything reaches a provider. Extraction must sit behind that gate: it is
+    # what keeps the daily workload at tens of jobs rather than hundreds.
+    rejected = _job(title="Junior Product Engineer", source_job_id="junior-1")
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([rejected])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 0
+    assert gemini.eval_calls == 0
+
+
+def test_facet_extraction_cannot_see_the_person_being_matched(store, settings):
+    # The evaluation prompt carries the extracted candidate context; the facet
+    # prompt is built from a PostingFacts, which has nowhere to put any.
+    # Proving the same sentinel reaches one prompt and not the other pins the
+    # split at the seam, not just in the extraction module's unit tests -- and
+    # it is what makes a facet reusable across users at all.
+    sentinel = "CANDIDATE_SENTINEL_7be2"
+    gemini = FakeGemini(preference_payload={
+        "preferences": {
+            "preferred_roles": ["Senior Product Engineer"],
+            "preferred_seniority": ["senior"],
+            "must_have_signals": ["React"],
+            "nice_to_have_signals": [],
+            "preferred_locations": ["Germany"],
+            "avoid_signals": [],
+            "summary": sentinel,
+        },
+        "technical_skills": [],
+        "architecture_evidence": [],
+        "leadership_ownership": [],
+        "agentic_ai_evidence": [],
+        "product_domain_evidence": [],
+        "location_language_facts": [],
+        "career_direction": [],
+        "company_environment": [],
+        "career_evidence": [],
+        "evaluation_summary": sentinel,
+    })
+
+    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.eval_prompts and sentinel in gemini.eval_prompts[0]
+    assert gemini.facet_prompts
+    for prompt in gemini.facet_prompts:
+        assert sentinel not in prompt
+
+
+def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(store, settings):
+    job = _job()
+    failing = FakeGemini(facet_payload={"seniority": "extremely senior"})
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=failing, telegram=FakeTelegram())
+
+    job_id, _, _ = store.upsert_job(job)
+    assert store.get_job_facets(job_id) is None
+    assert summary.facet_extraction_attempted == 1
+    assert summary.facet_extraction_failed == 1
+    # Nothing was written to say "this job is bad", so the next run tries again.
+    assert store.jobs_needing_facets([job_id]) == {job_id}
+
+    recovering = FakeGemini()
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=recovering,
+                 telegram=FakeTelegram())
+    assert recovering.facet_calls == 1
+    assert store.get_job_facets(job_id) is not None
+
+
+def test_extraction_failures_are_counted_apart_from_evaluation_failures(store, settings):
+    failing = FakeGemini(facet_payload={"seniority": "extremely senior"})
+
+    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
+                           gemini=failing, telegram=FakeTelegram())
+
+    assert summary.facet_extraction_failed == 1
+    assert summary.evaluation_attempted == 1
+    assert summary.evaluated == 1
+    assert summary.errors == 0
+
+
+def test_a_failed_extraction_does_not_change_what_the_run_delivers(store, settings):
+    # Facets are written and never read back into scoring, so a run that
+    # cannot extract them delivers exactly what a run that can delivers.
+    with_facets = FakeTelegram()
+    enriched = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
+                            gemini=FakeGemini(), telegram=with_facets)
+
+    without_facets = FakeTelegram()
+    unenriched = run_pipeline(
+        settings,
+        sources=[FakeSource([_job(source_job_id="job-2", company="Globex")])],
+        store=store,
+        gemini=FakeGemini(facet_payload={"seniority": "extremely senior"}),
+        telegram=without_facets,
+    )
+
+    assert unenriched.ready_to_apply == enriched.ready_to_apply == 1
+    assert len(without_facets.messages) == len(with_facets.messages)
+
+
+def test_facets_record_what_the_source_supplied_without_the_model(store, settings):
+    # An Ashby posting with a structured remote flag: the remote policy is a
+    # fact the source already gave, so the model is not asked for it.
+    gemini = FakeGemini(facet_payload={
+        key: value for key, value in FACET_PAYLOAD.items() if key != "remote_policy"
+    })
+
+    run_pipeline(settings, sources=[FakeSource([_job(source="ashby", remote=True)])],
+                 store=store, gemini=gemini, telegram=FakeTelegram())
+
+    job_id, _, _ = store.upsert_job(_job(source="ashby", remote=True))
+    facets = store.get_job_facets(job_id)
+    assert facets.remote_policy == "remote"
+    assert "remote_policy" in facets.source_supplied
+    assert "remote_policy" not in gemini.facet_prompts[0]
+
+
+def test_provider_quota_stops_facet_work_without_stopping_the_run(store, settings):
+    class QuotaOnFacets(FakeGemini):
+        def generate_text(self, prompt, *, purpose=None, **kwargs):
+            if purpose == "job_facets":
+                raise GeminiBudgetExceeded("no budget for shared work")
+            return super().generate_text(prompt, purpose=purpose, **kwargs)
+
+    gemini = QuotaOnFacets()
+    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    assert summary.facet_extraction_attempted == 0
+    assert summary.facet_extraction_failed == 0
+    assert summary.ready_to_apply == 1
+
+
+def test_facet_extraction_is_bounded_per_run(store, settings):
+    # The backfill has to drain over consecutive runs rather than in one call
+    # storm. The bound is the shortlist size the search profile already sets
+    # as how much AI work one run may do.
+    jobs = [_job(source_job_id=f"bounded-{index}", company=f"Bounded {index}")
+            for index in range(3)]
+    ids = [store.upsert_job(job)[0] for job in jobs]
+    gemini = FakeGemini()
+
+    job_hunter.pipeline._extract_facets_for_run(
+        [(job_id, None) for job_id in ids],
+        [],
+        store,
+        gemini,
+        RunSummary(),
+        limit=4,
+    )
+
+    # Half the budget is reserved for the backfill, and there is none here, so
+    # the shortlist half is what bounds this.
+    assert gemini.facet_calls == 2
+    assert sum(store.get_job_facets(job_id) is not None for job_id in ids) == 2
+
+
+def test_a_rediscovered_job_is_backfilled_without_being_re_evaluated(store, settings):
+    # An already-evaluated job never re-enters the shortlist, so this is the
+    # only path by which the existing corpus gains facets. It must not cost a
+    # second evaluation.
+    job = _job()
+    first = FakeGemini(facet_payload={"seniority": "extremely senior"})
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=first,
+                 telegram=FakeTelegram())
+    job_id, _, _ = store.upsert_job(job)
+    assert store.get_job_facets(job_id) is None
+
+    second = FakeGemini()
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=second,
+                 telegram=FakeTelegram())
+
+    assert second.eval_calls == 0
+    assert second.facet_calls == 1
+    assert store.get_job_facets(job_id) is not None
+
+
+def test_the_backfill_keeps_its_share_when_the_shortlist_is_full(store, settings):
+    # Spending the budget in priority order alone would mean a productive day
+    # leaves nothing for the corpus, and the backfill would only ever progress
+    # on quiet days -- which is not a backfill.
+    shortlist = [store.upsert_job(_job(source_job_id=f"short-{i}", company=f"Short {i}"))[0]
+                 for i in range(4)]
+    older = [store.upsert_job(_job(source_job_id=f"old-{i}", company=f"Old {i}"))[0]
+             for i in range(4)]
+    gemini = FakeGemini()
+
+    job_hunter.pipeline._extract_facets_for_run(
+        [(job_id, None) for job_id in shortlist],
+        older,
+        store,
+        gemini,
+        RunSummary(),
+        limit=4,
+    )
+
+    assert sum(store.get_job_facets(job_id) is not None for job_id in shortlist) == 2
+    assert sum(store.get_job_facets(job_id) is not None for job_id in older) == 2
+
+
+def test_an_unspent_shortlist_allowance_flows_to_the_backfill(store, settings):
+    older = [store.upsert_job(_job(source_job_id=f"drain-{i}", company=f"Drain {i}"))[0]
+             for i in range(4)]
+    gemini = FakeGemini()
+
+    job_hunter.pipeline._extract_facets_for_run(
+        [], older, store, gemini, RunSummary(), limit=4
+    )
+
+    assert sum(store.get_job_facets(job_id) is not None for job_id in older) == 4
+
+
+def test_rolling_capacity_skips_do_not_consume_the_runs_facet_budget(store, settings):
+    # A skip never reached the provider, so it costs no budget. Counting it
+    # would let sustained rolling pressure burn a whole run's allowance
+    # extracting nothing, and say so nowhere.
+    class CapacityThenAvailable(FakeGemini):
+        def __init__(self):
+            super().__init__()
+            self.refusals = 0
+
+        def generate_text(self, prompt, *, purpose=None, **kwargs):
+            if purpose == "job_facets" and self.refusals < 2:
+                self.refusals += 1
+                raise GeminiTemporaryCapacity("full", retry_after_seconds=0)
+            return super().generate_text(prompt, purpose=purpose, **kwargs)
+
+    ids = [store.upsert_job(_job(source_job_id=f"cap-{i}", company=f"Cap {i}"))[0]
+           for i in range(4)]
+    gemini = CapacityThenAvailable()
+    summary = RunSummary()
+
+    job_hunter.pipeline._extract_facets_for_run(
+        [], ids, store, gemini, summary, limit=2
+    )
+
+    assert gemini.refusals == 2
+    assert summary.facet_extraction_attempted == 2
+    assert sum(store.get_job_facets(job_id) is not None for job_id in ids) == 2
+
+
+def test_a_provider_pause_during_facets_cannot_cost_the_run_its_digest(store, settings):
+    # A 429 persists a pause against the model, not the purpose, and the
+    # evaluation loops treat GeminiQuotaPaused as blocking for the rest of the
+    # run. Facet work therefore runs after every evaluation: by the time it
+    # can trip a pause, the digest is already built.
+    class PauseOnFacets(FakeGemini):
+        def generate_text(self, prompt, *, purpose=None, **kwargs):
+            if purpose == "job_facets":
+                raise GeminiQuotaPaused(
+                    "paused", paused_until="2099-01-01T00:00:00+00:00", reason="rate_limit"
+                )
+            return super().generate_text(prompt, purpose=purpose, **kwargs)
+
+    telegram = FakeTelegram()
+    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
+                           gemini=PauseOnFacets(), telegram=telegram)
+
+    assert summary.ready_to_apply == 1
+    assert telegram.messages
+    assert summary.facet_extraction_attempted == 0
