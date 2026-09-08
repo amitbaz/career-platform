@@ -23,7 +23,6 @@ from job_hunter.models import (
     GeminiQuotaSettings,
     GeminiUsageSummary,
     Job,
-    JobFacets,
     Material,
     RunSummary,
     SearchPolicy,
@@ -34,6 +33,7 @@ from job_hunter.sources import GmailStagedSource, LearnedAtsSource
 from job_hunter.sources.company_watch import CompanyWatchSource
 from job_hunter.telegram import build_digest, build_gemini_pause_warning, select_deliverable_items
 from job_hunter.watchlist import promote_company as persist_promoted_company
+from tests.facet_fixtures import REACT_MUST_HAVE, make_facets
 from tests.market_fixtures import make_market_policy
 
 
@@ -57,6 +57,17 @@ FACET_PAYLOAD = {
         {"requirement": "React", "depth": "experience", "kind": "must_have"}
     ],
 }
+
+
+def _stored_facets(**overrides):
+    """The facets a posting already read on an earlier run carries.
+
+    The single must-have matches `FACET_PAYLOAD` and the fake's scoring
+    response: a job scored from these must get exactly one support verdict.
+    """
+    overrides.setdefault("relocation_policy", "not_offered")
+    overrides.setdefault("requirements", [REACT_MUST_HAVE])
+    return make_facets(**overrides)
 
 
 class FakeGemini:
@@ -3146,46 +3157,66 @@ def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(s
     assert store.get_job_facets(job_id) is None
     assert summary.facet_extraction_attempted == 1
     assert summary.facet_extraction_failed == 1
+    # Read once, not twice: the backfill pass must not spend a second call
+    # re-reading a posting whose read already failed this run.
+    assert failing.facet_calls == 1
+    # Scoring is fed the facets (#126), so a posting that could not be read is
+    # left unscored rather than scored against an empty requirements list.
+    assert failing.eval_calls == 0
+    assert summary.scoring_skipped_without_facets == 1
+    assert store.get_evaluation(job_id) is None
     # Nothing was written to say "this job is bad", so the next run tries again.
     assert store.jobs_needing_facets([job_id]) == {job_id}
 
     recovering = FakeGemini()
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=recovering,
-                 telegram=FakeTelegram())
+    recovered = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                             gemini=recovering, telegram=FakeTelegram())
     assert recovering.facet_calls == 1
     assert store.get_job_facets(job_id) is not None
+    # ...and the job the earlier run could not read is delivered now.
+    assert recovered.ready_to_apply == 1
 
 
-def test_extraction_failures_are_counted_apart_from_evaluation_failures(store, settings):
+def test_a_posting_that_cannot_be_read_is_not_counted_as_a_failed_evaluation(store, settings):
+    # Three different health signals, kept apart: extraction failed, no
+    # scoring call was made, and nothing was damaged. A run where the postings
+    # cannot be read delivers less, and has to say so in its own counter
+    # rather than hiding inside `errors` or looking like a scoring failure.
     failing = FakeGemini(facet_payload={"seniority": "extremely senior"})
 
     summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
                            gemini=failing, telegram=FakeTelegram())
 
     assert summary.facet_extraction_failed == 1
-    assert summary.evaluation_attempted == 1
-    assert summary.evaluated == 1
+    assert summary.scoring_skipped_without_facets == 1
+    assert summary.evaluation_attempted == 0
+    assert summary.evaluated == 0
     assert summary.errors == 0
 
 
-def test_a_failed_extraction_does_not_change_what_the_run_delivers(store, settings):
-    # Facets are written and never read back into scoring, so a run that
-    # cannot extract them delivers exactly what a run that can delivers.
-    with_facets = FakeTelegram()
-    enriched = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
-                            gemini=FakeGemini(), telegram=with_facets)
+def test_one_unreadable_posting_does_not_cost_the_rest_of_the_run(store, settings):
+    # A posting that cannot be read costs its own job a day, and nothing more:
+    # every other job in the run is scored and delivered as usual.
+    class UnreadableGlobex(FakeGemini):
+        def generate_text(self, prompt, *, purpose=None, **kwargs):
+            if purpose == "job_facets" and "Globex" in prompt:
+                return json.dumps({"seniority": "extremely senior"})
+            return super().generate_text(prompt, purpose=purpose, **kwargs)
 
-    without_facets = FakeTelegram()
-    unenriched = run_pipeline(
+    telegram = FakeTelegram()
+    summary = run_pipeline(
         settings,
-        sources=[FakeSource([_job(source_job_id="job-2", company="Globex")])],
+        sources=[FakeSource([_job(), _job(source_job_id="job-2", company="Globex")])],
         store=store,
-        gemini=FakeGemini(facet_payload={"seniority": "extremely senior"}),
-        telegram=without_facets,
+        gemini=UnreadableGlobex(),
+        telegram=telegram,
     )
 
-    assert unenriched.ready_to_apply == enriched.ready_to_apply == 1
-    assert len(without_facets.messages) == len(with_facets.messages)
+    assert summary.ready_to_apply == 1
+    assert summary.scoring_skipped_without_facets == 1
+    assert summary.errors == 0
+    assert telegram.messages
+    assert "Globex" not in str(telegram.messages)
 
 
 def test_facets_record_what_the_source_supplied_without_the_model(store, settings):
@@ -3205,20 +3236,35 @@ def test_facets_record_what_the_source_supplied_without_the_model(store, setting
     assert "remote_policy" not in gemini.facet_prompts[0]
 
 
-def test_provider_quota_stops_facet_work_without_stopping_the_run(store, settings):
-    class QuotaOnFacets(FakeGemini):
+def test_running_out_of_shared_budget_only_defers_the_unread_posting(store, settings):
+    # The shared reading budget and the scoring reserve are different budgets.
+    # Exhausting the first must not stop the run the way a paused model does:
+    # a job whose posting has already been read is still scored today, and
+    # only a job nobody has read waits for tomorrow.
+    class BudgetOnOne(FakeGemini):
         def generate_text(self, prompt, *, purpose=None, **kwargs):
-            if purpose == "job_facets":
+            if purpose == "job_facets" and "Globex" in prompt:
                 raise GeminiBudgetExceeded("no budget for shared work")
             return super().generate_text(prompt, purpose=purpose, **kwargs)
 
-    gemini = QuotaOnFacets()
-    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
+    gemini = BudgetOnOne()
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([_job(), _job(source_job_id="job-2", company="Globex")])],
+        store=store,
+        gemini=gemini,
+        telegram=FakeTelegram(),
+    )
 
-    assert summary.facet_extraction_attempted == 0
-    assert summary.facet_extraction_failed == 0
     assert summary.ready_to_apply == 1
+    # A provider refusal, counted apart from a failed read: a budget-exhausted
+    # day must not inflate the signal that says extraction is broken.
+    assert summary.scoring_deferred_by_read_budget == 1
+    assert summary.scoring_skipped_without_facets == 0
+    assert summary.facet_extraction_failed == 0
+    assert summary.errors == 0
+    # Deferred, not discarded: it is queued for the next run.
+    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
 
 
 def test_facet_extraction_is_bounded_per_run(store, settings):
@@ -3245,24 +3291,143 @@ def test_facet_extraction_is_bounded_per_run(store, settings):
     assert sum(store.get_job_facets(job_id) is not None for job_id in ids) == 2
 
 
-def test_a_rediscovered_job_is_backfilled_without_being_re_evaluated(store, settings):
-    # An already-evaluated job never re-enters the shortlist, so this is the
-    # only path by which the existing corpus gains facets. It must not cost a
-    # second evaluation.
+def test_a_rediscovered_job_is_backfilled_without_being_re_scored(store, settings):
+    # The existing corpus was scored before facets existed, so its jobs carry
+    # an evaluation and no facets. Such a job never re-enters the shortlist,
+    # which makes the backfill pass the only path by which it gains them --
+    # and it must not cost a second scoring call.
     job = _job()
-    first = FakeGemini(facet_payload={"seniority": "extremely senior"})
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=first,
-                 telegram=FakeTelegram())
     job_id, _, _ = store.upsert_job(job)
+    store.save_evaluation(job_id, _evaluation(job_id))
+    store.mark_delivered(job_id, "telegram_message")
     assert store.get_job_facets(job_id) is None
 
-    second = FakeGemini()
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=second,
+    gemini = FakeGemini()
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
                  telegram=FakeTelegram())
 
-    assert second.eval_calls == 0
-    assert second.facet_calls == 1
+    assert gemini.eval_calls == 0
+    assert gemini.facet_calls == 1
     assert store.get_job_facets(job_id) is not None
+
+
+# --- Scoring from facets (issue #126) ---------------------------------------
+#
+# The contract half of the pair #125 began. Scoring is handed the requirements
+# already read from the posting instead of the posting itself, so this is where
+# the acceptance criteria are checked: the description never reaches a scoring
+# call, a posting is read once and never re-read per user, and a job whose
+# posting could not be read is left unscored rather than scored against
+# nothing.
+
+
+def test_the_scoring_call_never_receives_the_job_description(store, settings):
+    description = "PIPELINE_DESCRIPTION_MARKER React and TypeScript, remote across Europe."
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([_job(description=description)])],
+                 store=store, gemini=gemini, telegram=FakeTelegram())
+
+    assert gemini.eval_prompts
+    for prompt in gemini.eval_prompts:
+        assert "PIPELINE_DESCRIPTION_MARKER" not in prompt
+        assert description not in prompt
+    # The posting was read once, by extraction, and that is the only prompt
+    # the description belongs in.
+    assert any("PIPELINE_DESCRIPTION_MARKER" in prompt for prompt in gemini.facet_prompts)
+
+
+def test_the_scoring_call_receives_the_extracted_requirements(store, settings):
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    prompt = gemini.eval_prompts[0]
+    assert "React" in prompt
+    assert "experience" in prompt
+    assert "candidate_support" in prompt
+
+
+def test_a_posting_is_read_once_and_scored_once(store, settings):
+    # The temporary doubling #125 accepted ends here: a job costs one read and
+    # one score on the run that first reaches it, and nothing but a score
+    # afterwards.
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([_job()])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 1
+    assert gemini.eval_calls == 1
+
+
+def test_a_posting_already_read_is_scored_without_being_read_again(store, settings):
+    # This is where the saving lands: the second user, and every later day,
+    # pays for the score alone.
+    job = _job()
+    job_id, _, _ = store.upsert_job(job)
+    store.save_job_facets(job_id, _stored_facets())
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 0
+    assert gemini.eval_calls == 1
+    assert summary.ready_to_apply == 1
+
+
+def test_a_job_scored_from_facets_still_produces_a_whole_evaluation(store, settings):
+    # A refactor of how the judgement is assembled, not of what it concludes:
+    # every component the digest and the decision ladder read is still there.
+    job = _job()
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=FakeGemini(), telegram=telegram)
+
+    job_id, _, _ = store.upsert_job(job)
+    evaluation = store.get_evaluation(job_id)
+    assert set(evaluation.scores) == {
+        "role_seniority", "technical", "product_architecture",
+        "career_direction", "location_language", "company_environment",
+    }
+    assert evaluation.total_score == 90
+    assert evaluation.decision == "high_priority"
+    assert evaluation.hard_blockers == []
+    assert evaluation.strengths == ["React expertise"]
+    assert evaluation.rationale == "Strong fit"
+    assert evaluation.salary_note and evaluation.location_note
+    # Candidate support is still decided here, per user, over the requirement
+    # extraction supplied -- which is what cannot be shared between people.
+    assert evaluation.requirements["must_have"] == [
+        {"requirement": "React", "depth": "experience", "candidate_support": "supported"}
+    ]
+    assert summary.ready_to_apply == 1
+    assert telegram.messages
+
+
+def test_a_scoring_response_missing_a_support_verdict_is_not_partially_read(store, settings):
+    # Malformed output raises inside the scoring call and is contained by the
+    # per-job guard: the job is counted as an error, and the run goes on.
+    payload = _evaluation_payload(
+        {
+            "role_seniority": 28, "technical": 22, "product_architecture": 18,
+            "career_direction": 8, "location_language": 9, "company_environment": 5,
+        },
+        "high_priority",
+    )
+    payload["requirements"]["must_have"] = []
+    gemini = FakeGemini(evaluation_payload=payload)
+
+    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    job_id, _, _ = store.upsert_job(_job())
+    assert store.get_evaluation(job_id) is None
+    assert summary.errors == 1
+    assert summary.ready_to_apply == 0
 
 
 def test_the_backfill_keeps_its_share_when_the_shortlist_is_full(store, settings):
@@ -3329,11 +3494,12 @@ def test_rolling_capacity_skips_do_not_consume_the_runs_facet_budget(store, sett
     assert sum(store.get_job_facets(job_id) is not None for job_id in ids) == 2
 
 
-def test_a_provider_pause_during_facets_cannot_cost_the_run_its_digest(store, settings):
+def test_a_provider_pause_during_the_backfill_cannot_cost_the_run_its_digest(store, settings):
     # A 429 persists a pause against the model, not the purpose, and the
-    # evaluation loops treat GeminiQuotaPaused as blocking for the rest of the
-    # run. Facet work therefore runs after every evaluation: by the time it
-    # can trip a pause, the digest is already built.
+    # scoring loops treat GeminiQuotaPaused as blocking for the rest of the
+    # run. The backfill therefore still runs after every scoring call: by the
+    # time it can trip a pause, the digest is already built. The run's own
+    # reads happen inline and are the unavoidable cost of scoring at all.
     class PauseOnFacets(FakeGemini):
         def generate_text(self, prompt, *, purpose=None, **kwargs):
             if purpose == "job_facets":
@@ -3342,37 +3508,39 @@ def test_a_provider_pause_during_facets_cannot_cost_the_run_its_digest(store, se
                 )
             return super().generate_text(prompt, purpose=purpose, **kwargs)
 
+    # Already read on an earlier run, so scoring it needs no provider read...
+    scored = _job()
+    scored_id, _, _ = store.upsert_job(scored)
+    store.save_job_facets(scored_id, _stored_facets())
+    # ...while this one is corpus the backfill would try to read.
+    rediscovered = _job(source_job_id="job-2", company="Globex")
+    rediscovered_id, _, _ = store.upsert_job(rediscovered)
+    store.save_evaluation(rediscovered_id, _evaluation(rediscovered_id))
+    store.mark_delivered(rediscovered_id, "telegram_message")
+
     telegram = FakeTelegram()
-    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
-                           gemini=PauseOnFacets(), telegram=telegram)
+    summary = run_pipeline(settings, sources=[FakeSource([scored, rediscovered])],
+                           store=store, gemini=PauseOnFacets(), telegram=telegram)
 
     assert summary.ready_to_apply == 1
     assert telegram.messages
     assert summary.facet_extraction_attempted == 0
+    assert summary.scoring_skipped_without_facets == 0
+    assert summary.scoring_deferred_by_read_budget == 0
 
 
 # --- Hard blockers decided from facets (issue #127) --------------------------------
 #
-# A job whose stored facets already disqualify it for this user is blocked
-# before any scoring call is dispatched. These tests sit at the seam because
-# that is where the saving is real: the assertion that matters in every one of
-# them is what `gemini.eval_calls` is.
+# A job whose facets already disqualify it for this user is blocked before the
+# scoring call is dispatched. These tests sit at the seam because that is where
+# the saving is real: the assertion that matters in every one of them is what
+# `gemini.eval_calls` is.
 
 
 def _seed_facets(store, job, **overrides):
-    """Give `job` stored facets, as an earlier run's extraction would have."""
+    """Give `job` the facets an earlier run's read would have stored."""
     job_id, _, _ = store.upsert_job(job)
-    defaults = dict(
-        seniority="senior",
-        remote_policy="unknown",
-        relocation_policy="unknown",
-        hiring_regions=[],
-        stack=["react"],
-        compensation=Compensation(),
-        requirements=[],
-    )
-    defaults.update(overrides)
-    store.save_job_facets(job_id, JobFacets(**defaults))
+    store.save_job_facets(job_id, _stored_facets(**overrides))
     return job_id
 
 
@@ -3422,23 +3590,25 @@ def test_a_role_requiring_relocation_blocks_without_a_scoring_call(store, settin
     assert "relocation" in store.get_evaluation(job_id).hard_blockers[0]
 
 
-def test_a_job_with_no_facets_yet_is_scored_rather_than_blocked(store, settings):
-    # Fail open: an absent fact is not evidence of a disqualifying one, and a
-    # job discovered today has no facets until this run's extraction pass.
-    job = _job()
-    gemini = FakeGemini()
+def test_a_posting_read_this_run_can_be_blocked_in_the_same_run(store, settings):
+    # Scoring reads an unread posting inline (#126), so a job first seen today
+    # is blocked on what that read found, without the scoring call that used to
+    # be the only way to find it out.
+    # Not an Ashby posting: Ashby's structured `isRemote` flag supplies
+    # `remote_policy` itself, and a supplied facet is never asked of the model.
+    job = _job(source="remotive", source_job_id="inline-1", remote=None)
+    gemini = FakeGemini(facet_payload={**FACET_PAYLOAD, "remote_policy": "onsite"})
 
     summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
                            gemini=gemini, telegram=FakeTelegram())
 
-    assert gemini.eval_calls == 1
-    assert summary.blocked_by_facets == 0
-    job_id, _, _ = store.upsert_job(job)
-    assert store.get_evaluation(job_id).decision == "high_priority"
+    assert gemini.facet_calls == 1
+    assert gemini.eval_calls == 0
+    assert summary.blocked_by_facets == 1
 
 
 def test_a_job_whose_relevant_facets_are_unknown_is_scored_rather_than_blocked(store, settings):
-    # Extraction ran and the posting simply did not say. Silence is not a "no".
+    # The posting was read and simply did not say. Silence is not a "no".
     job = _job()
     job_id = _seed_facets(store, job, remote_policy="unknown", relocation_policy="unknown")
     gemini = FakeGemini()
@@ -3448,6 +3618,23 @@ def test_a_job_whose_relevant_facets_are_unknown_is_scored_rather_than_blocked(s
 
     assert gemini.eval_calls == 1
     assert store.get_evaluation(job_id).decision == "high_priority"
+
+
+def test_facets_read_from_thin_content_do_not_block(store, settings):
+    # A `partial_unknown` posting is a search-result snippet, not a posting:
+    # `evaluate_job` already refuses a confident decision on one, and blocking
+    # is a confident decision. Reading such a posting is not gated, so the gate
+    # has to be here.
+    job = _job(source="duckduckgo", source_job_id="thin-1", content_confidence="partial_unknown")
+    job_id = _seed_facets(store, job, remote_policy="onsite")
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 1
+    assert summary.blocked_by_facets == 0
+    assert store.get_evaluation(job_id).decision != "blocked"
 
 
 def test_facets_that_disqualify_nothing_reach_scoring_unchanged(store, settings):
@@ -3503,8 +3690,8 @@ def test_the_block_is_decided_against_this_users_own_floor(store, policy, settin
 
 def test_a_facet_block_is_not_counted_as_an_evaluation(store, settings):
     # `evaluation_attempted`/`evaluated` exist to detect a run where every
-    # fresh Gemini evaluation failed. A block that makes no call is a success
-    # and must not be able to mask that.
+    # fresh scoring call failed. A block that makes no call is a success and
+    # must not be able to mask that.
     job = _job()
     _seed_facets(store, job, remote_policy="onsite")
 
@@ -3514,6 +3701,9 @@ def test_a_facet_block_is_not_counted_as_an_evaluation(store, settings):
     assert summary.blocked_by_facets == 1
     assert summary.evaluation_attempted == 0
     assert summary.evaluated == 0
+    # Nor is it one of the jobs #126 leaves unscored: it has facets, and they
+    # are what decided it.
+    assert summary.scoring_skipped_without_facets == 0
 
 
 def test_a_blocked_job_is_never_delivered(store, settings):
@@ -3534,23 +3724,6 @@ def test_a_blocked_job_is_never_delivered(store, settings):
     assert summary.ready_to_apply == 0
     assert summary.blocked_by_facets == 1
     assert not any("Globex" in message for message in second.messages)
-
-
-def test_facets_read_from_thin_content_do_not_block(store, settings):
-    # A `partial_unknown` posting is a search-result snippet, not a posting:
-    # `evaluate_job` already refuses to reach a confident decision on one, and
-    # blocking is a confident decision. Extraction runs on such postings all
-    # the same, so the gate has to be here.
-    job = _job(source="duckduckgo", source_job_id="thin-1", content_confidence="partial_unknown")
-    job_id = _seed_facets(store, job, remote_policy="onsite")
-    gemini = FakeGemini()
-
-    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           gemini=gemini, telegram=FakeTelegram())
-
-    assert gemini.eval_calls == 1
-    assert summary.blocked_by_facets == 0
-    assert store.get_evaluation(job_id).decision != "blocked"
 
 
 def test_a_block_is_counted_only_once_it_is_stored(store, settings):

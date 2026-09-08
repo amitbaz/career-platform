@@ -1,3 +1,19 @@
+"""Subjective scoring: how well one posting fits one person (issue #126).
+
+This is the per-user half of the objective-extraction / subjective-scoring
+split described in [CONTEXT.md](../../../../CONTEXT.md). It is handed the
+posting's **facets** -- the requirements it states and the depth each demands,
+its disclosed pay, where it will hire, its remote and relocation policy, its
+seniority and its stack -- already read once by `facets.py`, and it never sees
+the posting text. Judging whether *this* candidate satisfies each stated
+requirement stays here, because that answer is different for every user and
+cannot be shared.
+
+The module, the stored row and the provider purpose keep the name
+"evaluation" because the artefact they persist is still an `Evaluation`; the
+combined operation that read the posting and scored it in one call is gone.
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +22,15 @@ from typing import TYPE_CHECKING
 from job_hunter import content_confidence
 from job_hunter.market_eligibility import evaluate_market_eligibility
 from job_hunter.market_policy import market_by_id, salary_floor_for_job
-from job_hunter.models import CandidateContext, Evaluation, Job, MarketPolicy, SearchPolicy
+from job_hunter.models import (
+    CandidateContext,
+    Compensation,
+    Evaluation,
+    Job,
+    JobFacets,
+    MarketPolicy,
+    SearchPolicy,
+)
 
 if TYPE_CHECKING:
     from job_hunter.gemini import GeminiClient
@@ -26,7 +50,6 @@ HIGH_PRIORITY_THRESHOLD = 85
 # GeminiClient.generate_text's max_attempts docstring for what qualifies.
 _EVALUATION_MAX_ATTEMPTS = 2
 
-_VALID_DEPTHS = {"familiarity", "experience", "deep_expert"}
 _VALID_SUPPORT = {"supported", "partial", "unsupported", "unknown"}
 
 _TIER_PROMPT_HINTS = {
@@ -37,15 +60,22 @@ _TIER_PROMPT_HINTS = {
     content_confidence.PARTIAL_UNKNOWN: "This content is thin or unverified. Prefer 'unknown' candidate_support over guessing when the posting doesn't clearly state a requirement.",
 }
 
-_REQUIREMENT_EXTRACTION_RULES = """Before scoring, extract the posting's explicit requirements:
-- must_have: requirements the posting states or clearly implies are required.
-- preferred: requirements stated as nice-to-have, a plus, or preferred.
-For each, state its required depth (familiarity, experience, or deep_expert) and classify
-candidate_support strictly from the candidate context evidence below: supported, partial,
-unsupported, or unknown. Do not infer expertise from adjacent technology mentions alone
-(for example, React experience is not backend expertise, and API collaboration is not
-evidence of independently designing backend systems). Do not invent requirements that are
-not stated or clearly implied by the posting."""
+_REQUIREMENT_SUPPORT_RULES = """The posting's requirements have already been read from it and are listed below,
+each with the depth it demands. Do not add to them, drop any, merge them, or reword them.
+For each one, in the order given, judge candidate_support strictly from the candidate
+context evidence below: supported, partial, unsupported, or unknown. Do not infer expertise
+from adjacent technology mentions alone (for example, React experience is not backend
+expertise, and API collaboration is not evidence of independently designing backend
+systems)."""
+
+
+#: The response contract, identical on both prompt paths. The support lists
+#: are answered positionally against the requirements the posting block lists,
+#: so the ordering instruction is part of the shape rather than advice.
+_RESPONSE_SHAPE = """Return ONLY JSON with this exact shape and no markdown fences:
+{"scores": {"role_seniority": int, "technical": int, "product_architecture": int, "career_direction": int, "location_language": int, "company_environment": int}, "total_score": int, "hard_blockers": [string], "strengths": [string], "gaps": [string], "salary_note": string, "location_note": string, "decision": string, "rationale": string, "requirements": {"must_have": [{"requirement": string, "candidate_support": string}], "preferred": [{"requirement": string, "candidate_support": string}]}}
+
+requirements.must_have and requirements.preferred must each carry exactly one entry per requirement listed under "Stated must-have requirements" and "Stated preferred requirements" below, in the same order, echoing the requirement text unchanged. Never add a requirement, drop one, or reorder them."""
 
 
 class EvaluationError(ValueError):
@@ -144,8 +174,8 @@ def _market_policy_block(job: Job, market: MarketPolicy) -> str:
 
 def _market_rules_block(job: Job) -> str:
     rules = """Rules:
-- Only use evidence present in the candidate context and job description below. Never invent candidate facts.
-- Unstated or unclear requirements are gaps, not invented facts.
+- Only use evidence present in the candidate context and the posting facts below. Never invent candidate facts.
+- A fact the posting did not state arrives as "unknown", an empty list, or undisclosed pay. None of those means "no".
 - Missing salary is unknown, not a blocker.
 - Disclosed gross base max below market floor is a blocker.
 - Hybrid/onsite/relocation is not a blocker when market policy allows it.
@@ -161,8 +191,88 @@ def _market_rules_block(job: Job) -> str:
     return rules
 
 
+def _format_compensation(compensation: Compensation) -> str:
+    """Render disclosed pay, or say plainly that the posting disclosed none.
+
+    "not disclosed" is spelled out rather than left blank: an empty field
+    invites the model to read silence as zero, and a zero salary is a hard
+    blocker under every market policy.
+
+    A row claiming disclosure but carrying neither bound is read as no
+    disclosure. `facets.py` cannot produce that, but `job_facets_from_row`
+    reads the columns straight, so a row written before that rule existed can
+    -- and rendering it would put "up to None" in front of the model.
+    """
+    if not compensation.disclosed:
+        return "not disclosed"
+    if compensation.minimum is None and compensation.maximum is None:
+        return "not disclosed"
+    if compensation.minimum is not None and compensation.maximum is not None:
+        amount = f"{compensation.minimum}-{compensation.maximum}"
+    elif compensation.minimum is not None:
+        amount = f"from {compensation.minimum}"
+    else:
+        amount = f"up to {compensation.maximum}"
+    period = f" per {compensation.period}" if compensation.period else ""
+    return f"{compensation.currency} {amount}{period}".strip()
+
+
+def _stated_requirements(facets: JobFacets, kind: str) -> list[dict[str, str]]:
+    """The posting's requirements of one kind, in the order they were read.
+
+    Order is the contract between the prompt and the response: support
+    verdicts come back positionally, so the same list has to be rendered and
+    validated against.
+    """
+    return [item for item in facets.requirements if item.get("kind") == kind]
+
+
+def _render_requirements(label: str, items: list[dict[str, str]]) -> str:
+    if not items:
+        return f"Stated {label} requirements: none stated"
+    lines = [f"Stated {label} requirements, in order:"]
+    lines += [
+        f"{index}. {item['requirement']} (required depth: {item['depth']})"
+        for index, item in enumerate(items, start=1)
+    ]
+    return "\n".join(lines)
+
+
+def _posting_block(job: Job, facets: JobFacets) -> str:
+    """Everything the scoring call learns about the posting.
+
+    Deliberately not the posting text. It was read once by `facets.py` and
+    turned into these facts; re-sending it for every user, every day, for a
+    posting that has not changed is the cost this split exists to remove.
+    """
+    confidence = job.content_confidence or content_confidence.PARTIAL_UNKNOWN
+    hint = _TIER_PROMPT_HINTS.get(confidence, _TIER_PROMPT_HINTS[content_confidence.PARTIAL_UNKNOWN])
+    return "\n".join(
+        [
+            f"Job title: {job.title}",
+            f"Company: {job.company}",
+            f"Location: {job.location}",
+            f"Remote: {job.remote}",
+            f"Job content confidence: {confidence} — {hint}",
+            "",
+            "Posting facts, read from the posting itself. The posting text is not repeated here:",
+            f"- Seniority: {facets.seniority}",
+            f"- Remote policy: {facets.remote_policy}",
+            f"- Relocation policy: {facets.relocation_policy}",
+            f"- Hiring regions: {', '.join(facets.hiring_regions) or 'none stated'}",
+            f"- Stack: {', '.join(facets.stack) or 'none named'}",
+            f"- Disclosed compensation: {_format_compensation(facets.compensation)}",
+            "",
+            _render_requirements("must-have", _stated_requirements(facets, "must_have")),
+            "",
+            _render_requirements("preferred", _stated_requirements(facets, "preferred")),
+        ]
+    )
+
+
 def _build_evaluation_prompt(
     job: Job,
+    facets: JobFacets,
     context: CandidateContext,
     policy: SearchPolicy,
     market: MarketPolicy | None = None,
@@ -175,28 +285,21 @@ def _build_evaluation_prompt(
 Score EXACTLY these components, each an integer from 0 up to its stated maximum:
 {maxima_lines}
 
-{_REQUIREMENT_EXTRACTION_RULES}
+{_REQUIREMENT_SUPPORT_RULES}
 
 Rules:
-- Only use evidence present in the candidate context and job description below. Never invent candidate facts.
-- Unstated or unclear requirements are gaps, not invented facts.
+- Only use evidence present in the candidate context and the posting facts below. Never invent candidate facts.
+- A fact the posting did not state arrives as "unknown", an empty list, or undisclosed pay. None of those means "no".
 - Compensation floor is EUR {policy.salary_floor_eur}. A disclosed maximum below the floor is a hard blocker.
 - A role that is not remote, or requires relocation, is a hard blocker.
 - List every hard blocker in hard_blockers; otherwise leave it empty.
 
-Return ONLY JSON with this exact shape and no markdown fences:
-{{"scores": {{"role_seniority": int, "technical": int, "product_architecture": int, "career_direction": int, "location_language": int, "company_environment": int}}, "total_score": int, "hard_blockers": [string], "strengths": [string], "gaps": [string], "salary_note": string, "location_note": string, "decision": string, "rationale": string, "requirements": {{"must_have": [{{"requirement": string, "depth": string, "candidate_support": string}}], "preferred": [{{"requirement": string, "depth": string, "candidate_support": string}}]}}}}
+{_RESPONSE_SHAPE}
 
 Candidate context:
 {_serialize_context(context)}
 
-Job title: {job.title}
-Company: {job.company}
-Location: {job.location}
-Remote: {job.remote}
-Job content confidence: {job.content_confidence or content_confidence.PARTIAL_UNKNOWN} — {_TIER_PROMPT_HINTS.get(job.content_confidence, _TIER_PROMPT_HINTS[content_confidence.PARTIAL_UNKNOWN])}
-Job description:
-{job.description}
+{_posting_block(job, facets)}
 """
 
     return f"""You are evaluating a job posting against a candidate profile for a market-driven job search. Remote, hybrid, onsite, and relocation compatibility is governed by the specific market policy below, not by a single global remote-only rule.
@@ -204,48 +307,60 @@ Job description:
 Score EXACTLY these components, each an integer from 0 up to its stated maximum:
 {maxima_lines}
 
-{_REQUIREMENT_EXTRACTION_RULES}
+{_REQUIREMENT_SUPPORT_RULES}
 
 {_market_rules_block(job)}
 
 Market policy:
 {_market_policy_block(job, market)}
 
-Return ONLY JSON with this exact shape and no markdown fences:
-{{"scores": {{"role_seniority": int, "technical": int, "product_architecture": int, "career_direction": int, "location_language": int, "company_environment": int}}, "total_score": int, "hard_blockers": [string], "strengths": [string], "gaps": [string], "salary_note": string, "location_note": string, "decision": string, "rationale": string, "requirements": {{"must_have": [{{"requirement": string, "depth": string, "candidate_support": string}}], "preferred": [{{"requirement": string, "depth": string, "candidate_support": string}}]}}}}
+{_RESPONSE_SHAPE}
 
 Candidate context:
 {_serialize_context(context)}
 
-Job title: {job.title}
-Company: {job.company}
-Location: {job.location}
-Remote: {job.remote}
-Job content confidence: {job.content_confidence or content_confidence.PARTIAL_UNKNOWN} — {_TIER_PROMPT_HINTS.get(job.content_confidence, _TIER_PROMPT_HINTS[content_confidence.PARTIAL_UNKNOWN])}
-Job description:
-{job.description}
+{_posting_block(job, facets)}
 """
 
 
-def _validate_requirement_list(items: object, label: str) -> list[dict]:
+def _validate_support_list(
+    items: object, label: str, stated: list[dict[str, str]]
+) -> list[dict]:
+    """Pair each stated requirement with the verdict the scoring call gave it.
+
+    The requirement text and its depth are the posting's, taken from the
+    facets, and only `candidate_support` comes from the model -- so the call
+    can neither invent a requirement nor quietly restate one at a depth the
+    posting never demanded.
+
+    A response that does not carry exactly one verdict per stated requirement
+    cannot be lined up with them at all, and is rejected rather than read as
+    far as it goes: dropping the verdict the model failed to give would let an
+    unjudged must-have pass as though it had been judged.
+    """
     if not isinstance(items, list):
         raise EvaluationError(f"requirements.{label} must be a list")
+    if len(items) != len(stated):
+        raise EvaluationError(
+            f"requirements.{label} must carry exactly one candidate_support verdict per "
+            f"stated requirement ({len(stated)}), got {len(items)}"
+        )
     validated = []
-    for item in items:
+    for item, requirement in zip(items, stated):
         if not isinstance(item, dict):
             raise EvaluationError(f"each requirements.{label} entry must be an object")
-        requirement = item.get("requirement")
-        depth = item.get("depth")
         support = item.get("candidate_support")
-        if not isinstance(requirement, str) or not requirement:
-            raise EvaluationError(f"requirements.{label}.requirement must be a non-empty string")
-        if depth not in _VALID_DEPTHS:
-            raise EvaluationError(f"requirements.{label}.depth {depth!r} must be one of {sorted(_VALID_DEPTHS)}")
         if support not in _VALID_SUPPORT:
             raise EvaluationError(
                 f"requirements.{label}.candidate_support {support!r} must be one of {sorted(_VALID_SUPPORT)}"
             )
-        validated.append({"requirement": requirement, "depth": depth, "candidate_support": support})
+        validated.append(
+            {
+                "requirement": requirement["requirement"],
+                "depth": requirement["depth"],
+                "candidate_support": support,
+            }
+        )
     return validated
 
 
@@ -259,11 +374,33 @@ def _capped_score(total: int, possible_threshold: int) -> int:
     return min(total, max(0, possible_threshold - 1))
 
 
-def evaluate_job(job: Job, context: CandidateContext, policy: SearchPolicy, gemini: "GeminiClient") -> Evaluation:
+def evaluate_job(
+    job: Job,
+    facets: JobFacets | None,
+    context: CandidateContext,
+    policy: SearchPolicy,
+    gemini: "GeminiClient",
+) -> Evaluation:
+    """Score `job` for this candidate from the facets already read from it.
+
+    `facets` is required. A job whose facets are missing -- extraction has not
+    reached it yet, or failed -- must not be scored: an absent requirements
+    list is indistinguishable, inside the prompt, from a posting that demands
+    nothing, and scoring it that way inflates exactly the jobs nothing is known
+    about. The caller leaves such a job for a later run.
+
+    Raises `EvaluationError` on missing facets and on any response that cannot
+    be read as a complete result.
+    """
+    if facets is None:
+        raise EvaluationError(
+            f"cannot score job {job.url or job.title!r} without its extracted facets"
+        )
+
     market = market_by_id(policy, job.market_id) if job.market_id and policy.markets else None
 
     raw = gemini.generate_text(
-        _build_evaluation_prompt(job, context, policy, market),
+        _build_evaluation_prompt(job, facets, context, policy, market),
         purpose="job_evaluation",
         thinking_level="medium",
         max_output_tokens=5000,
@@ -304,8 +441,12 @@ def evaluate_job(job: Job, context: CandidateContext, policy: SearchPolicy, gemi
     requirements = data.get("requirements")
     if not isinstance(requirements, dict) or "must_have" not in requirements or "preferred" not in requirements:
         raise EvaluationError("requirements must be an object with 'must_have' and 'preferred' lists")
-    must_have = _validate_requirement_list(requirements["must_have"], "must_have")
-    preferred = _validate_requirement_list(requirements["preferred"], "preferred")
+    must_have = _validate_support_list(
+        requirements["must_have"], "must_have", _stated_requirements(facets, "must_have")
+    )
+    preferred = _validate_support_list(
+        requirements["preferred"], "preferred", _stated_requirements(facets, "preferred")
+    )
 
     major_unsupported_must_have = any(
         item["candidate_support"] == "unsupported" and item["depth"] != "familiarity"

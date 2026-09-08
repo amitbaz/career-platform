@@ -3,9 +3,9 @@
 Two of the hard blockers the evaluation prompt asks for are not judgement
 calls: compensation disclosed below the user's floor, and a role that is not
 remote or requires relocation contrary to the user's policy. Both are
-comparisons between a fact the posting states about itself -- already stored
-as a facet by #125, extracted once for everybody -- and a number in this
-user's own search profile.
+comparisons between a fact the posting states about itself -- read once for
+everybody as a facet (#125), and since #126 handed to the scoring call in
+place of the description -- and a number in this user's own search profile.
 
 **The asymmetry is the design.** The facts are shared; the thresholds are not.
 So the comparison happens per user, here, at the moment of scoring, and its
@@ -13,10 +13,10 @@ result is written only to that user's evaluation row. `BlockingThresholds`
 exists to make that split visible: everything per-user enters through it, and
 `hard_blockers_from_facets` cannot reach a profile any other way.
 
-**It fails open.** A facet that is missing or `unknown` sends the job to
-scoring. An absent fact is not evidence of a disqualifying one, and discarding
-jobs because extraction was incomplete would be a far worse failure than
-spending the call. The prompt keeps both rules for the same reason: this
+**It fails open.** A facet that is `unknown`, or a posting too thin to have
+been read reliably, sends the job on to scoring. An absent fact is not
+evidence of a disqualifying one, and discarding jobs because the reading was
+incomplete would be a far worse failure than spending the call. The prompt keeps both rules for the same reason: this
 module removes calls, it does not take the model's authority over what the
 facets cannot settle. See
 `docs/superpowers/specs/2026-09-08-facet-hard-blockers-design.md`.

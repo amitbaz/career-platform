@@ -39,6 +39,7 @@ from job_hunter.models import (
     DigestItem,
     GeminiUsageSummary,
     Job,
+    JobFacets,
     Material,
     NavigationCard,
     NavigationSession,
@@ -528,44 +529,64 @@ _FACET_SKIPPED = "skipped"
 _FACET_QUOTA_BLOCKED = "quota_blocked"
 
 
-def _extract_job_facets(
+def _waiting_out_capacity(call, *, doing: str, job_id: str):
+    """Run `call`, waiting out the provider's rolling window as often as needed.
+
+    Both provider calls a user is waiting on -- reading the posting and
+    scoring it -- wait rather than give up their turn: the run is producing
+    this person's digest and there is no later chance today.
+    `GeminiClient._preflight_with_pacing` has already slept out one window and
+    re-checked before raising, so each pass here is a second, deliberate wait.
+
+    The backfill pass deliberately does not use this. Nobody is waiting on it,
+    so it gives up its turn instead of holding the run open.
+    """
+    while True:
+        try:
+            return call()
+        except GeminiTemporaryCapacity as exc:
+            logger.info(
+                "Gemini temporary capacity reached; waiting %.2fs before %s for job_id=%s",
+                exc.retry_after_seconds,
+                doing,
+                job_id,
+            )
+            time.sleep(exc.retry_after_seconds)
+
+
+def _extract_and_store_facets(
     job_id: str,
     job: Job,
     store: PostgresJobStore,
     gemini: GeminiClient,
     summary: RunSummary,
-) -> str:
-    """Read and store one job's objective facets. One step of the run's pass.
+) -> JobFacets | None:
+    """Read one job's objective facets and store them, returning them.
 
-    Nothing here may end the run, and nothing here may change what the run
-    delivers: the facets are written and never read back into scoring. A
-    failure of any kind -- an unusable response, a store write that did not
-    land -- leaves the job unenriched with no marker on it, so the next run
-    that reaches the job tries again. That is deliberate: an unreadable
-    response says nothing about the posting, and recording it as a permanent
-    property of the job would be a lie that never expires.
+    Returns None when the response could not be read as facets. Nothing is
+    written in that case -- the job is left unenriched with no marker on it,
+    so the next run that reaches it tries again. That is deliberate: an
+    unreadable response says nothing about the posting, and recording it as a
+    permanent property of the job would be a lie that never expires.
+
+    A store write that does not land is counted but not fatal: the facets are
+    still returned, so the run can score with them, and the job is extracted
+    again next time because nothing was persisted.
+
+    Provider capacity and quota exceptions propagate. What to do about them
+    differs between the two callers -- a job waiting to be scored must wait
+    for capacity, while the backfill pass, which nobody is waiting on, gives
+    up its turn -- so neither answer belongs here.
     """
     try:
         facets = extract_facets(PostingFacts.from_job(job), gemini)
-    except GeminiTemporaryCapacity:
-        # `GeminiClient._preflight_with_pacing` already slept out one rolling
-        # window and re-checked, so reaching this means capacity is still
-        # full. Evaluation keeps waiting because a user is waiting on the
-        # answer; facets are shared work nobody is waiting on, so this job
-        # keeps its turn for the next run. It never reached the provider, so
-        # it is not an attempt and must not consume a slot in the run's
-        # bounded budget -- otherwise a run under sustained rolling pressure
-        # would burn its whole allowance extracting nothing.
-        logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
-        return _FACET_SKIPPED
-    except (GeminiBudgetExceeded, GeminiQuotaPaused):
-        logger.info("facet extraction deferred by provider quota for job_id=%s", job_id)
-        return _FACET_QUOTA_BLOCKED
+    except (GeminiTemporaryCapacity, GeminiBudgetExceeded, GeminiQuotaPaused):
+        raise
     except Exception:
         logger.exception("facet extraction failed for job_id=%s", job_id)
         summary.facet_extraction_attempted += 1
         summary.facet_extraction_failed += 1
-        return _FACET_EXTRACTED
+        return None
 
     summary.facet_extraction_attempted += 1
     try:
@@ -573,6 +594,87 @@ def _extract_job_facets(
     except Exception:
         logger.exception("storing facets failed for job_id=%s", job_id)
         summary.facet_extraction_failed += 1
+    return facets
+
+
+def _facets_for_scoring(
+    job_id: str,
+    job: Job,
+    store: PostgresJobStore,
+    gemini: GeminiClient,
+    summary: RunSummary,
+    needs_facets: set[str],
+) -> JobFacets | None:
+    """The facets a scoring call must be given, reading the posting if needed.
+
+    Scoring no longer receives the job description (#126), so a job cannot be
+    scored until its posting has been read once. `needs_facets` is the run's
+    single `jobs_needing_facets` answer, so the ordinary case -- a posting
+    already read on an earlier run -- costs one store read and no provider
+    call, and the same posting is never read twice in a run.
+
+    Returns None when the posting could not be read this run. The caller must
+    leave the job unscored rather than score it against nothing.
+
+    `needs_facets` is narrowed as the run reads, so it ends the scoring loops
+    holding exactly the postings the run has *not* spent a read on. The
+    backfill pass is given those and no others: a posting whose read failed
+    here must not be read a second time in the same run, which would spend two
+    calls to learn the same nothing.
+    """
+    if job_id not in needs_facets:
+        try:
+            facets = store.get_job_facets(job_id)
+        except Exception:
+            logger.exception("could not read stored facets for job_id=%s", job_id)
+            return None
+        if facets is not None:
+            return facets
+        # The bulk check said this job had current facets and the row is not
+        # there now. Read the posting again rather than score it blind.
+        logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
+
+    facets = _waiting_out_capacity(
+        lambda: _extract_and_store_facets(job_id, job, store, gemini, summary),
+        doing="reading the posting",
+        job_id=job_id,
+    )
+    # A turn is spent once the provider has actually answered -- including an
+    # answer that could not be read, which cost a call. A refusal that never
+    # reached the provider raises out of here instead, leaving the job in the
+    # set, because it has not had its turn.
+    needs_facets.discard(job_id)
+    return facets
+
+
+def _backfill_one_job_facets(
+    job_id: str,
+    job: Job,
+    store: PostgresJobStore,
+    gemini: GeminiClient,
+    summary: RunSummary,
+) -> str:
+    """One step of the run's backfill pass over jobs nothing is waiting on.
+
+    Nothing here may end the run, and nothing here may change what the run
+    delivers: this pass runs after every scoring call the run makes, over the
+    jobs those calls did not need.
+    """
+    try:
+        _extract_and_store_facets(job_id, job, store, gemini, summary)
+    except GeminiTemporaryCapacity:
+        # `GeminiClient._preflight_with_pacing` already slept out one rolling
+        # window and re-checked, so reaching this means capacity is still
+        # full. Scoring keeps waiting because a user is waiting on the
+        # answer; this job keeps its turn for the next run. It never reached
+        # the provider, so it is not an attempt and must not consume a slot in
+        # the run's bounded budget -- otherwise a run under sustained rolling
+        # pressure would burn its whole allowance extracting nothing.
+        logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
+        return _FACET_SKIPPED
+    except (GeminiBudgetExceeded, GeminiQuotaPaused):
+        logger.info("facet extraction deferred by provider quota for job_id=%s", job_id)
+        return _FACET_QUOTA_BLOCKED
     return _FACET_EXTRACTED
 
 
@@ -585,23 +687,30 @@ def _extract_facets_for_run(
     *,
     limit: int,
 ) -> None:
-    """Give this run's jobs their objective facets, and backfill the rest.
+    """Read the postings this run's scoring did not need, and backfill the rest.
 
-    `run_candidates` are the jobs this run put through evaluation; `backfill_ids`
-    are jobs it rediscovered, which were evaluated on an earlier run and so
-    never re-enter the shortlist. Both survived the non-AI filters. Ids may
-    repeat within or across the two; the first occurrence wins.
+    `run_candidates` are the jobs this run selected but did not read -- the
+    shortlist tail the offer cap never reached, and the retry queue it never
+    got to. A job it *did* score was read inline first, so it is not here.
+    `backfill_ids` are jobs it rediscovered, which were scored on an earlier
+    run and so never re-enter the shortlist. Both survived the non-AI filters.
+    Ids may repeat within or across the two; the first occurrence wins.
 
     Only jobs with no current facets are extracted, so the ordinary steady
     state -- everything already read, nothing rewritten -- costs one pair of
     store reads and no provider call at all.
 
-    `limit` is the shortlist size the user's search profile already sets as
-    "how much AI work one run may do". Reusing it rather than adding a knob
-    keeps the work bounded without asking an operator to size it. Half of it
-    is **reserved for the backfill**: spending the budget in priority order
-    alone would mean a day that discovers a full shortlist leaves nothing for
-    the corpus, and the backfill would only ever progress on quiet days --
+    `limit` is what is left of `max_jobs_per_run` -- the shortlist size the
+    user's search profile already sets as "how much AI work one run may do" --
+    once the run's inline reads have been subtracted. It bounds this pass, not
+    the run: an inline read is the unavoidable cost of scoring a job and is
+    never refused for want of budget, so a run that scores a full shortlist of
+    unread postings simply leaves this pass nothing. Reusing that figure rather
+    than adding a knob keeps the backfill bounded without asking an operator to
+    size it. Half of what remains is **reserved for the backfill**: spending
+    the budget in priority order alone would mean a day that discovers a full
+    shortlist leaves nothing for the corpus, and the backfill would only ever
+    progress on quiet days --
     which is not a backfill. The reserve is what makes the existing corpus
     drain over consecutive runs whether or not discovery is productive.
 
@@ -648,7 +757,7 @@ def _extract_facets_for_run(
                     continue
             if job is None:
                 continue
-            outcome = _extract_job_facets(job_id, job, store, gemini, summary)
+            outcome = _backfill_one_job_facets(job_id, job, store, gemini, summary)
             if outcome == _FACET_QUOTA_BLOCKED:
                 quota_blocked = True
             elif outcome == _FACET_SKIPPED:
@@ -688,7 +797,7 @@ def _evaluate_and_deliver_job(
     digest_items: list[DigestItem],
     summary: RunSummary,
     queued_job_ids: set[str],
-    facet_ready_ids: set[str],
+    needs_facets: set[str],
 ) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest, containing its failures.
 
@@ -712,7 +821,7 @@ def _evaluate_and_deliver_job(
             digest_items,
             summary,
             queued_job_ids,
-            facet_ready_ids,
+            needs_facets,
         )
     except Exception:
         logger.exception(
@@ -726,41 +835,24 @@ def _evaluate_and_deliver_job(
 
 
 def _facet_decided_blockers(
-    job_id: str,
-    job: Job,
-    settings: Settings,
-    store: PostgresJobStore,
-    facet_ready_ids: set[str],
+    job: Job, facets: JobFacets, settings: Settings
 ) -> list[str]:
-    """Return the hard blockers this job's stored facets establish, if any.
+    """Return the hard blockers this job's facets establish, if any (#127).
 
-    Empty means "score it": the facets are missing, stale, or simply do not
-    settle the question. Every step here fails open on purpose (#127) --
-    including a store read that raises, because failing to read a fact is not
-    evidence of a disqualifying one, and dropping a job over it would be a far
-    worse failure than spending the call.
+    `facets` are the ones scoring is about to be given, so blocking reads
+    exactly what the model would have read -- there is no second, staler view
+    of the posting to disagree with it, and no extra store read.
 
-    `facet_ready_ids` is the run's answer to "whose facets describe the job as
-    it stands now", taken once from `store.jobs_needing_facets` so the
-    description-hash invalidation that gates re-extraction is the same
-    mechanism that gates blocking, rather than a second notion of a changed
-    posting.
+    Empty means "score it". Every step fails open on purpose: an absent fact
+    is not evidence of a disqualifying one, and dropping a job over one would
+    be a far worse failure than spending the call.
     """
-    if job_id not in facet_ready_ids:
-        return []
     if not content_confidence.is_sufficient(job.content_confidence):
-        # Thin or unverified content is the one case where a facet may be
-        # reading a search-result snippet rather than the posting.
+        # Thin or unverified content is the one case where a facet may have
+        # been read from a search-result snippet rather than the posting.
         # `evaluate_job` already refuses a confident decision on such a job,
         # and a block is a confident decision -- so it goes to the model,
-        # which sees the same thin text and can weigh it in context.
-        return []
-    try:
-        facets = store.get_job_facets(job_id)
-    except Exception:
-        logger.exception("could not read facets for job_id=%s", job_id)
-        return []
-    if facets is None:
+        # which sees the same thin material and can weigh it in context.
         return []
 
     market = (
@@ -783,7 +875,7 @@ def _evaluate_and_deliver_one_job(
     digest_items: list[DigestItem],
     summary: RunSummary,
     queued_job_ids: set[str],
-    facet_ready_ids: set[str],
+    needs_facets: set[str],
 ) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest.
 
@@ -800,11 +892,47 @@ def _evaluate_and_deliver_one_job(
         store.complete_ai_work("job_evaluation", job_id)
         return False, False, None, False, False
 
-    # A job the facts already disqualify for this user costs nothing to
-    # establish (#127): the comparison is between the posting's shared facets
-    # and this profile's own numbers, and everything below handles the
+    # Scoring is handed the posting's facets, not its description (#126), so
+    # a posting nobody has read yet is read here, once, before it is scored.
+    try:
+        facets = _facets_for_scoring(job_id, job, store, gemini, summary, needs_facets)
+    except GeminiQuotaPaused:
+        # The model is paused, so the scoring call would not have gone through
+        # either. Queue the job exactly as a paused scoring call does.
+        logger.warning(
+            "reading the posting for job_id=%s was paused by Gemini quota", job_id
+        )
+        store.enqueue_ai_work("job_evaluation", job_id)
+        return False, True, None, False, False
+    except GeminiBudgetExceeded:
+        # The *non-core* daily budget is out, not evaluation's reserve: a job
+        # whose posting was already read still scores this run, so this must
+        # not block the run the way a paused model does. Only a posting nobody
+        # has read yet has to wait for tomorrow.
+        logger.warning(
+            "no shared budget left to read the posting for job_id=%s; not scored this run",
+            job_id,
+        )
+        summary.scoring_deferred_by_read_budget += 1
+        store.enqueue_ai_work("job_evaluation", job_id)
+        return False, False, None, False, False
+
+    if facets is None:
+        # Scoring against an empty requirements list would read "this posting
+        # demands nothing" instead of "nobody has read this posting", which
+        # inflates the score of exactly the jobs least is known about. The job
+        # keeps its place in the ranking and is scored on a later run.
+        logger.warning(
+            "job_id=%s has no readable facets; not scored this run", job_id
+        )
+        summary.scoring_skipped_without_facets += 1
+        return False, False, None, False, False
+
+    # A job those same facts already disqualify for this user costs nothing
+    # more to establish (#127): the comparison is between the posting's shared
+    # facets and this profile's own numbers, and everything below handles the
     # resulting evaluation exactly as it handles the model's.
-    facet_blockers = _facet_decided_blockers(job_id, job, settings, store, facet_ready_ids)
+    facet_blockers = _facet_decided_blockers(job, facets, settings)
     scored = not facet_blockers
     if facet_blockers:
         evaluation = blocked_evaluation(job, facet_blockers)
@@ -814,34 +942,30 @@ def _evaluate_and_deliver_one_job(
             "; ".join(facet_blockers),
         )
     else:
-        while True:
-            try:
-                evaluation = evaluate_job(
+        try:
+            evaluation = _waiting_out_capacity(
+                lambda: evaluate_job(
                     job,
+                    facets,
                     candidate_context,
                     settings.policy,
                     gemini,
-                )
-                break
-            except GeminiTemporaryCapacity as exc:
-                logger.info(
-                    "Gemini temporary capacity reached; waiting %.2fs before retrying job_id=%s",
-                    exc.retry_after_seconds,
-                    job_id,
-                )
-                time.sleep(exc.retry_after_seconds)
-            except (GeminiBudgetExceeded, GeminiQuotaPaused):
-                logger.warning(
-                    "job evaluation deferred by Gemini quota for job_id=%s",
-                    job_id,
-                )
-                store.enqueue_ai_work("job_evaluation", job_id)
-                return False, True, None, False, False
-            except Exception:
-                logger.exception("evaluation failed for job_id=%s", job_id)
-                summary.evaluation_attempted += 1
-                summary.errors += 1
-                return False, False, None, False, False
+                ),
+                doing="scoring",
+                job_id=job_id,
+            )
+        except (GeminiBudgetExceeded, GeminiQuotaPaused):
+            logger.warning(
+                "job evaluation deferred by Gemini quota for job_id=%s",
+                job_id,
+            )
+            store.enqueue_ai_work("job_evaluation", job_id)
+            return False, True, None, False, False
+        except Exception:
+            logger.exception("evaluation failed for job_id=%s", job_id)
+            summary.evaluation_attempted += 1
+            summary.errors += 1
+            return False, False, None, False, False
 
         summary.evaluation_attempted += 1
 
@@ -1115,6 +1239,19 @@ def run_pipeline(
     pending_evaluation_ids = [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
     pending_evaluation_id_set = set(pending_evaluation_ids)
 
+    # Which of the jobs this run may score have not been read yet, asked once
+    # for the whole run rather than per job. Scoring needs a posting's facets
+    # (#126), and this is the one mechanism that decides whether a stored set
+    # is still current -- the same description hash that gates re-evaluation.
+    scoring_candidate_ids = pending_evaluation_ids + [job_id for job_id, _job, _score in selected]
+    try:
+        needs_facets = store.jobs_needing_facets(scoring_candidate_ids)
+    except Exception:
+        # Reading the posting again costs a provider call; not scoring at all
+        # costs the user their digest. Assume nothing has been read.
+        logger.exception("could not determine which postings still need reading")
+        needs_facets = set(scoring_candidate_ids)
+
     queued_job_ids = (
         {job_id for job_id, _job, _score in selected}
         | pending_evaluation_id_set
@@ -1127,24 +1264,6 @@ def run_pipeline(
             digest_items,
             settings.policy.match_score_floor,
         )
-
-    # Whose stored facets describe the job as it stands, asked once for the
-    # whole run rather than per job (#127). `jobs_needing_facets` answers the
-    # negative of it, and reusing it keeps one notion of a changed posting:
-    # a job whose description moved since extraction is not blocked on the
-    # facts read from the old text, it is scored.
-    evaluation_candidate_ids = pending_evaluation_ids + [
-        job_id for job_id, _job, _score in selected
-    ]
-    try:
-        facet_ready_ids = set(evaluation_candidate_ids) - store.jobs_needing_facets(
-            evaluation_candidate_ids
-        )
-    except Exception:
-        # Failing to work out which jobs have current facets must never cost a
-        # job its scoring call: every candidate falls through to the model.
-        logger.exception("could not determine which jobs have current facets")
-        facet_ready_ids = set()
 
     quota_blocked = candidate_context is None
     if quota_blocked and pending_evaluation_ids:
@@ -1175,7 +1294,7 @@ def run_pipeline(
             digest_items,
             summary,
             queued_job_ids,
-            facet_ready_ids,
+            needs_facets,
         )
         if decision is not None and scored:
             summary.evaluated += 1
@@ -1224,7 +1343,7 @@ def run_pipeline(
             digest_items,
             summary,
             queued_job_ids,
-            facet_ready_ids,
+            needs_facets,
         )
         if decision is not None and scored:
             summary.evaluated += 1
@@ -1238,34 +1357,39 @@ def run_pipeline(
             companies_promoted += 1
         quota_blocked = quota_blocked or blocked
 
-    # Objective facets (#125), deliberately *after* every evaluation.
+    # The backfill half of objective extraction, over the postings this run's
+    # scoring did not need. A job that was scored has already been read, so
+    # `jobs_needing_facets` inside this pass skips it; what is left is the
+    # shortlist tail the offer cap never reached, and the jobs discovery
+    # rediscovered.
     #
-    # Every job below survived the non-AI filters -- this run's shortlist and
-    # retry queue did so this run, a rediscovered job did so on the run that
-    # first evaluated it -- so this pass never spends a provider call on a
-    # posting the prefilter or the profession gate rejected. Rediscovered jobs
-    # are how the existing corpus acquires facets at all: an already-evaluated
-    # job never re-enters the shortlist, so leaving them out would mean only
-    # jobs first seen today ever gained facets, and a failed extraction would
-    # never be retried.
+    # Rediscovered jobs are how the existing corpus acquires facets at all: an
+    # already-evaluated job never re-enters the shortlist, so leaving them out
+    # would mean only jobs first seen today ever gained facets, and a failed
+    # extraction would never be retried. Every job here survived the non-AI
+    # filters -- this run's shortlist did so this run, a rediscovered job did
+    # so on the run that first evaluated it -- so this pass never spends a
+    # provider call on a posting the prefilter or the profession gate rejected.
     #
-    # The ordering is what keeps this work unable to cost the user a digest.
-    # A provider 429 persists a pause against the *model*, not the purpose
-    # (`GeminiUsageTracker.record_429`), and the evaluation loops treat
-    # `GeminiQuotaPaused` as blocking for the rest of the run -- so a 429
-    # tripped by a facet call made first would defer every evaluation behind
-    # it and deliver nothing. Running last, facet work can only ever spend
-    # what the run's own offers did not need. The internal core reserve
-    # protects evaluation from the *budget*; this ordering protects it from
-    # the provider.
+    # It runs *after* every scoring call, and that ordering is still what keeps
+    # it unable to cost the user a digest. A provider 429 persists a pause
+    # against the *model*, not the purpose (`GeminiUsageTracker.record_429`),
+    # and the scoring loops treat `GeminiQuotaPaused` as blocking for the rest
+    # of the run -- so a 429 tripped by a backfill call made first would defer
+    # every score behind it and deliver nothing. The run's own reads happen
+    # inline, only for jobs it is about to score, and are the unavoidable
+    # cost of scoring them at all.
+    #
+    # The run's whole facet budget is `max_jobs_per_run`, and the inline reads
+    # have already spent part of it, so the backfill gets what is left.
     _extract_facets_for_run(
-        [(job_id, None) for job_id in pending_evaluation_ids]
-        + [(job_id, job) for job_id, job, _score in selected],
+        [(job_id, None) for job_id in pending_evaluation_ids if job_id in needs_facets]
+        + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
         discovery.rediscovered_job_ids,
         store,
         gemini,
         summary,
-        limit=settings.policy.max_jobs_per_run,
+        limit=max(0, settings.policy.max_jobs_per_run - summary.facet_extraction_attempted),
     )
 
     logger.info(
@@ -1273,7 +1397,8 @@ def run_pipeline(
         "deferred_by_budget=%s "
         "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
         "deferred_by_offer_cap=%s match_score_floor=%s "
-        "withheld_by_score_floor=%s",
+        "withheld_by_score_floor=%s skipped_without_facets=%s "
+        "deferred_by_read_budget=%s",
         len(selected),
         summary.evaluated,
         summary.blocked_by_facets,
@@ -1284,6 +1409,8 @@ def run_pipeline(
         cap_deferred_count,
         settings.policy.match_score_floor,
         summary.withheld_by_score_floor,
+        summary.scoring_skipped_without_facets,
+        summary.scoring_deferred_by_read_budget,
     )
 
     for job_id in (

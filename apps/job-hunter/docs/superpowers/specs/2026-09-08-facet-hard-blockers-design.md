@@ -24,6 +24,10 @@ is therefore per-user, made freshly at the scoring seam, and its result is writt
 to that user's `job_hunter_evaluations` row. Nothing about the decision is stored on the
 job, so nothing about it can leak to another user.
 
+Since #126 landed, scoring is itself handed the posting's facets, and the seam reads that
+same object. There is no second, staler view of the posting to disagree with the one the
+model would have been given, and no extra store read.
+
 `hard_blockers.py` holds the comparison and nothing else:
 
 - `BlockingThresholds.for_job(job, policy, market)` collects the per-user numbers — the
@@ -35,8 +39,9 @@ job, so nothing about it can leak to another user.
 - `blocked_evaluation(job, blockers)` builds the `Evaluation` record: `decision="blocked"`,
   the reasons in `hard_blockers`, every score zero, and `model=""` — no model produced it.
 
-The pipeline reads the job's stored facets immediately before it would call Gemini. When
-they yield blockers, the deterministic `Evaluation` takes the place of the model's, and
+The pipeline runs it on the facets `_facets_for_scoring` just returned — read on an earlier
+run, or read inline this one — immediately before it would score. When they yield blockers,
+the deterministic `Evaluation` takes the place of the model's, and
 **everything downstream is unchanged**: the same merge-following write, the same company
 promotion, the same score floor, the same digest handling, the same decision counters.
 That is what makes "the same outcome, recorded the same way" true by construction rather
@@ -44,13 +49,14 @@ than by a parallel implementation that has to be kept in step.
 
 ## Failing open
 
-A missing or unknown facet must never block. Concretely, the job goes to scoring when:
+A missing or unknown facet must never block. A job whose posting could not be read has no
+facets at all, and #126 already leaves it unscored rather than scoring it against nothing;
+this seam is never reached for it. Of the jobs that do reach it, the job goes on to scoring
+when:
 
-- it has no facet row yet (never extracted, or extraction failed);
-- reading the facets raises;
 - the posting's content confidence is `partial_unknown` — a snippet, not a posting.
   `evaluate_job` already withholds a confident decision on such content, and a block is a
-  confident decision; extraction itself applies no such gate, so it has to be applied here;
+  confident decision; reading a posting applies no such gate, so it has to be applied here;
 - `remote_policy` or `relocation_policy` is `unknown`;
 - compensation is undisclosed, or discloses no maximum;
 - the disclosed currency is not the floor's currency, or the period is not annual.
