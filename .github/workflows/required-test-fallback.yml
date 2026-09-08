@@ -1,0 +1,36 @@
+# `test` is a required status check on main, but the two workflows that define a
+# job called `test` (job-hunter-ci.yml, relay-ci.yml) are both path-filtered. A
+# pull request touching none of those paths — a docs, tooling or config change —
+# therefore produces no `test` run at all, and GitHub blocks the merge waiting
+# for a check that can never report.
+#
+# This workflow closes that gap: it runs precisely when neither CI workflow does,
+# and reports the same `test` context so the rule is satisfied.
+#
+# Keep `paths-ignore` below in sync with the union of the `pull_request.paths`
+# filters in job-hunter-ci.yml and relay-ci.yml. A path listed here that is not
+# listed there means some PRs get no `test` check and block; a path listed there
+# that is missing here only means both a real and a no-op `test` run for that PR,
+# which is harmless — the real one still has to pass.
+name: Required test fallback
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'apps/job-hunter/**'
+      - 'apps/relay/**'
+      - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - '.github/workflows/job-hunter-ci.yml'
+      - '.github/workflows/relay-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report that no test suite covers these paths
+        run: |
+          echo "No path in this pull request is covered by Job Hunter CI or Relay CI."
+          echo "Reporting the required 'test' check as passed so the merge is not blocked."
