@@ -352,18 +352,25 @@ class GeminiUsageSummary:
 
 @dataclass(slots=True)
 class Settings:
-    gemini_api_key: str
-    candidate_profile: str
-    cover_letter_template: str
+    gemini_api_key: str = field(repr=False)
+    candidate_profile: str = field(repr=False)
+    cover_letter_template: str = field(repr=False)
     timezone: str
     scheduled_hour: int
     policy: SearchPolicy
     gemini_quota: GeminiQuotaSettings
+    brave_search_api_key: str | None = field(default=None, repr=False)
     dry_run: bool = False
-    telegram_bot_token: str | None = None
-    telegram_chat_id: str | None = None
+    telegram_bot_token: str | None = field(default=None, repr=False)
+    telegram_chat_id: str | None = field(default=None, repr=False)
     gemini_model: str = "gemini-3.6-flash"
     output_dir: str = "var"
+
+
+@dataclass(slots=True, frozen=True)
+class ProviderCredentials:
+    gemini_api_key: str | None = field(default=None, repr=False)
+    brave_search_api_key: str | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)

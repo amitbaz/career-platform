@@ -32,7 +32,8 @@ def test_token_carries_the_expected_claims():
 
     assert claims["sub"] == USER_A
     assert claims["role"] == "authenticated"
-    assert set(claims) == {"sub", "role", "exp"}
+    assert claims["job_hunter_runner"] is True
+    assert set(claims) == {"sub", "role", "job_hunter_runner", "exp"}
 
 
 def test_token_header_names_the_key():

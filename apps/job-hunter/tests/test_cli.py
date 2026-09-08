@@ -1,7 +1,14 @@
 from pathlib import Path
 
+from job_hunter.config import load_gmail_settings as load_database_gmail_settings
 from job_hunter.gmail_models import GmailSettings, GmailSyncSummary
-from job_hunter.models import GeminiQuotaSettings, RunSummary, SearchPolicy, Settings
+from job_hunter.models import (
+    GeminiQuotaSettings,
+    ProviderCredentials,
+    RunSummary,
+    SearchPolicy,
+    Settings,
+)
 from job_hunter.postgres_store import DryRunStore
 from job_hunter import cli
 
@@ -95,6 +102,27 @@ def test_run_manual_always_proceeds_without_time_guard(monkeypatch, tmp_path):
 
     assert exit_code == 0
     assert called == [settings]
+
+
+def test_run_loads_settings_from_the_constructed_store(monkeypatch, tmp_path):
+    settings = _settings(tmp_path)
+    captured = {}
+
+    class Store:
+        def __init__(self, client):
+            captured["store"] = self
+
+    def load_from_store(store):
+        captured["settings_store"] = store
+        return settings
+
+    monkeypatch.setattr(cli, "PostgresJobStore", Store)
+    monkeypatch.setattr(cli, "load_settings", load_from_store)
+    monkeypatch.setattr(cli, "run_pipeline", lambda *args, **kwargs: RunSummary())
+    _patch_build_client(monkeypatch)
+
+    assert cli.main(["run"]) == 0
+    assert captured["settings_store"] is captured["store"]
 
 
 def test_run_creates_output_parent_directory(monkeypatch, tmp_path):
@@ -215,7 +243,9 @@ def _patch_gmail_sync_dependencies(monkeypatch, run):
         def sync(self, now, *, dry_run, force_backfill):
             return run(now=now, dry_run=dry_run, force_backfill=force_backfill)
 
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: _gmail_settings(), raising=False)
+    monkeypatch.setattr(
+        cli, "load_gmail_settings", lambda store: _gmail_settings(), raising=False
+    )
     monkeypatch.setattr(cli, "HttpClient", object, raising=False)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda settings: object(), raising=False)
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object(), raising=False)
@@ -233,6 +263,73 @@ def test_sync_gmail_does_not_load_candidate_profile_settings(monkeypatch, tmp_pa
     _patch_gmail_sync_dependencies(monkeypatch, lambda **kwargs: GmailSyncSummary())
 
     assert cli.main(["sync-gmail"]) == 0
+
+
+def test_sync_gmail_builds_the_store_before_loading_gmail_settings(monkeypatch):
+    events = []
+    captured = {}
+    _patch_gmail_sync_dependencies(monkeypatch, lambda **kwargs: GmailSyncSummary())
+
+    class Http:
+        def __init__(self):
+            events.append("http")
+
+    class Store:
+        def __init__(self, client):
+            events.append("store")
+            captured["store"] = self
+
+    def build_client(http):
+        events.append("client")
+        return _FakeSupabaseClient()
+
+    def load_from_store(store):
+        events.append("load")
+        captured["settings_store"] = store
+        return _gmail_settings()
+
+    monkeypatch.setattr(cli, "HttpClient", Http)
+    monkeypatch.setattr(cli, "_build_client", build_client)
+    monkeypatch.setattr(cli, "PostgresJobStore", Store)
+    monkeypatch.setattr(cli, "load_gmail_settings", load_from_store)
+
+    assert cli.main(["sync-gmail"]) == 0
+    assert events[:4] == ["http", "client", "store", "load"]
+    assert captured["settings_store"] is captured["store"]
+
+
+def test_sync_gmail_uses_provider_credentials_without_loading_candidate_documents(
+    monkeypatch,
+):
+    captured = {}
+    _patch_gmail_sync_dependencies(monkeypatch, lambda **kwargs: GmailSyncSummary())
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
+    monkeypatch.setenv("GEMINI_FREE_RPM", "10")
+    monkeypatch.setenv("GEMINI_FREE_TPM", "250000")
+    monkeypatch.setenv("GEMINI_FREE_RPD", "500")
+
+    class Store:
+        def __init__(self, client):
+            pass
+
+        def get_provider_credentials(self):
+            return ProviderCredentials(gemini_api_key="stored-gemini")
+
+        def get_source_documents(self):
+            raise AssertionError("Gmail sync must not load candidate documents")
+
+    class Gemini:
+        def __init__(self, api_key, model, http, tracker=None):
+            captured["api_key"] = api_key
+
+    monkeypatch.setattr(cli, "PostgresJobStore", Store)
+    monkeypatch.setattr(cli, "load_gmail_settings", load_database_gmail_settings)
+    monkeypatch.setattr(cli, "GeminiClient", Gemini)
+
+    assert cli.main(["sync-gmail"]) == 0
+    assert captured["api_key"] == "stored-gemini"
 
 
 def test_sync_gmail_returns_nonzero_on_fatal_auth_error(monkeypatch, tmp_path):
@@ -277,7 +374,7 @@ def test_sync_gmail_dry_run_wraps_the_store_in_a_dry_run_store(monkeypatch, tmp_
         def __init__(self, store, quota, model, *, run_id=None):
             captured["tracker_store"] = store
 
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
+    monkeypatch.setattr(cli, "load_gmail_settings", lambda store: settings)
     monkeypatch.setattr(cli, "HttpClient", object)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
@@ -345,7 +442,7 @@ def test_sync_gmail_constructs_one_tracked_gemini_client_sharing_run_id(monkeypa
         def sync(self, now, *, dry_run, force_backfill):
             return GmailSyncSummary()
 
-    monkeypatch.setattr(cli, "load_gmail_settings", lambda: settings)
+    monkeypatch.setattr(cli, "load_gmail_settings", lambda store: settings)
     monkeypatch.setattr(cli, "HttpClient", object)
     monkeypatch.setattr(cli, "GoogleOAuthTokenProvider", lambda value: object())
     monkeypatch.setattr(cli, "GmailClient", lambda http, token_provider: object())
@@ -391,6 +488,31 @@ def test_generate_cover_letter_delegates_with_job_id(monkeypatch, tmp_path):
 
     assert exit_code == 0
     assert calls == [(settings, "42")]
+
+
+def test_generate_cover_letter_loads_settings_from_the_constructed_store(
+    monkeypatch, tmp_path
+):
+    settings = _settings(tmp_path)
+    captured = {}
+
+    class Store:
+        def __init__(self, client):
+            captured["store"] = self
+
+    def load_from_store(store):
+        captured["settings_store"] = store
+        return settings
+
+    monkeypatch.setattr(cli, "PostgresJobStore", Store)
+    monkeypatch.setattr(cli, "load_settings", load_from_store)
+    monkeypatch.setattr(
+        cli, "generate_cover_letter_on_demand", lambda *args, **kwargs: True
+    )
+    _patch_build_client(monkeypatch)
+
+    assert cli.main(["generate-cover-letter", "--job-id", "42"]) == 0
+    assert captured["settings_store"] is captured["store"]
 
 
 def test_generate_cover_letter_returns_nonzero_when_not_delivered(monkeypatch, tmp_path):

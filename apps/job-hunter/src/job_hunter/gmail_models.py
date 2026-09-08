@@ -26,10 +26,18 @@ LEGACY_SEMANTIC_FAILURE_RATIONALE = "semantic classification unavailable or inva
 
 @dataclass(frozen=True, slots=True)
 class GmailSettings:
+    """Gmail sync configuration.
+
+    The OAuth secrets and the user's Gemini key are kept out of ``repr()`` (via
+    ``field(repr=False)``), so a stray ``logger.info(settings)`` cannot print
+    them. The Gemini key is the per-user value read from the credential store,
+    not a repository secret.
+    """
+
     client_id: str
-    client_secret: str
-    refresh_token: str
-    gemini_api_key: str
+    client_secret: str = field(repr=False)
+    refresh_token: str = field(repr=False)
+    gemini_api_key: str = field(repr=False)
     gemini_quota: GeminiQuotaSettings
     gemini_model: str = "gemini-3.6-flash"
 

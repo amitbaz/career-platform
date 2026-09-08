@@ -1,9 +1,8 @@
-import base64
-
 import pytest
 
 from job_hunter.config import (
     ProfileNotFoundError,
+    RuntimeConfigurationError,
     _parse_manual_company_watch,
     load_gmail_settings,
     load_settings,
@@ -16,20 +15,14 @@ from job_hunter.models import (
     DEFAULT_FRONTEND_SIGNALS,
     DEFAULT_SPECIALIST_BOARD_HOSTS,
     CompanyWatchSeed,
+    ProviderCredentials,
 )
 from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.search_profile import SearchProfile, SearchProfileMarket
 from tests.fake_supabase_client import FakeSupabaseClient
 
 
-def _set_required_bot_env(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv(
-        "CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode()
-    )
-    monkeypatch.setenv(
-        "COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode()
-    )
+def _set_runtime_env(monkeypatch):
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
 
 
@@ -63,18 +56,57 @@ def _profile(**overrides) -> SearchProfile:
     return SearchProfile(**defaults)
 
 
-def _store_for(profile: SearchProfile) -> PostgresJobStore:
-    store = PostgresJobStore(FakeSupabaseClient())
-    store.save_search_profile(profile)
-    return store
+class _FakeRuntimeStore:
+    def __init__(
+        self,
+        profile: SearchProfile,
+        *,
+        credentials: ProviderCredentials | None = None,
+        documents: dict[str, str] | None = None,
+    ) -> None:
+        self._profile_store = PostgresJobStore(FakeSupabaseClient())
+        self._profile_store.save_search_profile(profile)
+        self.credentials = credentials or ProviderCredentials(
+            gemini_api_key="stored-gemini",
+            brave_search_api_key="stored-brave",
+        )
+        self.documents = (
+            {"cv": "stored profile", "cover_letter": "stored template"}
+            if documents is None
+            else documents
+        )
+        self.document_reads = 0
+
+    def get_search_profile(self):
+        return self._profile_store.get_search_profile()
+
+    def get_provider_credentials(self) -> ProviderCredentials:
+        return self.credentials
+
+    def get_source_documents(self) -> dict[str, str]:
+        self.document_reads += 1
+        return self.documents
 
 
-def _load(profile: SearchProfile):
-    return load_settings(_store_for(profile))
+def _store_for(
+    profile: SearchProfile,
+    *,
+    credentials: ProviderCredentials | None = None,
+    documents: dict[str, str] | None = None,
+) -> _FakeRuntimeStore:
+    return _FakeRuntimeStore(
+        profile,
+        credentials=credentials,
+        documents=documents,
+    )
+
+
+def _load(profile: SearchProfile, **store_kwargs):
+    return load_settings(_store_for(profile, **store_kwargs))
 
 
 def test_load_settings_reads_the_search_profile(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     profile = _profile(
         target_titles=["senior product engineer"],
         specialist_board_hosts=["jobs.lever.co"],
@@ -114,14 +146,70 @@ def test_load_settings_raises_when_no_profile_exists():
         load_settings(store)
 
 
+def test_load_settings_reads_documents_and_provider_keys_from_store(monkeypatch):
+    _set_runtime_env(monkeypatch)
+
+    settings = _load(_profile())
+
+    assert settings.gemini_api_key == "stored-gemini"
+    assert settings.brave_search_api_key == "stored-brave"
+    assert settings.candidate_profile == "stored profile"
+    assert settings.cover_letter_template == "stored template"
+
+
+def test_load_settings_does_not_read_four_legacy_environment_variables(monkeypatch):
+    _set_runtime_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "legacy-gemini-sentinel")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "legacy-brave-sentinel")
+    monkeypatch.setenv("CANDIDATE_PROFILE_B64", "legacy-cv-sentinel")
+    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", "legacy-cover-letter-sentinel")
+
+    settings = _load(_profile())
+
+    assert settings.gemini_api_key == "stored-gemini"
+    assert settings.brave_search_api_key == "stored-brave"
+    assert settings.candidate_profile == "stored profile"
+    assert settings.cover_letter_template == "stored template"
+
+
+def test_load_settings_names_missing_gemini_cv_and_cover_letter_without_values(
+    monkeypatch,
+):
+    _set_runtime_env(monkeypatch)
+    store = _store_for(
+        _profile(),
+        credentials=ProviderCredentials(brave_search_api_key="brave-only"),
+        documents={},
+    )
+
+    with pytest.raises(RuntimeConfigurationError) as exc_info:
+        load_settings(store)
+
+    assert str(exc_info.value) == (
+        "Missing per-user Job Hunter configuration: gemini, cv, cover_letter"
+    )
+
+
+def test_load_settings_accepts_missing_brave_key(monkeypatch):
+    _set_runtime_env(monkeypatch)
+
+    settings = _load(
+        _profile(),
+        credentials=ProviderCredentials(gemini_api_key="stored-gemini"),
+    )
+
+    assert settings.brave_search_api_key is None
+
+
 def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
     monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
     monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
 
-    bot_settings = _load(_profile())
-    gmail_settings = load_gmail_settings()
+    store = _store_for(_profile())
+    bot_settings = load_settings(store)
+    gmail_settings = load_gmail_settings(store)
 
     assert bot_settings.gemini_quota == gmail_settings.gemini_quota
     assert bot_settings.gemini_quota.rpm == 10
@@ -136,7 +224,7 @@ def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch):
     "name", ["GEMINI_FREE_RPM", "GEMINI_FREE_TPM", "GEMINI_FREE_RPD"]
 )
 def test_gemini_free_tier_limit_is_required(monkeypatch, name):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     monkeypatch.delenv(name)
 
     with pytest.raises(ValueError, match=name):
@@ -152,51 +240,60 @@ def test_gemini_free_tier_limit_is_required(monkeypatch, name):
     ],
 )
 def test_gemini_free_tier_limit_must_be_a_positive_integer(monkeypatch, name, value):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
         _load(_profile())
 
 
-def test_load_gmail_settings_does_not_require_candidate_profile(monkeypatch):
+def test_load_gmail_settings_reads_gemini_from_store_without_loading_documents(
+    monkeypatch,
+):
     monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
     monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
     monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini")
-    monkeypatch.delenv("CANDIDATE_PROFILE_B64", raising=False)
-    settings = load_gmail_settings()
+    store = _store_for(_profile())
+
+    settings = load_gmail_settings(store)
+
+    assert settings.gemini_api_key == "stored-gemini"
+    assert store.document_reads == 0
+
+
+def test_load_gmail_settings_does_not_require_candidate_documents(monkeypatch):
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
+    store = _store_for(_profile(), documents={})
+
+    settings = load_gmail_settings(store)
+
     assert settings.client_id == "client"
+    assert store.document_reads == 0
 
 
 def test_load_gmail_settings_requires_refresh_token(monkeypatch):
     monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
     monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini")
     monkeypatch.delenv("GMAIL_REFRESH_TOKEN", raising=False)
     with pytest.raises(ValueError, match="GMAIL_REFRESH_TOKEN"):
-        load_gmail_settings()
+        load_gmail_settings(_store_for(_profile()))
 
 
-def test_load_settings_decodes_private_sources(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
+def test_load_settings_reads_private_sources(monkeypatch):
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
 
     settings = _load(_profile(max_jobs_per_run=25))
-    assert settings.candidate_profile == "profile"
-    assert settings.cover_letter_template == "template"
+    assert settings.candidate_profile == "stored profile"
+    assert settings.cover_letter_template == "stored template"
     assert settings.timezone == "Europe/Berlin"
     assert settings.dry_run is True
 
 
 def test_load_settings_dry_run_env_zero_is_false(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "0")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
@@ -206,9 +303,6 @@ def test_load_settings_dry_run_env_zero_is_false(monkeypatch):
 
 
 def test_load_settings_requires_telegram_in_non_dry_run(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.delenv("JOB_HUNTER_DRY_RUN", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -217,9 +311,6 @@ def test_load_settings_requires_telegram_in_non_dry_run(monkeypatch):
 
 
 def test_load_settings_discovery_config(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -303,9 +394,6 @@ def test_load_settings_discovery_config(monkeypatch):
 
 
 def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode())
-    monkeypatch.setenv("COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode())
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
 
     settings = _load(_profile())
@@ -321,7 +409,7 @@ def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
 
 @pytest.mark.parametrize("limit", [5, 10, 20])
 def test_load_settings_reads_the_daily_offer_limit(monkeypatch, limit):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
 
     settings = _load(_profile(daily_offer_limit=limit))
 
@@ -338,7 +426,7 @@ def test_load_settings_falls_back_to_defaults_for_empty_ranking_lists(monkeypatc
     operator knowledge, so an unconfigured profile must fall back exactly
     like one saved before these fields existed.
     """
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(
         _profile(
             engineering_title_keywords=[],
@@ -363,7 +451,7 @@ def test_load_settings_falls_back_to_defaults_for_empty_ranking_lists(monkeypatc
 def test_load_settings_explicit_ranking_lists_override_rather_than_merge(monkeypatch):
     """A non-empty configured value replaces the default outright -- it is
     not merged with it."""
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(
         _profile(
             engineering_title_keywords=["custom-keyword"],
@@ -383,37 +471,37 @@ def test_load_settings_explicit_ranking_lists_override_rather_than_merge(monkeyp
 
 
 def test_load_settings_reads_learned_ats_denylist(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(_profile(learned_ats_denylist=["lever:jobgether"]))
     assert settings.policy.learned_ats_denylist == ["lever:jobgether"]
 
 
 def test_load_settings_normalizes_learned_ats_denylist_entries(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(_profile(learned_ats_denylist=[" Lever:JobGether "]))
     assert settings.policy.learned_ats_denylist == ["lever:jobgether"]
 
 
 def test_load_settings_rejects_malformed_learned_ats_denylist_entry(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     with pytest.raises(ValueError, match="learned_ats_denylist"):
         _load(_profile(learned_ats_denylist=["jobgether"]))
 
 
 def test_load_settings_defaults_learned_ats_allowlist_to_no_entries(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(_profile())
     assert settings.policy.learned_ats_allowlist == []
 
 
 def test_load_settings_reads_and_normalizes_learned_ats_allowlist(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(_profile(learned_ats_allowlist=[" Lever:ClientCo "]))
     assert settings.policy.learned_ats_allowlist == ["lever:clientco"]
 
 
 def test_load_settings_rejects_malformed_learned_ats_allowlist_entry(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     with pytest.raises(ValueError, match="learned_ats_allowlist"):
         _load(_profile(learned_ats_allowlist=["clientco"]))
 
@@ -421,7 +509,7 @@ def test_load_settings_rejects_malformed_learned_ats_allowlist_entry(monkeypatch
 def test_load_settings_rejects_a_board_in_both_ats_lists(monkeypatch):
     # The two lists express opposite operator intent; honouring either one
     # silently would hide an editing mistake in the only operator surface.
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     with pytest.raises(ValueError, match="lever:clientco"):
         _load(
             _profile(
@@ -474,7 +562,7 @@ def test_load_settings_rejects_invalid_manual_company_name(entry):
 def test_load_settings_rejects_non_string_manual_watch_optional_field(
     monkeypatch, field, value
 ):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     with pytest.raises(
         ValueError,
         match=rf"manual_company_watch\[0\].{field} must be a string or null",
@@ -487,7 +575,7 @@ def test_load_settings_rejects_non_string_manual_watch_optional_field(
 
 
 def test_load_settings_rejects_unknown_manual_watch_mapping_key(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     with pytest.raises(
         ValueError,
         match=r"manual_company_watch\[0\]\.ats_identifer is not allowed",
@@ -502,7 +590,7 @@ def test_load_settings_rejects_unknown_manual_watch_mapping_key(monkeypatch):
 
 
 def test_load_settings_parses_markets_in_declared_order(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(
         _profile(
             markets=[
@@ -541,7 +629,7 @@ def test_load_settings_parses_markets_in_declared_order(monkeypatch):
 
 
 def test_load_settings_rejects_duplicate_market_ids(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     market_kwargs = dict(
         market_id="london",
         query_share=0.5,
@@ -565,7 +653,7 @@ def test_load_settings_rejects_duplicate_market_ids(monkeypatch):
 
 
 def test_market_source_config_distinguishes_direct_and_discovery(monkeypatch):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     settings = _load(
         _profile(
             markets=[
@@ -596,7 +684,7 @@ def test_load_settings_rejects_non_positive_location_floor(monkeypatch):
     # per-value constraint at the Pydantic layer, so a non-positive floor
     # still reaches config.py's unchanged _parse_markets check and must
     # still raise there.
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
     with pytest.raises(
         ValueError, match=r"salary\.location_floors\.Berlin must be positive"
     ):

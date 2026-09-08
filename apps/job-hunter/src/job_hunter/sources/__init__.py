@@ -102,7 +102,7 @@ def build_brave_budget(
     """
     if client is None:
         return None
-    if not os.environ.get("BRAVE_SEARCH_API_KEY"):
+    if not settings.brave_search_api_key:
         return None
     return BraveRequestBudget(
         SearchUsageLedger(client),
@@ -147,7 +147,7 @@ def build_sources(
 ) -> list[JobSource]:
     _validate_direct_sources(settings.policy.markets)
     queries = generate_search_queries(settings.policy, query_date)
-    brave_api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    brave_api_key = settings.brave_search_api_key
     targeted_sources: list[JobSource] = []
 
     if brave_api_key:

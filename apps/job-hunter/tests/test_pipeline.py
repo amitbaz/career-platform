@@ -2194,7 +2194,7 @@ def test_targeted_canonical_search_stops_after_shared_breaker_opens():
     ]
 
     for job in jobs:
-        assert _targeted_canonical_candidates(http, job, breaker) == []
+        assert _targeted_canonical_candidates(http, job, breaker, None) == []
 
     assert http.calls == 1
 
@@ -2427,7 +2427,6 @@ def test_run_pipeline_builds_brave_backed_source_when_configured(
     import job_hunter.pipeline as pipeline_module
     from job_hunter.sources import build_sources as real_build_sources
 
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
     settings = Settings(
         gemini_api_key="key",
         candidate_profile="profile",
@@ -2436,6 +2435,7 @@ def test_run_pipeline_builds_brave_backed_source_when_configured(
         scheduled_hour=9,
         policy=make_market_policy(),
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        brave_search_api_key="brave-key",
         dry_run=False,
         telegram_bot_token="token",
         telegram_chat_id="chat",

@@ -54,9 +54,12 @@ select has_function('public', 'job_hunter_eligible_inbound_jobs', array[]::text[
   'job_hunter_eligible_inbound_jobs exists');
 select has_function('public', 'job_hunter_find_job_by_identity', array['text', 'text', 'text'],
   'job_hunter_find_job_by_identity exists');
+select has_function('public', 'job_hunter_get_provider_credentials', array[]::text[],
+  'job_hunter_get_provider_credentials exists');
 
--- Every one of them must run with the caller's own privileges. A
--- `security definer` here would let one user's call read every user's rows.
+-- The credential retrieval RPC is the only security-definer exception. Every
+-- store and normalizer function must continue to run with the caller's own
+-- privileges so one user's call cannot read another user's rows.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -64,8 +67,8 @@ select is(
     where n.nspname = 'public'
       and p.proname like 'job\_hunter\_%'
       and p.prosecdef),
-  null,
-  'no public.job_hunter_* function is security definer');
+  array['job_hunter_get_provider_credentials'],
+  'credential retrieval is the only public.job_hunter_* security definer');
 
 -- Every one must pin an empty search_path so an attacker-controlled
 -- search_path cannot swap a table out from under it.
@@ -79,11 +82,9 @@ select is(
   null,
   'every public.job_hunter_* function pins search_path');
 
--- The two assertions above compare an aggregate to null, so with zero
--- job_hunter_* functions they would both pass vacuously. Pin the population
--- they are asserting over: six functions the port exposes plus six ports of
--- the pure Python normalizers. A new function must be added here
--- deliberately, which forces someone to look at the two checks above.
+-- Pin the full population asserted over above: every existing store and
+-- normalizer function plus the runner-only retrieval RPC. A new function must
+-- be added here deliberately, which forces someone to review both checks.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -94,6 +95,7 @@ select is(
     'job_hunter_confidence_rank',
     'job_hunter_eligible_inbound_jobs',
     'job_hunter_find_job_by_identity',
+    'job_hunter_get_provider_credentials',
     'job_hunter_gmail_candidate_complete',
     'job_hunter_locations_compatible',
     'job_hunter_merge_jobs',
@@ -106,7 +108,7 @@ select is(
     'job_hunter_set_job_markets',
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs'],
-  'exactly the sixteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the seventeen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

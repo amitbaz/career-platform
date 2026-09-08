@@ -33,6 +33,7 @@ from job_hunter.models import (
     Job,
     Material,
     NavigationSession,
+    ProviderCredentials,
 )
 from job_hunter.normalize import job_fingerprint
 from job_hunter.search_profile import SearchProfile
@@ -1642,6 +1643,89 @@ class PostgresJobStore:
     # Search profile
     # ------------------------------------------------------------------
 
+    def get_provider_credentials(self) -> ProviderCredentials:
+        """Return provider secrets exposed to this trusted Job Hunter runner.
+
+        The RPC is the audited runner-claim security-definer exception. Its
+        response is treated as untrusted at this boundary: malformed, unknown,
+        or duplicate rows fail closed without including row values in errors,
+        and response-bearing client failures are replaced without a chain.
+        """
+        request_error: SupabaseRequestError | None = None
+        try:
+            rows = self._client.rpc("job_hunter_get_provider_credentials")
+        except SupabaseRequestError:
+            request_error = SupabaseRequestError("provider credential request failed")
+        # Raise after leaving the handler so the response-bearing original is
+        # not retained as this value-free exception's implicit context.
+        if request_error is not None:
+            raise request_error from None
+        if not isinstance(rows, list):
+            raise ValueError("invalid provider credential response")
+
+        credentials: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("invalid provider credential response")
+            provider = row.get("provider")
+            secret = row.get("secret")
+            if (
+                not isinstance(provider, str)
+                or provider not in {"gemini", "brave"}
+                or provider in credentials
+                or not isinstance(secret, str)
+                or not secret.strip()
+            ):
+                raise ValueError("invalid provider credential response")
+            credentials[provider] = secret
+
+        return ProviderCredentials(
+            gemini_api_key=credentials.get("gemini"),
+            brave_search_api_key=credentials.get("brave"),
+        )
+
+    def get_source_documents(self) -> dict[str, str]:
+        """Return the newest non-null CV and cover letter visible through RLS.
+
+        Unknown, duplicate, or malformed material fails closed with a
+        value-free error. Supabase response bodies and their exception chains
+        are also removed at this sensitive boundary.
+        """
+        request_error: SupabaseRequestError | None = None
+        try:
+            rows = self._client.select(
+                "source_documents",
+                params={
+                    "select": "kind,content,updated_at",
+                    "order": "updated_at.desc",
+                },
+            )
+        except SupabaseRequestError:
+            request_error = SupabaseRequestError("source document request failed")
+        # See the credential reader above: raising outside the handler avoids
+        # retaining the original response body through ``__context__``.
+        if request_error is not None:
+            raise request_error from None
+        if not isinstance(rows, list):
+            raise ValueError("invalid source document response")
+
+        documents: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("invalid source document response")
+            kind = row.get("kind")
+            if not isinstance(kind, str) or kind not in {"cv", "cover_letter"}:
+                raise ValueError("invalid source document response")
+            if "content" not in row:
+                raise ValueError("invalid source document response")
+            content = row["content"]
+            if content is None:
+                continue
+            if not isinstance(content, str) or kind in documents:
+                raise ValueError("invalid source document response")
+            documents[kind] = content
+        return documents
+
     def get_search_profile(self) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
         """Return the caller's search profile row and its market rows, if any.
 
@@ -2397,7 +2481,9 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "current_application_state",
         "pending_review_events",
         "get_navigation_session",
+        "get_provider_credentials",
         "get_search_profile",
+        "get_source_documents",
     }
 )
 

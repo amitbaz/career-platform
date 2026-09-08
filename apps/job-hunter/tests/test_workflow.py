@@ -6,6 +6,18 @@ import yaml
 # Workflows live at the monorepo root, three levels above apps/job-hunter/tests.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DAILY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "job-hunter-daily.yml"
+COVER_LETTER_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "job-hunter-generate-cover-letter.yml"
+)
+
+# These four now live in the per-user credential store, so no workflow step may
+# hand them to the runner as repository-wide secrets.
+USER_RUNTIME_SECRET_NAMES = {
+    "GEMINI_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "CANDIDATE_PROFILE_B64",
+    "COVER_LETTER_TEMPLATE_B64",
+}
 
 
 def _load_workflow_steps():
@@ -52,17 +64,19 @@ def test_both_gemini_steps_carry_quota_vars_and_matching_run_id():
     assert gmail_step["env"]["GEMINI_RUN_ID"] == run_step["env"]["GEMINI_RUN_ID"]
 
 
-def test_gemini_api_key_stays_a_secret_not_a_variable():
-    _, gmail_step, run_step = _load_workflow_steps()
+def test_user_runtime_secrets_are_not_injected_into_workflows():
+    for workflow_path in (DAILY_WORKFLOW, COVER_LETTER_WORKFLOW):
+        workflow = yaml.safe_load(workflow_path.read_text())
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                assert USER_RUNTIME_SECRET_NAMES.isdisjoint(
+                    (step.get("env") or {}).keys()
+                )
 
-    for step in (gmail_step, run_step):
-        assert step["env"]["GEMINI_API_KEY"] == "${{ secrets.GEMINI_API_KEY }}"
 
-
-def test_run_step_carries_brave_secret_and_monthly_budget():
+def test_run_step_carries_brave_monthly_budget():
     _, _, run_step = _load_workflow_steps()
 
-    assert run_step["env"]["BRAVE_SEARCH_API_KEY"] == "${{ secrets.BRAVE_SEARCH_API_KEY }}"
     assert run_step["env"]["BRAVE_MONTHLY_QUERY_LIMIT"] == (
         "${{ vars.BRAVE_MONTHLY_QUERY_LIMIT || '250' }}"
     )

@@ -1073,3 +1073,13 @@ export type CareerDashboard = {
   recentPracticePlans: PracticePlan[];
   recommendation: PracticeRecommendation;
 };
+
+/** Providers whose per-user credentials can be managed through Relay. */
+export type ProviderCredential = "gemini" | "brave";
+
+/** Non-secret configuration metadata returned by the credential API. */
+export type ProviderCredentialStatus = {
+  provider: ProviderCredential;
+  configured: boolean;
+  updatedAt: string | null;
+};
