@@ -103,7 +103,9 @@ python -m job_hunter run                       # full pipeline run
 python -m job_hunter run --scheduled           # only runs at the scheduled_hour in the user's search profile
 ```
 
-Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, fill in the Supabase and Gemini free-tier quota values, set `JOB_HUNTER_DRY_RUN=1`, then `set -a; source .env; set +a` before running. The Gemini key and the CV and cover letter text are not env vars: they are saved in Relay's Profile view for `JOB_HUNTER_USER_ID` and read from Postgres at run time. `JOB_HUNTER_DRY_RUN` truthy values are `1/true/yes` (case-insensitive); anything else is treated as unset/false.
+Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, then `set -a; source .env; set +a` before running. `.env.example` is grouped by the surface each variable serves; a dry run needs the Supabase group (`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`) and the three Gemini free-tier quota values (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`), which are required and have no default. Everything under "Optional overrides" can stay blank — each takes the code default stated in its comment, so never copy a default into a value there. The webhook group is not needed for a run.
+
+Set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery; truthy values are `1/true/yes` (case-insensitive), anything else is treated as unset/false. The Gemini key and the CV and cover letter text are not env vars: they are saved in Relay's Profile view for `JOB_HUNTER_USER_ID` and read from Postgres at run time.
 
 CI (`.github/workflows/job-hunter-ci.yml`) runs `pytest -q` on Python 3.12 — no lint step configured. It triggers on every pull request, and on pushes to `main` only. The push trigger is deliberately scoped to `main`: without it, a commit on a pull request branch starts both workflows against the same commit and costs twice the Actions minutes, which matters while the repository is private and subject to the monthly cap.
 

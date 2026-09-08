@@ -203,7 +203,9 @@ This bot is designed to run entirely on the Gemini API free tier, at €0 cost. 
 
 ## Local dry run
 
-Copy `.env.example` to `.env`, fill in the Supabase and Gemini free-tier quota values, and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode). Your Gemini key and your CV and cover letter text are read from Relay for `JOB_HUNTER_USER_ID`, not from `.env`:
+Copy `.env.example` to `.env` and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode). `.env.example` is grouped by the surface each variable serves, and a dry run needs two of those groups: the Supabase group listed below, and the three Gemini free-tier quota values (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`), which are required and have no default — see [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup) for where to read them. Leave the "Optional overrides" group blank: each of those takes the code default stated in its comment, so copying a default into a value there only creates something to drift. The webhook group is for the Vercel deployment and is not read by a run.
+
+Your Gemini key and your CV and cover letter text are read from Relay for `JOB_HUNTER_USER_ID`, not from `.env`:
 
 ```bash
 python -m venv .venv
