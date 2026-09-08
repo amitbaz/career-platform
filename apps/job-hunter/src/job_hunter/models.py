@@ -203,6 +203,14 @@ class SearchPolicy:
     salary_floor_eur: int
     thresholds: dict
     max_jobs_per_run: int = 35
+    #: How many job offers a run may deliver, counting the ready-to-apply and
+    #: possible-match outcomes the user actually receives. It is the run's
+    #: budget, not a filter: evaluation stops once it is met, and the
+    #: candidates never reached stay unevaluated and eligible tomorrow.
+    #: `max_jobs_per_run` remains a hard ceiling above it, so a day where
+    #: almost nothing passes still terminates. The allowed values (5, 10, 20)
+    #: are enforced where the setting is written, on `SearchProfile`.
+    daily_offer_limit: int = 10
     source_minimum_per_run: int = 0
     source_max_share: float = 0.5
     search_queries: list = field(default_factory=list)

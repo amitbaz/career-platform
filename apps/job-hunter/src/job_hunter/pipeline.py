@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 
 _AVAILABILITY_WARNING = "⚠️ Availability not verified - check the posting before applying"
 _READY_DECISIONS = {"high_priority", "package_match"}
+#: The outcomes the daily offer limit counts: the offers themselves, ready to
+#: apply or possible. A `skip` costs a Gemini call but no delivery budget, and
+#: so does a `blocked` job -- it reaches Telegram only under "Needs review /
+#: blockers", which is a warning about a job, not an offer to act on.
+_OFFER_DECISIONS = _READY_DECISIONS | {"possible_match"}
 _MIN_DELIVERABLE_SCORE = 61
 _NAVIGATION_SESSION_TTL = timedelta(days=30)
 _SUPPORTED_WATCH_ATS_PROVIDERS = frozenset({"ashby", "greenhouse", "lever"})
@@ -486,18 +491,20 @@ def _evaluate_and_deliver_job(
     gemini: GeminiClient,
     digest_items: list[DigestItem],
     summary: RunSummary,
-) -> tuple[bool, bool, str | None, bool]:
+) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest.
 
-    Returns (promoted, blocked, decision, attempted). `attempted` is True
-    only when a fresh Gemini evaluation was actually made for this job (not
+    Returns (promoted, blocked, decision, attempted, offered). `attempted` is
+    True only when a fresh Gemini evaluation was actually made for this job (not
     for the already-evaluated shortcut below), so callers can tell "nothing
     new to do" apart from "the evaluation itself failed" -- both of which
-    otherwise look identical from the outside (decision=None).
+    otherwise look identical from the outside (decision=None). `offered` is
+    True when this job will reach the user as an offer, which is what the
+    daily offer limit counts.
     """
     if store.get_evaluation(job_id) is not None and store.has_delivery(job_id, "telegram_message"):
         store.complete_ai_work("job_evaluation", job_id)
-        return False, False, None, False
+        return False, False, None, False, False
 
     while True:
         try:
@@ -521,11 +528,11 @@ def _evaluate_and_deliver_job(
                 job_id,
             )
             store.enqueue_ai_work("job_evaluation", job_id)
-            return False, True, None, False
+            return False, True, None, False, False
         except Exception:
             logger.exception("evaluation failed for job_id=%s", job_id)
             summary.errors += 1
-            return False, False, None, True
+            return False, False, None, True, False
 
     store.save_evaluation(job_id, evaluation)
     store.complete_ai_work("job_evaluation", job_id)
@@ -574,7 +581,15 @@ def _evaluate_and_deliver_job(
     else:
         summary.skipped += 1
 
-    return promoted, False, evaluation.decision, True
+    # An offer the digest would drop anyway must not spend delivery budget:
+    # the score floor in telegram.select_deliverable_items sits below the
+    # `possible` rung, so a profile with a low `possible` threshold can score a
+    # possible_match under it.
+    offered = (
+        evaluation.decision in _OFFER_DECISIONS
+        and evaluation.total_score >= _MIN_DELIVERABLE_SCORE
+    )
+    return promoted, False, evaluation.decision, True, offered
 
 def _format_gemini_usage_log(summary: GeminiUsageSummary) -> str:
     """One structured log line at run completion: totals plus per-purpose counts."""
@@ -718,6 +733,13 @@ def run_pipeline(
     decision_counts_by_source: dict[str, dict[str, int]] = {}
     deferred_by_budget = max(0, len(ranked) - len(selected))
     quota_deferred_count = 0
+    # The user's daily offer limit is the run's delivery budget. Walking the
+    # selected candidates in rank order and stopping once it is met needs no
+    # assumed ratio between candidates evaluated and offers delivered, and
+    # keeps adapting when that ratio moves.
+    offer_limit = settings.policy.daily_offer_limit
+    delivered_offers = 0
+    cap_deferred_count = 0
     logger.info(
         "discovery: raw=%s unique=%s prefilter_rejected=%s profession_rejected=%s eligible=%s selected=%s deferred_by_budget=%s canonical_network_attempts=%s sources=%s",
         discovery.stats.raw,
@@ -755,17 +777,23 @@ def run_pipeline(
     for job_id in pending_evaluation_ids:
         if quota_blocked:
             continue
+        # Left in the queue rather than completed, so it is retried tomorrow.
+        if delivered_offers >= offer_limit:
+            cap_deferred_count += 1
+            continue
         job = store.get_job(job_id)
         if job is None:
             store.complete_ai_work("job_evaluation", job_id)
             continue
-        promoted, blocked, decision, attempted = _evaluate_and_deliver_job(
+        promoted, blocked, decision, attempted, offered = _evaluate_and_deliver_job(
             job_id, job, candidate_context, settings, store, gemini, digest_items, summary
         )
         if attempted:
             summary.evaluation_attempted += 1
         if decision is not None:
             summary.evaluated += 1
+        if offered:
+            delivered_offers += 1
         if blocked:
             quota_deferred_count += 1
         _record_decision(decision_counts, job.market_id, decision)
@@ -777,17 +805,25 @@ def run_pipeline(
     for job_id, job, _score in selected:
         if job_id in pending_evaluation_id_set:
             continue
+        # The user has the offers they asked for. The rest of the shortlist is
+        # left unevaluated -- not queued, not discarded: it ranks again on the
+        # next run, so a low limit trades breadth for pace rather than jobs.
+        if delivered_offers >= offer_limit:
+            cap_deferred_count += 1
+            continue
         if quota_blocked:
             store.enqueue_ai_work("job_evaluation", job_id)
             quota_deferred_count += 1
             continue
-        promoted, blocked, decision, attempted = _evaluate_and_deliver_job(
+        promoted, blocked, decision, attempted, offered = _evaluate_and_deliver_job(
             job_id, job, candidate_context, settings, store, gemini, digest_items, summary
         )
         if attempted:
             summary.evaluation_attempted += 1
         if decision is not None:
             summary.evaluated += 1
+        if offered:
+            delivered_offers += 1
         if blocked:
             quota_deferred_count += 1
         _record_decision(decision_counts, job.market_id, decision)
@@ -797,11 +833,16 @@ def run_pipeline(
         quota_blocked = quota_blocked or blocked
 
     logger.info(
-        "evaluation_capacity selected=%s evaluated=%s deferred_by_budget=%s quota_deferred=%s",
+        "evaluation_capacity selected=%s evaluated=%s deferred_by_budget=%s "
+        "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
+        "deferred_by_offer_cap=%s",
         len(selected),
         summary.evaluated,
         deferred_by_budget,
         quota_deferred_count,
+        offer_limit,
+        delivered_offers,
+        cap_deferred_count,
     )
 
     for job_id in set(store.pending_delivery_job_ids()) - queued_job_ids - set(discovery.rediscovered_job_ids):

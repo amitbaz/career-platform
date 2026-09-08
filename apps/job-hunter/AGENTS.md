@@ -128,7 +128,8 @@ Pipeline, in `pipeline.py::run_pipeline`:
 
 ```
 all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or profile-aware rank
-  -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error) -> Gemini -> decision filter -> score-sorted Telegram
+  -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
+  -> Gemini, stopping once daily_offer_limit offers are in hand -> decision filter -> score-sorted Telegram
   -> Telegram digest delivery (telegram.py)
 ```
 
@@ -143,6 +144,7 @@ Key modules:
 - `src/job_hunter/config.py` — loads the user's search profile (from Postgres, via `load_settings(store)`) + required env vars into a `Settings`/`SearchPolicy` (see `models.py`). Candidate profile and cover letter template are base64-encoded secrets (`CANDIDATE_PROFILE_B64`, `COVER_LETTER_TEMPLATE_B64`), decoded in memory only — never write decoded plaintext to the repo or logs.
 - `src/job_hunter/cli.py` — `python -m job_hunter run` entrypoint. `--scheduled` gates execution on `should_run_scheduled` (pipeline.py), comparing current local hour in `settings.timezone` against `settings.scheduled_hour`.
 - `src/job_hunter/preferences.py` extracts a compact preference profile from the candidate profile. When that succeeds, `pipeline.py` uses `rank_jobs(..., preferences)` plus `select_diverse_candidates()` to enforce profile-aware ranking with per-source diversity. The shortlist knobs are `max_jobs_per_run` (code default 35, set to 100 in the user's search profile), `source_minimum_per_run` (0) and `source_max_share` (0.5) — the user's search profile (stored in Postgres) is what a real run uses, so read the values there rather than the code defaults. If preference extraction or shortlist selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
+- `daily_offer_limit` (5, 10 or 20; default 10) is the delivery budget on top of that shortlist: `run_pipeline` walks the selected candidates in rank order and stops evaluating once that many offers — ready-to-apply plus possible-match — have been produced, so Gemini spend follows what the user asked for. Candidates never reached are left unevaluated and are neither queued nor discarded; they rank again on the next run. The `evaluation_capacity` log line reports `daily_offer_limit`, `delivered_offers` and `deferred_by_offer_cap` separately from `deferred_by_budget`, because a cap-limited run and a market-limited run need telling apart.
 - Per-job evaluation failures are caught individually inside the loop (not fail-open at the run level) so one bad job doesn't abort the run; each increments `summary.errors`.
 - Cover letter + PDF generation is not part of the daily pipeline. It is triggered on demand, one job at a time, by tapping "Gen CL" on that job's Telegram card (`generate-cover-letter.yml` -> `python -m job_hunter generate-cover-letter --job-id <id>`), regardless of decision.
 
