@@ -1650,8 +1650,9 @@ def test_collect_candidates_resolver_tail_is_not_batched(supabase_client, policy
     shortlist entirely (it bounds only jobs that need a *network* resolution),
     so all of them enter the resolve branch. Each then pays, sequentially:
     `_harvest_ats_board_safely` (a registry read plus a write),
-    `upsert_logical_job`, optionally `set_job_market`, `needs_evaluation`,
-    and -- outside the resolver gate altogether -- `record_ats_eligible_job`.
+    `upsert_logical_job`, optionally `set_job_market`, and
+    `needs_evaluation`. Eligibility recording is no longer among them: #151
+    took it out of the loop and flushes it once for the whole run.
 
     The bounds are deliberately loose. This is a shape assertion, not a
     budget: it fails if the tail gets materially more expensive, and it also
@@ -1685,8 +1686,8 @@ def test_collect_candidates_resolver_tail_is_not_batched(supabase_client, policy
             "branch, or this test is measuring the wrong path"
         )
         assert len(result.eligible) == job_count, (
-            "sanity check: these jobs must become eligible, or "
-            "record_ats_eligible_job never runs"
+            "sanity check: these jobs must become eligible, or this test is "
+            "measuring a shorter path than the one it names"
         )
         return len(client.calls)
 
@@ -1722,12 +1723,10 @@ def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
 
     Jobs are rejected by the legacy remote-only hard blocker (`remote=False`,
     no markets configured) so none reach `eligible`. That keeps this test
-    isolated to `upsert_ats_boards` (design step 6's board-sighting write, in
-    scope for this task): an eligible ATS job would also call
-    `record_ats_eligible_job` in the untouched, out-of-scope final loop,
-    which touches the same `job_hunter_ats_registry` table once per
-    eligible job and would make this test fail for a reason this task was
-    never asked to fix.
+    isolated to `upsert_ats_boards` (design step 6's board-sighting write):
+    an eligible ATS job also touches `job_hunter_ats_registry` when its
+    eligibility is recorded, and mixing the two would leave neither
+    pinned down. That write is batched too, and has its own test below.
     """
     from job_hunter.postgres_store import PostgresJobStore
 
@@ -1749,8 +1748,8 @@ def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
         ]
         result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
         assert result.eligible == [], (
-            "sanity check: these jobs must be rejected, not eligible, or "
-            "record_ats_eligible_job would contaminate this test's count"
+            "sanity check: these jobs must be rejected, not eligible, or the "
+            "eligibility write would contaminate this test's count"
         )
         return sum(
             1 for call in client.calls if "job_hunter_ats_registry" in call
@@ -2599,3 +2598,87 @@ def test_format_phase_cost_renders_every_phase_dearest_first():
     assert rendered.startswith("enrich=1500.0s eligible=900.0s")
     # A free phase is still rendered: a missing one would read as unmeasured.
     assert "dedupe=0.0s" in rendered
+
+
+def test_recording_eligibility_does_not_scale_with_the_eligible_jobs(
+    supabase_client, policy
+):
+    """Twenty eligible jobs on one board cost no more registry writes than one.
+
+    The defect this guards against is a request count that grows with the
+    job count: the per-job version did a read then a write for every
+    eligible job, roughly 2,700 serial round trips in run 34201733339 to
+    increment a counter on a few dozen rows (#151). Counting the calls is
+    the only way to see that -- the data it writes is identical either way.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    def run_with(job_count: int) -> tuple[int, int]:
+        client = CountingClient(supabase_client)
+        store = PostgresJobStore(client)
+        jobs = [
+            Job(
+                source="arbeitnow",
+                source_job_id=f"eligible-{job_count}-{index}",
+                title="Senior Product Engineer",
+                company=f"Acme {job_count} {index}",
+                url=f"https://jobs.lever.co/acme/eligible-{job_count}-{index}",
+                description="React TypeScript remote role.",
+                remote=True,
+            )
+            for index in range(job_count)
+        ]
+        result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+        assert len(result.eligible) == job_count, (
+            "sanity check: these jobs must become eligible, or nothing "
+            "records their eligibility and this test proves nothing"
+        )
+        return sum(1 for call in client.calls if "job_hunter_ats_registry" in call), sum(
+            1
+            for call in client.calls
+            if "job_hunter_record_ats_eligible_jobs" in call
+        )
+
+    one_registry_calls, one_flush = run_with(1)
+    twenty_registry_calls, twenty_flush = run_with(20)
+
+    assert twenty_registry_calls == one_registry_calls, (
+        f"twenty eligible jobs on one board cost {twenty_registry_calls} "
+        f"ATS-registry requests against {one_registry_calls} for a single "
+        "job; the eligibility write is scaling with the job count again"
+    )
+    # One flush per run, whatever the run found.
+    assert one_flush == 1
+    assert twenty_flush == 1
+
+
+def test_a_failure_recording_eligibility_does_not_cost_the_run(store, policy, caplog):
+    """Learning the registry is opportunistic; the candidates are not."""
+
+    class FailingEligibilityStore:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def record_ats_eligible_jobs(self, sightings, now):
+            raise RuntimeError("registry is down")
+
+    job = Job(
+        source="arbeitnow",
+        source_job_id="eligible-1",
+        title="Senior Product Engineer",
+        company="Acme",
+        url="https://jobs.lever.co/acme/eligible-1",
+        description="React TypeScript remote role.",
+        remote=True,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = collect_candidates(
+            [FakeSource([job])], FailingEligibilityStore(store), NoOpHttp(), policy
+        )
+
+    assert len(result.eligible) == 1
+    assert "recording 1 ATS-eligible job(s) failed" in caplog.text

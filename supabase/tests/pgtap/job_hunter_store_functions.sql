@@ -105,10 +105,11 @@ select is(
     'job_hunter_normalize_tokens',
     'job_hunter_pending_delivery_jobs',
     'job_hunter_pending_review_events',
+    'job_hunter_record_ats_eligible_jobs',
     'job_hunter_set_job_markets',
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs'],
-  'exactly the seventeen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the eighteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

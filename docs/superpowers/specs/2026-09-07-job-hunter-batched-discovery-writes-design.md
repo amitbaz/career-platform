@@ -72,7 +72,9 @@ Three principles constrain the design:
    [Out of scope](#out-of-scope) — and remains per-job: a job that reaches the resolve
    branch pays roughly six to eight PostgREST requests (`_harvest_ats_board_safely`,
    `upsert_logical_job`, `set_job_market`, `needs_evaluation`, and, once eligible,
-   `record_ats_eligible_job`). `max_canonical_resolutions_per_run` bounds only the jobs
+   `record_ats_eligible_job`). **Superseded in part by #151:** eligibility recording is
+   no longer among them -- it is collected during the loop and flushed once, through
+   `record_ats_eligible_jobs`. The rest of the tail is still per-job. `max_canonical_resolutions_per_run` bounds only the jobs
    whose URL is *not* already a supported ATS URL; a prefiltered job that already carries
    one bypasses the shortlist gate entirely and always resolves. So a run where 1,000
    ATS-hosted jobs survive prefilter still spends 6,000-8,000 sequential requests in that
@@ -260,6 +262,8 @@ shape.
 - Evaluation-phase and delivery-phase store calls. They run over the ~100 selected jobs,
   not the ~19,000 discovered ones, so they are not what spends the hour.
 - The canonical-resolution loop at the end of `collect_candidates`. It stays per-job.
+  (**Since updated by #151**, which took the eligibility write out of that loop and
+  batched it; everything else below still holds.)
   Batching it means restructuring a loop that interleaves outbound page fetches, a
   resolver, re-attribution, and store writes whose results feed the next decision — a
   different problem from "the same write, N times". It is bounded for non-ATS URLs by

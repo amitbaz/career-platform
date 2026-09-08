@@ -1443,34 +1443,52 @@ class PostgresJobStore:
             "job_hunter_ats_registry", values, params={"id": f"eq.{rows[0]['id']}"}
         )
 
-    def record_ats_eligible_job(
-        self, provider: str, board_identifier: str, now: datetime
-    ) -> None:
-        """Record that a scan of this board surfaced a candidate-eligible job.
+    def record_ats_eligible_jobs(
+        self, sightings: list[tuple[str, str]], now: datetime
+    ) -> int:
+        """Record a run's eligible jobs against their boards, in one round trip.
 
-        Translates store.py:1622-1636, with the same read-then-write
-        treatment of the counter as `record_ats_scan_failure`.
+        Takes ``(provider, board_identifier)`` tuples, one per eligible job,
+        and collapses them to one entry per distinct board before sending --
+        the same shape and the same collapse as `upsert_ats_boards` above,
+        for the same reason: discovery sees a board once per job, and the
+        request count must follow the board count rather than the job count.
+
+        The per-job version this replaces did a select followed by an update
+        for every eligible job, which put roughly 2,700 serial round trips
+        inside the daily run to increment a counter on a few dozen rows
+        (issue #151). Returns how many registry rows were updated.
+
+        A board absent from the registry is left alone rather than created,
+        exactly as before. Learning the registry is opportunistic: a failure
+        here is the caller's to log and skip, and must not cost the run.
         """
         timestamp = to_iso(_require_aware(now))
-        rows = self._client.select(
-            "job_hunter_ats_registry",
-            params={
-                "provider": f"eq.{provider}",
-                "board_identifier": f"eq.{board_identifier}",
-                "select": "id,eligible_jobs_seen",
-                "limit": "1",
-            },
-        )
-        if not rows:
-            return
-        self._client.update(
-            "job_hunter_ats_registry",
+        counts: dict[tuple[str, str], int] = {}
+        for provider, board_identifier in sightings:
+            key = (provider, board_identifier)
+            counts[key] = counts.get(key, 0) + 1
+        if not counts:
+            return 0
+        rows = self._client.rpc(
+            "job_hunter_record_ats_eligible_jobs",
             {
-                "last_eligible_at": timestamp,
-                "eligible_jobs_seen": rows[0]["eligible_jobs_seen"] + 1,
+                "p_boards": [
+                    {
+                        "provider": provider,
+                        "board_identifier": board_identifier,
+                        "eligible_jobs": eligible_jobs,
+                    }
+                    for (provider, board_identifier), eligible_jobs in counts.items()
+                ],
+                "p_now": timestamp,
             },
-            params={"id": f"eq.{rows[0]['id']}"},
+            # This adds to a counter, so it is not idempotent: a retried call
+            # would count the same run's eligible jobs twice. Same reasoning
+            # as `merge_jobs`, the other non-idempotent RPC here.
+            retry=False,
         )
+        return int(rows[0]) if rows else 0
 
     def count_ats_boards(self) -> int:
         """Translates store.py:1638-1640."""
@@ -2517,7 +2535,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "clear_ats_board_rejection": None,
     "record_ats_scan_success": None,
     "record_ats_scan_failure": None,
-    "record_ats_eligible_job": None,
+    "record_ats_eligible_jobs": "count",
     "record_gemini_usage": None,
     "set_gemini_pause": None,
     "clear_gemini_pause": None,

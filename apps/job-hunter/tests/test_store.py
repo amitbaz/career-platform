@@ -580,7 +580,7 @@ def test_watch_success_normalizes_a_non_utc_offset(store):
         "reject_ats_board",
         "record_ats_scan_success",
         "record_ats_scan_failure",
-        "record_ats_eligible_job",
+        "record_ats_eligible_jobs",
     ],
 )
 def test_discovery_state_time_methods_reject_naive_datetimes(store, method_name):
@@ -602,7 +602,7 @@ def test_discovery_state_time_methods_reject_naive_datetimes(store, method_name)
         "reject_ats_board": ("lever", "acme", "reason", naive),
         "record_ats_scan_success": ("lever", "acme", naive, 0),
         "record_ats_scan_failure": ("lever", "acme", naive),
-        "record_ats_eligible_job": ("lever", "acme", naive),
+        "record_ats_eligible_jobs": ([("lever", "acme")], naive),
     }[method_name]
 
     with pytest.raises(ValueError, match="timezone-aware"):
@@ -889,17 +889,61 @@ def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board(st
     assert store.list_due_ats_boards(now + timedelta(days=30)) == []
 
 
-def test_record_ats_eligible_job_counts_every_sighting(store):
+def test_record_ats_eligible_jobs_counts_every_sighting(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
     store.upsert_ats_board(provider="lever", board_identifier="acme")
 
-    store.record_ats_eligible_job("lever", "acme", now)
+    store.record_ats_eligible_jobs([("lever", "acme")], now)
     later = now + timedelta(hours=2)
-    store.record_ats_eligible_job("lever", "acme", later)
+    store.record_ats_eligible_jobs([("lever", "acme")], later)
 
     entry = store.list_due_ats_boards(later)[0]
     assert entry.eligible_jobs_seen == 2
     assert from_iso(entry.last_eligible_at) == later
+
+
+def test_record_ats_eligible_jobs_counts_a_board_once_per_job(store):
+    """Many jobs on one board are one row update carrying their count.
+
+    The collapse is what keeps the request count off the job count, and
+    getting it wrong the other way -- one increment per board rather than
+    per job -- would quietly undercount every busy board.
+    """
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="acme")
+    store.upsert_ats_board(provider="ashby", board_identifier="globex")
+
+    updated = store.record_ats_eligible_jobs(
+        [("lever", "acme"), ("lever", "acme"), ("lever", "acme"), ("ashby", "globex")],
+        now,
+    )
+
+    assert updated == 2
+    seen = {
+        (entry.provider, entry.board_identifier): entry.eligible_jobs_seen
+        for entry in store.list_due_ats_boards(now)
+    }
+    assert seen == {("lever", "acme"): 3, ("ashby", "globex"): 1}
+
+
+def test_record_ats_eligible_jobs_ignores_a_board_it_does_not_know(store):
+    """An unregistered board is left alone, exactly as the per-job version did."""
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+    store.upsert_ats_board(provider="lever", board_identifier="acme")
+
+    updated = store.record_ats_eligible_jobs(
+        [("lever", "acme"), ("lever", "never-registered")], now
+    )
+
+    assert updated == 1
+    assert store.list_due_ats_boards(now)[0].eligible_jobs_seen == 1
+
+
+def test_record_ats_eligible_jobs_with_nothing_to_record_writes_nothing(store):
+    """No eligible job on any board means no round trip at all."""
+    now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
+
+    assert store.record_ats_eligible_jobs([], now) == 0
 
 
 def test_list_due_ats_boards_orders_by_provider_then_board(store):
