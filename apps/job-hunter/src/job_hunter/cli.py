@@ -106,11 +106,14 @@ def _run(args: argparse.Namespace) -> int:
     summary = run_pipeline(settings, store=store, gemini=gemini, http=http)
     logger.info(
         "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
-        "facets_extracted=%d facets_failed=%d",
+        "blocked_by_facets=%d facets_extracted=%d facets_failed=%d",
         summary.ready_to_apply,
         summary.possible_matches,
         summary.skipped,
         summary.errors,
+        # Jobs the stored facets disqualified without a scoring call (#127):
+        # the saving this run made against the user's own provider quota.
+        summary.blocked_by_facets,
         # Facet extraction is shared, best-effort work: it is reported here so
         # a run whose enrichment is quietly failing is visible, but it never
         # decides the exit code -- a run that delivered its digest succeeded.

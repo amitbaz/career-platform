@@ -139,7 +139,8 @@ all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or 
   -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
   -> per job: objective facet extraction if the posting has not been read yet
      (facets.py, once per posting ever, candidate-blind)
-     then subjective scoring from those facets
+     then facet-decided hard blockers (hard_blockers.py, per user, no provider call)
+     then subjective scoring from those facets for whatever they did not settle
      (evaluation.py, per user, never sees the description)
   -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
   -> facet backfill over what scoring did not need (rediscovered jobs + the shortlist tail)
@@ -185,6 +186,27 @@ Key modules:
   `GeminiBudgetExceeded` on a read defers only the job whose posting has never been read, and
   the run keeps scoring every job that has been — unlike `GeminiQuotaPaused`, which means the
   model is paused and blocks the run as it always did.
+- `src/job_hunter/hard_blockers.py` — decides the two objective hard blockers from the facets
+  scoring is about to be given, with no provider call (#127): compensation disclosed below the
+  user's floor, and a role that is not remote or requires relocation contrary to the user's
+  policy. The facts are shared (the posting's facets, read once for everybody); the thresholds
+  are per-user (`SearchPolicy.salary_floor_eur`, or the attributed market's currency, floor,
+  remote and relocation rules), so the comparison is made per user at the scoring seam and its
+  result is written only to that user's evaluation row — never cached across users. Everything
+  about it **fails open**: thin content (`partial_unknown`, where a facet may have been read
+  from a search-result snippet — `evaluate_job` withholds a confident decision on the same
+  material), an `unknown` policy, undisclosed pay, a disclosed minimum with no maximum, a
+  foreign currency or a non-annual period all send the job on to scoring. Only the disclosed
+  *maximum* is compared, matching the scoring prompt's own rule, and that prompt keeps both
+  rules — this removes calls, it does not remove the model's authority over what the facets
+  cannot settle. It reads the same `JobFacets` object `_facets_for_scoring` just returned, so
+  there is no second, staler view of the posting to disagree with it and no extra store read.
+  `pipeline.py::_facet_decided_blockers` is the seam; a block builds the same `Evaluation`
+  shape a model block produces (`decision="blocked"`, zero scores, empty `model`) and
+  everything downstream — the merge-following write, company promotion, the score floor, the
+  digest, the decision counters — handles it identically. Counted in
+  `RunSummary.blocked_by_facets`, deliberately *not* in `evaluation_attempted`/`evaluated`,
+  which exist to detect a run where every fresh Gemini scoring call failed.
 - `src/job_hunter/evaluation.py` — subjective scoring, the per-user half (#126). Takes a
   `JobFacets` and a `CandidateContext` and returns an `Evaluation`: the six score components,
   the total, hard blockers, strengths, gaps, the notes, the decision and the rationale. It
@@ -197,6 +219,7 @@ Key modules:
   `job_hunter_evaluations` table and the `job_evaluation` purpose keep the word "evaluation"
   although CONTEXT.md reserves it for the pre-split combined call; the artefact is still an
   `Evaluation`, and renaming it would be a rename with no behavioural content.
+
 - `src/job_hunter/hiring_scope.py` — reads a posting's *explicitly stated* hiring regions ("open to candidates based in the US and Europe") from its text alone. It is deliberately self-contained: no market, no candidate, no scoring. `market_policy.py::attribute_market` consumes it as a bonus that outranks a listing variant's location label, and as a filter that drops markets the posting's stated regions exclude. Keep it that way — a posting's eligible regions are a shared, cacheable property of the posting, whereas whether a given candidate may work there is per-user, and only the first belongs in this module.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
 - `DiscoveryStats.newly_discovered` counts the rows a run inserted, and is reported as

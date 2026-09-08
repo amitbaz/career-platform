@@ -17,13 +17,12 @@ from job_hunter.models import (
     CandidateContext,
     CandidatePreferences,
     CompanyWatchSeed,
+    Compensation,
     DigestItem,
     Evaluation,
     GeminiQuotaSettings,
     GeminiUsageSummary,
-    Compensation,
     Job,
-    JobFacets,
     Material,
     RunSummary,
     SearchPolicy,
@@ -2096,7 +2095,7 @@ def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(store, settings, 
     assert "eligible sources: ashby=160 remotive=40" in caplog.text
     assert "selected sources: ashby=60 remotive=40" in caplog.text
     assert (
-        "evaluation_capacity selected=100 evaluated=100 "
+        "evaluation_capacity selected=100 evaluated=100 blocked_by_facets=0 "
         "deferred_by_budget=100 quota_deferred=0"
     ) in caplog.text
 
@@ -2439,7 +2438,8 @@ def test_pipeline_logs_the_offer_cap_and_what_it_deferred(store, settings, caplo
     # Deferred by the cap is kept apart from deferred by the ranking budget:
     # they answer different questions about a short digest.
     assert (
-        "evaluation_capacity selected=9 evaluated=5 deferred_by_budget=0 "
+        "evaluation_capacity selected=9 evaluated=5 blocked_by_facets=0 "
+        "deferred_by_budget=0 "
         "quota_deferred=0 daily_offer_limit=5 delivered_offers=5 "
         "deferred_by_offer_cap=4"
     ) in caplog.text
@@ -3527,3 +3527,224 @@ def test_a_provider_pause_during_the_backfill_cannot_cost_the_run_its_digest(sto
     assert summary.facet_extraction_attempted == 0
     assert summary.scoring_skipped_without_facets == 0
     assert summary.scoring_deferred_by_read_budget == 0
+
+
+# --- Hard blockers decided from facets (issue #127) --------------------------------
+#
+# A job whose facets already disqualify it for this user is blocked before the
+# scoring call is dispatched. These tests sit at the seam because that is where
+# the saving is real: the assertion that matters in every one of them is what
+# `gemini.eval_calls` is.
+
+
+def _seed_facets(store, job, **overrides):
+    """Give `job` the facets an earlier run's read would have stored."""
+    job_id, _, _ = store.upsert_job(job)
+    store.save_job_facets(job_id, _stored_facets(**overrides))
+    return job_id
+
+
+def test_pay_below_the_users_floor_blocks_a_job_without_a_scoring_call(store, settings):
+    job = _job()
+    job_id = _seed_facets(
+        store,
+        job,
+        compensation=Compensation(
+            disclosed=True, currency="EUR", minimum=50000, maximum=60000, period="year"
+        ),
+    )
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 0
+    evaluation = store.get_evaluation(job_id)
+    assert evaluation.decision == "blocked"
+    assert len(evaluation.hard_blockers) == 1
+    assert "60000" in evaluation.hard_blockers[0]
+    assert summary.blocked_by_facets == 1
+
+
+def test_a_role_that_is_not_remote_blocks_without_a_scoring_call(store, settings):
+    job = _job()
+    job_id = _seed_facets(store, job, remote_policy="onsite")
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 0
+    assert store.get_evaluation(job_id).decision == "blocked"
+
+
+def test_a_role_requiring_relocation_blocks_without_a_scoring_call(store, settings):
+    job = _job()
+    job_id = _seed_facets(store, job, remote_policy="remote", relocation_policy="required")
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 0
+    assert "relocation" in store.get_evaluation(job_id).hard_blockers[0]
+
+
+def test_a_posting_read_this_run_can_be_blocked_in_the_same_run(store, settings):
+    # Scoring reads an unread posting inline (#126), so a job first seen today
+    # is blocked on what that read found, without the scoring call that used to
+    # be the only way to find it out.
+    # Not an Ashby posting: Ashby's structured `isRemote` flag supplies
+    # `remote_policy` itself, and a supplied facet is never asked of the model.
+    job = _job(source="remotive", source_job_id="inline-1", remote=None)
+    gemini = FakeGemini(facet_payload={**FACET_PAYLOAD, "remote_policy": "onsite"})
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 1
+    assert gemini.eval_calls == 0
+    assert summary.blocked_by_facets == 1
+
+
+def test_a_job_whose_relevant_facets_are_unknown_is_scored_rather_than_blocked(store, settings):
+    # The posting was read and simply did not say. Silence is not a "no".
+    job = _job()
+    job_id = _seed_facets(store, job, remote_policy="unknown", relocation_policy="unknown")
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, gemini=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 1
+    assert store.get_evaluation(job_id).decision == "high_priority"
+
+
+def test_facets_read_from_thin_content_do_not_block(store, settings):
+    # A `partial_unknown` posting is a search-result snippet, not a posting:
+    # `evaluate_job` already refuses a confident decision on one, and blocking
+    # is a confident decision. Reading such a posting is not gated, so the gate
+    # has to be here.
+    job = _job(source="duckduckgo", source_job_id="thin-1", content_confidence="partial_unknown")
+    job_id = _seed_facets(store, job, remote_policy="onsite")
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=gemini, telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 1
+    assert summary.blocked_by_facets == 0
+    assert store.get_evaluation(job_id).decision != "blocked"
+
+
+def test_facets_that_disqualify_nothing_reach_scoring_unchanged(store, settings):
+    job = _job()
+    job_id = _seed_facets(
+        store,
+        job,
+        remote_policy="remote",
+        relocation_policy="not_offered",
+        compensation=Compensation(
+            disclosed=True, currency="EUR", minimum=100000, maximum=130000, period="year"
+        ),
+    )
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=FakeGemini(), telegram=telegram)
+
+    assert summary.ready_to_apply == 1
+    assert telegram.messages
+    assert store.get_evaluation(job_id).decision == "high_priority"
+
+
+def test_the_block_is_decided_against_this_users_own_floor(store, policy, settings):
+    # The facts are shared; the floor is not. The same disclosed maximum is a
+    # blocker under one profile and not under another, so the answer can never
+    # be reused across users.
+    blocked_job = _job(source_job_id="job-blocked")
+    scored_job = _job(source_job_id="job-scored", company="Globex")
+    disclosed = dict(
+        compensation=Compensation(
+            disclosed=True, currency="EUR", minimum=90000, maximum=100000, period="year"
+        )
+    )
+    blocked_id = _seed_facets(store, blocked_job, **disclosed)
+    scored_id = _seed_facets(store, scored_job, **disclosed)
+
+    strict = dataclasses.replace(settings, policy=dataclasses.replace(policy, salary_floor_eur=120000))
+    lenient = dataclasses.replace(settings, policy=dataclasses.replace(policy, salary_floor_eur=90000))
+
+    strict_gemini = FakeGemini()
+    run_pipeline(strict, sources=[FakeSource([blocked_job])], store=store,
+                 gemini=strict_gemini, telegram=FakeTelegram())
+    lenient_gemini = FakeGemini()
+    run_pipeline(lenient, sources=[FakeSource([scored_job])], store=store,
+                 gemini=lenient_gemini, telegram=FakeTelegram())
+
+    assert strict_gemini.eval_calls == 0
+    assert store.get_evaluation(blocked_id).decision == "blocked"
+    assert lenient_gemini.eval_calls == 1
+    assert store.get_evaluation(scored_id).decision == "high_priority"
+
+
+def test_a_facet_block_is_not_counted_as_an_evaluation(store, settings):
+    # `evaluation_attempted`/`evaluated` exist to detect a run where every
+    # fresh scoring call failed. A block that makes no call is a success and
+    # must not be able to mask that.
+    job = _job()
+    _seed_facets(store, job, remote_policy="onsite")
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=FakeGemini(), telegram=FakeTelegram())
+
+    assert summary.blocked_by_facets == 1
+    assert summary.evaluation_attempted == 0
+    assert summary.evaluated == 0
+    # Nor is it one of the jobs #126 leaves unscored: it has facets, and they
+    # are what decided it.
+    assert summary.scoring_skipped_without_facets == 0
+
+
+def test_a_blocked_job_is_never_delivered(store, settings):
+    job = _job()
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           gemini=FakeGemini(), telegram=telegram)
+    assert summary.ready_to_apply == 1
+
+    blocked = _job(source_job_id="job-2", company="Globex")
+    _seed_facets(store, blocked, remote_policy="onsite")
+    second = FakeTelegram()
+
+    summary = run_pipeline(settings, sources=[FakeSource([blocked])], store=store,
+                           gemini=FakeGemini(), telegram=second)
+
+    assert summary.ready_to_apply == 0
+    assert summary.blocked_by_facets == 1
+    assert not any("Globex" in message for message in second.messages)
+
+
+def test_a_block_is_counted_only_once_it_is_stored(store, settings):
+    # The counter reports what a run did, so it may not run ahead of the
+    # write: a failed store write leaves the job unevaluated and eligible
+    # again next run, and counting it here would double-count that job.
+    job = _job()
+    _seed_facets(store, job, remote_policy="onsite")
+
+    class FailingSave:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+        def save_evaluation(self, job_id, evaluation):
+            raise RuntimeError("write failed")
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=FailingSave(store),
+                           gemini=FakeGemini(), telegram=FakeTelegram())
+
+    assert summary.blocked_by_facets == 0
+    assert summary.errors == 1

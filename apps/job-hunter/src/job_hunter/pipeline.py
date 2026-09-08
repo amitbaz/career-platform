@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
 
+from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.availability import UNVERIFIED
 from job_hunter.candidate_context import get_candidate_context
@@ -24,8 +25,14 @@ from job_hunter.gemini_usage import (
     GeminiQuotaPaused,
     GeminiTemporaryCapacity,
 )
+from job_hunter.hard_blockers import (
+    BlockingThresholds,
+    blocked_evaluation,
+    hard_blockers_from_facets,
+)
 from job_hunter.http import HttpClient
 from job_hunter.job_identity import normalize_company_name
+from job_hunter.market_policy import market_by_id
 from job_hunter.models import (
     AtsReference,
     CandidateContext,
@@ -791,7 +798,7 @@ def _evaluate_and_deliver_job(
     summary: RunSummary,
     queued_job_ids: set[str],
     needs_facets: set[str],
-) -> tuple[bool, bool, str | None, bool]:
+) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest, containing its failures.
 
     No single job may end a run. The inner function already catches a failed
@@ -824,7 +831,38 @@ def _evaluate_and_deliver_job(
             job.company,
         )
         summary.errors += 1
-        return False, False, None, False
+        return False, False, None, False, False
+
+
+def _facet_decided_blockers(
+    job: Job, facets: JobFacets, settings: Settings
+) -> list[str]:
+    """Return the hard blockers this job's facets establish, if any (#127).
+
+    `facets` are the ones scoring is about to be given, so blocking reads
+    exactly what the model would have read -- there is no second, staler view
+    of the posting to disagree with it, and no extra store read.
+
+    Empty means "score it". Every step fails open on purpose: an absent fact
+    is not evidence of a disqualifying one, and dropping a job over one would
+    be a far worse failure than spending the call.
+    """
+    if not content_confidence.is_sufficient(job.content_confidence):
+        # Thin or unverified content is the one case where a facet may have
+        # been read from a search-result snippet rather than the posting.
+        # `evaluate_job` already refuses a confident decision on such a job,
+        # and a block is a confident decision -- so it goes to the model,
+        # which sees the same thin material and can weigh it in context.
+        return []
+
+    market = (
+        market_by_id(settings.policy, job.market_id)
+        if job.market_id and settings.policy.markets
+        else None
+    )
+    return hard_blockers_from_facets(
+        facets, BlockingThresholds.for_job(job, settings.policy, market)
+    )
 
 
 def _evaluate_and_deliver_one_job(
@@ -838,19 +876,21 @@ def _evaluate_and_deliver_one_job(
     summary: RunSummary,
     queued_job_ids: set[str],
     needs_facets: set[str],
-) -> tuple[bool, bool, str | None, bool]:
+) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest.
 
-    Returns (promoted, blocked, decision, offered). `summary.evaluation_attempted`
+    Returns (promoted, blocked, decision, offered, scored). `summary.evaluation_attempted`
     is incremented here rather than reported back, so it counts the fresh
     Gemini evaluations actually made (not the already-evaluated shortcut
     below) even when a later step for the same job fails and the caller never
     sees a return value. `offered` is True when this job will reach the user
-    as an offer, which is what the daily offer limit counts.
+    as an offer, which is what the daily offer limit counts. `scored` is False
+    when the decision came from the job's facets rather than from the model,
+    so the caller can keep `summary.evaluated` a count of model evaluations.
     """
     if store.get_evaluation(job_id) is not None and store.has_delivery(job_id, "telegram_message"):
         store.complete_ai_work("job_evaluation", job_id)
-        return False, False, None, False
+        return False, False, None, False, False
 
     # Scoring is handed the posting's facets, not its description (#126), so
     # a posting nobody has read yet is read here, once, before it is scored.
@@ -863,7 +903,7 @@ def _evaluate_and_deliver_one_job(
             "reading the posting for job_id=%s was paused by Gemini quota", job_id
         )
         store.enqueue_ai_work("job_evaluation", job_id)
-        return False, True, None, False
+        return False, True, None, False, False
     except GeminiBudgetExceeded:
         # The *non-core* daily budget is out, not evaluation's reserve: a job
         # whose posting was already read still scores this run, so this must
@@ -875,7 +915,7 @@ def _evaluate_and_deliver_one_job(
         )
         summary.scoring_deferred_by_read_budget += 1
         store.enqueue_ai_work("job_evaluation", job_id)
-        return False, False, None, False
+        return False, False, None, False, False
 
     if facets is None:
         # Scoring against an empty requirements list would read "this posting
@@ -886,40 +926,60 @@ def _evaluate_and_deliver_one_job(
             "job_id=%s has no readable facets; not scored this run", job_id
         )
         summary.scoring_skipped_without_facets += 1
-        return False, False, None, False
+        return False, False, None, False, False
 
-    try:
-        evaluation = _waiting_out_capacity(
-            lambda: evaluate_job(
-                job,
-                facets,
-                candidate_context,
-                settings.policy,
-                gemini,
-            ),
-            doing="scoring",
-            job_id=job_id,
-        )
-    except (GeminiBudgetExceeded, GeminiQuotaPaused):
-        logger.warning(
-            "job evaluation deferred by Gemini quota for job_id=%s",
+    # A job those same facts already disqualify for this user costs nothing
+    # more to establish (#127): the comparison is between the posting's shared
+    # facets and this profile's own numbers, and everything below handles the
+    # resulting evaluation exactly as it handles the model's.
+    facet_blockers = _facet_decided_blockers(job, facets, settings)
+    scored = not facet_blockers
+    if facet_blockers:
+        evaluation = blocked_evaluation(job, facet_blockers)
+        logger.info(
+            "blocked job_id=%s from facets without a scoring call: %s",
             job_id,
+            "; ".join(facet_blockers),
         )
-        store.enqueue_ai_work("job_evaluation", job_id)
-        return False, True, None, False
-    except Exception:
-        logger.exception("evaluation failed for job_id=%s", job_id)
-        summary.evaluation_attempted += 1
-        summary.errors += 1
-        return False, False, None, False
+    else:
+        try:
+            evaluation = _waiting_out_capacity(
+                lambda: evaluate_job(
+                    job,
+                    facets,
+                    candidate_context,
+                    settings.policy,
+                    gemini,
+                ),
+                doing="scoring",
+                job_id=job_id,
+            )
+        except (GeminiBudgetExceeded, GeminiQuotaPaused):
+            logger.warning(
+                "job evaluation deferred by Gemini quota for job_id=%s",
+                job_id,
+            )
+            store.enqueue_ai_work("job_evaluation", job_id)
+            return False, True, None, False, False
+        except Exception:
+            logger.exception("evaluation failed for job_id=%s", job_id)
+            summary.evaluation_attempted += 1
+            summary.errors += 1
+            return False, False, None, False, False
 
-    summary.evaluation_attempted += 1
+        summary.evaluation_attempted += 1
+
     # A job selected earlier in the run can have been merged away since --
     # discovery merges duplicates while it is still building the shortlist --
     # so the id that row lives under now is whatever the store wrote against,
     # not necessarily the one selected. Everything below has to use that one:
     # the id it replaced names a row that no longer exists (#145).
     written_job_id = store.save_evaluation(job_id, evaluation)
+    if not scored:
+        # Counted here rather than where the block was decided: the counter
+        # reports what the run did, and a write that did not land leaves the
+        # job unevaluated and eligible again tomorrow, to be counted then.
+        summary.blocked_by_facets += 1
     already_delivered = False
     if written_job_id != job_id:
         job_id = written_job_id
@@ -973,7 +1033,7 @@ def _evaluate_and_deliver_one_job(
             summary.withheld_by_score_floor += 1
         else:
             summary.skipped += 1
-        return promoted, False, evaluation.decision, False
+        return promoted, False, evaluation.decision, False, scored
 
     item = DigestItem(
         job_id=job_id,
@@ -1004,7 +1064,8 @@ def _evaluate_and_deliver_one_job(
         summary.skipped += 1
 
     offered = not already_delivered and evaluation.decision in _OFFER_DECISIONS
-    return promoted, False, evaluation.decision, offered
+    return promoted, False, evaluation.decision, offered, scored
+
 
 def _format_gemini_usage_log(summary: GeminiUsageSummary) -> str:
     """One structured log line at run completion: totals plus per-purpose counts."""
@@ -1223,7 +1284,7 @@ def run_pipeline(
         if job is None:
             store.complete_ai_work("job_evaluation", job_id)
             continue
-        promoted, blocked, decision, offered = _evaluate_and_deliver_job(
+        promoted, blocked, decision, offered, scored = _evaluate_and_deliver_job(
             job_id,
             job,
             candidate_context,
@@ -1235,7 +1296,7 @@ def run_pipeline(
             queued_job_ids,
             needs_facets,
         )
-        if decision is not None:
+        if decision is not None and scored:
             summary.evaluated += 1
         if offered:
             delivered_offers += 1
@@ -1272,7 +1333,7 @@ def run_pipeline(
                 summary.errors += 1
             quota_deferred_count += 1
             continue
-        promoted, blocked, decision, offered = _evaluate_and_deliver_job(
+        promoted, blocked, decision, offered, scored = _evaluate_and_deliver_job(
             job_id,
             job,
             candidate_context,
@@ -1284,7 +1345,7 @@ def run_pipeline(
             queued_job_ids,
             needs_facets,
         )
-        if decision is not None:
+        if decision is not None and scored:
             summary.evaluated += 1
         if offered:
             delivered_offers += 1
@@ -1332,13 +1393,15 @@ def run_pipeline(
     )
 
     logger.info(
-        "evaluation_capacity selected=%s evaluated=%s deferred_by_budget=%s "
+        "evaluation_capacity selected=%s evaluated=%s blocked_by_facets=%s "
+        "deferred_by_budget=%s "
         "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
         "deferred_by_offer_cap=%s match_score_floor=%s "
         "withheld_by_score_floor=%s skipped_without_facets=%s "
         "deferred_by_read_budget=%s",
         len(selected),
         summary.evaluated,
+        summary.blocked_by_facets,
         deferred_by_budget,
         quota_deferred_count,
         offer_limit,
