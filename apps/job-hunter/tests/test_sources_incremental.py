@@ -404,6 +404,14 @@ def test_company_watch_does_not_check_the_second_watch_until_the_first_is_consum
 
     assert next(jobs).source_job_id == "2"
     assert http.boards == ["acme", "globex"]
+    # Watch 1's success is recorded only once its postings have been handed
+    # over -- which is what advancing into watch 2 proves. Watch 2's is not
+    # recorded yet: its own posting is still parked at the `yield`, and a
+    # caller that stops here (the per-source time budget does) must leave that
+    # watch looking unchecked rather than freshly checked.
+    assert store.successes == [1]
+
+    assert list(jobs) == []
     assert store.successes == [1, 2]
 
 

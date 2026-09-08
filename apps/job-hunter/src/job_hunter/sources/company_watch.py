@@ -111,6 +111,13 @@ class CompanyWatchSource:
                     )
                 continue
 
+            # Handed over first, health written afterwards: a caller can stop
+            # between a watch's postings -- the per-source time budget does --
+            # and recording the check before the drain would mark a watch as
+            # freshly checked when most of it was never delivered. An
+            # unfinished watch is left as it was and checked again next run.
+            yield from jobs
+
             try:
                 self._store.record_watch_success(watch["id"], checked_at)
             except Exception:
@@ -119,7 +126,6 @@ class CompanyWatchSource:
                     watch["company_name"],
                     exc_info=True,
                 )
-            yield from jobs
 
     def _discover_watch(self, watch) -> list[Job]:
         """Return one watch's jobs, raising if its endpoint failed.

@@ -5,7 +5,13 @@ import pytest
 
 from job_hunter.canonical import CanonicalResolver
 from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS, PARTIAL_UNKNOWN
-from job_hunter.discovery import _dedupe, _merge_fields, collect_candidates
+from job_hunter.discovery import (
+    _dedupe,
+    _format_source_cost,
+    _merge_fields,
+    budget_applied,
+    collect_candidates,
+)
 from job_hunter.search_backend import SearchResponse
 from job_hunter.models import (
     AtsReference,
@@ -2136,3 +2142,295 @@ def test_collect_candidates_keeps_indistinguishable_sources_separate(store, poli
     result = collect_candidates([first, second], store, http, policy, clock=clock)
 
     assert sorted(result.stats.elapsed_by_source.values()) == [3.0, 7.0]
+
+
+class BudgetedSource:
+    """A source whose every unit of work costs a fixed amount of time.
+
+    Shaped like the real ones: a unit is one fetch followed by one yield, so
+    the only place the caller can stop it is between units. It records what
+    it actually ran, which is how the tests tell "stopped between units" from
+    "stopped mid-unit".
+    """
+
+    def __init__(self, jobs, clock, http, *, seconds_per_job, label) -> None:
+        self._jobs = jobs
+        self._clock = clock
+        self._http = http
+        self._seconds_per_job = seconds_per_job
+        self.source_label = label
+        self.units_started = 0
+        self.units_completed = 0
+        self.closed_cleanly = False
+
+    def discover(self):
+        try:
+            for job in self._jobs:
+                self.units_started += 1
+                self._clock.advance(self._seconds_per_job)
+                self._http.get("https://example.test/listing")
+                self.units_completed += 1
+                yield job
+        except GeneratorExit:
+            # Raised at the `yield`, never inside the fetch above: that is
+            # the guarantee "cut off between units, never mid-request" means.
+            self.closed_cleanly = True
+            raise
+
+
+def _budget_policy(policy, seconds):
+    policy.source_time_budget_seconds = seconds
+    return policy
+
+
+def test_collect_candidates_cuts_off_a_source_that_exceeds_its_budget(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+
+    result = collect_candidates(
+        [source], store, http, _budget_policy(policy, 25.0), clock=clock
+    )
+
+    # Three units fit: the budget is only checked between them, so the unit
+    # that crosses it still finishes rather than being torn up mid-request.
+    assert source.units_started == 3
+    assert result.stats.raw == 3
+    assert result.stats.source_outcomes == {"slow": "cut_off"}
+
+
+def test_a_cut_off_source_is_stopped_between_units_never_mid_request(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+
+    collect_candidates([source], store, http, _budget_policy(policy, 25.0), clock=clock)
+
+    assert source.units_started == source.units_completed
+    assert source.closed_cleanly
+
+
+def test_a_cut_off_sources_jobs_flow_through_the_pipeline(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+
+    result = collect_candidates(
+        [source], store, http, _budget_policy(policy, 25.0), clock=clock
+    )
+
+    # Partial results are kept, not discarded: a cut-off board contributes
+    # what it harvested rather than nothing at all.
+    assert len(result.eligible) == 3
+    assert result.stats.eligible == 3
+    assert result.stats.per_source == {"slow": 3}
+
+
+def test_sources_after_a_cut_off_source_still_run_and_are_measured(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    slow = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+    later = BudgetedSource(
+        [_costed_job("later", "1")], clock, http, seconds_per_job=2.0, label="later"
+    )
+
+    result = collect_candidates(
+        [slow, later], store, http, _budget_policy(policy, 25.0), clock=clock
+    )
+
+    assert later.units_completed == 1
+    assert result.stats.elapsed_by_source == {"slow": 30.0, "later": 2.0}
+    assert result.stats.requests_by_source == {"slow": 3, "later": 1}
+    assert result.stats.source_outcomes == {"slow": "cut_off", "later": "completed"}
+
+
+def test_the_cost_of_a_cut_off_source_covers_the_work_it_did(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+
+    result = collect_candidates(
+        [source], store, http, _budget_policy(policy, 25.0), clock=clock
+    )
+
+    assert result.stats.elapsed_by_source == {"slow": 30.0}
+    assert result.stats.requests_by_source == {"slow": 3}
+
+
+def test_a_source_that_raises_is_recorded_as_failed_not_cut_off(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    broken = CostlySource(
+        [], clock, http, seconds=5.0, requests=2, label="broken", raises=True
+    )
+    good = CostlySource(
+        [_costed_job("good", "1")], clock, http, seconds=1.0, requests=1, label="good"
+    )
+
+    result = collect_candidates(
+        [broken, good], store, http, _budget_policy(policy, 600.0), clock=clock
+    )
+
+    assert result.stats.source_outcomes == {"broken": "failed", "good": "completed"}
+    assert result.stats.raw == 1
+
+
+def test_a_source_whose_single_unit_outlasts_the_budget_reports_it_unbounded(
+    store, policy
+):
+    """One indivisible fetch cannot be bounded, and the report says so.
+
+    The budget can only cut between units. A source that spends its whole
+    cost inside one unit has no earlier boundary to be stopped at, so the
+    existing request timeout is what bounds it, not this budget. That is
+    derived from the source's longest unit rather than declared per adapter,
+    so it stays true for an adapter nobody has annotated.
+    """
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("indivisible", "1"), _costed_job("indivisible", "2")],
+        clock,
+        http,
+        seconds_per_job=100.0,
+        label="indivisible",
+    )
+
+    result = collect_candidates(
+        [source], store, http, _budget_policy(policy, 25.0), clock=clock
+    )
+
+    stats = result.stats
+    assert stats.longest_step_by_source == {"indivisible": 100.0}
+    assert stats.source_outcomes == {"indivisible": "cut_off"}
+    # The one unit that ran overshot the budget on its own, so the budget
+    # never had a boundary early enough to help.
+    assert budget_applied(stats, "indivisible", 25.0) is False
+    assert stats.raw == 1
+
+
+def test_a_divisible_source_cut_off_is_not_reported_unbounded(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+
+    result = collect_candidates(
+        [source], store, http, _budget_policy(policy, 25.0), clock=clock
+    )
+
+    assert budget_applied(result.stats, "slow", 25.0) is True
+
+
+def test_source_cost_log_distinguishes_cut_off_failed_and_unbounded(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    slow = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(5)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+    indivisible = BudgetedSource(
+        [_costed_job("indivisible", "1")],
+        clock,
+        http,
+        seconds_per_job=100.0,
+        label="indivisible",
+    )
+    broken = CostlySource(
+        [], clock, http, seconds=1.0, requests=1, label="broken", raises=True
+    )
+    fine = BudgetedSource(
+        [_costed_job("fine", "1")], clock, http, seconds_per_job=1.0, label="fine"
+    )
+
+    result = collect_candidates(
+        [slow, indivisible, broken, fine],
+        store,
+        http,
+        _budget_policy(policy, 25.0),
+        clock=clock,
+    )
+
+    rendered = _format_source_cost(result.stats, 25.0)
+    assert "slow=30.0s/3req(cut_off)" in rendered
+    assert "indivisible=100.0s/1req(cut_off,budget_not_applicable)" in rendered
+    assert "broken=1.0s/1req(failed)" in rendered
+    assert "fine=1.0s/1req" in rendered
+    assert "fine=1.0s/1req(" not in rendered
+
+
+def test_a_generous_budget_leaves_a_run_unchanged(store, policy):
+    """The default is loose on purpose: the first run must still measure reality."""
+    clock = FakeClock()
+    http = CountingHttp()
+    jobs = [_costed_job("slow", str(index)) for index in range(5)]
+    source = BudgetedSource(jobs, clock, http, seconds_per_job=10.0, label="slow")
+
+    result = collect_candidates([source], store, http, policy, clock=clock)
+
+    assert source.units_completed == 5
+    assert result.stats.raw == 5
+    assert result.stats.source_outcomes == {"slow": "completed"}
+
+
+def test_a_non_positive_budget_means_no_budget(store, policy):
+    """Zero is "unbounded", not "cut everything off immediately".
+
+    Reading a missing or zeroed setting as a zero-second budget would
+    silently stop every source at its first unit -- the most destructive
+    possible interpretation of an unset value.
+    """
+    clock = FakeClock()
+    http = CountingHttp()
+    source = BudgetedSource(
+        [_costed_job("slow", str(index)) for index in range(3)],
+        clock,
+        http,
+        seconds_per_job=10.0,
+        label="slow",
+    )
+
+    result = collect_candidates(
+        [source], store, http, _budget_policy(policy, 0.0), clock=clock
+    )
+
+    assert result.stats.raw == 3
+    assert result.stats.source_outcomes == {"slow": "completed"}

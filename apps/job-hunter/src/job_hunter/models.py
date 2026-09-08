@@ -47,6 +47,16 @@ DEFAULT_BLOCKED_PROFESSION_TITLE_PHRASES = [
     "embedded engineer",
 ]
 
+#: Wall-clock seconds any one job source may spend before discovery cuts it
+#: off. Deliberately loose. No source's normal cost is known yet -- that is
+#: what the per-source timing exists to establish -- and a tight default would
+#: silently truncate healthy sources on the very first run, producing data
+#: about the budget rather than about the sources. 1800s sits above every gap
+#: seen in the 47-minute discovery of the reference run (34138786671) while
+#: still stopping one source from consuming a whole run. Tightening it belongs
+#: to a later ticket, decided from the numbers rather than guessed at now.
+DEFAULT_SOURCE_TIME_BUDGET_SECONDS = 1800.0
+
 DEFAULT_SPECIALIST_BOARD_HOSTS = [
     "wellfound.com", "jobs.techaviv.com", "devjobs.co.il", "workvisajobs.co.uk",
     "nodeflair.com", "sg.jobstreet.com", "mycareersfuture.gov.sg", "builtin.com",
@@ -222,6 +232,17 @@ class SearchPolicy:
     specialist_query_templates: list[str] = field(default_factory=list)
     yc_job_pages: list[str] = field(default_factory=list)
     manual_company_watch: list[CompanyWatchSeed] = field(default_factory=list)
+    #: Wall-clock seconds any one source may spend before it is cut off,
+    #: checked between the units of work it iterates over. See
+    #: DEFAULT_SOURCE_TIME_BUDGET_SECONDS for why the default is loose.
+    #:
+    #: A zero or negative value here disables the budget, so that a caller
+    #: constructing a policy directly can opt out. That is *not* how the
+    #: environment variable behaves: `JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS=0`
+    #: is treated as a misconfiguration and replaced by the default, because a
+    #: zeroed setting is far more often a mistake than a deliberate opt-out.
+    #: `config._source_time_budget_seconds` is where that decision lives.
+    source_time_budget_seconds: float = DEFAULT_SOURCE_TIME_BUDGET_SECONDS
     max_search_queries_per_run: int = 30
     max_canonical_resolutions_per_run: int = 80
     max_learned_ats_boards_per_run: int = 75

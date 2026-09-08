@@ -668,3 +668,57 @@ def test_learned_ats_source_allowlist_does_not_override_health_backoff(store):
     assert jobs == []
     assert source.stats.boards_failed == 1
     assert store.list_due_ats_boards(now) == []
+
+
+def test_a_board_abandoned_part_way_is_not_recorded_as_a_successful_scan(store):
+    """Stopping mid-board must not claim a harvest that was never delivered.
+
+    The per-source time budget cuts between the postings a board yields, so a
+    board's bookkeeping can no longer be written before its postings are
+    handed over: doing that stamps `last_checked_at`, demoting the board in
+    the oldest-first ranking, and records a job count nothing received.
+    """
+    _seed_board(store, "lever", "big-lever")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"lever.co": _lever_postings(5, "big-lever")})
+
+    source = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: now
+    )
+    jobs = source.discover()
+    taken = [next(jobs), next(jobs)]
+    jobs.close()
+
+    assert len(taken) == 2
+    # Only what was actually handed over is counted, and the board is not
+    # claimed as a completed scan.
+    assert source.stats.jobs_raw == 2
+    assert source.stats.boards_successful == 0
+
+    later = now + timedelta(hours=25)
+    entries = {
+        entry.board_identifier: entry for entry in store.list_due_ats_boards(later)
+    }
+    # Still due: an unfinished scan must not look like a fresh one.
+    assert entries["big-lever"].last_success_at is None
+
+
+def test_a_fully_drained_board_is_still_recorded_as_a_successful_scan(store):
+    _seed_board(store, "lever", "big-lever")
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    http = RoutingHttp(responses={"lever.co": _lever_postings(5, "big-lever")})
+
+    source = LearnedAtsSource(
+        store, http, limit=10, market_order=["berlin"], now=lambda: now
+    )
+    jobs = list(source.discover())
+
+    assert len(jobs) == 5
+    assert source.stats.jobs_raw == 5
+    assert source.stats.boards_successful == 1
+
+    later = now + timedelta(hours=25)
+    entries = {
+        entry.board_identifier: entry for entry in store.list_due_ats_boards(later)
+    }
+    assert entries["big-lever"].last_success_at is not None

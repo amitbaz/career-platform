@@ -706,3 +706,46 @@ def test_load_settings_rejects_non_positive_location_floor(monkeypatch):
                 ]
             )
         )
+
+
+def test_source_time_budget_defaults_generously(monkeypatch):
+    """An unconfigured budget must not truncate healthy sources.
+
+    The whole point of the default is that the first run after the budget
+    lands still measures the sources rather than the budget: the reference
+    run's discovery took 47 minutes across its sources, so a default below
+    that would report the cap instead of the cost.
+    """
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+    monkeypatch.delenv("JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS", raising=False)
+
+    settings = _load(_profile(max_jobs_per_run=25))
+
+    assert settings.policy.source_time_budget_seconds >= 1800.0
+
+
+def test_source_time_budget_is_overridable_from_the_environment(monkeypatch):
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+    monkeypatch.setenv("JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS", "120")
+
+    settings = _load(_profile(max_jobs_per_run=25))
+
+    assert settings.policy.source_time_budget_seconds == 120.0
+
+
+@pytest.mark.parametrize("raw", ["nonsense", "0", "-30", "nan", "inf", "1e400"])
+def test_an_unusable_source_time_budget_falls_back_to_the_default(monkeypatch, raw):
+    """A bad value must not become a zero-second budget or no budget at all.
+
+    Reading "0" or a typo as the budget would cut every source off at its
+    first unit -- a misconfiguration turning a safeguard into the outage it
+    exists to prevent. The non-finite floats `float()` accepts fail the other
+    way: `nan` compares False against every elapsed time, so it would disable
+    the budget for the whole run while looking configured.
+    """
+    monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
+    monkeypatch.setenv("JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS", raw)
+
+    settings = _load(_profile(max_jobs_per_run=25))
+
+    assert settings.policy.source_time_budget_seconds == 1800.0

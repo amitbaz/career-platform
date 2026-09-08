@@ -164,8 +164,19 @@ class LearnedAtsSource:
                 self._reject_board(entry, checked_at, rejection)
                 continue
 
+            # Counted as handed over, and the board's health written only
+            # once every posting has been. A caller can stop between the
+            # postings of a board -- that is what the per-source time budget
+            # does -- and writing either before the drain would stamp
+            # `last_checked_at` on a board that was never finished, demoting
+            # it in the oldest-first ranking, and record a job count nothing
+            # received. On a cut-off the drain never completes, so the board
+            # stays due and is scanned again next run, which is correct.
+            for job in jobs:
+                self.stats.jobs_raw += 1
+                yield job
+
             self.stats.boards_successful += 1
-            self.stats.jobs_raw += len(jobs)
             try:
                 self._store.record_ats_scan_success(
                     entry.provider, entry.board_identifier, checked_at, len(jobs)
@@ -177,7 +188,6 @@ class LearnedAtsSource:
                     entry.board_identifier,
                     exc_info=True,
                 )
-            yield from jobs
 
     def _scan_board(self, source_type, board_identifier: str) -> list[Job]:
         """Return one board's jobs, re-raising the request failure it hid.
