@@ -18,6 +18,7 @@ from .models import (
     DEFAULT_SPECIALIST_BOARD_HOSTS,
     CompanyWatchSeed,
     GeminiQuotaSettings,
+    ProviderCredentials,
     SearchPolicy,
     Settings,
     MarketPolicy,
@@ -59,12 +60,36 @@ class SupabaseSettings:
     signing_key_jwk: dict = field(repr=False)
 
 
-def load_gmail_settings() -> GmailSettings:
+class ProfileNotFoundError(RuntimeError):
+    """Raised when the acting user has no row in job_hunter_search_profiles."""
+
+
+class RuntimeConfigurationError(RuntimeError):
+    """Raised when required per-user runtime material is absent."""
+
+
+def load_provider_credentials(store: "PostgresJobStore") -> ProviderCredentials:
+    """Load provider credentials through the authenticated user store."""
+    return store.get_provider_credentials()
+
+
+def _load_required_documents(store: "PostgresJobStore") -> tuple[str, str]:
+    """Load candidate documents in the order used by runtime validation."""
+    documents = store.get_source_documents()
+    return documents.get("cv", ""), documents.get("cover_letter", "")
+
+
+def load_gmail_settings(store: "PostgresJobStore") -> GmailSettings:
+    credentials = load_provider_credentials(store)
+    if not credentials.gemini_api_key:
+        raise RuntimeConfigurationError(
+            "Missing per-user Job Hunter configuration: gemini"
+        )
     return GmailSettings(
         client_id=_require_env("GMAIL_CLIENT_ID"),
         client_secret=_require_env("GMAIL_CLIENT_SECRET"),
         refresh_token=_require_env("GMAIL_REFRESH_TOKEN"),
-        gemini_api_key=_require_env("GEMINI_API_KEY"),
+        gemini_api_key=credentials.gemini_api_key,
         gemini_quota=GeminiQuotaSettings(
             rpm=_require_positive_int_env("GEMINI_FREE_RPM"),
             tpm=_require_positive_int_env("GEMINI_FREE_TPM"),
@@ -72,10 +97,6 @@ def load_gmail_settings() -> GmailSettings:
         ),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
     )
-
-
-class ProfileNotFoundError(RuntimeError):
-    """Raised when the acting user has no row in job_hunter_search_profiles."""
 
 
 def load_settings(store: "PostgresJobStore") -> Settings:
@@ -88,9 +109,21 @@ def load_settings(store: "PostgresJobStore") -> Settings:
     profile_row, market_row_list = result
     data = _profile_row_to_legacy_dict(profile_row, market_row_list)
 
-    gemini_api_key = _require_env("GEMINI_API_KEY")
-    candidate_profile = base64.b64decode(_require_env("CANDIDATE_PROFILE_B64")).decode("utf-8")
-    cover_letter_template = base64.b64decode(_require_env("COVER_LETTER_TEMPLATE_B64")).decode("utf-8")
+    credentials = load_provider_credentials(store)
+    candidate_profile, cover_letter_template = _load_required_documents(store)
+    missing = [
+        name
+        for name, value in (
+            ("gemini", credentials.gemini_api_key),
+            ("cv", candidate_profile),
+            ("cover_letter", cover_letter_template),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeConfigurationError(
+            f"Missing per-user Job Hunter configuration: {', '.join(missing)}"
+        )
     dry_run = os.environ.get("JOB_HUNTER_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
     if not dry_run:
@@ -149,7 +182,7 @@ def load_settings(store: "PostgresJobStore") -> Settings:
     )
 
     return Settings(
-        gemini_api_key=gemini_api_key,
+        gemini_api_key=credentials.gemini_api_key,
         candidate_profile=candidate_profile,
         cover_letter_template=cover_letter_template,
         timezone=data.get("timezone", "Europe/Berlin"),
@@ -160,6 +193,7 @@ def load_settings(store: "PostgresJobStore") -> Settings:
             tpm=_require_positive_int_env("GEMINI_FREE_TPM"),
             rpd=_require_positive_int_env("GEMINI_FREE_RPD"),
         ),
+        brave_search_api_key=credentials.brave_search_api_key,
         dry_run=dry_run,
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,

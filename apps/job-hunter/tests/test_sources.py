@@ -1,11 +1,15 @@
-import base64
 import dataclasses
 
 import pytest
 
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.config import load_settings
-from job_hunter.models import GeminiQuotaSettings, SearchPolicy, Settings
+from job_hunter.models import (
+    GeminiQuotaSettings,
+    ProviderCredentials,
+    SearchPolicy,
+    Settings,
+)
 from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.search_profile import SearchProfile, SearchProfileMarket
 from job_hunter.sources import (
@@ -429,18 +433,19 @@ def test_build_sources_includes_always_on_and_configured_ats(fake_http, policy):
     assert "LearnedAtsSource" not in kinds
 
 
-def test_build_sources_uses_only_brave_for_metered_market_discovery(
-    fake_http, monkeypatch, tmp_path, supabase_client
-):
-    # `SearchUsageLedger` is Postgres-backed now (issue #70 task 12), so
-    # exercising a real Brave budget needs the local Supabase stack via
-    # `supabase_client`, same as every other store-backed test. (The
-    # `brave_queries_available_today` monkeypatch this test used to carry was
-    # already dead: `build_sources` only ever calls it through
-    # `budget.available_today()`, which resolves the name from inside
-    # `search_budget.py`'s own module scope, not this module's imported
-    # alias -- removed rather than kept as misleading no-op cover.)
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+def test_build_sources_uses_only_brave_for_metered_market_discovery(fake_http):
+    class Budget:
+        monthly_limit = 1000
+
+        def available_today(self):
+            return 10
+
+        def discovery_allowance(self):
+            return 10
+
+        def reserve(self):
+            pass
+
     settings = Settings(
         gemini_api_key="g",
         candidate_profile="profile",
@@ -449,9 +454,10 @@ def test_build_sources_uses_only_brave_for_metered_market_discovery(
         scheduled_hour=9,
         policy=make_market_policy(),
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
+        brave_search_api_key="brave-key",
     )
 
-    sources = build_sources(settings, fake_http, supabase_client=supabase_client)
+    sources = build_sources(settings, fake_http, brave_budget=Budget())
 
     kinds = [type(s).__name__ for s in sources]
     assert kinds.count("TargetedSearchSource") == 1
@@ -459,10 +465,8 @@ def test_build_sources_uses_only_brave_for_metered_market_discovery(
 
 
 def test_build_sources_skips_market_discovery_sources_without_brave_key(
-    store,
-    fake_http, policy, monkeypatch, tmp_path
+    fake_http, policy
 ):
-    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
     settings = Settings(
         gemini_api_key="g",
         candidate_profile="profile",
@@ -473,7 +477,7 @@ def test_build_sources_skips_market_discovery_sources_without_brave_key(
         gemini_quota=GeminiQuotaSettings(rpm=10, tpm=250000, rpd=500),
     )
 
-    sources = build_sources(settings, fake_http, store=store)
+    sources = build_sources(settings, fake_http, store=object())
 
     kinds = [type(s).__name__ for s in sources]
     assert "TargetedSearchSource" not in kinds
@@ -783,14 +787,6 @@ def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg
     store,
     fake_http, monkeypatch
 ):
-    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv(
-        "CANDIDATE_PROFILE_B64", base64.b64encode(b"profile").decode()
-    )
-    monkeypatch.setenv(
-        "COVER_LETTER_TEMPLATE_B64", base64.b64encode(b"template").decode()
-    )
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
     monkeypatch.setenv("GEMINI_FREE_RPM", "10")
     monkeypatch.setenv("GEMINI_FREE_TPM", "250000")
@@ -798,6 +794,16 @@ def test_build_sources_from_real_config_includes_new_coverage_sources_and_no_ddg
 
     profile_store = PostgresJobStore(FakeSupabaseClient())
     profile_store.save_search_profile(_profile_matching_former_search_yml())
+    monkeypatch.setattr(
+        profile_store,
+        "get_provider_credentials",
+        lambda: ProviderCredentials(gemini_api_key="stored-gemini"),
+    )
+    monkeypatch.setattr(
+        profile_store,
+        "get_source_documents",
+        lambda: {"cv": "profile", "cover_letter": "template"},
+    )
     settings = load_settings(profile_store)
 
     sources = build_sources(settings, fake_http, store=store)

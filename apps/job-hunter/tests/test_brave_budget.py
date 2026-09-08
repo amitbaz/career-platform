@@ -216,9 +216,8 @@ class _Http:
 
 
 def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
-    monkeypatch, supabase_client
+    supabase_client,
 ):
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "configured-and-budgeted")
     now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
     ledger = SearchUsageLedger(supabase_client)
     budget = search_budget.BraveRequestBudget(
@@ -232,8 +231,12 @@ def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
         url="https://example.com/job",
     )
 
-    _targeted_canonical_candidates(http, job, CircuitBreaker(5), budget)
-    _targeted_canonical_candidates(http, job, CircuitBreaker(5), budget)
+    _targeted_canonical_candidates(
+        http, job, CircuitBreaker(5), "configured-and-budgeted", budget
+    )
+    _targeted_canonical_candidates(
+        http, job, CircuitBreaker(5), "configured-and-budgeted", budget
+    )
 
     brave_calls = [url for url in http.urls if "api.search.brave.com" in url]
     ddg_calls = [url for url in http.urls if "duckduckgo.com" in url]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import secrets
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -85,6 +84,7 @@ def _targeted_canonical_candidates(
     http: HttpClient,
     job: Job,
     breaker: CircuitBreaker,
+    brave_api_key: str | None,
     brave_budget: BraveRequestBudget | None = None,
 ) -> list[Job]:
     """Run one bounded public search for the employer's original posting."""
@@ -94,7 +94,6 @@ def _targeted_canonical_candidates(
         return []
 
     query = f'"{company}" "{title}" ({_CANONICAL_SEARCH_SITES})'
-    brave_api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
     backend = build_search_backend(
         http,
         brave_api_key,
@@ -687,7 +686,11 @@ def run_pipeline(
     resolver = CanonicalResolver(
         http,
         search_candidates=lambda job: _targeted_canonical_candidates(
-            http, job, search_breaker, brave_budget
+            http,
+            job,
+            search_breaker,
+            settings.brave_search_api_key,
+            brave_budget,
         ),
         watch_target=lambda company: _persisted_watch_target(store, company),
     )

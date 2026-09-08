@@ -147,9 +147,9 @@ def _generate_cover_letter(args: argparse.Namespace) -> int:
 
 
 def _sync_gmail(args: argparse.Namespace) -> int:
-    settings = load_gmail_settings()
     http = HttpClient()
     real_store = PostgresJobStore(_build_client(http))
+    settings = load_gmail_settings(real_store)
     if args.dry_run:
         # A GeminiUsageTracker WRITES usage/pause rows, and `store` below is
         # a DryRunStore precisely so --dry-run can never persist anything
