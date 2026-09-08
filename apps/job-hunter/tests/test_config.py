@@ -409,7 +409,7 @@ def test_load_settings_uses_profile_discovery_defaults(monkeypatch):
 
 @pytest.mark.parametrize("limit", [5, 10, 20])
 def test_load_settings_reads_the_daily_offer_limit(monkeypatch, limit):
-    _set_required_bot_env(monkeypatch)
+    _set_runtime_env(monkeypatch)
 
     settings = _load(_profile(daily_offer_limit=limit))
 
