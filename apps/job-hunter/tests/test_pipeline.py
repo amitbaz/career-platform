@@ -2540,6 +2540,11 @@ def test_pipeline_records_evaluation_against_survivor_when_job_merged_mid_run(
     # ...and the offer reached the user rather than being silently dropped.
     assert len(telegram.messages) == 1
     assert store.has_delivery(merge["survivor"], "telegram_message")
+    # Exactly once: the survivor's id has to join the run's working set, or
+    # the pending-delivery sweep queues the same job into the digest again.
+    assert telegram.messages[0].count("Staff Product Engineer") == 1
+    # The card describes the surviving row, not the one the merge discarded.
+    assert "Senior Product Engineer" not in telegram.messages[0]
 
 
 def test_pipeline_contains_a_store_write_failure_for_one_job(store, settings, monkeypatch):
@@ -2579,3 +2584,45 @@ def test_pipeline_contains_a_store_write_failure_for_one_job(store, settings, mo
     assert len(telegram.messages) == 1
     assert "Healthy GmbH" in telegram.messages[0]
     assert "Doomed GmbH" not in telegram.messages[0]
+
+
+def test_pipeline_does_not_offer_a_job_merged_into_an_already_delivered_one(
+    store, settings, monkeypatch
+):
+    """Issue #145: following a merge must not re-offer a job the user has seen.
+
+    `merge_jobs` moves the duplicate's deliveries onto the survivor, so the
+    already-delivered check at the top of the evaluation -- made against the
+    duplicate's id -- sees nothing. Redirecting the write without re-checking
+    would send the same job a second time under a different id.
+    """
+    discovered = _job()
+    delivered_job = _job(source_job_id="job-delivered", title="Staff Product Engineer")
+    delivered_id, _, _ = store.upsert_job(delivered_job)
+    store.save_evaluation(delivered_id, _evaluation(delivered_id))
+    store.mark_delivered(delivered_id, "telegram_message", "msg-yesterday")
+
+    merge = {}
+    real_evaluate = job_hunter.pipeline.evaluate_job
+
+    def evaluate_then_merge(job, *args, **kwargs):
+        evaluation = real_evaluate(job, *args, **kwargs)
+        if not merge:
+            duplicate_id, _, _ = store.upsert_job(job)
+            merge["survivor"] = store.merge_jobs(delivered_id, duplicate_id)
+        return evaluation
+
+    monkeypatch.setattr(job_hunter.pipeline, "evaluate_job", evaluate_then_merge)
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([discovered])],
+        store=store,
+        gemini=FakeGemini(),
+        telegram=telegram,
+    )
+
+    assert merge["survivor"] == delivered_id
+    assert summary.errors == 0
+    assert telegram.messages == []

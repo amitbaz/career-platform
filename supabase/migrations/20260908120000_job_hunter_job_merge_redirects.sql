@@ -11,9 +11,9 @@
 -- Nothing recorded where a deleted job went: application events and company
 -- watches are reassigned, but a caller holding the id had no way to ask.
 -- This table is that record. It is written inside the merge transaction, so
--- a redirect exists for exactly the merges that actually happened, and it
--- outlives the run, which the Telegram callback path needs too -- a card
--- delivered under an id that is merged away tomorrow still has to resolve.
+-- a redirect exists for exactly the merges that actually happened, and it is
+-- durable rather than run-scoped: a redirect a later run (or the Telegram
+-- callback path, which does not consult it yet) needs is still there.
 
 create table public.job_hunter_job_merges (
   id uuid primary key default gen_random_uuid(),

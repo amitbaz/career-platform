@@ -494,6 +494,7 @@ def _evaluate_and_deliver_job(
     gemini: GeminiClient,
     digest_items: list[DigestItem],
     summary: RunSummary,
+    queued_job_ids: set[str],
 ) -> tuple[bool, bool, str | None, bool]:
     """Evaluate one job and add it to the digest, containing its failures.
 
@@ -508,7 +509,15 @@ def _evaluate_and_deliver_job(
     """
     try:
         return _evaluate_and_deliver_one_job(
-            job_id, job, candidate_context, settings, store, gemini, digest_items, summary
+            job_id,
+            job,
+            candidate_context,
+            settings,
+            store,
+            gemini,
+            digest_items,
+            summary,
+            queued_job_ids,
         )
     except Exception:
         logger.exception(
@@ -530,6 +539,7 @@ def _evaluate_and_deliver_one_job(
     gemini: GeminiClient,
     digest_items: list[DigestItem],
     summary: RunSummary,
+    queued_job_ids: set[str],
 ) -> tuple[bool, bool, str | None, bool]:
     """Evaluate one job and add it to the digest.
 
@@ -579,7 +589,26 @@ def _evaluate_and_deliver_one_job(
     # so the id that row lives under now is whatever the store wrote against,
     # not necessarily the one selected. Everything below has to use that one:
     # the id it replaced names a row that no longer exists (#145).
-    job_id = store.save_evaluation(job_id, evaluation)
+    written_job_id = store.save_evaluation(job_id, evaluation)
+    already_delivered = False
+    if written_job_id != job_id:
+        job_id = written_job_id
+        # The surviving row is the one the merge kept the better fields on --
+        # the canonical URL a card sends the user to, above all -- so the
+        # digest describes it rather than the row that was discarded.
+        surviving_job = store.get_job(job_id)
+        if surviving_job is not None:
+            job = surviving_job
+        # Keep the run's working set honest about where this job ended up:
+        # the pending-delivery sweep at the end of the run subtracts these
+        # ids, and without the survivor in it the same job is queued into the
+        # digest a second time.
+        queued_job_ids.add(job_id)
+        # A duplicate can merge into a job that was already sent: the merge
+        # moves the deliveries onto the survivor, so the already-delivered
+        # check at the top of this function, made against the duplicate's id,
+        # saw none.
+        already_delivered = store.has_delivery(job_id, "telegram_message")
     store.complete_ai_work("job_evaluation", job_id)
 
     if evaluation.total_score != evaluation.raw_model_score:
@@ -617,7 +646,13 @@ def _evaluate_and_deliver_one_job(
         market_note=evaluation.location_note or "",
         availability_note=_AVAILABILITY_WARNING if job.availability == UNVERIFIED else "",
     )
-    digest_items.append(item)
+    if already_delivered:
+        logger.info(
+            "job_id=%s was merged into a job already delivered; not offering it twice",
+            job_id,
+        )
+    else:
+        digest_items.append(item)
 
     if evaluation.decision in _READY_DECISIONS:
         summary.ready_to_apply += 1
@@ -631,7 +666,8 @@ def _evaluate_and_deliver_one_job(
     # `possible` rung, so a profile with a low `possible` threshold can score a
     # possible_match under it.
     offered = (
-        evaluation.decision in _OFFER_DECISIONS
+        not already_delivered
+        and evaluation.decision in _OFFER_DECISIONS
         and evaluation.total_score >= _MIN_DELIVERABLE_SCORE
     )
     return promoted, False, evaluation.decision, offered
@@ -835,7 +871,15 @@ def run_pipeline(
             store.complete_ai_work("job_evaluation", job_id)
             continue
         promoted, blocked, decision, offered = _evaluate_and_deliver_job(
-            job_id, job, candidate_context, settings, store, gemini, digest_items, summary
+            job_id,
+            job,
+            candidate_context,
+            settings,
+            store,
+            gemini,
+            digest_items,
+            summary,
+            queued_job_ids,
         )
         if decision is not None:
             summary.evaluated += 1
@@ -859,11 +903,31 @@ def run_pipeline(
             cap_deferred_count += 1
             continue
         if quota_blocked:
-            store.enqueue_ai_work("job_evaluation", job_id)
+            # Outside the per-job wrapper, so it needs its own guard: this
+            # write carries the same foreign key as the evaluation, and
+            # letting it raise here would end the run on the very failure
+            # #145 is about.
+            try:
+                store.enqueue_ai_work("job_evaluation", job_id)
+            except Exception:
+                logger.exception(
+                    "deferring evaluation failed for job_id=%s source=%s",
+                    job_id,
+                    metric_source_label(job.source),
+                )
+                summary.errors += 1
             quota_deferred_count += 1
             continue
         promoted, blocked, decision, offered = _evaluate_and_deliver_job(
-            job_id, job, candidate_context, settings, store, gemini, digest_items, summary
+            job_id,
+            job,
+            candidate_context,
+            settings,
+            store,
+            gemini,
+            digest_items,
+            summary,
+            queued_job_ids,
         )
         if decision is not None:
             summary.evaluated += 1
@@ -912,9 +976,11 @@ def run_pipeline(
                     # The digest is already sent. Failing to record one item's
                     # delivery must not lose the record of the others (#145).
                     try:
-                        store.mark_delivered(item.job_id, "telegram_message", message_id)
+                        delivered_id = store.mark_delivered(
+                            item.job_id, "telegram_message", message_id
+                        )
                         _bump_market_count(delivered_by_market, item.market_id)
-                        delivered_job = store.get_job(item.job_id)
+                        delivered_job = store.get_job(delivered_id)
                         if delivered_job is not None:
                             _bump_source_count(
                                 delivered_by_source, metric_source_label(delivered_job.source)
@@ -974,9 +1040,11 @@ def run_pipeline(
                 for card in session.cards:
                     # Same containment as the plain-digest branch above.
                     try:
-                        store.mark_delivered(card.job_id, "telegram_message", str(message_id))
+                        delivered_id = store.mark_delivered(
+                            card.job_id, "telegram_message", str(message_id)
+                        )
                         _bump_market_count(delivered_by_market, card.market_id)
-                        delivered_job = store.get_job(card.job_id)
+                        delivered_job = store.get_job(delivered_id)
                         if delivered_job is not None:
                             _bump_source_count(
                                 delivered_by_source, metric_source_label(delivered_job.source)

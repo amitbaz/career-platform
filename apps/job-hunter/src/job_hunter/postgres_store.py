@@ -877,7 +877,7 @@ class PostgresJobStore:
         job_id: str,
         delivery_type: str,
         telegram_id: str | None = None,
-    ) -> None:
+    ) -> str:
         """Translates store.py:2096-2111.
 
         Upserts against `job_hunter_deliveries`'s `(user_id, job_id,
@@ -885,8 +885,10 @@ class PostgresJobStore:
         retry-safety reasoning as `save_evaluation`. It follows a merge the
         same way too: a job merged away between delivery and this call is
         recorded as delivered against the surviving job rather than failing.
+        Returns the id it wrote against, so a caller that reads the job back
+        afterwards reads a row that exists.
         """
-        self._write_following_merges(
+        return self._write_following_merges(
             job_id,
             lambda target_id: self._write_delivery(target_id, delivery_type, telegram_id),
         )
@@ -1677,7 +1679,19 @@ class PostgresJobStore:
         table default on first insert and is never touched on a repeat call,
         matching the original's `DO UPDATE SET updated_at = excluded.updated_at`
         only. `touch()` sets `updated_at` -- there is no trigger for it.
+
+        Follows a merge like `save_evaluation` does, and for the same reason:
+        the queue's `(job_id, user_id)` foreign key means deferring a job that
+        was merged away mid-run would otherwise raise, and a deferral that
+        raises is a job dropped rather than retried tomorrow.
         """
+        # The id it lands on is not returned: no caller needs it, and the
+        # queue is re-read by id from the store on the next run anyway.
+        self._write_following_merges(
+            job_id, lambda target_id: self._write_pending_ai_work(work_type, target_id)
+        )
+
+    def _write_pending_ai_work(self, work_type: str, job_id: str) -> None:
         self._client.upsert(
             "job_hunter_pending_ai_work",
             [
@@ -2494,7 +2508,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "backfill_ats_identity": "count",
     "save_evaluation": "echo_job_id",
     "save_material": None,
-    "mark_delivered": None,
+    "mark_delivered": "echo_job_id",
     "upsert_company_watch": "id",
     "record_watch_success": None,
     "record_watch_failure": None,

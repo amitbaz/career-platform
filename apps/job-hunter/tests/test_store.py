@@ -2920,3 +2920,28 @@ def test_mark_delivered_follows_a_job_merged_away_since_delivery(store):
     store.mark_delivered(duplicate_id, "telegram_message", "msg-1")
 
     assert store.has_delivery(survivor_id, "telegram_message")
+
+
+def test_enqueue_ai_work_follows_a_job_merged_away_since_selection(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="deferred-stale"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="deferred-kept"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id))
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+
+    # A deferral that raised would drop the job rather than retry it tomorrow.
+    store.enqueue_ai_work("job_evaluation", duplicate_id)
+
+    queued = [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
+    assert queued == [survivor_id]
+
+
+def test_mark_delivered_returns_the_job_id_it_wrote_against(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="returned-stale"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="returned-kept"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id))
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+
+    # The caller reads the job back to attribute the delivery to its source,
+    # and has to be given an id that still names a row.
+    assert store.mark_delivered(duplicate_id, "telegram_message", "msg-1") == survivor_id
+    assert store.mark_delivered(survivor_id, "telegram_document", "doc-1") == survivor_id
