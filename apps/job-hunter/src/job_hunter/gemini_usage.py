@@ -28,10 +28,12 @@ GEMINI_PURPOSES: tuple[GeminiPurpose, ...] = (
     "candidate_context",
     "job_evaluation",
     # Objective facet extraction (issue #125). Deliberately *not* the core
-    # purpose: facets are shared, reusable and can wait for tomorrow's run,
-    # while an evaluation the user is waiting on cannot. Charging them to the
-    # non-core budget is what stops the temporary doubling of daily calls,
-    # while both run against the same jobs, from ever starving evaluation.
+    # purpose: a posting's facts are shared and reusable, and reading a
+    # posting nobody has read yet can wait for tomorrow's run, while scoring a
+    # job whose posting has already been read cannot. Since #126 the two are
+    # in sequence -- a job cannot be scored before its posting is read -- so
+    # exhausting this budget defers exactly the jobs whose postings are still
+    # unread, and leaves every other job scoreable out of the core reserve.
     "job_facets",
     "cover_letter",
 )

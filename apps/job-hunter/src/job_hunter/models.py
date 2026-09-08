@@ -526,3 +526,10 @@ class RunSummary:
     # unenriched and the next run retries it, which is recovery, not damage.
     facet_extraction_attempted: int = 0
     facet_extraction_failed: int = 0
+    # Jobs the run declined to score because it could not give them the
+    # posting's facets, which scoring now requires (issue #126). Kept apart
+    # from `errors` and from the quota counters: it is neither damage nor a
+    # provider refusal, it is a job that keeps its place in the ranking and is
+    # scored on a later run. A number that stops being near zero means
+    # extraction is failing, and the run is quietly delivering less.
+    evaluation_skipped_without_facets: int = 0

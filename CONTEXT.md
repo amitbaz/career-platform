@@ -23,7 +23,10 @@ the distinction is load-bearing:
   user's own provider credentials.
 
 "Evaluation" refers to the older combined operation that did both at once. Use it only
-when talking about the pre-split behaviour.
+when talking about the pre-split behaviour — the operation itself was removed by #126.
+Several code and schema names survive it (`evaluation.py`, `job_hunter_evaluations`, the
+`job_evaluation` provider purpose): they name the artefact subjective scoring persists,
+which is still an `Evaluation`, not the combined call.
 
 **Facet** — one structured objective fact stored on a job: hiring-eligible regions,
 remote policy, seniority, compensation, a stated requirement and its depth. Facets are

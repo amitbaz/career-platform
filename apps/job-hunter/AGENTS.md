@@ -137,8 +137,11 @@ Pipeline, in `pipeline.py::run_pipeline`:
 ```
 all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or profile-aware rank
   -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
-  -> Gemini -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
-  -> objective facet extraction (facets.py, once per posting, candidate-blind, after every evaluation)
+  -> per job: objective facet extraction if the posting has not been read yet
+     (facets.py, once per posting ever, candidate-blind)
+     then subjective scoring from those facets (evaluation.py, per user, never sees the description)
+  -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
+  -> facet backfill over what scoring did not need (rediscovered jobs + the shortlist tail)
   -> Telegram digest delivery (telegram.py)
 ```
 
@@ -156,6 +159,10 @@ Key modules:
   takes a frozen `PostingFacts` built from the `Job` alone, the module imports nothing per-user,
   and `tests/test_facets.py` fails if it ever does. Keep the candidate-aware prompt in
   `evaluation.py` and this one here; merging them would put the constraint back on care alone.
+  Facets are what scoring reads (#126): `evaluation.py` is handed the stated requirements
+  and their depth instead of the description, and a job whose facets are missing is left
+  unscored rather than scored against an empty requirements list — see
+  `docs/superpowers/specs/2026-09-08-scoring-from-facets-design.md`.
   Two facets never reach the model: Ashby's structured `isRemote` supplies `remote_policy`
   directly (a *false* flag does not — it separates neither hybrid nor onsite; and Greenhouse is
   deliberately excluded, because its adapter derives `remote` from the substring "remote" in the
@@ -166,15 +173,27 @@ Key modules:
   second notion of a changed posting. Extraction is run from
   `pipeline.py::_extract_facets_for_run`, over this run's shortlist and retry queue first and
   then rediscovered jobs, every one of which survived the non-AI filters; it is bounded per run
-  by `max_jobs_per_run`, which is what makes the existing corpus drain over consecutive runs
-  with no migration script. A failure of any kind leaves the job unenriched with **no** marker,
+  by `max_jobs_per_run` minus whatever the run's own inline reads already spent, which is
+  what makes the existing corpus drain over consecutive runs with no migration script. A failure of any kind leaves the job unenriched with **no** marker,
   so a later run retries it — never record a placeholder, and never let a failure mark a posting
   permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart from
-  evaluation's counters, and reported on the `facet_extraction` log line. Facets are written and
-  never read back into scoring: until #126 lands, the combined evaluation still decides
-  everything, and both calls run against the same jobs (roughly 122 provider calls a day against
-  a 500 allowance). `job_facets` is a *non-core* Gemini purpose, so the core reserve refuses
-  facets before it refuses an evaluation.
+  evaluation's counters, and reported on the `facet_extraction` log line. `job_facets` is a *non-core* Gemini purpose, so the
+  core reserve refuses a read before it refuses a score. Since #126 that has a consequence:
+  `GeminiBudgetExceeded` on a read defers only the job whose posting has never been read, and
+  the run keeps scoring every job that has been — unlike `GeminiQuotaPaused`, which means the
+  model is paused and blocks the run as it always did.
+- `src/job_hunter/evaluation.py` — subjective scoring, the per-user half (#126). Takes a
+  `JobFacets` and a `CandidateContext` and returns an `Evaluation`: the six score components,
+  the total, hard blockers, strengths, gaps, the notes, the decision and the rationale. It
+  never receives `job.description`; the posting reaches it as the facets `facets.py` already
+  read. Whether *this* candidate supports each stated requirement is decided here, because
+  that answer differs per user and cannot be shared — the response carries one
+  `candidate_support` verdict per stated requirement, in order, and the stored requirement
+  keeps the posting's own text and depth from the facets. A response with a different number
+  of verdicts is rejected outright rather than partially read. The module, the
+  `job_hunter_evaluations` table and the `job_evaluation` purpose keep the word "evaluation"
+  although CONTEXT.md reserves it for the pre-split combined call; the artefact is still an
+  `Evaluation`, and renaming it would be a rename with no behavioural content.
 - `src/job_hunter/hiring_scope.py` — reads a posting's *explicitly stated* hiring regions ("open to candidates based in the US and Europe") from its text alone. It is deliberately self-contained: no market, no candidate, no scoring. `market_policy.py::attribute_market` consumes it as a bonus that outranks a listing variant's location label, and as a filter that drops markets the posting's stated regions exclude. Keep it that way — a posting's eligible regions are a shared, cacheable property of the posting, whereas whether a given candidate may work there is per-user, and only the first belongs in this module.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
 - `DiscoveryStats.newly_discovered` counts the rows a run inserted, and is reported as

@@ -43,6 +43,28 @@ class FakeGemini:
                     "evaluation_summary": "Senior frontend/product engineer.",
                 }
             )
+        if purpose == "job_facets":
+            # Scoring is fed the posting's facets (#126), so a fake that
+            # cannot answer this purpose cannot get a job scored at all.
+            return json.dumps(
+                {
+                    "seniority": "senior",
+                    "remote_policy": "remote",
+                    "relocation_policy": "unknown",
+                    "hiring_regions": ["europe"],
+                    "stack": ["react"],
+                    "compensation": {
+                        "disclosed": False,
+                        "currency": "",
+                        "minimum": None,
+                        "maximum": None,
+                        "period": "",
+                    },
+                    "requirements": [
+                        {"requirement": "React", "depth": "experience", "kind": "must_have"}
+                    ],
+                }
+            )
         if json_mode:
             return json.dumps(
                 {
@@ -64,7 +86,7 @@ class FakeGemini:
                     "rationale": "Good fit",
                     "requirements": {
                         "must_have": [
-                            {"requirement": "React", "depth": "experience", "candidate_support": "supported"}
+                            {"requirement": "React", "candidate_support": "supported"}
                         ],
                         "preferred": [],
                     },
