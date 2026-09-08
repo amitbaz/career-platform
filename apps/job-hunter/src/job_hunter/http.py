@@ -11,12 +11,23 @@ _BACKOFF_BASE = 2  # seconds: 2s, 4s
 
 
 class HttpClient:
-    """Thin wrapper around requests.Session with retry logic and sensible defaults."""
+    """Thin wrapper around requests.Session with retry logic and sensible defaults.
+
+    Counts the requests it makes in `request_count`. Discovery reads that
+    counter either side of a source's `discover()` and attributes the delta
+    to that source (see `job_hunter.discovery.collect_candidates`), which is
+    why the count lives on the shared client rather than in each source: the
+    sources differ in how they issue requests, and every one of them goes
+    through here. Every attempt counts, retries included, because a source
+    that is slow through being throttled has to read as chatty rather than
+    as cheap.
+    """
 
     def __init__(self) -> None:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "job-hunter-bot/1.0"})
         self._timeout = (5, 25)
+        self.request_count = 0
 
     def timeout_for_read(self, read_seconds: float) -> tuple[float, float]:
         """Return this client's timeout with a longer read budget.
@@ -117,6 +128,7 @@ class HttpClient:
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
+                self.request_count += 1
                 response = self._session.request(method, url, **kwargs)
                 if retry and response.status_code in retry_codes and attempt < _MAX_RETRIES:
                     time.sleep(_BACKOFF_BASE * (2 ** attempt))

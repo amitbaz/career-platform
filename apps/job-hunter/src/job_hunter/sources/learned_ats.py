@@ -58,6 +58,8 @@ class LearnedAtsStats:
 class LearnedAtsSource:
     """Scan due learned ATS boards through their native adapters."""
 
+    source_label = "learned_ats"
+
     def __init__(
         self,
         store: PostgresJobStore,

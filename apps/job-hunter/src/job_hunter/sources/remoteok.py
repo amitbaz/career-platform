@@ -2,6 +2,8 @@ from .base import strip_html
 from job_hunter.models import Job
 
 class RemoteOKSource:
+    source_label = "remoteok"
+
     def __init__(self, http): self._http = http
     def discover(self) -> list[Job]:
         data = self._http.get_json("https://remoteok.com/api")

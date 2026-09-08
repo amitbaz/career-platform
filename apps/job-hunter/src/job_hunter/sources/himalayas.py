@@ -9,6 +9,8 @@ _URL = "https://himalayas.app/jobs/api"
 
 
 class HimalayasSource:
+    source_label = "himalayas"
+
     def __init__(self, http, max_pages: int = 2) -> None:
         self._http = http
         self._max_pages = max_pages

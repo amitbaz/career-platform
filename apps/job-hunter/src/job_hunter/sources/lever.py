@@ -17,6 +17,10 @@ class LeverSource:
         self._site = site
         self._http = http
 
+    @property
+    def source_label(self) -> str:
+        return f"lever:{self._site}"
+
     def discover(self) -> list[Job]:
         try:
             data = self._http.get_json(_URL_TEMPLATE.format(site=self._site))

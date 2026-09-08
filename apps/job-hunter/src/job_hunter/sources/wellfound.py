@@ -48,6 +48,8 @@ class WellfoundListing:
 class WellfoundSource:
     """Discover Europe/London/US startup postings from Wellfound listing/detail pages."""
 
+    source_label = "wellfound"
+
     def __init__(
         self,
         http,

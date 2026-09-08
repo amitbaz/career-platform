@@ -12,6 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 class JobSource(Protocol):
+    # How a source instance is keyed in the discovery cost statistics
+    # (`DiscoveryStats.elapsed_by_source` / `requests_by_source`). Adapters
+    # configured once per board make it a property that includes the board,
+    # so `lever:acme` and `lever:globex` stay apart. A source without one is
+    # still measured, under its class name -- see `discovery.source_cost_label`.
+    source_label: str
+
     def discover(self) -> list[Job]: ...
 
 

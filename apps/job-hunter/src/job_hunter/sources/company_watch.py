@@ -66,6 +66,8 @@ def _has_endpoint(watch) -> bool:
 class CompanyWatchSource:
     """Check each due watch independently and persist endpoint health."""
 
+    source_label = "company_watch"
+
     def __init__(
         self,
         store: PostgresJobStore,

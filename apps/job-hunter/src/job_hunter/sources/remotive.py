@@ -8,6 +8,8 @@ _URL = "https://remotive.com/api/remote-jobs"
 
 
 class RemotiveSource:
+    source_label = "remotive"
+
     def __init__(self, http, query: str | None = None) -> None:
         self._http = http
         self._query = query

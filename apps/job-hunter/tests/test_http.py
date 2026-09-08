@@ -215,3 +215,31 @@ def test_timeout_for_read_keeps_the_connect_budget():
     assert read == 120
     assert (connect, read) != client._timeout
     assert connect == client._timeout[0]
+
+
+def test_request_count_includes_every_retry_attempt(monkeypatch):
+    """Discovery attributes this counter's delta to the running source.
+
+    Retries are real network requests, so a source that is slow because it
+    is being throttled has to look chatty here rather than cheap.
+    """
+    monkeypatch.setattr("job_hunter.http.time.sleep", lambda _: None)
+
+    responses = [FakeResponse(503), FakeResponse(200)]
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url))
+        if len(calls) <= len(responses):
+            return responses[len(calls) - 1]
+        return FakeResponse(200)
+
+    client = HttpClient()
+    monkeypatch.setattr(client._session, "request", fake_request)
+
+    assert client.request_count == 0
+    client.get("https://example.com/thing")
+    assert client.request_count == 2
+
+    client.post("https://example.com/thing")
+    assert client.request_count == 3

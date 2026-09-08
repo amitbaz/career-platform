@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -69,6 +71,17 @@ class DiscoveryStats:
     unique_by_source: dict[str, int] = field(default_factory=dict)
     rejected_by_source: dict[str, int] = field(default_factory=dict)
     eligible_by_source: dict[str, int] = field(default_factory=dict)
+    # The cost side of the yield figures above, keyed by source instance
+    # (see `source_cost_label`) rather than by the source string its jobs
+    # carry, so that a source producing nothing is still reported and two
+    # boards of the same ATS provider stay distinguishable.
+    elapsed_by_source: dict[str, float] = field(default_factory=dict)
+    requests_by_source: dict[str, int] = field(default_factory=dict)
+    # Wall-clock time inside `collect_candidates`. Deliberately not derived
+    # from `elapsed_by_source`: the difference between the two is the work
+    # happening around the sources rather than inside them, and that gap is
+    # the finding this instrumentation exists to expose.
+    total_elapsed_seconds: float = 0.0
 
 
 @dataclass(slots=True)
@@ -213,6 +226,52 @@ def _dedupe(jobs: list[Job]) -> tuple[list[Job], int]:
     return merged, cross_source_duplicate_groups
 
 
+def source_cost_label(source) -> str:
+    """Return a stable label identifying one source *instance* in run stats.
+
+    Cost is recorded per source object, not per source string: several
+    instances of the same adapter (one per configured ATS board) run as
+    separate sources, and a source that yields no jobs has no string to be
+    keyed by at all. Adapters declare a `source_label` -- ATS adapters
+    include their board, so `lever:acme` and `lever:globex` stay apart --
+    and anything without one (a test double, a source added without a
+    label) falls back to its class name so it is still measured rather than
+    silently missing.
+    """
+    declared = getattr(source, "source_label", None)
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    return type(source).__name__
+
+
+def _distinct_label(source, taken: set[str]) -> str:
+    """Return `source`'s cost label, suffixed if another source already took it.
+
+    Merging two sources under one key would hide one of them, which is the
+    failure mode this instrumentation exists to remove.
+    """
+    label = source_cost_label(source)
+    if label not in taken:
+        taken.add(label)
+        return label
+    suffix = 2
+    while f"{label}#{suffix}" in taken:
+        suffix += 1
+    unique = f"{label}#{suffix}"
+    taken.add(unique)
+    return unique
+
+
+def _client_request_count(http) -> int:
+    """Return the shared client's request counter, or 0 if it has none.
+
+    Test doubles and any client that does not count are reported as zero
+    requests rather than crashing discovery over instrumentation.
+    """
+    count = getattr(http, "request_count", 0)
+    return count if isinstance(count, int) else 0
+
+
 def metric_source_label(source: str) -> str:
     """Return a bounded source label suitable for metrics and logs."""
     if source.startswith("gmail:"):
@@ -291,6 +350,27 @@ def _cheap_market_attribution(job: Job, policy: SearchPolicy) -> str | None:
     return attribute_market(job, policy.markets)
 
 
+def _format_seconds(seconds: float) -> str:
+    return f"{seconds:.1f}s"
+
+
+def _format_source_cost(stats: DiscoveryStats) -> str:
+    """Render each source's cost, dearest first.
+
+    Only a rendering: the figures themselves live on `DiscoveryStats`, so a
+    test can assert them without reading a log line.
+    """
+    if not stats.elapsed_by_source:
+        return "none"
+    ordered = sorted(
+        stats.elapsed_by_source.items(), key=lambda item: item[1], reverse=True
+    )
+    return " ".join(
+        f"{label}={_format_seconds(elapsed)}/{stats.requests_by_source.get(label, 0)}req"
+        for label, elapsed in ordered
+    )
+
+
 def _format_source_contribution(per_source: dict[str, int]) -> str:
     """Render compact source totals without including any job content."""
     metric_counts: dict[str, int] = {}
@@ -311,23 +391,46 @@ def collect_candidates(
     policy: SearchPolicy,
     resolver: CanonicalResolver | None = None,
     preferences: CandidatePreferences | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> DiscoveryResult:
     """Discover, canonicalize, deduplicate, persist, and prefilter jobs.
 
     Source failures and unresolved canonical lookups remain non-fatal. When no
     resolver is supplied, candidates retain their source URLs and canonical
     counters stay at zero.
+
+    Records what each source cost -- elapsed time and network requests -- in
+    `DiscoveryStats`, alongside the yield counts it already collects, and the
+    total time this function took. `clock` returns monotonic seconds and is
+    injected so tests drive timing without waiting; requests are counted at
+    the shared `http` client (see `HttpClient.request_count`) and attributed
+    to whichever source is running, because the sources differ too much in
+    how they issue requests for each to count its own.
     """
+    started_at = clock()
     stats = DiscoveryStats()
     raw_jobs: list[Job] = []
     denylist = frozenset(policy.learned_ats_denylist)
+    taken_labels: set[str] = set()
 
     for source in sources:
+        label = _distinct_label(source, taken_labels)
+        source_started_at = clock()
+        requests_before = _client_request_count(http)
         try:
             jobs = source.discover()
         except Exception:
             logger.exception("source discovery failed: %r", source)
-            continue
+            # Failure isolation is unchanged -- the source contributes no
+            # jobs and the run continues -- but what it spent before failing
+            # is still reported, since a source that burns the run and then
+            # raises is exactly what this measures.
+            jobs = []
+        finally:
+            stats.elapsed_by_source[label] = max(0.0, clock() - source_started_at)
+            stats.requests_by_source[label] = max(
+                0, _client_request_count(http) - requests_before
+            )
 
         for job in jobs:
             stats.raw += 1
@@ -598,6 +701,12 @@ def collect_candidates(
                 )
 
     stats.eligible = len(eligible)
+    stats.total_elapsed_seconds = max(0.0, clock() - started_at)
+    logger.info(
+        "discovery source cost: total=%s %s",
+        _format_seconds(stats.total_elapsed_seconds),
+        _format_source_cost(stats),
+    )
     logger.info(
         "discovery source contribution: %s canonical_resolved=%s "
         "canonical_unresolved=%s canonical_budget_exhausted=%s "

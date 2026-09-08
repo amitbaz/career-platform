@@ -14,6 +14,10 @@ class AshbySource:
         self._board = board
         self._http = http
 
+    @property
+    def source_label(self) -> str:
+        return f"ashby:{self._board}"
+
     def discover(self) -> list[Job]:
         try:
             data = self._http.get_json(_URL_TEMPLATE.format(board=self._board))

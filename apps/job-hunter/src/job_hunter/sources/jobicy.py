@@ -9,6 +9,8 @@ _URL = "https://jobicy.com/api/v2/remote-jobs"
 
 
 class JobicySource:
+    source_label = "jobicy"
+
     def __init__(self, http, max_pages: int = 1) -> None:
         self._http = http
         self._max_pages = max_pages

@@ -6,6 +6,7 @@ import pytest
 from job_hunter.canonical import CanonicalResolver
 from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS, PARTIAL_UNKNOWN
 from job_hunter.discovery import _dedupe, _merge_fields, collect_candidates
+from job_hunter.search_backend import SearchResponse
 from job_hunter.models import (
     AtsReference,
     CandidatePreferences,
@@ -1862,3 +1863,233 @@ def test_collect_candidates_rediscovered_job_ids_membership_survives_batching(
     assert set(result.rediscovered_job_ids) == expected_rediscovered_ids
     assert len(result.rediscovered_job_ids) == 2
     assert len(result.eligible) == 2
+
+
+class FakeClock:
+    """A monotonic clock the test drives instead of waiting on a real one.
+
+    Reading it advances time by `tick`, standing in for the work discovery
+    does between sources; a source consumes time explicitly by calling
+    `advance`, so what lands in the statistics is exactly what the test made
+    that source cost.
+    """
+
+    def __init__(self, tick: float = 0.0) -> None:
+        self._now = 0.0
+        self._tick = tick
+
+    def __call__(self) -> float:
+        self._now += self._tick
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+class CountingHttp:
+    """Stands in for the shared `HttpClient`, counting requests as it does."""
+
+    def __init__(self) -> None:
+        self.request_count = 0
+
+    def get(self, url, **kwargs):
+        self.request_count += 1
+        return FakeResponse("")
+
+    def get_json(self, url, **kwargs):
+        self.request_count += 1
+        return {}
+
+
+class CostlySource:
+    """A fake source that consumes a chosen amount of time and requests.
+
+    `FakeSource` above cannot express either, which is the whole subject
+    here; everything else about it is that fixture with a price tag.
+    """
+
+    def __init__(
+        self,
+        jobs,
+        clock,
+        http,
+        *,
+        seconds=0.0,
+        requests=0,
+        label=None,
+        raises=False,
+    ) -> None:
+        self._jobs = jobs
+        self._clock = clock
+        self._http = http
+        self._seconds = seconds
+        self._requests = requests
+        self._raises = raises
+        if label is not None:
+            self.source_label = label
+
+    def discover(self):
+        self._clock.advance(self._seconds)
+        for _ in range(self._requests):
+            self._http.get("https://example.test/listing")
+        if self._raises:
+            raise RuntimeError("source is down")
+        return self._jobs
+
+
+def _costed_job(source: str, job_id: str) -> Job:
+    return Job(
+        source=source,
+        source_job_id=job_id,
+        title="Senior Product Engineer",
+        description="React TypeScript",
+        remote=True,
+    )
+
+
+def test_collect_candidates_records_each_source_elapsed_time_and_requests(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    cheap = CostlySource(
+        [_costed_job("cheap", "1")], clock, http, seconds=2.0, requests=1, label="cheap"
+    )
+    expensive = CostlySource(
+        [_costed_job("expensive", "2")],
+        clock,
+        http,
+        seconds=30.0,
+        requests=4,
+        label="expensive",
+    )
+
+    result = collect_candidates([cheap, expensive], store, http, policy, clock=clock)
+
+    assert result.stats.elapsed_by_source == {"cheap": 2.0, "expensive": 30.0}
+    assert result.stats.requests_by_source == {"cheap": 1, "expensive": 4}
+
+
+def test_collect_candidates_reports_the_cost_of_a_source_that_yields_nothing(
+    store, policy
+):
+    clock = FakeClock()
+    http = CountingHttp()
+    barren = CostlySource([], clock, http, seconds=12.0, requests=3, label="barren")
+
+    result = collect_candidates([barren], store, http, policy, clock=clock)
+
+    assert result.stats.per_source == {}
+    assert result.stats.elapsed_by_source == {"barren": 12.0}
+    assert result.stats.requests_by_source == {"barren": 3}
+
+
+def test_collect_candidates_reports_what_a_failing_source_spent_before_failing(
+    store, policy
+):
+    clock = FakeClock()
+    http = CountingHttp()
+    broken = CostlySource(
+        [], clock, http, seconds=5.0, requests=2, label="broken", raises=True
+    )
+    good = CostlySource(
+        [_costed_job("good", "1")], clock, http, seconds=1.0, requests=1, label="good"
+    )
+
+    result = collect_candidates([broken, good], store, http, policy, clock=clock)
+
+    assert result.stats.elapsed_by_source == {"broken": 5.0, "good": 1.0}
+    assert result.stats.requests_by_source == {"broken": 2, "good": 1}
+    # Failure isolation is unchanged: the broken source contributes nothing
+    # and the source after it still runs.
+    assert result.stats.raw == 1
+    assert len(result.eligible) == 1
+
+
+def test_collect_candidates_reports_total_time_beyond_the_sum_of_its_sources(
+    store, policy
+):
+    # A non-zero tick stands in for the work discovery does around the
+    # sources -- dedupe, persistence, prefilter -- which is exactly the time
+    # the sum of the per-source figures cannot account for.
+    clock = FakeClock(tick=1.0)
+    http = CountingHttp()
+    sources = [
+        CostlySource(
+            [_costed_job("a", "1")], clock, http, seconds=10.0, requests=1, label="a"
+        ),
+        CostlySource(
+            [_costed_job("b", "2")], clock, http, seconds=20.0, requests=1, label="b"
+        ),
+    ]
+
+    result = collect_candidates(sources, store, http, policy, clock=clock)
+
+    stats = result.stats
+    assert stats.elapsed_by_source["a"] >= 10.0
+    assert stats.elapsed_by_source["b"] >= 20.0
+    assert stats.total_elapsed_seconds > sum(stats.elapsed_by_source.values())
+
+
+class SilentSearchBackend:
+    """A search backend that answers every query with nothing."""
+
+    name = "silent"
+
+    def search(self, query):
+        return SearchResponse(hits=[], backend=self.name)
+
+
+def test_collect_candidates_measures_every_source_type_comparably(store, policy):
+    """Every kind of source in use is measured, and none is merged into another.
+
+    One instance of each shape the pipeline actually runs -- a feed, two
+    boards of the same ATS provider, a targeted search, a watchlist source
+    and staged email -- so that a source type cannot go silently unmeasured.
+    """
+    from job_hunter.sources.company_watch import CompanyWatchSource
+    from job_hunter.sources.gmail_staged import GmailStagedSource
+    from job_hunter.sources.learned_ats import LearnedAtsSource
+    from job_hunter.sources.lever import LeverSource
+    from job_hunter.sources.remotive import RemotiveSource
+    from job_hunter.sources.targeted_search import TargetedSearchSource
+
+    clock = FakeClock(tick=1.0)
+    http = CountingHttp()
+    sources = [
+        RemotiveSource(http),
+        LeverSource("acme", http),
+        LeverSource("globex", http),
+        TargetedSearchSource(SilentSearchBackend(), ["senior product engineer"]),
+        CompanyWatchSource(store, http),
+        LearnedAtsSource(store, http, limit=5, market_order=[]),
+        GmailStagedSource(store),
+    ]
+
+    result = collect_candidates(sources, store, http, policy, clock=clock)
+
+    assert set(result.stats.elapsed_by_source) == {
+        "remotive",
+        "lever:acme",
+        "lever:globex",
+        "targeted_search",
+        "company_watch",
+        "learned_ats",
+        "gmail",
+    }
+    assert set(result.stats.requests_by_source) == set(result.stats.elapsed_by_source)
+    # The three adapters that fetch over the shared client are the three that
+    # report requests; the store-backed ones reach Postgres through their own
+    # client and so report none of it here.
+    assert result.stats.requests_by_source["remotive"] == 1
+    assert result.stats.requests_by_source["lever:acme"] == 1
+    assert result.stats.requests_by_source["lever:globex"] == 1
+
+
+def test_collect_candidates_keeps_indistinguishable_sources_separate(store, policy):
+    clock = FakeClock()
+    http = CountingHttp()
+    first = CostlySource([], clock, http, seconds=3.0)
+    second = CostlySource([], clock, http, seconds=7.0)
+
+    result = collect_candidates([first, second], store, http, policy, clock=clock)
+
+    assert sorted(result.stats.elapsed_by_source.values()) == [3.0, 7.0]

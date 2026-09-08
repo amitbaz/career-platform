@@ -8,6 +8,8 @@ _URL = "https://www.arbeitnow.com/api/job-board-api"
 
 
 class ArbeitnowSource:
+    source_label = "arbeitnow"
+
     def __init__(self, http, max_pages: int = 2) -> None:
         self._http = http
         self._max_pages = max_pages
