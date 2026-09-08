@@ -857,9 +857,10 @@ def run_pipeline(
     delivered_offers = 0
     cap_deferred_count = 0
     logger.info(
-        "discovery: raw=%s unique=%s prefilter_rejected=%s profession_rejected=%s eligible=%s selected=%s deferred_by_budget=%s canonical_network_attempts=%s sources=%s",
+        "discovery: raw=%s unique=%s newly_discovered=%s prefilter_rejected=%s profession_rejected=%s eligible=%s selected=%s deferred_by_budget=%s canonical_network_attempts=%s sources=%s",
         discovery.stats.raw,
         discovery.stats.unique,
+        discovery.stats.newly_discovered,
         discovery.stats.prefilter_rejected,
         discovery.stats.profession_rejected,
         discovery.stats.eligible,

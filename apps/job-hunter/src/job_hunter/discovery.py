@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -87,10 +87,33 @@ DISCOVERY_PHASES = (
 )
 
 
+def _count_inserts(results: Iterable[tuple[str, bool, bool] | None]) -> int:
+    """How many of a batch upsert's results report a row it actually inserted.
+
+    A ``None`` entry is a job that could not be persisted at all --
+    ``upsert_logical_jobs`` has already logged why -- and nothing was
+    inserted for it, so it does not count.
+    """
+    return sum(1 for result in results if result is not None and result[1])
+
+
 @dataclass(slots=True)
 class DiscoveryStats:
     raw: int = 0
     unique: int = 0
+    # Rows this run inserted, as opposed to re-saw. Accumulated across every
+    # upsert the run makes rather than read off one of them, so no insert
+    # site can be forgotten: in practice almost all of them land in the raw
+    # persist, because by the time the unique jobs are upserted every one of
+    # them is already on the table. Two raw copies of one logical job count
+    # once, because the second resolves to the row the first inserted.
+    #
+    # It is a count of rows, not of `unique` jobs, and can exceed `unique`:
+    # `_dedupe` and the store resolve identity by different rules, so a pair
+    # this run collapses in memory may still be two rows on the table. Rows
+    # is the figure capacity planning wants -- shared facet extraction is
+    # paid per row.
+    newly_discovered: int = 0
     canonical_resolved: int = 0
     canonical_unresolved: int = 0
     cross_source_duplicates: int = 0
@@ -738,7 +761,10 @@ def collect_candidates(
     # Persist every source copy before collapsing the run so provenance is
     # retained even when only one representative continues to evaluation.
     with ledger.phase(PHASE_RAW_PERSIST):
-        store.upsert_logical_jobs(raw_jobs)
+        # The upsert already decides per row whether it inserted; keeping the
+        # answer here is what turns the newly-discovered rate from an estimate
+        # into a measurement.
+        stats.newly_discovered += _count_inserts(store.upsert_logical_jobs(raw_jobs))
 
     with ledger.phase(PHASE_DEDUPE):
         unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
@@ -770,6 +796,7 @@ def collect_candidates(
     with ledger.phase(PHASE_UNIQUE_PERSIST):
         stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
         upserted = store.upsert_logical_jobs(unique_jobs)
+        stats.newly_discovered += _count_inserts(upserted)
 
         persisted: list[tuple[str, Job, str | None]] = []
         skipped_count = 0
@@ -973,7 +1000,11 @@ def collect_candidates(
                             _record_reattribution(stats, previous_market_id, job.market_id)
                             # Late canonicalization may consolidate stored rows; use
                             # the store's history-preserving survivor ID downstream.
-                            job_id, _is_new, _description_changed = store.upsert_logical_job(job)
+                            job_id, is_new, _description_changed = store.upsert_logical_job(job)
+                            # Resolution rewrites the job's canonical URL, so this
+                            # upsert resolves identity again and can land on a row
+                            # the earlier two never matched.
+                            stats.newly_discovered += int(is_new)
                             if job.market_id:
                                 store.set_job_market(job_id, job.market_id)
                             if not store.needs_evaluation(job_id):

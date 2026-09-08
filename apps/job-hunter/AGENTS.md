@@ -142,6 +142,15 @@ Key modules:
 - `src/job_hunter/discovery.py`, `discovery_queries.py`, `ranking.py` — aggregate, generate expanded search queries, and rank candidates before Gemini. `generate_search_queries()` expands each role/template across configured ATS domains.
 - `src/job_hunter/hiring_scope.py` — reads a posting's *explicitly stated* hiring regions ("open to candidates based in the US and Europe") from its text alone. It is deliberately self-contained: no market, no candidate, no scoring. `market_policy.py::attribute_market` consumes it as a bonus that outranks a listing variant's location label, and as a filter that drops markets the posting's stated regions exclude. Keep it that way — a posting's eligible regions are a shared, cacheable property of the posting, whereas whether a given candidate may work there is per-user, and only the first belongs in this module.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
+- `DiscoveryStats.newly_discovered` counts the rows a run inserted, and is reported as
+  `newly_discovered=` on the `discovery:` log line next to `raw=` and `unique=`. It accumulates
+  across all three of `collect_candidates`' upserts rather than reading one of them, so a new
+  insert site cannot go uncounted; in practice nearly every insert lands in the *raw* persist,
+  since the unique jobs are upserted afterwards and are already on the table by then. It counts
+  rows, not `unique` jobs, and may exceed `unique`: `_dedupe` and the store resolve identity by
+  different rules, and rows is what capacity planning wants, because shared facet extraction is
+  paid per row. The `#114` sizing this feeds is why it is measured rather than estimated from an
+  assumed posting lifetime.
 - `DiscoveryStats` also carries the cost half of each source's scorecard: `elapsed_by_source`
   and `requests_by_source`, keyed by the source *instance* (`discovery.source_cost_label`, so
   `lever:acme` and `lever:globex` stay apart and a source yielding nothing is still reported),
