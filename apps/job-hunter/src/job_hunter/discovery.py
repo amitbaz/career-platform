@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -54,6 +55,37 @@ SOURCE_COMPLETED = "completed"
 SOURCE_CUT_OFF = "cut_off"
 SOURCE_FAILED = "failed"
 
+# The phases of `collect_candidates`, in the order they run. Each one can
+# independently dominate a run, and the per-source figures above measure only
+# the first of them -- in the run that prompted this (34201733339) the sources
+# summed to 100.1s of a 2771.2s discovery, leaving 96% of it attributed to
+# nothing at all.
+PHASE_SOURCES = "sources"
+PHASE_RAW_PERSIST = "raw_persist"
+PHASE_DEDUPE = "dedupe"
+PHASE_ENRICH = "enrich"
+PHASE_UNIQUE_PERSIST = "unique_persist"
+PHASE_PREFILTER = "prefilter"
+PHASE_CANONICAL = "canonical"
+PHASE_ELIGIBLE = "eligible"
+# Everything not inside one of the phases above: the in-memory bookkeeping
+# between them. It exists so the phases sum to the total exactly. A large
+# `other` is itself a finding -- it means real work has grown somewhere no
+# phase covers, which is the failure this instrumentation exists to prevent.
+PHASE_OTHER = "other"
+
+DISCOVERY_PHASES = (
+    PHASE_SOURCES,
+    PHASE_RAW_PERSIST,
+    PHASE_DEDUPE,
+    PHASE_ENRICH,
+    PHASE_UNIQUE_PERSIST,
+    PHASE_PREFILTER,
+    PHASE_CANONICAL,
+    PHASE_ELIGIBLE,
+    PHASE_OTHER,
+)
+
 
 @dataclass(slots=True)
 class DiscoveryStats:
@@ -100,6 +132,13 @@ class DiscoveryStats:
     # happening around the sources rather than inside them, and that gap is
     # the finding this instrumentation exists to expose.
     total_elapsed_seconds: float = 0.0
+    # Where that total went, keyed by the phase names in `DISCOVERY_PHASES`.
+    # Every phase is present even when it cost nothing, so a phase can never
+    # go silently unmeasured, and the values sum to `total_elapsed_seconds`
+    # so no remainder can hide between them. The `sources` phase is the whole
+    # source loop and so exceeds the sum of `elapsed_by_source`: the
+    # difference is the per-job work the loop body does around each source.
+    elapsed_by_phase: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -368,8 +407,74 @@ def _cheap_market_attribution(job: Job, policy: SearchPolicy) -> str | None:
     return attribute_market(job, policy.markets)
 
 
+class _PhaseLedger:
+    """Charges every moment of a discovery pass to exactly one phase.
+
+    A stopwatch rather than a set of independent timers: time is charged to
+    whichever phase is currently on the stack, so the phases partition the
+    run instead of sampling it. That is what lets the figures sum to the
+    total -- the property that would have made the 2671 unattributed seconds
+    in run 34138786671's successor visible the moment they appeared, instead
+    of after two wrong conclusions drawn from the log lines around them.
+
+    Phases nest: canonical resolution runs inside the eligible pass, and the
+    inner phase is charged for its own time while the outer one keeps the
+    rest. Reading the clock is the only side effect, so an injected clock
+    drives this exactly as it drives the per-source figures.
+    """
+
+    def __init__(self, clock: Callable[[], float], started_at: float) -> None:
+        self._clock = clock
+        self._last = started_at
+        self._stack = [PHASE_OTHER]
+        self.elapsed: dict[str, float] = {phase: 0.0 for phase in DISCOVERY_PHASES}
+
+    def _charge(self) -> float:
+        now = self._clock()
+        self.elapsed[self._stack[-1]] += max(0.0, now - self._last)
+        self._last = now
+        return now
+
+    @contextmanager
+    def phase(self, name: str) -> Iterator[None]:
+        self._charge()
+        self._stack.append(name)
+        try:
+            yield
+        finally:
+            self._charge()
+            self._stack.pop()
+
+    def close(self) -> float:
+        """Charge the remaining time and return the clock reading it ended on.
+
+        The caller takes the total from this return value rather than reading
+        the clock again, so that the phases sum to the total exactly instead
+        of to the total minus one more read.
+        """
+        return self._charge()
+
+
 def _format_seconds(seconds: float) -> str:
     return f"{seconds:.1f}s"
+
+
+def _format_phase_cost(stats: DiscoveryStats) -> str:
+    """Render where a discovery pass spent its time, dearest phase first.
+
+    Only a rendering: the figures live on `DiscoveryStats.elapsed_by_phase`,
+    so a test asserts them without reading a log line. Every phase is
+    rendered, including the free ones -- a phase missing from the line would
+    be indistinguishable from a phase nobody thought to measure.
+    """
+    if not stats.elapsed_by_phase:
+        return "none"
+    ordered = sorted(
+        stats.elapsed_by_phase.items(), key=lambda item: item[1], reverse=True
+    )
+    return " ".join(
+        f"{phase}={_format_seconds(elapsed)}" for phase, elapsed in ordered
+    )
 
 
 def budget_applied(
@@ -601,39 +706,43 @@ def collect_candidates(
     """
     started_at = clock()
     stats = DiscoveryStats()
+    ledger = _PhaseLedger(clock, started_at)
     raw_jobs: list[Job] = []
     denylist = frozenset(policy.learned_ats_denylist)
     taken_labels: set[str] = set()
 
     budget_seconds = policy.source_time_budget_seconds
 
-    for source in sources:
-        label = _distinct_label(source, taken_labels)
-        for job in _iter_source_jobs(
-            source, http, stats, label, clock, budget_seconds
-        ):
-            stats.raw += 1
-            stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
-            if job.url:
-                job.original_url = job.original_url or job.url
-            # Attribute before the first persist and before _dedupe, so a job
-            # from any source that happens to carry a supported ATS URL is
-            # stored with its identity and can be matched on the strongest
-            # dedup key this run rather than only on its URL.
-            apply_ats_identity(job)
-            job.content_confidence = content_confidence.infer_content_confidence(
-                job.source, job.description
-            )
-            raw_market_id = _cheap_market_attribution(job, policy)
-            _bump(stats.raw_by_market, raw_market_id or _UNATTRIBUTED)
-            raw_jobs.append(job)
+    with ledger.phase(PHASE_SOURCES):
+        for source in sources:
+            label = _distinct_label(source, taken_labels)
+            for job in _iter_source_jobs(
+                source, http, stats, label, clock, budget_seconds
+            ):
+                stats.raw += 1
+                stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
+                if job.url:
+                    job.original_url = job.original_url or job.url
+                # Attribute before the first persist and before _dedupe, so a
+                # job from any source that happens to carry a supported ATS
+                # URL is stored with its identity and can be matched on the
+                # strongest dedup key this run rather than only on its URL.
+                apply_ats_identity(job)
+                job.content_confidence = content_confidence.infer_content_confidence(
+                    job.source, job.description
+                )
+                raw_market_id = _cheap_market_attribution(job, policy)
+                _bump(stats.raw_by_market, raw_market_id or _UNATTRIBUTED)
+                raw_jobs.append(job)
 
     # Persist every source copy before collapsing the run so provenance is
     # retained even when only one representative continues to evaluation.
-    store.upsert_logical_jobs(raw_jobs)
+    with ledger.phase(PHASE_RAW_PERSIST):
+        store.upsert_logical_jobs(raw_jobs)
 
-    unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
-    stats.unique = len(unique_jobs)
+    with ledger.phase(PHASE_DEDUPE):
+        unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
+        stats.unique = len(unique_jobs)
 
     prefiltered: list[tuple[str, Job]] = []
     rediscovered_job_ids: list[str] = []
@@ -643,59 +752,61 @@ def collect_candidates(
     # observed with -- the attribution in step 6 overwrites job.market_id.
     board_sightings: list[tuple[str, str, str, str]] = []
     observed_markets: list[str | None] = []
-    for job in unique_jobs:
-        observed_market_id = _cheap_market_attribution(job, policy)
-        observed_markets.append(observed_market_id)
-        reference = _ats_board_reference_safely(
-            job, market_hint=observed_market_id, denylist=denylist
-        )
-        if reference is not None:
-            board_sightings.append(reference)
-        if job.url and not job.description:
-            enrich_job(job, http)
+    with ledger.phase(PHASE_ENRICH):
+        for job in unique_jobs:
+            observed_market_id = _cheap_market_attribution(job, policy)
+            observed_markets.append(observed_market_id)
+            reference = _ats_board_reference_safely(
+                job, market_hint=observed_market_id, denylist=denylist
+            )
+            if reference is not None:
+                board_sightings.append(reference)
+            if job.url and not job.description:
+                enrich_job(job, http)
 
     # Design steps 5 and 6 (batch-upsert the unique jobs, then batch the
     # remaining reads and writes): one batch of writes and one batch of reads
     # for the whole run.
-    stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
-    upserted = store.upsert_logical_jobs(unique_jobs)
+    with ledger.phase(PHASE_UNIQUE_PERSIST):
+        stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
+        upserted = store.upsert_logical_jobs(unique_jobs)
 
-    persisted: list[tuple[str, Job, str | None]] = []
-    skipped_count = 0
-    # strict=True: these three lists are built one entry per unique job and
-    # must stay that way. A store whose batch upsert returns a shorter list
-    # (DryRunStore._synthesize("list") returns []) would otherwise make
-    # collect_candidates silently return zero candidates.
-    for job, observed_market_id, result in zip(
-        unique_jobs, observed_markets, upserted, strict=True
-    ):
-        if result is None:
-            # upsert_logical_jobs already logged why. Dropping the job here is
-            # the only option: everything downstream is keyed by its id. It
-            # still counts in stats.unique (set above, from _dedupe's output)
-            # but never reaches unique_by_market/unique_by_source or
-            # _record_reattribution below -- logged so that gap is visible
-            # rather than a silent mismatch against the discovery: log line.
-            skipped_count += 1
-            continue
-        persisted.append((result[0], job, observed_market_id))
+        persisted: list[tuple[str, Job, str | None]] = []
+        skipped_count = 0
+        # strict=True: these three lists are built one entry per unique job
+        # and must stay that way. A store whose batch upsert returns a
+        # shorter list (DryRunStore._synthesize("list") returns []) would
+        # otherwise make collect_candidates silently return zero candidates.
+        for job, observed_market_id, result in zip(
+            unique_jobs, observed_markets, upserted, strict=True
+        ):
+            if result is None:
+                # upsert_logical_jobs already logged why. Dropping the job here is
+                # the only option: everything downstream is keyed by its id. It
+                # still counts in stats.unique (set above, from _dedupe's output)
+                # but never reaches unique_by_market/unique_by_source or
+                # _record_reattribution below -- logged so that gap is visible
+                # rather than a silent mismatch against the discovery: log line.
+                skipped_count += 1
+                continue
+            persisted.append((result[0], job, observed_market_id))
 
-    if skipped_count:
-        logger.warning(
-            "discovery dropped %s job(s) that could not be persisted; "
-            "stats.unique will not equal the sum of unique_by_market/unique_by_source",
-            skipped_count,
-        )
+        if skipped_count:
+            logger.warning(
+                "discovery dropped %s job(s) that could not be persisted; "
+                "stats.unique will not equal the sum of unique_by_market/unique_by_source",
+                skipped_count,
+            )
 
-    market_updates: list[tuple[str, str | None]] = []
-    for job_id, job, observed_market_id in persisted:
-        job.market_id = attribute_market(job, policy.markets) if policy.markets else None
-        _record_reattribution(stats, observed_market_id, job.market_id)
-        if job.market_id:
-            market_updates.append((job_id, job.market_id))
-    store.set_job_markets(market_updates)
+        market_updates: list[tuple[str, str | None]] = []
+        for job_id, job, observed_market_id in persisted:
+            job.market_id = attribute_market(job, policy.markets) if policy.markets else None
+            _record_reattribution(stats, observed_market_id, job.market_id)
+            if job.market_id:
+                market_updates.append((job_id, job.market_id))
+        store.set_job_markets(market_updates)
 
-    evaluation_needed = store.needs_evaluation_bulk([job_id for job_id, _job, _hint in persisted])
+        evaluation_needed = store.needs_evaluation_bulk([job_id for job_id, _job, _hint in persisted])
 
     # Design step 7 (prefilter and count): mostly pure -- the only I/O left
     # here is collecting the terminal-status pairs for jobs rejected this
@@ -708,39 +819,40 @@ def collect_candidates(
     # (It is NOT read by needs_evaluation/needs_evaluation_bulk, which only
     # look at the evaluations table -- a rejected job with no evaluation row
     # still answers needs=True next run and is correctly re-evaluated.)
-    status_updates: list[tuple[str, str]] = []
-    for job_id, job, _observed_market_id in persisted:
-        market_key = job.market_id or _UNATTRIBUTED
-        source_label = metric_source_label(job.source)
-        _bump(stats.unique_by_market, market_key)
-        _bump(stats.unique_by_source, source_label)
+    with ledger.phase(PHASE_PREFILTER):
+        status_updates: list[tuple[str, str]] = []
+        for job_id, job, _observed_market_id in persisted:
+            market_key = job.market_id or _UNATTRIBUTED
+            source_label = metric_source_label(job.source)
+            _bump(stats.unique_by_market, market_key)
+            _bump(stats.unique_by_source, source_label)
 
-        if not evaluation_needed[job_id]:
-            rediscovered_job_ids.append(job_id)
-            continue
+            if not evaluation_needed[job_id]:
+                rediscovered_job_ids.append(job_id)
+                continue
 
-        if job.availability == CLOSED:
-            status_updates.append((job_id, "closed"))
-            stats.availability_rejected += 1
-            _bump(stats.rejected_by_market, market_key)
-            _bump(stats.rejected_by_source, source_label)
-            continue
+            if job.availability == CLOSED:
+                status_updates.append((job_id, "closed"))
+                stats.availability_rejected += 1
+                _bump(stats.rejected_by_market, market_key)
+                _bump(stats.rejected_by_source, source_label)
+                continue
 
-        market = market_by_id(policy, job.market_id) if job.market_id else None
-        prefilter_result = prefilter_job(job, policy, market)
-        if not prefilter_result.should_evaluate:
-            status_updates.append((job_id, "rejected"))
-            if prefilter_result.reason_code == "off_target_profession":
-                stats.profession_rejected += 1
-            else:
-                stats.prefilter_rejected += 1
-            _bump(stats.rejected_by_market, market_key)
-            _bump(stats.rejected_by_source, source_label)
-            continue
+            market = market_by_id(policy, job.market_id) if job.market_id else None
+            prefilter_result = prefilter_job(job, policy, market)
+            if not prefilter_result.should_evaluate:
+                status_updates.append((job_id, "rejected"))
+                if prefilter_result.reason_code == "off_target_profession":
+                    stats.profession_rejected += 1
+                else:
+                    stats.prefilter_rejected += 1
+                _bump(stats.rejected_by_market, market_key)
+                _bump(stats.rejected_by_source, source_label)
+                continue
 
-        prefiltered.append((job_id, job))
+            prefiltered.append((job_id, job))
 
-    store.set_job_statuses(status_updates)
+        store.set_job_statuses(status_updates)
 
     # Canonical resolution costs a page fetch plus a public search for jobs
     # not already on a supported ATS host, so that expensive path only runs
@@ -751,140 +863,152 @@ def collect_candidates(
     # at zero network cost, so they are never gated by this shortlist -- and
     # never consume a shortlist slot either, since they're filtered out
     # before the slot count is applied below.
-    shortlisted_ids: set[str] = set()
-    if resolver is not None and prefiltered:
-        shortlist_limit = max(
-            0,
-            min(
-                policy.max_canonical_resolutions_per_run,
-                max(0, policy.max_jobs_per_run) * _CANONICAL_SHORTLIST_MULTIPLIER,
-            ),
-        )
-        stats.canonical_shortlist_limit = shortlist_limit
-        ranked_prefiltered = rank_jobs(prefiltered, policy, preferences)
-        needing_resolution_ranked = [
-            item
-            for item in ranked_prefiltered
-            if item[1].url and parse_supported_ats_url(item[1].url) is None
-        ]
-        # Mirror pipeline._select_candidates's own strategy here: a flat
-        # top-N slice when there's no candidate profile to diversify by,
-        # diversity-aware selection when there is. Final selection
-        # guarantees every source a minimum_per_source floor regardless of
-        # global rank, so a flat rank slice here could shortlist zero
-        # candidates from a source that final selection still picks --
-        # leaving those jobs unresolved even though they ship.
-        try:
-            if preferences is None:
-                shortlist = needing_resolution_ranked[:shortlist_limit]
-            else:
-                shortlist = select_diverse_candidates(
-                    needing_resolution_ranked,
-                    limit=shortlist_limit,
-                    minimum_per_source=policy.source_minimum_per_run,
-                    max_share=policy.source_max_share,
-                )
-        except Exception:
-            logger.exception(
-                "canonical shortlist selection failed; falling back to global rank"
+    with ledger.phase(PHASE_CANONICAL):
+        shortlisted_ids: set[str] = set()
+        if resolver is not None and prefiltered:
+            shortlist_limit = max(
+                0,
+                min(
+                    policy.max_canonical_resolutions_per_run,
+                    max(0, policy.max_jobs_per_run) * _CANONICAL_SHORTLIST_MULTIPLIER,
+                ),
             )
-            shortlist = needing_resolution_ranked[:shortlist_limit]
-        shortlisted_ids = {item[0] for item in shortlist}
+            stats.canonical_shortlist_limit = shortlist_limit
+            ranked_prefiltered = rank_jobs(prefiltered, policy, preferences)
+            needing_resolution_ranked = [
+                item
+                for item in ranked_prefiltered
+                if item[1].url and parse_supported_ats_url(item[1].url) is None
+            ]
+            # Mirror pipeline._select_candidates's own strategy here: a flat
+            # top-N slice when there's no candidate profile to diversify by,
+            # diversity-aware selection when there is. Final selection
+            # guarantees every source a minimum_per_source floor regardless of
+            # global rank, so a flat rank slice here could shortlist zero
+            # candidates from a source that final selection still picks --
+            # leaving those jobs unresolved even though they ship.
+            try:
+                if preferences is None:
+                    shortlist = needing_resolution_ranked[:shortlist_limit]
+                else:
+                    shortlist = select_diverse_candidates(
+                        needing_resolution_ranked,
+                        limit=shortlist_limit,
+                        minimum_per_source=policy.source_minimum_per_run,
+                        max_share=policy.source_max_share,
+                    )
+            except Exception:
+                logger.exception(
+                    "canonical shortlist selection failed; falling back to global rank"
+                )
+                shortlist = needing_resolution_ranked[:shortlist_limit]
+            shortlisted_ids = {item[0] for item in shortlist}
 
     eligible: list[tuple[str, Job]] = []
     eligible_job_ids: set[str] = set()
 
-    for job_id, job in prefiltered:
-        if resolver is not None and job.url:
-            already_ats_url = parse_supported_ats_url(job.url) is not None
-            if not already_ats_url and job_id not in shortlisted_ids:
-                stats.canonical_budget_exhausted += 1
-            else:
-                if not already_ats_url:
-                    stats.canonical_network_attempts += 1
+    with ledger.phase(PHASE_ELIGIBLE):
+        for job_id, job in prefiltered:
+            if resolver is not None and job.url:
+                already_ats_url = parse_supported_ats_url(job.url) is not None
+                if not already_ats_url and job_id not in shortlisted_ids:
+                    stats.canonical_budget_exhausted += 1
+                else:
+                    with ledger.phase(PHASE_CANONICAL):
+                        if not already_ats_url:
+                            stats.canonical_network_attempts += 1
+                        try:
+                            resolution = resolver.resolve(job)
+                        except Exception:
+                            logger.exception(
+                                "canonical resolution failed: source=%s",
+                                metric_source_label(job.source),
+                            )
+                            resolution = None
+                        if job.availability == CLOSED:
+                            store.set_job_status(job_id, "closed")
+                            stats.availability_rejected += 1
+                            _bump(stats.rejected_by_market, job.market_id or _UNATTRIBUTED)
+                            _bump(stats.rejected_by_source, metric_source_label(job.source))
+                            continue
+                        if resolution is None:
+                            stats.canonical_unresolved += 1
+                        else:
+                            stats.canonical_resolved += 1
+                            job.canonical_url = resolution.url
+                            job.url = resolution.url
+                            if resolution.ats is not None:
+                                # Fill, never relabel. A job that reached the resolver
+                                # can already carry authoritative identity from its own
+                                # adapter (an ATS posting whose URL does not parse, such
+                                # as a board embedded on the employer's domain), and the
+                                # resolver's weaker branches -- an embedded link is the
+                                # first ATS anchor on the page, with no company or title
+                                # check -- can point at a different posting entirely.
+                                # Overwriting here would merge this job into that
+                                # posting's stored row on the ATS dedup key.
+                                apply_ats_identity(job, resolution.ats)
+                                if _harvest_ats_board_safely(store, job, denylist=denylist):
+                                    stats.ats_boards_discovered += 1
+                                if job.content_confidence != content_confidence.OFFICIAL_ATS:
+                                    authoritative = fetch_authoritative_description(
+                                        resolution.ats, resolution.url, http
+                                    )
+                                    if authoritative:
+                                        job.description = authoritative
+                                        job.content_confidence = content_confidence.OFFICIAL_ATS
+                            # Canonical resolution can surface stronger, directly
+                            # observed location evidence than the query-time hint that
+                            # seeded the earlier attribution above, so re-run it
+                            # before the final append. Attribution uncertainty alone
+                            # (i.e. falling back to the first enabled market) must
+                            # never drop a job -- only prefilter/eligibility do that.
+                            previous_market_id = job.market_id
+                            job.market_id = (
+                                attribute_market(job, policy.markets) if policy.markets else None
+                            )
+                            _record_reattribution(stats, previous_market_id, job.market_id)
+                            # Late canonicalization may consolidate stored rows; use
+                            # the store's history-preserving survivor ID downstream.
+                            job_id, _is_new, _description_changed = store.upsert_logical_job(job)
+                            if job.market_id:
+                                store.set_job_market(job_id, job.market_id)
+                            if not store.needs_evaluation(job_id):
+                                rediscovered_job_ids.append(job_id)
+                                continue
+
+            if job_id in eligible_job_ids:
+                continue
+            eligible_job_ids.add(job_id)
+            eligible.append((job_id, job))
+            _bump(stats.eligible_by_market, job.market_id or _UNATTRIBUTED)
+            _bump(stats.eligible_by_source, metric_source_label(job.source))
+            if job.ats_provider and job.ats_board:
                 try:
-                    resolution = resolver.resolve(job)
+                    store.record_ats_eligible_job(
+                        job.ats_provider, job.ats_board, datetime.now(timezone.utc)
+                    )
                 except Exception:
                     logger.exception(
-                        "canonical resolution failed: source=%s",
+                        "recording ATS-eligible job failed: source=%s",
                         metric_source_label(job.source),
                     )
-                    resolution = None
-                if job.availability == CLOSED:
-                    store.set_job_status(job_id, "closed")
-                    stats.availability_rejected += 1
-                    _bump(stats.rejected_by_market, job.market_id or _UNATTRIBUTED)
-                    _bump(stats.rejected_by_source, metric_source_label(job.source))
-                    continue
-                if resolution is None:
-                    stats.canonical_unresolved += 1
-                else:
-                    stats.canonical_resolved += 1
-                    job.canonical_url = resolution.url
-                    job.url = resolution.url
-                    if resolution.ats is not None:
-                        # Fill, never relabel. A job that reached the resolver
-                        # can already carry authoritative identity from its own
-                        # adapter (an ATS posting whose URL does not parse, such
-                        # as a board embedded on the employer's domain), and the
-                        # resolver's weaker branches -- an embedded link is the
-                        # first ATS anchor on the page, with no company or title
-                        # check -- can point at a different posting entirely.
-                        # Overwriting here would merge this job into that
-                        # posting's stored row on the ATS dedup key.
-                        apply_ats_identity(job, resolution.ats)
-                        if _harvest_ats_board_safely(store, job, denylist=denylist):
-                            stats.ats_boards_discovered += 1
-                        if job.content_confidence != content_confidence.OFFICIAL_ATS:
-                            authoritative = fetch_authoritative_description(
-                                resolution.ats, resolution.url, http
-                            )
-                            if authoritative:
-                                job.description = authoritative
-                                job.content_confidence = content_confidence.OFFICIAL_ATS
-                    # Canonical resolution can surface stronger, directly
-                    # observed location evidence than the query-time hint that
-                    # seeded the earlier attribution above, so re-run it
-                    # before the final append. Attribution uncertainty alone
-                    # (i.e. falling back to the first enabled market) must
-                    # never drop a job -- only prefilter/eligibility do that.
-                    previous_market_id = job.market_id
-                    job.market_id = (
-                        attribute_market(job, policy.markets) if policy.markets else None
-                    )
-                    _record_reattribution(stats, previous_market_id, job.market_id)
-                    # Late canonicalization may consolidate stored rows; use
-                    # the store's history-preserving survivor ID downstream.
-                    job_id, _is_new, _description_changed = store.upsert_logical_job(job)
-                    if job.market_id:
-                        store.set_job_market(job_id, job.market_id)
-                    if not store.needs_evaluation(job_id):
-                        rediscovered_job_ids.append(job_id)
-                        continue
-
-        if job_id in eligible_job_ids:
-            continue
-        eligible_job_ids.add(job_id)
-        eligible.append((job_id, job))
-        _bump(stats.eligible_by_market, job.market_id or _UNATTRIBUTED)
-        _bump(stats.eligible_by_source, metric_source_label(job.source))
-        if job.ats_provider and job.ats_board:
-            try:
-                store.record_ats_eligible_job(
-                    job.ats_provider, job.ats_board, datetime.now(timezone.utc)
-                )
-            except Exception:
-                logger.exception(
-                    "recording ATS-eligible job failed: source=%s",
-                    metric_source_label(job.source),
-                )
 
     stats.eligible = len(eligible)
-    stats.total_elapsed_seconds = max(0.0, clock() - started_at)
+    # The total comes from the ledger's own last reading rather than a fresh
+    # one, so the phases sum to it exactly and no remainder can appear
+    # between the last phase and this line.
+    stats.total_elapsed_seconds = max(0.0, ledger.close() - started_at)
+    stats.elapsed_by_phase = dict(ledger.elapsed)
     logger.info(
         "discovery source cost: total=%s %s",
         _format_seconds(stats.total_elapsed_seconds),
         _format_source_cost(stats, budget_seconds),
+    )
+    logger.info(
+        "discovery phase cost: total=%s %s",
+        _format_seconds(stats.total_elapsed_seconds),
+        _format_phase_cost(stats),
     )
     logger.info(
         "discovery source contribution: %s canonical_resolved=%s "
