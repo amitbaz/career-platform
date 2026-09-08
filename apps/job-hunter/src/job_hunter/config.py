@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import math
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +17,7 @@ from .models import (
     DEFAULT_ENGINEERING_TITLE_KEYWORDS,
     DEFAULT_ENGINEERING_TITLE_PHRASES,
     DEFAULT_FRONTEND_SIGNALS,
+    DEFAULT_SOURCE_TIME_BUDGET_SECONDS,
     DEFAULT_SPECIALIST_BOARD_HOSTS,
     CompanyWatchSeed,
     GeminiQuotaSettings,
@@ -28,6 +31,8 @@ from .models import (
 if TYPE_CHECKING:
     from .postgres_store import PostgresJobStore
 
+
+logger = logging.getLogger(__name__)
 
 _REMOTE_POLICIES = {"preferred", "required", "allowed"}
 _RELOCATION_POLICIES = {"none", "selective", "allowed"}
@@ -154,6 +159,7 @@ def load_settings(store: "PostgresJobStore") -> Settings:
         manual_company_watch=_parse_manual_company_watch(
             data.get("manual_company_watch", [])
         ),
+        source_time_budget_seconds=_source_time_budget_seconds(),
         max_search_queries_per_run=data.get("max_search_queries_per_run", 30),
         max_canonical_resolutions_per_run=data.get(
             "max_canonical_resolutions_per_run", 80
@@ -295,6 +301,47 @@ def _require_positive_int_env(name: str) -> int:
         raise ValueError(f"{name} must be a positive integer") from exc
     if value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _source_time_budget_seconds() -> float:
+    """Read the per-source wall-clock budget from the environment.
+
+    Environment rather than the search profile on purpose: the budget bounds
+    what ingestion costs the platform, and says nothing about what jobs this
+    user wants. Putting it in the search profile would make an infrastructure
+    limit look like a search preference and would have to be answered by every
+    future user.
+
+    An unusable value falls back to the default rather than raising, and never
+    to zero: a budget is a safeguard, and a run that refuses to start -- or one
+    that cuts every source off at its first unit -- is a worse outcome than a
+    run bounded by the default. "Unusable" includes the non-finite floats
+    `float()` accepts: `nan` compares False against everything, so a budget of
+    nan would disable the budget for every source in the run while looking like
+    a configured one.
+    """
+    raw = os.environ.get("JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_SOURCE_TIME_BUDGET_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "ignoring unparseable JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS=%r; "
+            "using the default of %ss",
+            raw,
+            DEFAULT_SOURCE_TIME_BUDGET_SECONDS,
+        )
+        return DEFAULT_SOURCE_TIME_BUDGET_SECONDS
+    if not math.isfinite(value) or value <= 0:
+        logger.warning(
+            "ignoring unusable JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS=%r; "
+            "using the default of %ss",
+            raw,
+            DEFAULT_SOURCE_TIME_BUDGET_SECONDS,
+        )
+        return DEFAULT_SOURCE_TIME_BUDGET_SECONDS
     return value
 
 

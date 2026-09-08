@@ -46,6 +46,14 @@ _CANONICAL_SHORTLIST_MULTIPLIER = 2
 # real market's counters.
 _UNATTRIBUTED = "unattributed"
 
+# How a source's run ended, as recorded in `DiscoveryStats.source_outcomes`.
+# "Cut off" and "failed" are kept apart deliberately: a slow source needs a
+# schedule, a smaller unit of work, or to run alongside others, while a broken
+# one needs fixing or removing, and one log line cannot prompt both.
+SOURCE_COMPLETED = "completed"
+SOURCE_CUT_OFF = "cut_off"
+SOURCE_FAILED = "failed"
+
 
 @dataclass(slots=True)
 class DiscoveryStats:
@@ -77,6 +85,16 @@ class DiscoveryStats:
     # boards of the same ATS provider stay distinguishable.
     elapsed_by_source: dict[str, float] = field(default_factory=dict)
     requests_by_source: dict[str, int] = field(default_factory=dict)
+    # The longest single unit of work a source ran -- one feed page, one ATS
+    # board, one watched company, one search query. It is the granularity at
+    # which the time budget can cut, so comparing it against the budget says
+    # whether the budget could have bounded that source at all. Derived from
+    # what the source did rather than declared per adapter, so it stays true
+    # for an adapter nobody annotated.
+    longest_step_by_source: dict[str, float] = field(default_factory=dict)
+    # How each source's run ended: SOURCE_COMPLETED, SOURCE_CUT_OFF or
+    # SOURCE_FAILED, keyed like the cost figures above.
+    source_outcomes: dict[str, str] = field(default_factory=dict)
     # Wall-clock time inside `collect_candidates`. Deliberately not derived
     # from `elapsed_by_source`: the difference between the two is the work
     # happening around the sources rather than inside them, and that gap is
@@ -354,21 +372,58 @@ def _format_seconds(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
-def _format_source_cost(stats: DiscoveryStats) -> str:
-    """Render each source's cost, dearest first.
+def budget_applied(
+    stats: DiscoveryStats, label: str, budget_seconds: float | None
+) -> bool:
+    """Return whether the time budget could actually bound this source.
+
+    The budget is checked between the units of work a source iterates over,
+    so it can only bound a source whose units are smaller than it. A source
+    whose work is one indivisible fetch -- or whose single unit outlasts the
+    whole budget -- has no earlier boundary to be stopped at, and is bounded
+    by the existing request timeout instead. Saying so in the report matters:
+    a source that overran despite the budget and a source the budget could
+    never have caught call for different responses.
+    """
+    if not budget_seconds or budget_seconds <= 0:
+        return False
+    return stats.longest_step_by_source.get(label, 0.0) <= budget_seconds
+
+
+def _format_source_cost(stats: DiscoveryStats, budget_seconds: float | None) -> str:
+    """Render each source's cost and how its run ended, dearest first.
 
     Only a rendering: the figures themselves live on `DiscoveryStats`, so a
-    test can assert them without reading a log line.
+    test can assert them without reading a log line. A source that finished
+    within its budget carries no marker, so the markers that do appear are
+    the ones worth reading.
+
+    `budget_seconds` is required rather than defaulted: omitting it would make
+    `budget_applied` answer False for everything and render every cut-off
+    source as one the budget could not have caught, which is the opposite of
+    what that marker is for.
     """
     if not stats.elapsed_by_source:
         return "none"
     ordered = sorted(
         stats.elapsed_by_source.items(), key=lambda item: item[1], reverse=True
     )
-    return " ".join(
-        f"{label}={_format_seconds(elapsed)}/{stats.requests_by_source.get(label, 0)}req"
-        for label, elapsed in ordered
-    )
+    rendered = []
+    for label, elapsed in ordered:
+        markers = []
+        outcome = stats.source_outcomes.get(label)
+        if outcome in (SOURCE_CUT_OFF, SOURCE_FAILED):
+            markers.append(outcome)
+        if outcome == SOURCE_CUT_OFF and not budget_applied(
+            stats, label, budget_seconds
+        ):
+            markers.append("budget_not_applicable")
+        suffix = f"({','.join(markers)})" if markers else ""
+        requests = stats.requests_by_source.get(label, 0)
+        rendered.append(
+            f"{label}={_format_seconds(elapsed)}/{requests}req{suffix}"
+        )
+    return " ".join(rendered)
 
 
 def _format_source_contribution(per_source: dict[str, int]) -> str:
@@ -390,26 +445,26 @@ def _iter_source_jobs(
     stats: DiscoveryStats,
     label: str,
     clock: Callable[[], float],
+    budget_seconds: float | None = None,
 ) -> Iterator[Job]:
-    """Yield one source's jobs, recording its cost and isolating its failures.
+    """Yield one source's jobs, bounding it, costing it and isolating failures.
 
-    Sources hand jobs back incrementally, so both of this function's jobs --
-    failure isolation and cost accounting -- have to follow the work into the
-    iteration rather than sitting around the call that starts it.
+    Sources hand jobs back incrementally, so all three of this function's jobs
+    -- failure isolation, cost accounting and the time budget -- have to
+    follow the work into the iteration rather than sitting around the call
+    that starts it.
 
-<<<<<<< HEAD
-    *Failures* can now surface at any point during iteration. The iterator is
+    *Failures* can surface at any point during iteration. The iterator is
     therefore driven by hand: that keeps the `except` around the source's own
     work alone, so a bug in the caller's per-job handling still propagates
     instead of being mistaken for a dead source. Jobs the source produced
     before it failed have already been handed over and stay handed over --
     handled exactly as they are when the source succeeds. That is a
-    deliberate reading of "unchanged" from issue #122: before sources
-    yielded, a source raising part way contributed nothing, because its whole
-    list was discarded. No source in the tree can reach that path today --
-    each either catches its own errors or raises on its first request, before
-    yielding -- so no run's job set changes. Keeping the prefix is the
-    behaviour the per-source budget (issue #120) needs.
+    deliberate reading of "unchanged" from issue #122: before sources yielded,
+    a source raising part way contributed nothing, because its whole list was
+    discarded. No source in the tree can reach that path today -- each either
+    catches its own errors or raises on its first request, before yielding --
+    so no run's job set changes.
 
     *Cost* is charged per `next()`, not per `discover()` call, which after
     #122 does no work at all and would have measured every source at zero.
@@ -417,38 +472,55 @@ def _iter_source_jobs(
     handling happens between `next()` calls and is deliberately excluded, so
     the figure still means "what this source cost". The running totals are
     written to `stats` after every step rather than once at the end, so a
-    caller that abandons the drain part way -- which is the whole point of
-    #122 -- still sees what the source spent before it stopped.
-=======
-    Jobs the source produced before it failed have already been handed over
-    and stay handed over -- handled exactly as they are when the source
-    succeeds. That is a deliberate reading of "unchanged": before sources
-    yielded, a source raising part way contributed nothing, because its
-    whole list was discarded. No source in the tree can reach that path
-    today -- each either catches its own errors or raises on its first
-    request, before yielding -- so no run's job set changes. Keeping the
-    prefix is the behaviour the per-source budget (issue #120) needs, and
-    discarding it would defeat the point of yielding at all.
->>>>>>> 1924e9a (docs: describe the incremental source contract where it is documented)
+    caller that abandons the drain part way still sees what the source spent
+    before it stopped.
+
+    *The budget* is checked between steps and never inside one, so a source is
+    cut off between the units it already iterates over -- a feed page, an ATS
+    board, a watched company, a search query -- and never mid-request: a
+    half-parsed HTTP response is worse than a source that overruns slightly.
+    Whatever it produced before that point has already been handed over and is
+    kept, which is what makes the budget worth having: a large board that
+    contributes some of its harvest beats one that contributes none. Sources
+    scheduled after it run and are measured as usual.
+
+    Two consequences are worth stating. A source whose own unit outlasts the
+    whole budget cannot be bounded by it -- see `budget_applied`, which is how
+    the report says so. And a source that overruns on its *last* unit is
+    recorded as cut off rather than completed, because from outside there is
+    no way to tell "nothing left" from "one more unit" without paying for that
+    unit, and paying it is the thing the budget exists to refuse.
     """
     elapsed = 0.0
     requests = 0
+    longest_step = 0.0
 
     def bracket(step):
         """Run one step of the source's own work, charging it to `label`."""
-        nonlocal elapsed, requests
+        nonlocal elapsed, requests, longest_step
         started_at = clock()
         requests_before = _client_request_count(http)
         try:
             return step()
         finally:
-            elapsed += max(0.0, clock() - started_at)
+            step_elapsed = max(0.0, clock() - started_at)
+            elapsed += step_elapsed
+            longest_step = max(longest_step, step_elapsed)
             requests += max(0, _client_request_count(http) - requests_before)
             # Written every step, and always at least once, so a source that
             # yields nothing -- or raises immediately -- is still reported
             # rather than missing from the cost table.
             stats.elapsed_by_source[label] = elapsed
             stats.requests_by_source[label] = requests
+            stats.longest_step_by_source[label] = longest_step
+
+    def over_budget() -> bool:
+        # A missing or non-positive budget means no budget. Reading it as a
+        # zero-second one would stop every source at its first unit, which is
+        # the most destructive possible reading of an unset setting.
+        if not budget_seconds or budget_seconds <= 0:
+            return False
+        return elapsed >= budget_seconds
 
     try:
         jobs = bracket(lambda: iter(source.discover()))
@@ -458,17 +530,45 @@ def _iter_source_jobs(
         # since a source that burns the run and then raises is exactly what
         # the cost figures exist to expose.
         logger.exception("source discovery failed: %r", source)
+        stats.source_outcomes[label] = SOURCE_FAILED
         return
 
-    while True:
-        try:
-            job = bracket(lambda: next(jobs))
-        except StopIteration:
-            return
-        except Exception:
-            logger.exception("source discovery failed: %r", source)
-            return
-        yield job
+    try:
+        while True:
+            if over_budget():
+                stats.source_outcomes[label] = SOURCE_CUT_OFF
+                logger.warning(
+                    "source cut off by its time budget: source=%s "
+                    "elapsed=%s budget=%s longest_step=%s budget_applied=%s",
+                    label,
+                    _format_seconds(elapsed),
+                    _format_seconds(budget_seconds),
+                    _format_seconds(longest_step),
+                    budget_applied(stats, label, budget_seconds),
+                )
+                return
+            try:
+                job = bracket(lambda: next(jobs))
+            except StopIteration:
+                stats.source_outcomes[label] = SOURCE_COMPLETED
+                return
+            except Exception:
+                logger.exception("source discovery failed: %r", source)
+                stats.source_outcomes[label] = SOURCE_FAILED
+                return
+            yield job
+    finally:
+        # Closing a generator raises GeneratorExit at whichever `yield` it is
+        # parked on, which is by definition a boundary between its units of
+        # work -- so a cut-off source unwinds its own `finally` blocks rather
+        # than being abandoned mid-iteration. Sources that hand back a plain
+        # iterator have nothing to close.
+        close = getattr(jobs, "close", None)
+        if callable(close):
+            try:
+                bracket(close)
+            except Exception:
+                logger.exception("closing source iterator failed: %r", source)
 
 
 def collect_candidates(
@@ -493,6 +593,11 @@ def collect_candidates(
     the shared `http` client (see `HttpClient.request_count`) and attributed
     to whichever source is running, because the sources differ too much in
     how they issue requests for each to count its own.
+
+    Each source is also bounded by `policy.source_time_budget_seconds`, so no
+    one source can consume the run. A source that overruns is cut off between
+    its units of work, whatever it produced is kept and flows on normally, and
+    the remaining sources run as usual -- see `_iter_source_jobs`.
     """
     started_at = clock()
     stats = DiscoveryStats()
@@ -500,9 +605,13 @@ def collect_candidates(
     denylist = frozenset(policy.learned_ats_denylist)
     taken_labels: set[str] = set()
 
+    budget_seconds = policy.source_time_budget_seconds
+
     for source in sources:
         label = _distinct_label(source, taken_labels)
-        for job in _iter_source_jobs(source, http, stats, label, clock):
+        for job in _iter_source_jobs(
+            source, http, stats, label, clock, budget_seconds
+        ):
             stats.raw += 1
             stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
             if job.url:
@@ -775,7 +884,7 @@ def collect_candidates(
     logger.info(
         "discovery source cost: total=%s %s",
         _format_seconds(stats.total_elapsed_seconds),
-        _format_source_cost(stats),
+        _format_source_cost(stats, budget_seconds),
     )
     logger.info(
         "discovery source contribution: %s canonical_resolved=%s "

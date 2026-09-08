@@ -29,10 +29,13 @@ class JobSource(Protocol):
         point. A source that materialises its whole harvest first cannot
         be bounded from outside without discarding the harvest.
 
-        No caller stops a source yet: this is groundwork for the per-source
-        time budget (issue #120), which is where the stopping happens.
-        Every implementation is a generator function, which the protocol
-        cannot express but `test_sources_incremental.py` enforces.
+        `discovery._iter_source_jobs` is the caller that stops one, when a
+        source overruns its wall-clock budget. It cuts between the units
+        yielded here and never inside one, so the size of a unit is the
+        granularity at which a source can be bounded at all: a source whose
+        unit is one indivisible fetch is bounded by the request timeout
+        instead. Every implementation is a generator function, which the
+        protocol cannot express but `test_sources_incremental.py` enforces.
 
         Because the work now happens while the caller iterates rather than
         inside this call, a caller measuring what a source costs has to
