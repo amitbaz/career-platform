@@ -25,6 +25,7 @@ from job_hunter.ai import (
     AIQuotaPaused,
     AITemporaryCapacity,
 )
+from job_hunter.ai.usage import AIUsageTracker
 from job_hunter.hard_blockers import (
     BlockingThresholds,
     blocked_evaluation,
@@ -1116,9 +1117,16 @@ def run_pipeline(
     sources=None,
     store: PostgresJobStore,
     ai: AIProvider,
+    usage: AIUsageTracker | None = None,
     telegram: TelegramClient | None = None,
     http: HttpClient | None = None,
 ) -> RunSummary:
+    """Run one discovery-to-delivery pass.
+
+    `usage` is the ledger governing `ai`'s calls, passed in rather than read
+    off the provider: what a run spent is the ledger's question, not the text
+    generation port's, and a run given no ledger simply reports no usage.
+    """
     http = http or HttpClient()
     try:
         backfilled = store.backfill_ats_identity()
@@ -1425,8 +1433,9 @@ def run_pipeline(
             settings.policy.match_score_floor,
         )
 
-    tracker = getattr(ai, "_tracker", None)
-    usage_summary = tracker.snapshot(datetime.now(timezone.utc)) if tracker is not None else None
+    usage_summary = (
+        usage.snapshot(datetime.now(timezone.utc)) if usage is not None else None
+    )
     if usage_summary is not None:
         logger.info(_format_ai_usage_log(usage_summary))
 

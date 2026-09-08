@@ -296,8 +296,14 @@ def _require_env(name: str) -> str:
 
 
 def _ai_model() -> str:
-    """The model this run calls. `gemini-3.5-flash-lite` is the free-tier default."""
-    return os.environ.get("GEMINI_MODEL", _DEFAULT_AI_MODEL)
+    """The model this run calls. `gemini-3.5-flash-lite` is the free-tier default.
+
+    An empty value is treated as unset: the workflows pass
+    `GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}`, which expands to an empty string
+    when the repository variable is not set, and an empty model would otherwise
+    reach Google as `.../models/:generateContent`.
+    """
+    return os.environ.get("GEMINI_MODEL", "").strip() or _DEFAULT_AI_MODEL
 
 
 def _ai_quota(model: str) -> AIQuotaSettings:
@@ -329,17 +335,6 @@ def _optional_positive_int_env(name: str) -> int | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return None
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _require_positive_int_env(name: str) -> int:
-    raw = _require_env(name)
     try:
         value = int(raw)
     except ValueError as exc:

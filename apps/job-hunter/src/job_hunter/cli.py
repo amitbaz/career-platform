@@ -104,7 +104,7 @@ def _run(args: argparse.Namespace) -> int:
         settings.ai_api_key, settings.ai_model, http, tracker=tracker
     )
 
-    summary = run_pipeline(settings, store=store, ai=ai, http=http)
+    summary = run_pipeline(settings, store=store, ai=ai, usage=tracker, http=http)
     logger.info(
         "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
         "blocked_by_facets=%d facets_extracted=%d facets_failed=%d",

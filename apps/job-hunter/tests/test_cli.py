@@ -413,8 +413,14 @@ class _CapturingProvider:
 
 def test_run_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
+    pipeline_kwargs = {}
+
+    def _run_pipeline(s, **kwargs):
+        pipeline_kwargs.update(kwargs)
+        return RunSummary()
+
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: RunSummary())
+    monkeypatch.setattr(cli, "run_pipeline", _run_pipeline)
     monkeypatch.setattr(cli, "AIUsageTracker", _CapturingTracker)
     monkeypatch.setattr(cli, "build_gemini_provider", _CapturingProvider)
     _patch_build_client(monkeypatch)
@@ -431,6 +437,9 @@ def test_run_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch
     assert tracker.model == settings.ai_model
     assert tracker.quota == settings.ai_quota
     assert provider.tracker is tracker
+    # The run reports what it spent from the same ledger the provider writes
+    # to; reaching into the provider for it is what silently broke once.
+    assert pipeline_kwargs["usage"] is tracker
 
 
 def test_sync_gmail_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):

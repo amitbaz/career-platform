@@ -547,7 +547,7 @@ def test_migrate_returns_per_table_row_counts(tmp_path, supabase_client: Supabas
     assert counts["job_sources"] == 0
     # Rebuilt on the next real run -- never migrated.
     assert counts["pending_ai_work"] == 0
-    assert counts["ai_quota_state"] == 0
+    assert counts["gemini_quota_state"] == 0
     assert counts["candidate_context_cache"] == 0
 
 

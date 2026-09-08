@@ -1668,11 +1668,23 @@ class PostgresJobStore:
         adapter writes its own rows correctly on the day it is added.
 
         `run_id` is NOT NULL after migration 202609060003 and is written as the
-        migration's own backfill sentinel `'unknown'`. It survives as an
-        optional annotation on the natural key only: nothing quota-related
-        reads it, and issue #73 removed the `GEMINI_RUN_ID` plumbing that used
-        to set it, because a per-run discriminator in a per-user ledger let one
-        run's budget hide behind another's.
+        migration's own backfill sentinel `'unknown'`. It survives as an inert
+        annotation: nothing quota-related reads it, and issue #73 removed the
+        `GEMINI_RUN_ID` plumbing that used to set it, because a per-run
+        discriminator in a per-user ledger let one run's budget hide behind
+        another's.
+
+        That leaves the upsert conflict target -- `(user_id, run_id, model,
+        purpose, occurred_at)`, the unique constraint the schema actually has
+        -- effectively `(user_id, model, purpose, occurred_at)`, since `run_id`
+        is now constant. Two attempts sharing a microsecond timestamp would
+        collapse into one row; `occurred_at` comes from `datetime.now()`, so
+        that is a theoretical loss rather than an observed one. `provider` is
+        deliberately *not* in the target because it is not in the constraint:
+        the second adapter this port exists to enable needs a migration that
+        widens the unique index to include it, or two providers on the same
+        model id would overwrite each other's ledger rows. That migration is a
+        schema change with its own plan, not a side effect of this one.
         """
         self._client.upsert(
             "job_hunter_ai_usage",

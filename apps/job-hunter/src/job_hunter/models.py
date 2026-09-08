@@ -382,8 +382,8 @@ class AIQuotaSettings:
     rate_pause_seconds: int = 90
 
     def __post_init__(self) -> None:
-        # config.py's _require_positive_int_env already rejects a non-positive
-        # rpm/tpm/rpd from the environment; this guard closes the same gap for
+        # config.py's _optional_positive_int_env already rejects a non-positive
+        # rpm/tpm/rpd override from the environment; this guard closes the same gap for
         # any other construction path (tests, future callers) so it can never
         # contradict that validation, only extend it. rate_pause_seconds has
         # no env-level guard at all today, and a non-positive value is the

@@ -266,6 +266,16 @@ def test_each_free_tier_variable_overrides_only_its_own_default(
     )
 
 
+def test_an_empty_model_variable_is_treated_as_unset(monkeypatch):
+    """`GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}` expands to "" when unset."""
+    _set_runtime_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_MODEL", "")
+
+    settings = _load(_profile())
+
+    assert settings.ai_model == "gemini-3.5-flash-lite"
+
+
 def test_a_model_absent_from_the_defaults_table_runs_conservatively_and_says_so(
     monkeypatch, caplog
 ):

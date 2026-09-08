@@ -2644,17 +2644,17 @@ def test_pipeline_sends_no_message_events_when_navigator_supported(store, settin
     job = _job()
     summary = _usage_summary()
     gemini = FakeGemini()
-    gemini._tracker = FakeUsageTracker(summary)
+    usage = FakeUsageTracker(summary)
     telegram = OrderedNavigatorTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     kinds = [kind for kind, _payload in telegram.events]
     # With navigator support, the digest is delivered via the interactive
     # card, not a message -- and no Gemini usage status message is sent.
     assert kinds[-1] == "card"
     assert "message" not in kinds
-    assert gemini._tracker.snapshot_calls == 1
+    assert usage.snapshot_calls == 1
 
 
 def test_pipeline_surfaces_evaluation_location_note_in_navigator_card(store, settings):
@@ -2673,10 +2673,10 @@ def test_pipeline_sends_gemini_pause_warning_as_last_message(store, settings):
     job = _job()
     summary = _usage_summary(provider_paused=True)
     gemini = FakeGemini()
-    gemini._tracker = FakeUsageTracker(summary)
+    usage = FakeUsageTracker(summary)
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     expected_warning = build_ai_pause_warning(summary)
     assert expected_warning is not None
@@ -2687,10 +2687,10 @@ def test_pipeline_sends_no_warning_when_usage_is_healthy(store, settings):
     job = _job()
     summary = _usage_summary()
     gemini = FakeGemini()
-    gemini._tracker = FakeUsageTracker(summary)
+    usage = FakeUsageTracker(summary)
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     assert build_ai_pause_warning(summary) is None
     # Only the digest message was sent — no warning, no usage status.
@@ -2704,10 +2704,10 @@ def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(s
     # without a second wasted Gemini attempt (Task 8's short-circuit) — but
     # the run-completion summary still reports the day as budget-exhausted.
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded(), allow=1)
-    gemini._tracker = FakeUsageTracker(_usage_summary(internal_budget_exhausted=True))
+    usage = FakeUsageTracker(_usage_summary(internal_budget_exhausted=True))
     telegram = FakeTelegram()
 
-    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram)
+    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
     pending = {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
@@ -2716,7 +2716,7 @@ def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(s
     expected_warning = build_ai_pause_warning(_usage_summary(internal_budget_exhausted=True))
     warning_occurrences = [msg for msg in telegram.messages if msg == expected_warning]
     assert len(warning_occurrences) == 1
-    assert gemini._tracker.snapshot_calls == 1
+    assert usage.snapshot_calls == 1
 
 
 def test_pipeline_logs_structured_ai_usage_line(store, settings, caplog):
@@ -2737,11 +2737,11 @@ def test_pipeline_logs_structured_ai_usage_line(store, settings, caplog):
         },
     )
     gemini = FakeGemini()
-    gemini._tracker = FakeUsageTracker(summary)
+    usage = FakeUsageTracker(summary)
     telegram = FakeTelegram()
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
+        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     assert "ai_usage run_calls=21" in caplog.text
     assert "rpd_pct=34.0" in caplog.text
@@ -2775,11 +2775,11 @@ def test_pipeline_log_total_does_not_double_count_cached_tokens(store, settings,
         total_tokens_today=1250,
     )
     gemini = FakeGemini()
-    gemini._tracker = FakeUsageTracker(summary)
+    usage = FakeUsageTracker(summary)
     telegram = FakeTelegram()
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
+        run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     assert "input=1000" in caplog.text
     assert "output=200" in caplog.text
@@ -2793,19 +2793,25 @@ def test_pipeline_logs_ai_usage_even_in_dry_run(store, settings, caplog):
     job = _job()
     summary = _usage_summary()
     gemini = FakeGemini()
-    gemini._tracker = FakeUsageTracker(summary)
+    usage = FakeUsageTracker(summary)
 
     with caplog.at_level(logging.INFO):
-        run_pipeline(dry_settings, sources=[FakeSource([job])], store=store, ai=gemini)
+        run_pipeline(
+            dry_settings,
+            sources=[FakeSource([job])],
+            store=store,
+            ai=gemini,
+            usage=usage,
+        )
 
     assert "ai_usage run_calls=21" in caplog.text
-    assert gemini._tracker.snapshot_calls == 1
+    assert usage.snapshot_calls == 1
 
 
-def test_pipeline_without_gemini_tracker_sends_no_usage_status(store, settings):
-    """Legacy/test gemini fakes without a tracker must not break or send usage."""
+def test_pipeline_without_a_usage_ledger_sends_no_usage_status(store, settings):
+    """A run given no ledger reports no usage rather than failing."""
     job = _job()
-    gemini = FakeGemini()  # no `_tracker` attribute at all
+    gemini = FakeGemini()
     telegram = FakeTelegram()
 
     run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
