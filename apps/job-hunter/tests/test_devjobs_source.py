@@ -62,7 +62,7 @@ class FakeHttp:
 def test_devjobs_parses_listing_and_detail(work_mode, expected_remote):
     http = FakeHttp(detail_html_by_id={"4458634930": _detail_html(work_mode)})
 
-    jobs = DevJobsSource(http).discover()
+    jobs = list(DevJobsSource(http).discover())
 
     # Frontend and Full Stack share the same listing fixture and thus the same
     # job id; cross-category dedup means the id is fetched only once.
@@ -84,7 +84,7 @@ def test_devjobs_listing_failure_returns_empty_list():
             self.calls.append((url, kwargs))
             raise RuntimeError("network down")
 
-    jobs = DevJobsSource(FailingHttp()).discover()
+    jobs = list(DevJobsSource(FailingHttp()).discover())
 
     assert jobs == []
 
@@ -107,7 +107,7 @@ def test_devjobs_detail_failure_skips_only_that_posting():
             return FakeResponse(self.listing_html)
 
     http = PartiallyFailingHttp(listing_html=listing_html)
-    jobs = DevJobsSource(http).discover()
+    jobs = list(DevJobsSource(http).discover())
 
     # Both categories share the same listing fixture, so cross-category dedup
     # fetches each id only once: job 1 fails, job 2 succeeds.
@@ -124,7 +124,7 @@ def test_devjobs_malformed_detail_title_is_skipped():
     """
     http = FakeHttp(detail_html_by_id={"4458634930": malformed_html})
 
-    jobs = DevJobsSource(http).discover()
+    jobs = list(DevJobsSource(http).discover())
 
     assert jobs == []
 
@@ -138,7 +138,7 @@ def test_devjobs_deduplicates_detail_ids_within_a_listing():
     """
     http = FakeHttp(listing_html=listing_html)
 
-    jobs = DevJobsSource(http).discover()
+    jobs = list(DevJobsSource(http).discover())
 
     detail_calls = [call for call in http.calls if "job-details" in call[0]]
     # The listing's own duplicate anchor collapses to 1 id, and cross-category
@@ -171,7 +171,7 @@ def test_devjobs_dedupes_job_ids_across_categories():
             return FakeResponse(frontend_html if category == "Frontend" else fullstack_html)
 
     http = PerCategoryHttp()
-    jobs = DevJobsSource(http).discover()
+    jobs = list(DevJobsSource(http).discover())
 
     detail_calls = [call for call in http.calls if "job-details" in call[0]]
     # Job 1 appears in both categories' listings but is only fetched once;
@@ -190,7 +190,7 @@ def test_devjobs_caps_detail_requests_per_category():
     """
     http = FakeHttp(listing_html=listing_html)
 
-    DevJobsSource(http, max_jobs_per_category=2).discover()
+    list(DevJobsSource(http, max_jobs_per_category=2).discover())
 
     detail_calls = [call for call in http.calls if "job-details" in call[0]]
     # Frontend takes ids 1,2 (cap of 2); Full Stack sees the same listing but,

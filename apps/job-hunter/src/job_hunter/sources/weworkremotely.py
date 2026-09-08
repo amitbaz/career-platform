@@ -1,4 +1,6 @@
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
+
 from job_hunter.models import Job
 from .base import strip_html
 
@@ -12,8 +14,8 @@ class WeWorkRemotelySource:
             "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
             "https://weworkremotely.com/categories/remote-product-jobs.rss",
         ]
-    def discover(self) -> list[Job]:
-        jobs = []
+    def discover(self) -> Iterator[Job]:
+        """Yield each feed's jobs before fetching the feed after it."""
         for feed in self._feed_urls:
             try:
                 response = self._http.get(feed)
@@ -27,7 +29,6 @@ class WeWorkRemotelySource:
                 if not raw_title or not link:
                     continue
                 company, sep, title = raw_title.partition(":")
-                jobs.append(Job(source="weworkremotely", title=title.strip() if sep else raw_title,
-                                 company=company.strip() if sep else "", url=link,
-                                 description=strip_html(item.findtext("description", "")), remote=True))
-        return jobs
+                yield Job(source="weworkremotely", title=title.strip() if sep else raw_title,
+                          company=company.strip() if sep else "", url=link,
+                          description=strip_html(item.findtext("description", "")), remote=True)

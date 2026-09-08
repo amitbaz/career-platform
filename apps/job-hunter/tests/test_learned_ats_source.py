@@ -112,7 +112,7 @@ def test_learned_ats_source_scans_due_boards_through_native_adapters(store):
     source = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert sorted(job.source for job in jobs) == ["ashby", "greenhouse", "lever"]
     assert source.stats == LearnedAtsStats(
@@ -144,7 +144,7 @@ def test_learned_ats_source_isolates_a_failing_board_from_a_healthy_one(store):
     source = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert [job.source_job_id for job in jobs] == ["2"]
     assert jobs[0].source == "lever"
@@ -171,7 +171,7 @@ def test_learned_ats_source_404_logs_compact_and_marks_board_permanent(store, ca
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
     with caplog.at_level(logging.INFO):
-        jobs = source.discover()
+        jobs = list(source.discover())
 
     assert jobs == []
     assert source.stats.boards_failed == 1
@@ -195,7 +195,7 @@ def test_learned_ats_source_unexpected_error_logs_exactly_one_full_traceback(sto
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
     with caplog.at_level(logging.WARNING):
-        source.discover()
+        list(source.discover())
 
     traceback_records = [
         r for r in caplog.records if "flaky-co" in r.getMessage() and r.exc_info is not None
@@ -228,7 +228,7 @@ def test_learned_ats_source_deactivates_board_after_repeated_404s(store):
         source = LearnedAtsSource(
             store, http, limit=10, market_order=["berlin"], now=lambda t=checked_at: t
         )
-        source.discover()
+        list(source.discover())
 
     final_check = base + timedelta(hours=25 * 3)
     due_identifiers = {
@@ -252,7 +252,7 @@ def test_learned_ats_source_never_deactivates_board_after_repeated_transient_err
         source = LearnedAtsSource(
             store, http, limit=10, market_order=["berlin"], now=lambda t=checked_at: t
         )
-        source.discover()
+        list(source.discover())
 
     final_check = base + timedelta(hours=25 * 3)
     due_identifiers = {
@@ -272,7 +272,7 @@ def test_learned_ats_source_rejects_jobgether_shaped_board_and_drops_its_jobs(st
     source = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert jobs == []
     assert source.stats.boards_rejected == 1
@@ -292,7 +292,7 @@ def test_learned_ats_source_keeps_scanning_veeva_shaped_board_with_no_markers(st
     source = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 21
     assert source.stats.boards_successful == 1
@@ -313,7 +313,7 @@ def test_learned_ats_source_survives_one_stray_third_party_posting(store):
     source = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 20
     assert source.stats.boards_rejected == 0
@@ -334,7 +334,7 @@ def test_learned_ats_source_refuses_denylisted_board_without_scanning(store):
         now=lambda: now,
         denylist=frozenset({"lever:jobgether"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert jobs == []
     assert http.calls == []
@@ -353,7 +353,7 @@ def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run(
     first = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: base
     )
-    first.discover()
+    list(first.discover())
     assert first.stats.boards_rejected == 1
     calls_after_first_run = len(http.calls)
 
@@ -365,7 +365,7 @@ def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run(
     second = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: later
     )
-    jobs = second.discover()
+    jobs = list(second.discover())
 
     assert jobs == []
     assert second.stats.boards_scanned == 0
@@ -397,7 +397,7 @@ def test_learned_ats_source_survives_a_posting_with_no_description(store):
     source = LearnedAtsSource(
         store, http, limit=10, market_order=["berlin"], now=lambda: now
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 6
     assert source.stats.boards_rejected == 0
@@ -417,7 +417,7 @@ def test_learned_ats_source_matches_denylist_entry_case_insensitively(store):
         now=lambda: now,
         denylist=frozenset({"lever:jobgether"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert jobs == []
     assert http.calls == []
@@ -440,7 +440,7 @@ def test_learned_ats_source_denylisted_board_does_not_consume_a_scan_slot(store)
         now=lambda: now,
         denylist=frozenset({"lever:aaa-denylisted"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 3
     assert source.stats.boards_scanned == 1
@@ -462,7 +462,7 @@ def test_learned_ats_source_keeps_an_allowlisted_board_detection_would_reject(st
         now=lambda: now,
         allowlist=frozenset({"lever:clientco"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 10
     assert source.stats.boards_rejected == 0
@@ -488,7 +488,7 @@ def test_learned_ats_source_logs_the_verdict_it_overrode(store, caplog):
         allowlist=frozenset({"lever:clientco"}),
     )
     with caplog.at_level(logging.INFO):
-        source.discover()
+        list(source.discover())
 
     kept = [r.getMessage() for r in caplog.records if "learned_ats_allowlist" in r.getMessage()]
     assert len(kept) == 1
@@ -515,7 +515,7 @@ def test_learned_ats_source_heals_an_already_rejected_allowlisted_board(store):
         now=lambda: now,
         allowlist=frozenset({"lever:clientco"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     # Recovered and rescanned within the same run -- editing the config is
     # the whole recovery procedure.
@@ -546,7 +546,7 @@ def test_learned_ats_source_logs_the_reason_it_cleared_when_healing(store, caplo
         allowlist=frozenset({"lever:clientco"}),
     )
     with caplog.at_level(logging.INFO):
-        source.discover()
+        list(source.discover())
 
     recovered = [r.getMessage() for r in caplog.records if "recovered" in r.getMessage()]
     assert len(recovered) == 1
@@ -571,7 +571,7 @@ def test_learned_ats_source_healing_ignores_a_board_that_is_not_allowlisted(stor
         now=lambda: now,
         allowlist=frozenset({"lever:someone-else"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert jobs == []
     assert http.calls == []
@@ -594,7 +594,7 @@ def test_learned_ats_source_allowlist_matches_the_board_key_case_insensitively(s
         now=lambda: now,
         allowlist=frozenset({"lever:clientco"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 10
     assert source.stats.boards_rejected == 0
@@ -617,7 +617,7 @@ def test_learned_ats_source_allowlist_wins_over_the_denylist_branch(store):
         denylist=frozenset({"lever:clientco"}),
         allowlist=frozenset({"lever:clientco"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 10
     assert source.stats.boards_rejected == 0
@@ -639,7 +639,7 @@ def test_learned_ats_source_still_rejects_an_aggregator_that_is_not_allowlisted(
         now=lambda: now,
         allowlist=frozenset({"lever:someone-else"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert jobs == []
     assert source.stats.boards_rejected == 1
@@ -663,7 +663,7 @@ def test_learned_ats_source_allowlist_does_not_override_health_backoff(store):
         now=lambda: now,
         allowlist=frozenset({"lever:clientco"}),
     )
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert jobs == []
     assert source.stats.boards_failed == 1

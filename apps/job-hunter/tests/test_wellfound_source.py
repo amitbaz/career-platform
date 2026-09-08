@@ -63,7 +63,7 @@ def test_wellfound_parses_listing_and_detail():
     http = FakeHttp(detail_html_by_id={"4639071": _detail_html()})
     listings = [WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london")]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     assert len(jobs) == 2
     job = jobs[0]
@@ -90,7 +90,7 @@ def test_wellfound_parses_remote_work_policy(policy_text, expected_remote):
     http = FakeHttp(detail_html_by_id={"4639071": _detail_html(extra_body=f"<div>{policy_text}</div>")})
     listings = [WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london")]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     job = next(j for j in jobs if j.source_job_id == "4639071")
     assert job.remote is expected_remote
@@ -107,7 +107,7 @@ def test_wellfound_detail_missing_at_and_bullet_leaves_company_and_location_empt
     http = FakeHttp(detail_html_by_id={"4639071": malformed_html})
     listings = [WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london")]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     job = next(j for j in jobs if j.source_job_id == "4639071")
     assert job.title == "Frontend Engineer"
@@ -133,7 +133,7 @@ def test_wellfound_listing_failure_does_not_block_other_listings():
         WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/europe", market_id="germany_eu"),
     ]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     assert len(jobs) == 2
     assert all(job.market_hint == "germany_eu" for job in jobs)
@@ -159,7 +159,7 @@ def test_wellfound_detail_failure_skips_only_that_posting():
     http = PartiallyFailingHttp(listing_html=listing_html)
     listings = [WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london")]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     assert len(jobs) == 1
     assert jobs[0].source_job_id == "2"
@@ -173,7 +173,7 @@ def test_wellfound_deduplicates_links_within_one_page():
     http = FakeHttp(listing_html=listing_html)
     listings = [WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london")]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     detail_calls = [call for call in http.calls if "/jobs/" in call[0]]
     assert len(detail_calls) == 1
@@ -203,7 +203,7 @@ def test_wellfound_global_dedup_across_listings_keeps_first_market_hint():
         WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london"),
     ]
 
-    jobs = WellfoundSource(http, listings).discover()
+    jobs = list(WellfoundSource(http, listings).discover())
 
     assert len(jobs) == 1
     assert jobs[0].market_hint == "germany_eu"
@@ -216,7 +216,7 @@ def test_fetch_job_sets_source_page_html_for_canonical_reuse():
     listings = [WellfoundListing(url="https://wellfound.com/role/l/x/y", market_id="germany_eu")]
     source = WellfoundSource(http, listings)
 
-    jobs = source.discover()
+    jobs = list(source.discover())
 
     assert len(jobs) == 2
     assert all(job.source_page_html for job in jobs)
@@ -232,7 +232,7 @@ def test_wellfound_caps_new_detail_urls_per_listing():
     http = FakeHttp(listing_html=listing_html)
     listings = [WellfoundListing(url="https://wellfound.com/role/l/frontend-engineer/london", market_id="london")]
 
-    WellfoundSource(http, listings, max_jobs_per_listing=2).discover()
+    list(WellfoundSource(http, listings, max_jobs_per_listing=2).discover())
 
     detail_calls = [call for call in http.calls if "/jobs/" in call[0]]
     assert len(detail_calls) == 2

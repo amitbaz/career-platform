@@ -40,7 +40,7 @@ def test_yc_source_maps_public_job_links_and_deduplicates_urls():
     from job_hunter.sources.yc import YCSource
 
     page = "https://www.ycombinator.com/jobs/role"
-    jobs = YCSource(FakeHttp({page: FakeResponse(_job_links())}), [page]).discover()
+    jobs = list(YCSource(FakeHttp({page: FakeResponse(_job_links())}), [page]).discover())
 
     assert len(jobs) == 1
     job = jobs[0]
@@ -56,15 +56,17 @@ def test_yc_source_continues_to_later_public_page_after_failure():
 
     unavailable_page = "https://www.ycombinator.com/jobs/role"
     valid_page = "https://www.ycombinator.com/jobs/location/berlin"
-    jobs = YCSource(
-        FakeHttp(
-            {
-                unavailable_page: FakeResponse(status_code=500),
-                valid_page: FakeResponse(_job_links()),
-            }
-        ),
-        [unavailable_page, valid_page],
-    ).discover()
+    jobs = list(
+        YCSource(
+            FakeHttp(
+                {
+                    unavailable_page: FakeResponse(status_code=500),
+                    valid_page: FakeResponse(_job_links()),
+                }
+            ),
+            [unavailable_page, valid_page],
+        ).discover()
+    )
 
     assert [job.url for job in jobs] == [
         "https://www.ycombinator.com/companies/acme/jobs/abc"

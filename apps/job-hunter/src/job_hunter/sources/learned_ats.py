@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -80,8 +80,16 @@ class LearnedAtsSource:
         self._allowlist = allowlist
         self.stats = LearnedAtsStats()
 
-    def discover(self) -> list[Job]:
-        """Return jobs from due learned ATS boards, isolating per-board failures."""
+    def discover(self) -> Iterator[Job]:
+        """Yield jobs board by board, isolating per-board failures.
+
+        A whole board stays the unit of work rather than a single posting:
+        aggregator detection judges a board on all of its descriptions at
+        once, and the health write records the board's job count. Both need
+        the board's scan to have finished, so the board's jobs are gathered
+        before any of them is handed out -- but a caller that stops between
+        boards keeps every job the earlier boards produced.
+        """
         checked_at = self._now()
         # Recover before reading the due list, so a board the operator
         # un-rejected is scanned in the same run that recovered it --
@@ -105,7 +113,6 @@ class LearnedAtsSource:
         entries = select_ats_boards(
             remaining, self._market_order, self._limit, checked_at
         )
-        discovered: list[Job] = []
         for entry in entries:
             source_type = _ATS_SOURCE_TYPES.get(entry.provider)
             if source_type is None:
@@ -159,7 +166,6 @@ class LearnedAtsSource:
 
             self.stats.boards_successful += 1
             self.stats.jobs_raw += len(jobs)
-            discovered.extend(jobs)
             try:
                 self._store.record_ats_scan_success(
                     entry.provider, entry.board_identifier, checked_at, len(jobs)
@@ -171,11 +177,17 @@ class LearnedAtsSource:
                     entry.board_identifier,
                     exc_info=True,
                 )
-        return discovered
+            yield from jobs
 
     def _scan_board(self, source_type, board_identifier: str) -> list[Job]:
+        """Return one board's jobs, re-raising the request failure it hid.
+
+        The adapter fails open, so its request error only surfaces through
+        the tracking client; the scan therefore has to be drained here
+        before that check means anything.
+        """
         tracked_http = _HealthTrackingHttp(self._http)
-        jobs = source_type(board_identifier, tracked_http).discover()
+        jobs = list(source_type(board_identifier, tracked_http).discover())
         if tracked_http.error is not None:
             raise tracked_http.error
         return jobs

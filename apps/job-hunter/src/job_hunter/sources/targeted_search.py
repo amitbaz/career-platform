@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from job_hunter.circuit_breaker import CircuitBreaker
@@ -49,8 +50,13 @@ class TargetedSearchSource:
         for query in self._queries:
             _bump(self.stats.planned_by_market, query.market_id or "legacy")
 
-    def discover(self) -> list[Job]:
-        jobs: list[Job] = []
+    def discover(self) -> Iterator[Job]:
+        """Yield each query's hits before issuing the query after it.
+
+        `stats` is filled in as queries run, so it only describes the
+        queries that were actually reached -- a caller that stops iterating
+        early sees stats for the work it paid for, not for work never done.
+        """
         for index, query in enumerate(self._queries):
             market_key = query.market_id or "legacy"
             if self._breaker is not None and self._breaker.is_open:
@@ -88,12 +94,9 @@ class TargetedSearchSource:
 
             source = self._job_source_label or f"search:{response.backend}"
             for hit in response.hits:
-                jobs.append(
-                    Job(
-                        source=source,
-                        title=hit.title,
-                        url=hit.url,
-                        market_hint=query.market_id,
-                    )
+                yield Job(
+                    source=source,
+                    title=hit.title,
+                    url=hit.url,
+                    market_hint=query.market_id,
                 )
-        return jobs

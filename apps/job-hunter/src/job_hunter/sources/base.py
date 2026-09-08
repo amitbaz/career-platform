@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import Protocol
 
 import requests
@@ -19,7 +20,26 @@ class JobSource(Protocol):
     # still measured, under its class name -- see `discovery.source_cost_label`.
     source_label: str
 
-    def discover(self) -> list[Job]: ...
+    def discover(self) -> Iterator[Job]:
+        """Yield jobs as they are found, not as one fully built list.
+
+        Incremental production is what lets a caller stop a source part
+        way through -- between feed pages, ATS boards, watched companies
+        or search queries -- and keep everything it produced up to that
+        point. A source that materialises its whole harvest first cannot
+        be bounded from outside without discarding the harvest.
+
+        No caller stops a source yet: this is groundwork for the per-source
+        time budget (issue #120), which is where the stopping happens.
+        Every implementation is a generator function, which the protocol
+        cannot express but `test_sources_incremental.py` enforces.
+
+        Because the work now happens while the caller iterates rather than
+        inside this call, a caller measuring what a source costs has to
+        bracket the whole drain, not this call -- see
+        `discovery._iter_source_jobs`.
+        """
+        ...
 
 
 def strip_html(text: str) -> str:

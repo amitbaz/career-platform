@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -22,9 +23,8 @@ class YCSource:
         self._http = http
         self._urls = urls
 
-    def discover(self) -> list[Job]:
-        """Return jobs found on configured pages, continuing after a page failure."""
-        jobs: list[Job] = []
+    def discover(self) -> Iterator[Job]:
+        """Yield each page's jobs before fetching the next, skipping failed pages."""
         seen_urls: set[str] = set()
         for page_url in self._urls:
             try:
@@ -39,8 +39,7 @@ class YCSource:
                 job = self._job_from_anchor(anchor)
                 if job is not None and job.url not in seen_urls:
                     seen_urls.add(job.url)
-                    jobs.append(job)
-        return jobs
+                    yield job
 
     @staticmethod
     def _job_from_anchor(anchor) -> Job | None:

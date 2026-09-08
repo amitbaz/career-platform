@@ -297,4 +297,4 @@ A failed Telegram send (bad token, bot not started, wrong chat id, message too l
 
 ### Flaky web sources
 
-Public source APIs and job boards occasionally time out or return errors. Each source adapter fails open — an exception during discovery for one source is logged and skipped, and the run continues with the remaining sources — so a single flaky source does not abort the whole run. Check the Actions log for `discovery failed` warnings to see which source had trouble on a given run.
+Public source APIs and job boards occasionally time out or return errors. Each source adapter fails open — an exception during discovery for one source is logged and the rest of that source is abandoned, while the postings it had already produced are kept and the run continues with the remaining sources — so a single flaky source does not abort the whole run. Check the Actions log for `discovery failed` warnings to see which source had trouble on a given run.

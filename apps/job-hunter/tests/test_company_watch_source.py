@@ -47,7 +47,7 @@ def test_greenhouse_watch_rewrites_only_source_and_records_success(store, tmp_pa
         }
     )
 
-    jobs = CompanyWatchSource(store, http, now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, http, now=lambda: now).discover())
 
     assert len(jobs) == 1
     job = jobs[0]
@@ -94,7 +94,7 @@ def test_company_failure_is_recorded_without_skipping_later_watch(
         ControlledGreenhouseSource,
     )
 
-    jobs = CompanyWatchSource(store, FakeHttp({}), now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, FakeHttp({}), now=lambda: now).discover())
 
     assert [job.source_job_id for job in jobs] == ["healthy-1"]
     assert jobs[0].source == "watch:greenhouse"
@@ -135,7 +135,7 @@ def test_swallowed_ats_http_failure_updates_health_and_later_watch_runs(store, t
 
     http = BoardHttp()
 
-    jobs = CompanyWatchSource(store, http, now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, http, now=lambda: now).discover())
 
     assert [job.source_job_id for job in jobs] == ["777"]
     assert len(http.calls) == 2
@@ -187,7 +187,7 @@ def test_failure_health_write_error_does_not_abort_later_watch(
 
     monkeypatch.setattr(store, "record_watch_failure", record_failure)
 
-    jobs = CompanyWatchSource(store, FakeHttp({}), now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, FakeHttp({}), now=lambda: now).discover())
 
     assert [job.source_job_id for job in jobs] == ["healthy-1"]
     assert (
@@ -234,7 +234,7 @@ def test_success_health_write_error_keeps_jobs_and_does_not_record_failure(
 
     monkeypatch.setattr(store, "record_watch_success", record_success)
 
-    jobs = CompanyWatchSource(store, FakeHttp({}), now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, FakeHttp({}), now=lambda: now).discover())
 
     assert [job.source_job_id for job in jobs] == ["first-1", "second-1"]
     first = store.get_company_watch("First")
@@ -301,7 +301,7 @@ def test_generic_watch_parses_postings_and_links_from_one_page_only(store, tmp_p
     http = OnePageHttp()
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
-    jobs = CompanyWatchSource(store, http, now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, http, now=lambda: now).discover())
 
     assert http.calls == [careers_url]
     assert [(job.title, job.url) for job in jobs] == [
@@ -365,7 +365,7 @@ def test_generic_watch_accepts_compatible_json_ld_job_types(store, tmp_path, job
     http = OnePageHttp()
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
-    jobs = CompanyWatchSource(store, http, now=lambda: now).discover()
+    jobs = list(CompanyWatchSource(store, http, now=lambda: now).discover())
 
     assert http.calls == [careers_url]
     assert [(job.title, job.url) for job in jobs] == [
@@ -400,7 +400,7 @@ def test_company_only_watch_is_skipped_without_recording_failure(store, tmp_path
     )
 
     with caplog.at_level("WARNING"):
-        jobs = CompanyWatchSource(store, http, now=lambda: now).discover()
+        jobs = list(CompanyWatchSource(store, http, now=lambda: now).discover())
 
     assert [job.source for job in jobs] == ["watch:greenhouse"]
     assert "Distribusion Technologies" not in caplog.text

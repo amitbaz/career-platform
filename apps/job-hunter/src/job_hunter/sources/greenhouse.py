@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from job_hunter.canonical import apply_ats_identity
 from job_hunter.models import AtsReference, Job
 from job_hunter.normalize import canonicalize_url
@@ -18,7 +20,7 @@ class GreenhouseSource:
     def source_label(self) -> str:
         return f"greenhouse:{self._token}"
 
-    def discover(self) -> list[Job]:
+    def discover(self) -> Iterator[Job]:
         try:
             data = self._http.get_json(_URL_TEMPLATE.format(token=self._token))
         except Exception as exc:
@@ -28,9 +30,8 @@ class GreenhouseSource:
                 logger.warning(
                     "greenhouse discovery failed for token %s", self._token, exc_info=True
                 )
-            return []
+            return
 
-        jobs = []
         for item in data.get("jobs", []):
             job_id = item.get("id")
             location = item.get("location", {}) or {}
@@ -57,8 +58,7 @@ class GreenhouseSource:
                     job_id=str(job_id) if job_id is not None else None,
                 ),
             )
-            jobs.append(job)
-        return jobs
+            yield job
 
 
 def fetch_description(token: str, target_url: str, http) -> str | None:

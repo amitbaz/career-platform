@@ -123,7 +123,7 @@ def test_remotive_maps_public_posting(fake_http):
             }
         ]
     }
-    jobs = RemotiveSource(fake_http).discover()
+    jobs = list(RemotiveSource(fake_http).discover())
     assert len(jobs) == 1
     job = jobs[0]
     assert job.source == "remotive"
@@ -173,7 +173,7 @@ def test_arbeitnow_paginates_up_to_max_pages(fake_http):
             calls["n"] += 1
             return page
 
-    jobs = ArbeitnowSource(PaginatingHttp(), max_pages=2).discover()
+    jobs = list(ArbeitnowSource(PaginatingHttp(), max_pages=2).discover())
     assert len(jobs) == 2
     assert calls["n"] == 2  # stopped at max_pages despite a further "next" link
     assert jobs[0].source_job_id == "job-1"
@@ -187,7 +187,7 @@ def test_duckduckgo_parses_result_links_and_skips_navigation(fake_http):
         <a class="result__a" href="https://duckduckgo.com/y.js?ad_provider=x">Sponsored</a>
     </body></html>
     """
-    jobs = DuckDuckGoSource(fake_http, ['"Senior Product Engineer" remote']).discover()
+    jobs = list(DuckDuckGoSource(fake_http, ['"Senior Product Engineer" remote']).discover())
     assert len(jobs) == 1
     assert jobs[0].source == "duckduckgo"
     assert jobs[0].url == "https://jobs.ashbyhq.com/acme/a1"
@@ -199,7 +199,7 @@ def test_duckduckgo_continues_after_query_failure():
         def get(self, url, **kwargs):
             raise RuntimeError("network down")
 
-    jobs = DuckDuckGoSource(FailingHttp(), ["query one", "query two"]).discover()
+    jobs = list(DuckDuckGoSource(FailingHttp(), ["query one", "query two"]).discover())
     assert jobs == []
 
 
@@ -216,7 +216,7 @@ def test_ashby_maps_public_posting(fake_http, policy):
             }
         ]
     }
-    jobs = AshbySource("acme", fake_http).discover()
+    jobs = list(AshbySource("acme", fake_http).discover())
     assert jobs[0].source_job_id == "a1"
     assert jobs[0].remote is True
     assert jobs[0].company == "acme"
@@ -233,7 +233,7 @@ def test_lever_maps_public_posting(fake_http):
             "workplaceType": "remote",
         }
     ]
-    jobs = LeverSource("acme", fake_http).discover()
+    jobs = list(LeverSource("acme", fake_http).discover())
     assert jobs[0].source_job_id == "l1"
     assert jobs[0].remote is True
     assert jobs[0].location == "Remote"
@@ -251,7 +251,7 @@ def test_greenhouse_maps_public_posting(fake_http):
             }
         ]
     }
-    jobs = GreenhouseSource("acme", fake_http).discover()
+    jobs = list(GreenhouseSource("acme", fake_http).discover())
     assert jobs[0].source_job_id == "555"
     assert jobs[0].remote is True
     assert jobs[0].description == "React TypeScript"
@@ -282,7 +282,7 @@ def test_jobicy_maps_public_posting_from_single_feed():
         ]
     }
 
-    jobs = JobicySource(http, max_pages=2).discover()
+    jobs = list(JobicySource(http, max_pages=2).discover())
 
     assert len(jobs) == 2
     assert http.calls == [("get_json", "https://jobicy.com/api/v2/remote-jobs", {})]
@@ -318,7 +318,7 @@ def test_jobicy_skips_malformed_records(fake_http):
         ]
     }
 
-    jobs = JobicySource(fake_http).discover()
+    jobs = list(JobicySource(fake_http).discover())
 
     assert len(jobs) == 1
     assert jobs[0].company == "Truelogic"
@@ -366,7 +366,7 @@ def test_himalayas_maps_public_posting_and_uses_cursor_pagination():
 
     http = CursorHttp()
 
-    jobs = HimalayasSource(http, max_pages=2).discover()
+    jobs = list(HimalayasSource(http, max_pages=2).discover())
 
     assert len(jobs) == 2
     assert http.calls == [
@@ -404,7 +404,7 @@ def test_himalayas_skips_malformed_records(fake_http):
         ]
     }
 
-    jobs = HimalayasSource(fake_http).discover()
+    jobs = list(HimalayasSource(fake_http).discover())
 
     assert len(jobs) == 1
     assert jobs[0].source_job_id == "https://himalayas.app/companies/acme/jobs/senior-product-engineer"
@@ -825,7 +825,7 @@ def test_duckduckgo_opens_circuit_after_consecutive_failures():
     http = FailingHttp()
     breaker = CircuitBreaker(failure_threshold=2)
 
-    jobs = DuckDuckGoSource(http, ["q1", "q2", "q3", "q4"], breaker=breaker).discover()
+    jobs = list(DuckDuckGoSource(http, ["q1", "q2", "q3", "q4"], breaker=breaker).discover())
 
     assert jobs == []
     assert len(http.calls) == 2
@@ -836,7 +836,7 @@ def test_duckduckgo_circuit_stays_closed_when_a_query_succeeds(fake_http):
     fake_http.text = _DUCKDUCKGO_HTML
     breaker = CircuitBreaker(failure_threshold=2)
 
-    jobs = DuckDuckGoSource(fake_http, ["q1", "q2", "q3"], breaker=breaker).discover()
+    jobs = list(DuckDuckGoSource(fake_http, ["q1", "q2", "q3"], breaker=breaker).discover())
 
     assert len(jobs) == 3
     assert not breaker.is_open
@@ -851,7 +851,7 @@ def test_duckduckgo_shared_breaker_blocks_a_later_source_instance():
     http = FailingHttp()
     breaker = CircuitBreaker(failure_threshold=1)
 
-    DuckDuckGoSource(http, ["q1"], breaker=breaker).discover()
-    DuckDuckGoSource(http, ["q2"], breaker=breaker).discover()
+    list(DuckDuckGoSource(http, ["q1"], breaker=breaker).discover())
+    list(DuckDuckGoSource(http, ["q2"], breaker=breaker).discover())
 
     assert len(http.calls) == 1

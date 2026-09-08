@@ -136,7 +136,7 @@ all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or 
 Cover letter generation + PDF rendering (`cover_letter.py`/`pdf.py`) is not part of the daily pipeline above — it runs on demand, one job at a time, when "Gen CL" is tapped on that job's Telegram card. This fires a `repository_dispatch` event that runs `.github/workflows/generate-cover-letter.yml` (`python -m job_hunter generate-cover-letter --job-id <id>`).
 
 Key modules:
-- `src/job_hunter/sources/` — one adapter per job source, all implementing a common `discover()` interface (`base.py`). Built-ins now include Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, and DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source **fails open**: an exception during discovery is caught in `run_pipeline`, logged, and that source is skipped — the rest of the run continues.
+- `src/job_hunter/sources/` — one adapter per job source, all implementing a common `discover()` interface (`base.py`), which **yields jobs as it finds them** rather than returning a finished list. Built-ins now include Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, and DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source **fails open**: an exception during discovery is caught in `discovery.py::_iter_source_jobs`, logged, and the rest of that source is abandoned — the jobs it had already yielded are kept, and later sources still run. `LearnedAtsSource` and `CompanyWatchSource` keep a whole board / a whole watch as their unit of work, because their aggregator verdict and health writes are per board and per watch; every other source yields per posting, page or query.
 - `src/job_hunter/discovery.py`, `discovery_queries.py`, `ranking.py` — aggregate, generate expanded search queries, and rank candidates before Gemini. `generate_search_queries()` expands each role/template across configured ATS domains.
 - `src/job_hunter/hiring_scope.py` — reads a posting's *explicitly stated* hiring regions ("open to candidates based in the US and Europe") from its text alone. It is deliberately self-contained: no market, no candidate, no scoring. `market_policy.py::attribute_market` consumes it as a bonus that outranks a listing variant's location label, and as a filter that drops markets the posting's stated regions exclude. Keep it that way — a posting's eligible regions are a shared, cacheable property of the posting, whereas whether a given candidate may work there is per-user, and only the first belongs in this module.
 - `PrefilterResult.reason_code` identifies deterministic rejection causes; `DiscoveryStats.profession_rejected` tracks off-target professions. Telegram delivery fails closed for unknown decisions.
@@ -147,7 +147,12 @@ Key modules:
   since the difference is work happening around the sources rather than inside them. Time comes
   from the `clock` injected into `collect_candidates`; requests are counted at the shared
   `HttpClient` (`request_count`) and attributed to whichever source is running, so a new adapter
-  is measured without doing anything. Give a new source a `source_label` (`JobSource` declares it):
+  is measured without doing anything. Both are charged per step of the source's iteration, in
+  `_iter_source_jobs`, not around the `discover()` call: since sources yield, that call does no
+  work, and bracketing it would score every source at zero. The caller's own per-job handling
+  happens between steps and is excluded, so the figure keeps meaning "what this source cost" —
+  and the running totals are written after every step, so a caller that stops a source part way
+  still sees what it spent. Give a new source a `source_label` (`JobSource` declares it):
   a class attribute, or a property including the board for adapters configured one instance per
   board. Two caveats when reading the figures. The request count is everything that source sent
   through the shared client, and `cli.py` hands the same client to `SupabaseClient`, so for the
