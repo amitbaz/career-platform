@@ -136,6 +136,15 @@ machine's memory, so expect a run to be slower when several stacks are up.
 The daily digest and cover-letter workflows deliberately stay on GitHub-hosted runners: they
 must fire whether or not this Mac is awake.
 
+Two things the runner needs that a hosted runner gives you for free, both configured as files in
+the runner's own directory rather than in this repository:
+
+- **`.path`** — a launchd agent inherits a stripped `PATH`, so without it `docker` and `supabase`
+  are simply not found. It lists Homebrew's `bin` ahead of the system paths.
+- **`.env`** — `RUNNER_TOOL_CACHE` and `AGENT_TOOLSDIRECTORY` must point somewhere writable
+  (`_work/_tool`). Left unset, `actions/setup-python` falls back to the hosted runner's own
+  `/Users/runner/hostedtoolcache` and dies on `mkdir: /Users/runner: Permission denied`.
+
 ### When another session is in your way
 
 Say so rather than working around it. Deleting, resetting or force-pushing over someone else's
