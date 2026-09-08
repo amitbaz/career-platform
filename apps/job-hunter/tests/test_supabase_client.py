@@ -199,3 +199,35 @@ def test_errors_do_not_leak_the_token():
         client.select("job_hunter_jobs")
 
     assert "test-token" not in str(excinfo.value)
+
+
+def test_request_errors_carry_the_status_and_the_postgres_error_code():
+    # PostgREST reports the SQLSTATE in the body. A caller that has to tell a
+    # foreign key violation from any other 409 needs it as a field, not as a
+    # substring of the message (#145).
+    body = {
+        "code": "23503",
+        "message": 'insert or update on table "job_hunter_evaluations" violates foreign key',
+        "details": 'Key is not present in table "job_hunter_jobs".',
+    }
+    client, _ = _client(FakeResponse(409, payload=body))
+
+    with pytest.raises(SupabaseRequestError) as excinfo:
+        client.insert("job_hunter_evaluations", [{"job_id": "gone"}])
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.code == "23503"
+
+
+def test_a_request_error_with_an_unparseable_body_has_no_code():
+    class UnparseableResponse(FakeResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    client, _ = _client(UnparseableResponse(502, text="<html>gateway</html>"))
+
+    with pytest.raises(SupabaseRequestError) as excinfo:
+        client.select("job_hunter_jobs")
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.code is None

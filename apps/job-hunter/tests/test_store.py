@@ -2836,3 +2836,112 @@ def test_save_search_profile_replaces_markets_rather_than_accumulating(store):
     assert [row["market_id"] for row in market_rows] == ["israel_remote"]
     # Same user -> same profile row (upsert on user_id), not a second one.
     assert store.get_search_profile()[0]["id"] == second_profile_id
+
+
+# Merge redirects (#145) ----------------------------------------------------------
+# `merge_jobs` deletes the duplicate row, so any id captured before the merge
+# names nothing afterwards. These cover the record that says where it went and
+# the writes that follow it.
+
+
+def test_resolve_merged_job_id_is_none_for_a_job_that_was_never_merged(store):
+    job_id, _, _ = store.upsert_job(make_job(fingerprint="live"))
+
+    assert store.resolve_merged_job_id(job_id) is None
+
+
+def test_resolve_merged_job_id_points_at_the_survivor(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="duplicate"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="survivor"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id))
+
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+    assert store.resolve_merged_job_id(duplicate_id) == survivor_id
+
+
+def test_resolve_merged_job_id_follows_a_survivor_that_is_merged_again(store):
+    first_id, _, _ = store.upsert_job(make_job(fingerprint="first"))
+    second_id, _, _ = store.upsert_job(make_job(fingerprint="second"))
+    third_id, _, _ = store.upsert_job(make_job(fingerprint="third"))
+    # History decides the survivor, so give each merge's intended survivor an
+    # evaluation first: first -> second, then second -> third.
+    store.save_evaluation(second_id, _evaluation(second_id))
+    assert store.merge_jobs(second_id, first_id) == second_id
+    # Both rows carry an evaluation now, so pin the second merge's survivor
+    # with the one signal that outranks that: application-event history.
+    store.save_application_event(
+        job_id=third_id,
+        event_type="APPLIED",
+        occurred_at="2026-09-08T10:00:00+00:00",
+        source_message_id="m-third",
+        source_thread_id="t-third",
+        confidence=1.0,
+        company="Third GmbH",
+        role_title="Engineer",
+        rationale="applied",
+    )
+    assert store.merge_jobs(third_id, second_id) == third_id
+
+    # Redirects are flattened as they are written, so the first job resolves
+    # straight to the row that is actually left rather than to a dead one.
+    assert store.resolve_merged_job_id(first_id) == third_id
+    assert store.resolve_merged_job_id(second_id) == third_id
+
+
+def test_save_evaluation_follows_a_job_merged_away_since_selection(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="stale"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="kept"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id, total_score=55))
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+
+    written_to = store.save_evaluation(duplicate_id, _evaluation(duplicate_id, total_score=90))
+
+    assert written_to == survivor_id
+    assert store.get_evaluation(survivor_id).total_score == 90
+
+
+def test_save_evaluation_raises_when_the_job_id_is_not_a_merged_one(store):
+    from job_hunter.supabase_client import SupabaseRequestError
+
+    unknown_id = "00000000-0000-0000-0000-0000000000ff"
+
+    # A foreign key violation with no redirect behind it is a real error and
+    # must stay one: silently swallowing it would lose the evaluation.
+    with pytest.raises(SupabaseRequestError):
+        store.save_evaluation(unknown_id, _evaluation(unknown_id))
+
+
+def test_mark_delivered_follows_a_job_merged_away_since_delivery(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="delivered-stale"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="delivered-kept"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id))
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+
+    store.mark_delivered(duplicate_id, "telegram_message", "msg-1")
+
+    assert store.has_delivery(survivor_id, "telegram_message")
+
+
+def test_enqueue_ai_work_follows_a_job_merged_away_since_selection(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="deferred-stale"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="deferred-kept"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id))
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+
+    # A deferral that raised would drop the job rather than retry it tomorrow.
+    store.enqueue_ai_work("job_evaluation", duplicate_id)
+
+    queued = [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
+    assert queued == [survivor_id]
+
+
+def test_mark_delivered_returns_the_job_id_it_wrote_against(store):
+    duplicate_id, _, _ = store.upsert_job(make_job(fingerprint="returned-stale"))
+    survivor_id, _, _ = store.upsert_job(make_job(fingerprint="returned-kept"))
+    store.save_evaluation(survivor_id, _evaluation(survivor_id))
+    assert store.merge_jobs(survivor_id, duplicate_id) == survivor_id
+
+    # The caller reads the job back to attribute the delivery to its source,
+    # and has to be given an id that still names a row.
+    assert store.mark_delivered(duplicate_id, "telegram_message", "msg-1") == survivor_id
+    assert store.mark_delivered(survivor_id, "telegram_document", "doc-1") == survivor_id

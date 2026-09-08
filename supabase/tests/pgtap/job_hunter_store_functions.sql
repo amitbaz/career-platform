@@ -566,6 +566,65 @@ select throws_ok(
   null, null,
   'merge_jobs: a missing job raises rather than silently half-merging');
 
+-- 7. merge redirects (#145) --------------------------------------------------------------
+-- The deleted duplicate's id has to keep resolving: a run that selected it
+-- before the merge is still holding it when it writes the evaluation.
+
+select is(
+  (select survivor_id::text from public.job_hunter_job_merges
+    where duplicate_id = '10000000-0000-0000-0000-000000000005'),
+  '10000000-0000-0000-0000-000000000006',
+  'merge_jobs: the deleted duplicate''s id redirects to the survivor');
+
+select is(
+  (select count(*)::int from public.job_hunter_job_merges
+    where duplicate_id = '10000000-0000-0000-0000-000000000006'),
+  0,
+  'merge_jobs: a self-merge records nothing, since nothing was deleted');
+
+-- A survivor can itself be merged away later. Redirects are repointed when
+-- that happens, so a reader never has to walk a chain to a deleted row.
+insert into public.job_hunter_jobs
+  (id, user_id, fingerprint, source, url, company, title, location,
+   description, description_hash, content_confidence, first_seen_at, last_seen_at)
+values
+  ('10000000-0000-0000-0000-000000000009', '11111111-0000-0000-0000-00000000000a',
+   'fp-merge-third', '', 'https://m.example/third', 'Merge Co', 'Merge Engineer',
+   'Zurich', 'third description', 'h-third', 'aggregator_text',
+   '2025-12-31T00:00:00Z', '2025-12-31T00:00:00Z');
+
+-- The merge above left every history signal on 006, so this row has to match
+-- it on all of them and win on the first_seen_at tie-break, which is what
+-- makes the survivor here deterministic rather than an id comparison.
+insert into public.job_hunter_application_events
+  (user_id, job_id, event_type, occurred_at, source_message_id, confidence)
+values
+  ('11111111-0000-0000-0000-00000000000a', '10000000-0000-0000-0000-000000000009',
+   'APPLIED', '2025-12-31T00:00:00Z', 'm-third', 1.0);
+
+insert into public.job_hunter_evaluations (user_id, job_id, evaluated_at)
+values
+  ('11111111-0000-0000-0000-00000000000a', '10000000-0000-0000-0000-000000000009',
+   '2025-12-31T00:00:00Z');
+
+select is(
+  (select public.job_hunter_merge_jobs('10000000-0000-0000-0000-000000000009',
+                                       '10000000-0000-0000-0000-000000000006')::text),
+  '10000000-0000-0000-0000-000000000009',
+  'merge_jobs: the earlier first_seen_at decides when history is equal');
+
+select is(
+  (select survivor_id::text from public.job_hunter_job_merges
+    where duplicate_id = '10000000-0000-0000-0000-000000000005'),
+  '10000000-0000-0000-0000-000000000009',
+  'merge_jobs: an existing redirect is repointed when its survivor is merged away');
+
+select is(
+  (select survivor_id::text from public.job_hunter_job_merges
+    where duplicate_id = '10000000-0000-0000-0000-000000000006'),
+  '10000000-0000-0000-0000-000000000009',
+  'merge_jobs: the new duplicate gets its own redirect');
+
 select pg_temp.become_postgres();
 select * from finish();
 rollback;
