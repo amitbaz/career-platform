@@ -31,6 +31,7 @@ from job_hunter.models import (
     CandidateContextCacheEntry,
     Evaluation,
     Job,
+    JobFacets,
     Material,
     NavigationSession,
     ProviderCredentials,
@@ -40,6 +41,7 @@ from job_hunter.search_profile import SearchProfile
 from job_hunter.store_mapping import (
     ats_entry_from_row,
     evaluation_from_row,
+    job_facets_from_row,
     job_from_row,
     material_from_row,
     navigation_session_from_row,
@@ -820,6 +822,143 @@ class PostgresJobStore:
         if not rows:
             return None
         return evaluation_from_row(rows[0])
+
+    # ------------------------------------------------------------------
+    # Objective facets
+    # ------------------------------------------------------------------
+
+    def save_job_facets(self, job_id: str, facets: JobFacets) -> None:
+        """Persist a job's objective facets, replacing any earlier set.
+
+        The description hash is read off the job row here rather than taken
+        from the caller, exactly as `_write_evaluation` does: there is one
+        notion of "the description this was computed at", and it lives on the
+        job. That is what makes `jobs_needing_facets` reuse the existing
+        invalidation mechanism instead of inventing a second one.
+
+        Unlike `save_evaluation`, this deliberately does **not** follow a
+        merge. Facets describe the posting they were read from; the surviving
+        row of a merge is a different posting with its own description, and
+        writing these facets against it would stamp them with *that* row's
+        description hash -- pinning one posting's facts to another's text as
+        permanently current, with no path back to re-extraction. An
+        evaluation survives that treatment because the next description change
+        recomputes it; facets stamped this way would never expire. A job
+        merged away mid-run is therefore left unenriched, and the survivor is
+        extracted from its own text on a later run.
+        """
+        try:
+            self._write_job_facets(job_id, facets)
+        except SupabaseRequestError as error:
+            if error.code != _FOREIGN_KEY_VIOLATION:
+                raise
+            logger.info(
+                "job_id=%s was merged away mid-run; discarding its facets rather "
+                "than stamping them on the survivor",
+                job_id,
+            )
+
+    def _write_job_facets(self, job_id: str, facets: JobFacets) -> None:
+        jobs = self._client.select(
+            "job_hunter_jobs",
+            params={"id": f"eq.{job_id}", "select": "description_hash"},
+        )
+        job_row = jobs[0] if jobs else {}
+        compensation = facets.compensation
+        self._client.upsert(
+            "job_hunter_job_facets",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "job_id": job_id,
+                    "description_hash_at_extraction": job_row.get("description_hash") or "",
+                    "seniority": facets.seniority,
+                    "remote_policy": facets.remote_policy,
+                    "relocation_policy": facets.relocation_policy,
+                    "hiring_regions": facets.hiring_regions,
+                    "stack": facets.stack,
+                    "compensation_disclosed": compensation.disclosed,
+                    "compensation_currency": compensation.currency,
+                    "compensation_min": compensation.minimum,
+                    "compensation_max": compensation.maximum,
+                    "compensation_period": compensation.period,
+                    "requirements_json": facets.requirements,
+                    "source_supplied": facets.source_supplied,
+                    "model": facets.model,
+                    "extracted_at": to_iso(datetime.now(timezone.utc)),
+                }
+            ],
+            on_conflict="job_id",
+        )
+
+    def get_job_facets(self, job_id: str) -> JobFacets | None:
+        """Return a job's stored facets, or None when it has never been extracted.
+
+        None means "not extracted yet", never "this posting states nothing":
+        a posting that states nothing is stored with every facet at its
+        unknown/empty value, which is a fact about the posting and worth
+        keeping.
+        """
+        rows = self._client.select(
+            "job_hunter_job_facets",
+            params={
+                "job_id": f"eq.{job_id}",
+                "select": (
+                    "seniority,remote_policy,relocation_policy,hiring_regions,stack,"
+                    "compensation_disclosed,compensation_currency,compensation_min,"
+                    "compensation_max,compensation_period,requirements_json,"
+                    "source_supplied,description_hash_at_extraction,model"
+                ),
+                "limit": "1",
+            },
+        )
+        if not rows:
+            return None
+        return job_facets_from_row(rows[0])
+
+    def jobs_needing_facets(self, job_ids: list[str]) -> set[str]:
+        """Which of `job_ids` have no current facets, in two requests per chunk.
+
+        A job needs extraction when it has no facet row at all, or when the
+        description it was extracted at is not the description the job carries
+        now -- the same comparison `needs_evaluation` makes against
+        `description_hash_at_eval`, deliberately reusing the one mechanism
+        rather than adding a second notion of a changed posting.
+
+        An id with no readable job row is left out entirely. Row-level
+        security filters such a row before this sees it, and there is no
+        description to extract from either way: reporting it as needing work
+        would send the pipeline into a call it can only fail.
+        """
+        unique_ids = list(dict.fromkeys(job_ids))
+        if not unique_ids:
+            return set()
+
+        needing: set[str] = set()
+        for chunk in _chunked(unique_ids, _URL_FILTER_CHUNK_SIZE):
+            id_filter = f"in.({','.join(chunk)})"
+            job_rows = self._client.select(
+                "job_hunter_jobs",
+                params={"id": id_filter, "select": "id,description_hash"},
+            )
+            facet_rows = self._client.select(
+                "job_hunter_job_facets",
+                params={
+                    "job_id": id_filter,
+                    "select": "job_id,description_hash_at_extraction",
+                },
+            )
+            extracted_at_hash = {
+                row["job_id"]: row.get("description_hash_at_extraction") or ""
+                for row in facet_rows
+            }
+            for row in job_rows:
+                job_id = row["id"]
+                if job_id not in extracted_at_hash:
+                    needing.add(job_id)
+                elif extracted_at_hash[job_id] != (row.get("description_hash") or ""):
+                    needing.add(job_id)
+        return needing
 
     # ------------------------------------------------------------------
     # Materials
@@ -2533,6 +2672,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_ats_boards": "count",
     "backfill_ats_identity": "count",
     "save_evaluation": "echo_job_id",
+    "save_job_facets": None,
     "save_material": None,
     "mark_delivered": "echo_job_id",
     "upsert_company_watch": "id",
@@ -2571,6 +2711,8 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
     {
         "client",
         "close",
+        "get_job_facets",
+        "jobs_needing_facets",
         "list_job_sources",
         "find_job_by_canonical_url",
         "find_job_by_ats",

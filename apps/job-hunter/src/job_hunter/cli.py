@@ -105,11 +105,17 @@ def _run(args: argparse.Namespace) -> int:
 
     summary = run_pipeline(settings, store=store, gemini=gemini, http=http)
     logger.info(
-        "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d",
+        "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
+        "facets_extracted=%d facets_failed=%d",
         summary.ready_to_apply,
         summary.possible_matches,
         summary.skipped,
         summary.errors,
+        # Facet extraction is shared, best-effort work: it is reported here so
+        # a run whose enrichment is quietly failing is visible, but it never
+        # decides the exit code -- a run that delivered its digest succeeded.
+        summary.facet_extraction_attempted - summary.facet_extraction_failed,
+        summary.facet_extraction_failed,
     )
     if summary.evaluation_attempted and summary.evaluated == 0:
         # Isolated source/job failures stay non-fatal (see summary.errors above),

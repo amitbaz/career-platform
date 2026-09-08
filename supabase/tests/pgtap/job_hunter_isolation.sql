@@ -71,7 +71,8 @@ select unnest(array[
   'job_hunter_telegram_navigation_sessions',
   'job_hunter_search_profiles',
   'job_hunter_search_profile_markets',
-  'job_hunter_job_merges'
+  'job_hunter_job_merges',
+  'job_hunter_job_facets'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -169,6 +170,10 @@ begin
          remote_policy, relocation_policy, sponsorship_policy)
       values (p_owner, v_profile, gen_random_uuid()::text, 0.5, 'EUR', 90000,
               'preferred', 'selective', 'not_required') returning id into v_id;
+    when 'job_hunter_job_facets' then
+      v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
+      insert into public.job_hunter_job_facets (user_id, job_id, extracted_at)
+      values (p_owner, v_job, now()) returning id into v_id;
     when 'job_hunter_job_merges' then
       -- duplicate_id names a deleted row and carries no foreign key, so a
       -- fresh uuid is a faithful seed; survivor_id does need a real job.
@@ -247,8 +252,8 @@ select is(
   'every public.job_hunter_* table is covered by the isolation check');
 
 select is(
-  (select count(*)::int from pg_temp.job_hunter_tables), 21,
-  'twenty-one Job Hunter tables are under test');
+  (select count(*)::int from pg_temp.job_hunter_tables), 22,
+  'twenty-two Job Hunter tables are under test');
 
 select pg_temp.check_isolation(
   t.table_name,

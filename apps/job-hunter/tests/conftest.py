@@ -58,6 +58,7 @@ _REQUIRED = (
 #   job_hunter_deliveries         -> job_hunter_jobs               (job_id, user_id)
 #   job_hunter_pending_ai_work    -> job_hunter_jobs               (job_id, user_id) on delete cascade
 #   job_hunter_job_merges         -> job_hunter_jobs               (survivor_id, user_id) on delete cascade
+#   job_hunter_job_facets         -> job_hunter_jobs               (job_id, user_id) on delete cascade
 #
 # job_hunter_job_merges also holds a duplicate_id, deliberately without a
 # foreign key: it names the row the merge deleted, which is the whole point of
@@ -86,6 +87,7 @@ _TABLES_CHILD_FIRST = (
     "job_hunter_deliveries",
     "job_hunter_pending_ai_work",
     "job_hunter_job_merges",
+    "job_hunter_job_facets",
     "job_hunter_ats_registry",
     "job_hunter_ai_usage",
     "job_hunter_ai_quota_state",

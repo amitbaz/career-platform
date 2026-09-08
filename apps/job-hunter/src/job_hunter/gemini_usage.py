@@ -21,12 +21,18 @@ if TYPE_CHECKING:
     from job_hunter.postgres_store import PostgresJobStore
 
 GeminiPurpose = Literal[
-    "gmail_semantic", "candidate_context", "job_evaluation", "cover_letter"
+    "gmail_semantic", "candidate_context", "job_evaluation", "job_facets", "cover_letter"
 ]
 GEMINI_PURPOSES: tuple[GeminiPurpose, ...] = (
     "gmail_semantic",
     "candidate_context",
     "job_evaluation",
+    # Objective facet extraction (issue #125). Deliberately *not* the core
+    # purpose: facets are shared, reusable and can wait for tomorrow's run,
+    # while an evaluation the user is waiting on cannot. Charging them to the
+    # non-core budget is what stops the temporary doubling of daily calls,
+    # while both run against the same jobs, from ever starving evaluation.
+    "job_facets",
     "cover_letter",
 )
 _CORE_PURPOSE: GeminiPurpose = "job_evaluation"

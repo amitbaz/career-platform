@@ -30,8 +30,10 @@ from typing import Any
 
 from job_hunter.models import (
     AtsRegistryEntry,
+    Compensation,
     Evaluation,
     Job,
+    JobFacets,
     Material,
     NavigationCard,
     NavigationSession,
@@ -131,6 +133,34 @@ def evaluation_from_row(row: dict[str, Any]) -> Evaluation:
         content_confidence=row.get("content_confidence_at_eval") or "",
         requirements=row.get("requirements_json") or {},
         raw_model_score=row.get("raw_model_score", 0),
+    )
+
+
+def job_facets_from_row(row: dict[str, Any]) -> JobFacets:
+    """Map a ``job_hunter_job_facets`` PostgREST row to a `JobFacets`.
+
+    ``hiring_regions``, ``stack`` and ``source_supplied`` are ``text[]``
+    columns, which PostgREST hands back as JSON arrays; ``requirements_json``
+    is jsonb and comes back already decoded. Compensation is split across
+    five columns so it stays filterable, and is reassembled here.
+    """
+    return JobFacets(
+        seniority=row.get("seniority") or "unknown",
+        remote_policy=row.get("remote_policy") or "unknown",
+        relocation_policy=row.get("relocation_policy") or "unknown",
+        hiring_regions=list(row.get("hiring_regions") or []),
+        stack=list(row.get("stack") or []),
+        compensation=Compensation(
+            disclosed=bool(row.get("compensation_disclosed")),
+            currency=row.get("compensation_currency") or "",
+            minimum=row.get("compensation_min"),
+            maximum=row.get("compensation_max"),
+            period=row.get("compensation_period") or "",
+        ),
+        requirements=list(row.get("requirements_json") or []),
+        source_supplied=list(row.get("source_supplied") or []),
+        description_hash_at_extraction=row.get("description_hash_at_extraction") or "",
+        model=row.get("model") or "",
     )
 
 
