@@ -293,7 +293,7 @@ The pipeline does not implement a Gemini-quota circuit breaker. Each daily run u
 
 ### Telegram delivery errors
 
-A failed Telegram send (bad token, bot not started, wrong chat id, message too large) is logged and does not crash the run or discard evaluation results. The job stays evaluated and marked undelivered in Postgres, and later runs retry only the missing Telegram deliveries without re-calling Gemini. Retry eligibility follows the same score floor as the digest: only jobs with final score `>60` are retried, and ready-to-apply jobs retry both the digest message and PDF until both succeed. Verify `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are correct and that you've sent at least one message to the bot (see [Telegram bot setup](#telegram-bot-setup)).
+A failed Telegram send (bad token, bot not started, wrong chat id, message too large) is logged and does not crash the run or discard evaluation results. The job stays evaluated and marked undelivered in Postgres, and later runs retry only the missing Telegram deliveries without re-calling Gemini. Retry eligibility follows the search profile's inclusive `match_score_floor` (default 80), so changing the floor changes new deliveries and retries consistently, and ready-to-apply jobs retry both the digest message and PDF until both succeed. Verify `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are correct and that you've sent at least one message to the bot (see [Telegram bot setup](#telegram-bot-setup)).
 
 ### Flaky web sources
 

@@ -50,10 +50,6 @@ from job_hunter.supabase_client import SupabaseClient, SupabaseRequestError
 
 logger = logging.getLogger(__name__)
 
-# Translates store.py's `_DELIVERABLE_SCORE_FLOOR`. A job must score strictly
-# above this to ever be a delivery candidate.
-_DELIVERABLE_SCORE_FLOOR = 60
-
 # Postgres SQLSTATE for foreign_key_violation, which PostgREST reports in the
 # body of a 409. A write against a job id that `merge_jobs` has already
 # deleted fails with exactly this, and is the one case the store retries
@@ -919,7 +915,10 @@ class PostgresJobStore:
         rows = self._client.select("job_hunter_deliveries", params=params)
         return len(rows) > 0
 
-    def pending_delivery_job_ids(self) -> list[str]:
+    def pending_delivery_job_ids(
+        self,
+        match_score_floor: int,
+    ) -> list[str]:
         """Translates store.py:2126-2141.
 
         `job_hunter_pending_delivery_jobs` (migration
@@ -927,12 +926,17 @@ class PostgresJobStore:
         evaluation" join, the score floor, the decision filter, and the
         anti-join against a sent `telegram_message` delivery -- as one SQL
         function, rather than fetching every job/evaluation pair into
-        Python and filtering there. It `returns table (job_id uuid)`, so
+        Python and filtering there. The SQL predicate is `>=`, matching the
+        profile's inclusive floor, so the value passes through unchanged
+        (migration 20260908160000). The parameter is still named
+        `p_score_floor`: PostgREST resolves `rpc` by parameter name, so
+        renaming it would break whichever side of a deploy is not yet
+        updated. It `returns table (job_id uuid)`, so
         `rpc` hands back `[{'job_id': '...'}, ...]`; unwrap the single key.
         """
         rows = self._client.rpc(
             "job_hunter_pending_delivery_jobs",
-            {"p_score_floor": _DELIVERABLE_SCORE_FLOOR},
+            {"p_score_floor": match_score_floor},
         )
         return [row["job_id"] for row in rows]
 

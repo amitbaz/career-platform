@@ -368,6 +368,19 @@ def _evaluation_payload(scores, decision):
     }
 
 
+def _decision_for(store, company: str) -> str | None:
+    """The decision the run stored for `company`'s job, by company name.
+
+    The pipeline assigns job ids itself, so a test that wants to assert a
+    tier has to find the row back through the one field it controls.
+    """
+    for row in store.list_jobs_for_matching():
+        if row["company"] == company:
+            evaluation = store.get_evaluation(row["id"])
+            return evaluation.decision if evaluation else None
+    return None
+
+
 def _jobs_for_source(source: str, count: int, *, title="Senior Product Engineer", description="React TypeScript remote role"):
     return [
         _job(
@@ -424,6 +437,21 @@ class AlternatingDecisionGemini(FakeGemini):
             return super().generate_text(prompt, **kwargs)
         self.eval_calls += 1
         scores = self._STRONG if self.eval_calls % 2 == 1 else self._WEAK
+        return json.dumps(_evaluation_payload(scores, "high_priority"))
+
+
+class ScoreSequenceGemini(FakeGemini):
+    """Returns known component scores for successive job evaluations."""
+
+    def __init__(self, scores_by_evaluation):
+        super().__init__()
+        self._scores_by_evaluation = scores_by_evaluation
+
+    def generate_text(self, prompt, **kwargs):
+        if kwargs.get("purpose") == "candidate_context" or not kwargs.get("json_mode"):
+            return super().generate_text(prompt, **kwargs)
+        scores = self._scores_by_evaluation[self.eval_calls]
+        self.eval_calls += 1
         return json.dumps(_evaluation_payload(scores, "high_priority"))
 
 
@@ -785,6 +813,7 @@ def test_pipeline_counts_a_failed_expired_watch_retry_as_a_new_pause(store, sett
 
 
 def test_pipeline_does_not_promote_possible_match(store, settings, monkeypatch):
+    settings.policy.match_score_floor = 70
     gemini = FakeGemini(
         evaluation_payload=_evaluation_payload(
             {
@@ -2073,21 +2102,24 @@ def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settin
         settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
     )
 
-    # Every other candidate scores below `possible`, so reaching five offers
-    # costs nine evaluations rather than five.
+    # Every other candidate scores about 30 -- below the `possible` rung,
+    # so a decision-ladder skip rather than a job the floor took away.
+    # Reaching five offers costs nine evaluations rather than five.
     assert summary.ready_to_apply == 5
     assert summary.skipped == 4
+    assert summary.withheld_by_score_floor == 0
     assert gemini.eval_calls == 9
 
 
-def test_pipeline_does_not_spend_the_cap_on_offers_the_digest_would_drop(store, settings):
-    """An offer scoring under the digest's floor costs no delivery budget.
+def test_pipeline_does_not_spend_the_cap_on_offers_below_the_match_score_floor(store, settings):
+    """An offer scoring under the profile floor costs no delivery budget.
 
-    A profile may put its `possible` rung below the score Telegram is willing
-    to send, and then a possible_match never reaches the user. Counting it
-    would end the run early and leave the digest short of the cap.
+    A profile may put its `possible` rung below the match-score floor. Counting
+    a withheld possible_match would end the run early and leave the digest
+    short of the cap.
     """
     settings.policy.thresholds = {"package": 75, "possible": 30}
+    settings.policy.match_score_floor = 61
     settings.policy.daily_offer_limit = 5
     jobs = _jobs_for_source("ashby", 20)
     gemini = AlternatingDecisionGemini()
@@ -2098,6 +2130,192 @@ def test_pipeline_does_not_spend_the_cap_on_offers_the_digest_would_drop(store, 
     )
 
     assert _digest_offer_count(telegram.messages[0]) == 5
+
+
+def test_pipeline_withholds_offers_below_the_match_score_floor(store, settings):
+    settings.policy.match_score_floor = 80
+    settings.policy.daily_offer_limit = 20
+    jobs = _jobs_for_source("ashby", 3)
+    gemini = ScoreSequenceGemini(
+        [
+            {
+                "role_seniority": 28,
+                "technical": 22,
+                "product_architecture": 18,
+                "career_direction": 8,
+                "location_language": 5,
+                "company_environment": 0,
+            },
+            {
+                "role_seniority": 28,
+                "technical": 22,
+                "product_architecture": 18,
+                "career_direction": 8,
+                "location_language": 3,
+                "company_environment": 0,
+            },
+            {
+                "role_seniority": 28,
+                "technical": 22,
+                "product_architecture": 18,
+                "career_direction": 2,
+                "location_language": 0,
+                "company_environment": 0,
+            },
+        ]
+    )
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert _digest_companies(telegram.messages[0]) == {jobs[0].company}
+    assert summary.ready_to_apply == 1
+    assert summary.possible_matches == 0
+    assert summary.withheld_by_score_floor == 2
+    # The spec's named case: the third job scores 70, which clears the
+    # `possible` rung of 65 and so would have been delivered as a possible
+    # match before the floor existed. Asserting the tier, not just the
+    # count, keeps the case alive if a threshold moves.
+    assert _decision_for(store, jobs[2].company) == "possible_match"
+    # A withheld offer is not a decision-ladder skip. Nothing here scored
+    # below `possible`, so `skipped` must stay empty.
+    assert summary.skipped == 0
+
+
+def test_pipeline_sends_nothing_when_no_offer_clears_the_match_score_floor(store, settings):
+    settings.policy.match_score_floor = 80
+    jobs = _jobs_for_source("ashby", 1)
+    gemini = ScoreSequenceGemini(
+        [
+            {
+                "role_seniority": 28,
+                "technical": 22,
+                "product_architecture": 18,
+                "career_direction": 8,
+                "location_language": 3,
+                "company_environment": 0,
+            }
+        ]
+    )
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert telegram.messages == []
+    assert summary.withheld_by_score_floor == 1
+
+
+def test_pipeline_delivers_an_offer_at_a_lower_configured_match_score_floor(store, settings):
+    settings.policy.thresholds["possible"] = 50
+    settings.policy.match_score_floor = 50
+    jobs = _jobs_for_source("ashby", 1)
+    gemini = ScoreSequenceGemini(
+        [
+            {
+                "role_seniority": 28,
+                "technical": 22,
+                "product_architecture": 0,
+                "career_direction": 0,
+                "location_language": 0,
+                "company_environment": 0,
+            }
+        ]
+    )
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert _digest_companies(telegram.messages[0]) == {jobs[0].company}
+    assert summary.possible_matches == 1
+    assert summary.withheld_by_score_floor == 0
+
+
+def test_pipeline_fills_the_daily_cap_after_withholding_lower_scored_jobs(store, settings):
+    settings.policy.match_score_floor = 80
+    settings.policy.daily_offer_limit = 5
+    jobs = _jobs_for_source("ashby", 8)
+    below_floor = {
+        "role_seniority": 28,
+        "technical": 22,
+        "product_architecture": 18,
+        "career_direction": 8,
+        "location_language": 3,
+        "company_environment": 0,
+    }
+    above_floor = {
+        "role_seniority": 28,
+        "technical": 22,
+        "product_architecture": 18,
+        "career_direction": 8,
+        "location_language": 9,
+        "company_environment": 5,
+    }
+    gemini = ScoreSequenceGemini([below_floor] * 3 + [above_floor] * 5)
+    telegram = FakeTelegram()
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource(jobs)], store=store, gemini=gemini, telegram=telegram
+    )
+
+    assert _digest_offer_count(telegram.messages[0]) == 5
+    assert summary.ready_to_apply == 5
+    assert summary.withheld_by_score_floor == 3
+    assert gemini.eval_calls == 8
+
+
+def test_pipeline_does_not_retry_delivery_below_the_current_match_score_floor(store, settings):
+    settings.policy.match_score_floor = 80
+    job = _job()
+    job_id, _, _ = store.upsert_job(job)
+    store.save_evaluation(
+        job_id,
+        _evaluation(job_id, decision="package_match", total_score=79),
+    )
+    telegram = FakeTelegram()
+
+    run_pipeline(
+        settings,
+        sources=[FakeSource([])],
+        store=store,
+        gemini=FakeGemini(),
+        telegram=telegram,
+    )
+
+    assert telegram.messages == []
+
+
+def test_pipeline_logs_the_match_score_floor_and_withheld_count(store, settings, caplog):
+    settings.policy.match_score_floor = 80
+    jobs = _jobs_for_source("ashby", 1)
+    gemini = ScoreSequenceGemini(
+        [
+            {
+                "role_seniority": 28,
+                "technical": 22,
+                "product_architecture": 18,
+                "career_direction": 8,
+                "location_language": 3,
+                "company_environment": 0,
+            }
+        ]
+    )
+
+    with caplog.at_level(logging.INFO):
+        run_pipeline(
+            settings,
+            sources=[FakeSource(jobs)],
+            store=store,
+            gemini=gemini,
+            telegram=FakeTelegram(),
+        )
+
+    assert "match_score_floor=80 withheld_by_score_floor=1" in caplog.text
 
 
 def test_pipeline_leaves_candidates_beyond_the_cap_for_the_next_run(store, settings):

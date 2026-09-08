@@ -222,7 +222,7 @@ def test_pipeline_failed_navigator_send_keeps_jobs_pending(store):
     job_id, _, _ = store.upsert_job(job)
     assert len(telegram.cards) == 1
     assert store.has_delivery(job_id, "telegram_message") is False
-    assert job_id in store.pending_delivery_job_ids()
+    assert job_id in store.pending_delivery_job_ids(settings.policy.match_score_floor)
 
 
 def test_pipeline_with_no_deliverable_jobs_sends_nothing(store):

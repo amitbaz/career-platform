@@ -123,23 +123,29 @@ def test_build_digest_empty_items_returns_placeholder():
     assert digest
 
 
-def test_build_digest_omits_scores_at_or_below_sixty():
+def test_build_digest_renders_low_scores_selected_by_the_engine():
+    """Score eligibility is the pipeline's, not the digest's.
+
+    `match_score_floor` is applied in `run_pipeline` before a `DigestItem`
+    exists, and `run_pipeline` is the only producer of the list this takes.
+    So these inputs are not what a real run renders -- they are the proof
+    that the surface no longer holds a floor of its own, which is what let
+    the old hardcoded 60 disagree with the profile.
+    """
     digest = build_digest([
-        _item(company="Keep", score=61, decision="possible_match"),
-        _item(company="Drop60", score=60, decision="possible_match"),
-        _item(company="DropLow", score=40, decision="blocked"),
+        _item(company="Possible", score=50, decision="possible_match"),
+        _item(company="Blocked", score=40, decision="blocked"),
     ])
-    assert "Keep" in digest
-    assert "Drop60" not in digest
-    assert "DropLow" not in digest
+    assert "Possible" in digest
+    assert "Blocked" in digest
 
 
-def test_select_deliverable_items_keeps_only_scores_above_sixty():
+def test_select_deliverable_items_keeps_only_supported_decisions():
+    """Decision is the only filter left here; see the digest test above."""
     selected = select_deliverable_items([
-        _item(company="Keep", score=61, decision="high_priority"),
-        _item(company="KeepPossible", score=61, decision="possible_match"),
-        _item(company="DropReady", score=60, decision="high_priority"),
-        _item(company="DropPossible", score=60, decision="possible_match"),
+        _item(company="Keep", score=50, decision="high_priority"),
+        _item(company="KeepPossible", score=50, decision="possible_match"),
+        _item(company="Drop", score=90, decision="skip"),
     ])
     assert [item.company for item in selected] == ["Keep", "KeepPossible"]
 
