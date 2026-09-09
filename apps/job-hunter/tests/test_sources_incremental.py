@@ -606,3 +606,30 @@ def test_cost_is_recorded_for_a_source_that_raises_partway():
     assert [job.source_job_id for job in jobs] == ["1"]
     assert stats.elapsed_by_source["flaky"] == 7.0
     assert stats.requests_by_source["flaky"] == 2
+
+
+from job_hunter.sources.base import source_key_for
+
+
+class _LabelOnly:
+    source_label = "remotive"
+
+    def discover(self):
+        yield from ()
+
+
+class _KeyedBoard:
+    source_label = "lever:acme"
+    source_key = "lever:acme"
+
+    def discover(self):
+        yield from ()
+
+
+def test_source_key_falls_back_to_the_metrics_label():
+    """An adapter that never heard of source_key still has one."""
+    assert source_key_for(_LabelOnly()) == "remotive"
+
+
+def test_source_key_is_used_when_the_adapter_declares_one():
+    assert source_key_for(_KeyedBoard()) == "lever:acme"
