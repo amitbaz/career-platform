@@ -168,8 +168,24 @@ directory, for the same reason.
 - **What it looks like when the pool is bypassed:** a scatter of unrelated assertion failures
   (`assert [] == ['acme']`) or a `RuntimeError` about a foreign-key violation while cleaning seed
   users. Both mean a second writer is on this run's seed users — most likely a worktree sitting on
-  a revision from before the pool existed, which uses the slot-0 pair unconditionally. Check
-  `ps -eo args | grep '[-]m pytest'` and `git worktree list` before believing a red suite.
+  a revision from before the pool existed, which uses the slot-0 pair unconditionally.
+  `ps -eo args | grep '[-]m pytest'` and `git worktree list` can confirm this, but **`ps` is a
+  false negative**: a run that already reset the stack and exited leaves no process to find, and
+  an empty `ps` is not evidence that nothing interfered. Never treat it as an alternative to the
+  migration diff below.
+- **Diff the applied migrations before believing any red run**, and do it first when your branch
+  carries a migration that is not on `main`. A peer's `pnpm db:reset` drops every migration that
+  exists only in your worktree, and the suite then fails in ways that read as your own diff being
+  broken — the symptom points at your code and the cause is somebody else's reset. Compare
+  `supabase_migrations.schema_migrations` against `ls supabase/migrations`: a version present in
+  one and not the other names the cause in a single look. It catches the other direction too,
+  where a peer's migration *is* applied and turns unrelated tests red.
+- **A green run can be wrong as easily as a red one.** A workspace without its own `.venv` runs
+  against a different source tree entirely, so the suite passes while testing code you did not
+  write. This is why `pnpm job-hunter:test` is mandatory rather than a convenience: it resolves
+  the interpreter for the tree it is run from. Create the `.venv` in every new checkout and every
+  new worktree before the first test run, and never conclude anything from a green suite you have
+  not confirmed is the right tree.
 
 Raising the pool size means editing both `seed_pool.POOL_SIZE` and `supabase/seed.sql`, then
 running `pnpm db:reset` to create the new users — test writes go through PostgREST with a minted
