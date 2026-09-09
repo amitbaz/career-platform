@@ -54,6 +54,18 @@ facets and the company's together; there is no separate company-matching path.
 **Surface** — anything that consumes the engine and presents results: Telegram, the
 scheduled daily run, a future application. A surface never contains matching logic.
 
+**Stage** — one bounded unit of the shared ingestion/enrichment pipeline. The four
+stages are `crawl_source`, `resolve_persist`, `extract_facets`, and
+`recheck_freshness`. A stage consumes only its own durable **stage queue** and may
+enqueue at most the next stage; the queues are the coupling between stages. Queue
+payloads and operational state carry no user identity.
+
+**Transient / permanent / quota failure** — the three stage-failure classes.
+Transient work retries with increasing backoff and eventually dead-letters;
+permanent work dead-letters immediately; quota exhaustion delays the message without
+increasing its attempt count. A claimed message that is never acknowledged is not a
+failure classification: its visibility timeout expires and another worker may claim it.
+
 ## Jobs and their lifecycle
 
 **Posting** — one job advertisement in the world, held once in `job_hunter_postings` and

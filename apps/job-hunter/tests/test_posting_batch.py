@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import contextmanager
 
 import pytest
 
@@ -131,7 +132,7 @@ def test_a_failed_merge_degrades_to_the_per_listing_path(caplog):
         batch = store.merge_posting_batch([_job()])
 
     assert batch == PostingBatch()
-    assert "staged posting merge failed" in caplog.text
+    assert "staged resolve_persist queue failed" in caplog.text
 
 
 # What the batch changes about a job payload -------------------------------------
@@ -194,6 +195,98 @@ def test_a_staging_row_says_the_same_thing_the_job_payload_says():
     assert shared  # the two must overlap, or this asserts nothing
     for key in shared:
         assert row[key] == payload[key], key
+
+
+class QueueRecordingCopy:
+    def __init__(self, database):
+        self._database = database
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def write_row(self, row):
+        self._database.batch_id = row[0]
+
+
+class QueueRecordingCursor:
+    def __init__(self, database):
+        self._database = database
+        self._rows = []
+        self._row = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def copy(self, statement):
+        self._database.statements.append(statement)
+        return QueueRecordingCopy(self._database)
+
+    def execute(self, statement, params=None):
+        self._database.statements.append(statement)
+        self._row = None
+        self._rows = []
+        if "pgmq.send" in statement:
+            self._row = (7,)
+        elif "pgmq.read" in statement:
+            self._rows = [(7, {"batch_id": self._database.batch_id}, 0)]
+        elif "job_hunter_merge_posting_batch" in statement:
+            self._rows = [(self._database.fingerprint, "posting-a", True)]
+        elif "job_hunter_stage_queue_metrics" in statement:
+            self._rows = [
+                (stage, 0, 0, 0)
+                for stage in (
+                    "crawl_source",
+                    "extract_facets",
+                    "recheck_freshness",
+                    "resolve_persist",
+                )
+            ]
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._rows
+
+
+class QueueRecordingConnection:
+    def __init__(self, database):
+        self._database = database
+
+    def cursor(self):
+        return QueueRecordingCursor(self._database)
+
+
+class QueueRecordingDatabase:
+    def __init__(self, fingerprint):
+        self.fingerprint = fingerprint
+        self.batch_id = None
+        self.statements: list[str] = []
+
+    @contextmanager
+    def connection(self):
+        yield QueueRecordingConnection(self)
+
+
+def test_resolve_persist_is_reached_as_a_queue_consumer():
+    job = _job()
+    database = QueueRecordingDatabase(job_fingerprint(job))
+    store = PostgresJobStore(RecordingClient(), database)
+
+    batch = store.merge_posting_batch([job])
+
+    assert batch == PostingBatch(
+        posting_ids={job_fingerprint(job): "posting-a"}, newly_discovered=1
+    )
+    assert any("pgmq.send" in statement for statement in database.statements)
+    assert any("pgmq.read" in statement for statement in database.statements)
+    assert any("pgmq.delete" in statement for statement in database.statements)
 
 
 # Against a real database ---------------------------------------------------------

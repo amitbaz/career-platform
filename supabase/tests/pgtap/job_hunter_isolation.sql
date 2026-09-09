@@ -295,14 +295,14 @@ select unnest(array[
   'job_hunter_posting_merges'
 ]) as table_name;
 
--- Ingestion's own scratch space (issue #182), which is neither per-user nor
--- shared: a crawl COPYs a batch of listings into it over a privileged
--- connection and the merge empties it again. No role a user can hold reaches
--- it at all, which is asserted -- alongside the merge that consumes it -- in
--- job_hunter_posting_batches.sql.
+-- Ingestion's own scratch and operational state (issues #182 and #183), which
+-- is neither per-user nor user-readable. No role a user can hold reaches it;
+-- the batch and queue suites assert the useful properties each table has.
 create view pg_temp.job_hunter_ingestion_tables as
 select unnest(array[
-  'job_hunter_posting_staging'
+  'job_hunter_posting_staging',
+  'job_hunter_stage_attempts',
+  'job_hunter_stage_dead_letters'
 ]) as table_name;
 
 -- Guard: every job_hunter_ table in the schema is in the list under test,

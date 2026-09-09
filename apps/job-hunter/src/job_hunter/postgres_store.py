@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 
@@ -39,7 +39,10 @@ from job_hunter.models import (
 )
 from job_hunter.normalize import job_fingerprint
 from job_hunter.pg import IngestionDatabase
+from job_hunter.postgres_stage_queue import PostgresStageQueue
+from job_hunter.resolve_persist import PostingBatch, ResolvePersistStage
 from job_hunter.search_profile import SearchProfile
+from job_hunter.stage_queue import Stage, StageRunner
 from job_hunter.store_mapping import (
     ats_entry_from_row,
     company_facets_from_row,
@@ -184,32 +187,6 @@ _POSTING_STAGING_COLUMNS = (
     "ats_board",
     "ats_job_id",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class PostingBatch:
-    """What one staged crawl batch resolved to (issue #182).
-
-    `posting_ids` maps a listing's fingerprint to the posting it resolved to,
-    so a caller can hand each job payload the posting it is a copy of instead
-    of making `job_hunter_upsert_job` resolve one per listing. It has one
-    entry per *distinct* fingerprint, not one per listing: collapsing the
-    duplicates inside a batch is half of what the merge is for.
-
-    `newly_discovered` counts the postings the merge inserted -- advertisements
-    nobody had a row for before this batch. It is a count of postings and not
-    of job rows: `DiscoveryStats.newly_discovered` stays the per-user figure it
-    has always been, and the two differ whenever a run re-discovers an
-    advertisement another user already found.
-
-    An empty batch is what a store with no direct Postgres connection returns,
-    and it is not an error: every caller then falls back to resolving each
-    posting inside its own job upsert, exactly as it did before #182.
-    """
-
-    posting_ids: dict[str, str] = field(default_factory=dict)
-    newly_discovered: int = 0
-
 
 _T = TypeVar("_T")
 
@@ -413,17 +390,13 @@ class PostgresJobStore:
         return row["id"], row["is_new"], row["description_changed"]
 
     def merge_posting_batch(self, jobs: list[Job]) -> PostingBatch:
-        """Persist a whole crawl batch of postings with one set-based merge.
+        """Stage, enqueue, and consume one crawl batch of postings.
 
-        Bulk-loads every listing into `job_hunter_posting_staging` under a
-        fresh batch identifier and then calls `job_hunter_merge_posting_batch`
-        once. That single statement normalizes the batch, collapses the
-        duplicates inside it, resolves each listing against existing postings
-        by the fingerprint computed here, inserts what is new, updates what
-        changed, reports which postings were genuinely new, and clears the
-        batch from staging. The identity rules are the ones
-        `job_hunter_upsert_posting` applies per listing; what changes is that
-        they are applied once over a set rather than once per listing.
+        The COPY and queue send commit together before the worker claims
+        anything. A process killed after that point leaves a durable message;
+        pgmq makes it visible to a later call after the visibility timeout.
+        The bounded worker also drains older abandoned batches before this
+        call falls back to per-listing persistence.
 
         Needs the direct Postgres connection: `COPY` and a set-based statement
         are the two things PostgREST cannot express, which is the whole reason
@@ -434,14 +407,17 @@ class PostgresJobStore:
         than raised for the same reason: a run that cannot take the fast path
         should still deliver, and the phase breakdown will show it did not.
 
-        Staged rows and the merge share one transaction, so a batch is either
-        merged or still in staging and never half of each.
+        `resolve_persist` is idempotent at the posting boundary. If a worker is
+        killed after the merge commits but before its queue acknowledgement,
+        the replay sees an empty staging batch and completes harmlessly; the
+        postings already produced remain the same.
         """
         if self._ingestion is None or not jobs:
             return PostingBatch()
 
         batch_id = str(uuid.uuid4())
         columns = ", ".join(_POSTING_STAGING_COLUMNS)
+        queue = PostgresStageQueue(self._ingestion)
         try:
             with self._ingestion.connection() as connection:
                 with connection.cursor() as cursor:
@@ -450,28 +426,35 @@ class PostgresJobStore:
                     ) as copy:
                         for ordinal, job in enumerate(jobs):
                             copy.write_row(self._staging_row(batch_id, ordinal, job))
-                    cursor.execute(
-                        "select fingerprint, posting_id, is_new "
-                        "from public.job_hunter_merge_posting_batch(%s)",
-                        (batch_id,),
+                    message_id = queue.enqueue(
+                        Stage.RESOLVE_PERSIST,
+                        {"batch_id": batch_id},
+                        connection=connection,
                     )
-                    rows = cursor.fetchall()
+
+            runner = StageRunner(queue, visibility_timeout_seconds=5 * 60)
+            outcomes = runner.run_once(
+                Stage.RESOLVE_PERSIST,
+                ResolvePersistStage(self._ingestion),
+                batch_size=100,
+            )
         except Exception:
             logger.exception(
-                "staged posting merge failed for %s listing(s); falling back to "
-                "resolving each posting inside its own job upsert",
+                "staged resolve_persist queue failed for %s listing(s); falling "
+                "back to resolving each posting inside its own job upsert",
                 len(jobs),
             )
             return PostingBatch()
 
-        return PostingBatch(
-            posting_ids={
-                fingerprint: str(posting_id)
-                for fingerprint, posting_id, _is_new in rows
-                if posting_id is not None
-            },
-            newly_discovered=sum(1 for _f, _id, is_new in rows if is_new),
+        for outcome in outcomes:
+            if outcome.message.message_id == message_id:
+                return outcome.result
+        logger.warning(
+            "resolve_persist batch remains queued; falling back to per-listing "
+            "persistence for this run: batch_id=%s",
+            batch_id,
         )
+        return PostingBatch()
 
     @staticmethod
     def _staging_row(batch_id: str, ordinal: int, job: Job) -> tuple[Any, ...]:
