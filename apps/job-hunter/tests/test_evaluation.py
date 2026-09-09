@@ -2,8 +2,9 @@ import json
 
 import pytest
 
+from job_hunter.ai import AIQuotaPaused
 from job_hunter.content_confidence import AGGREGATOR_TEXT, OFFICIAL_ATS, PARTIAL_UNKNOWN
-from job_hunter.evaluation import EvaluationError, evaluate_job
+from job_hunter.evaluation import SCORE_MAXIMA, EvaluationError, evaluate_job
 from job_hunter.models import (
     CandidateContext,
     CandidatePreferences,
@@ -28,6 +29,7 @@ class FakeGemini:
         self.text = ""
         self.model = "gemini-2.5-flash-lite"
         self.prompts = []
+        self.schemas = []
 
     def generate_text(
         self,
@@ -44,6 +46,7 @@ class FakeGemini:
         self.prompts.append(
             (prompt, purpose, thinking_level, max_output_tokens, json_mode, max_attempts)
         )
+        self.schemas.append(json_schema)
         return self.text
 
 
@@ -207,6 +210,46 @@ def test_evaluation_rejects_invalid_json(fake_gemini, job, facets, policy, conte
         evaluate_job(job, facets, context, policy, fake_gemini)
 
 
+def test_evaluation_retries_one_unparseable_response_and_uses_the_second_sample(
+    fake_gemini, job, facets, policy, context
+):
+    responses = ["not json", json.dumps(_valid_payload())]
+
+    def generate_text(prompt, **kwargs):
+        fake_gemini.text = responses.pop(0)
+        return FakeGemini.generate_text(fake_gemini, prompt, **kwargs)
+
+    fake_gemini.generate_text = generate_text
+
+    result = evaluate_job(job, facets, context, policy, fake_gemini)
+
+    assert result.total_score == 89
+    assert len(fake_gemini.prompts) == 2
+    assert fake_gemini.schemas[0] == fake_gemini.schemas[1]
+
+
+def test_evaluation_does_not_retry_a_quota_refusal(job, facets, policy, context):
+    class QuotaRefusingGemini(FakeGemini):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def generate_text(self, prompt, **kwargs):
+            self.calls += 1
+            raise AIQuotaPaused(
+                "paused",
+                paused_until="2026-09-10T00:00:00+00:00",
+                reason="daily_quota",
+            )
+
+    gemini = QuotaRefusingGemini()
+
+    with pytest.raises(AIQuotaPaused):
+        evaluate_job(job, facets, context, policy, gemini)
+
+    assert gemini.calls == 1
+
+
 def test_evaluation_prompt_uses_compact_context_not_full_profile(fake_gemini, job, facets, policy, context):
     fake_gemini.text = json.dumps(_valid_payload())
     evaluate_job(job, facets, context, policy, fake_gemini)
@@ -243,6 +286,32 @@ def test_evaluation_uses_expected_resource_controls(fake_gemini, job, facets, po
     assert max_output_tokens == 5000
     assert json_mode is True
     assert max_attempts == 2
+
+
+def test_evaluation_declares_the_complete_parser_schema(
+    fake_gemini, job, facets, policy, context
+):
+    fake_gemini.text = json.dumps(_valid_payload())
+
+    evaluate_job(job, facets, context, policy, fake_gemini)
+
+    schema = fake_gemini.schemas[0]
+    assert schema["type"] == "OBJECT"
+    assert schema["required"] == list(schema["properties"])
+    scores = schema["properties"]["scores"]
+    assert scores["required"] == list(SCORE_MAXIMA)
+    assert scores["properties"]["role_seniority"] == {
+        "type": "INTEGER",
+        "minimum": 0,
+        "maximum": 30,
+    }
+    requirements = schema["properties"]["requirements"]["properties"]
+    assert requirements["must_have"]["minItems"] == 1
+    assert requirements["must_have"]["maxItems"] == 1
+    assert requirements["preferred"]["minItems"] == 1
+    assert requirements["preferred"]["maxItems"] == 1
+    support = requirements["must_have"]["items"]["properties"]["candidate_support"]
+    assert support["enum"] == sorted({"supported", "partial", "unsupported", "unknown"})
 
 
 # --- Market-aware prompt content (Task 6) -----------------------------------

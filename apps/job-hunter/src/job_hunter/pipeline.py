@@ -16,8 +16,8 @@ from job_hunter.canonical import CanonicalResolver, parse_supported_ats_url
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.cover_letter import generate_cover_letter
 from job_hunter.discovery import collect_candidates, metric_source_label
-from job_hunter.evaluation import evaluate_job
-from job_hunter.facets import PostingFacts, extract_facets
+from job_hunter.evaluation import EvaluationError, evaluate_job
+from job_hunter.facets import FacetExtractionError, PostingFacts, extract_facets
 from job_hunter.ai import (
     AI_PURPOSES,
     AIBudgetExceeded,
@@ -616,6 +616,12 @@ def _extract_and_store_facets(
         facets = extract_facets(PostingFacts.from_job(job), ai)
     except (AITemporaryCapacity, PlatformAllowanceExhausted):
         raise
+    except FacetExtractionError:
+        logger.exception("facet extraction response could not be parsed for job_id=%s", job_id)
+        summary.facet_extraction_attempted += 1
+        summary.facet_extraction_failed += 1
+        summary.extraction_parse_failures += 1
+        return None
     except Exception:
         logger.exception("facet extraction failed for job_id=%s", job_id)
         summary.facet_extraction_attempted += 1
@@ -825,7 +831,7 @@ def _extract_facets_for_run(
     logger.info(
         "facet_extraction candidates=%s backfill=%s needed=%s attempted=%s "
         "failed=%s skipped_by_capacity=%s limit=%s backfill_reserve=%s "
-        "quota_blocked=%s",
+        "quota_blocked=%s parse_failures=%s",
         len(ordered_candidates),
         len(ordered_backfill),
         len(needed),
@@ -835,6 +841,7 @@ def _extract_facets_for_run(
         limit,
         backfill_reserve,
         quota_blocked,
+        summary.extraction_parse_failures,
     )
 
 
@@ -1007,6 +1014,12 @@ def _evaluate_and_deliver_one_job(
             )
             store.enqueue_ai_work("job_evaluation", job_id)
             return False, True, None, False, False
+        except EvaluationError:
+            logger.exception("evaluation response could not be parsed for job_id=%s", job_id)
+            summary.evaluation_attempted += 1
+            summary.scoring_parse_failures += 1
+            summary.errors += 1
+            return False, False, None, False, False
         except Exception:
             logger.exception("evaluation failed for job_id=%s", job_id)
             summary.evaluation_attempted += 1
@@ -1462,7 +1475,7 @@ def run_pipeline(
         "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
         "deferred_by_offer_cap=%s match_score_floor=%s "
         "withheld_by_score_floor=%s skipped_without_facets=%s "
-        "deferred_by_read_budget=%s",
+        "deferred_by_read_budget=%s parse_failures=%s",
         len(selected),
         summary.evaluated,
         summary.blocked_by_facets,
@@ -1475,6 +1488,7 @@ def run_pipeline(
         summary.withheld_by_score_floor,
         summary.scoring_skipped_without_facets,
         summary.scoring_deferred_by_read_budget,
+        summary.scoring_parse_failures,
     )
 
     for job_id in (
