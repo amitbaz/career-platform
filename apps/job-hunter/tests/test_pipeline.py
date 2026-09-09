@@ -3152,6 +3152,89 @@ def test_pipeline_extracts_a_posting_once(store, settings):
     assert gemini.facet_calls == 1
 
 
+def test_a_job_with_no_posting_is_never_read(store, supabase_client):
+    # The mirror of the store's own guarantee: a job with no posting is not
+    # reported as needing extraction, so scoring takes the "already read"
+    # branch, finds nothing, and must NOT fall through into a provider call
+    # whose result could not be stored -- that call would be spent again on
+    # every later run.
+    from job_hunter.store_mapping import to_iso as _to_iso
+
+    now = _to_iso(datetime.now(timezone.utc))
+    row = supabase_client.insert(
+        "job_hunter_jobs",
+        [
+            {
+                "user_id": supabase_client.user_id,
+                "fingerprint": f"no-posting-{uuid.uuid4()}",
+                "description": "React TypeScript remote role",
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+        ],
+    )[0]
+    gemini = FakeGemini()
+    summary = RunSummary()
+
+    facets = job_hunter.pipeline._facets_for_scoring(
+        row["id"], _job(), store, gemini, summary, set()
+    )
+
+    assert facets is None
+    assert gemini.facet_calls == 0
+    assert summary.facet_extraction_attempted == 0
+
+
+def test_a_second_users_run_reuses_the_first_users_extraction(store, other_store, settings):
+    # The acceptance criterion of #175: two users whose runs select the same
+    # advertisement cost one extraction between them, and the second run
+    # scores against what the first one read.
+    job = _job()
+    gemini = FakeGemini()
+
+    first = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                         ai=gemini, telegram=FakeTelegram())
+    second = run_pipeline(settings, sources=[FakeSource([job])], store=other_store,
+                          ai=gemini, telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 1
+    # The run log tells the two apart: the second user's run read nothing and
+    # reused one posting.
+    assert first.facet_extraction_attempted == 1
+    assert first.facets_reused == 0
+    assert second.facet_extraction_attempted == 0
+    assert second.facets_reused == 1
+    # Subjective scoring stays per-user: both runs made their own call and
+    # both users got the same delivered outcome.
+    assert gemini.eval_calls == 2
+    assert second.ready_to_apply == first.ready_to_apply == 1
+
+
+def test_a_changed_description_is_re_read_once_for_both_users(store, other_store, settings):
+    gemini = FakeGemini()
+    run_pipeline(settings, sources=[FakeSource([_job(description="React role.")])],
+                 store=store, ai=gemini, telegram=FakeTelegram())
+    run_pipeline(settings, sources=[FakeSource([_job(description="React role.")])],
+                 store=other_store, ai=gemini, telegram=FakeTelegram())
+    assert gemini.facet_calls == 1
+
+    edited = _job(description="Rewritten posting: React and Node, hybrid in Berlin.")
+    run_pipeline(settings, sources=[FakeSource([edited])], store=store, ai=gemini,
+                 telegram=FakeTelegram())
+    run_pipeline(settings, sources=[FakeSource([edited])], store=other_store,
+                 ai=gemini, telegram=FakeTelegram())
+
+    # One re-read for the edit, not one per user: the description hash lives
+    # on the posting, so the two users cannot invalidate each other in turn.
+    assert gemini.facet_calls == 2
+    # Both are looking at the re-read answer, and neither has work left.
+    mine, _, _ = store.upsert_job(edited)
+    theirs, _, _ = other_store.upsert_job(edited)
+    assert store.jobs_needing_facets([mine]) == set()
+    assert other_store.jobs_needing_facets([theirs]) == set()
+    assert other_store.get_job_facets(theirs) == store.get_job_facets(mine)
+
+
 def test_a_changed_description_triggers_re_extraction(store, settings):
     gemini = FakeGemini()
     run_pipeline(settings, sources=[FakeSource([_job(description="React role.")])],
