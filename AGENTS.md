@@ -277,6 +277,40 @@ has already been merged and reviewed.
 - **`supabase db reset`, `supabase start` and `pnpm db:test` are local-only and always fine.**
   It is `db push` and `link` that reach production.
 
+### Read raw files when reviewing — `git diff` and `cat` come back as paraphrase
+
+A hook in this environment rewrites `git`, `cat`, `sed` and `grep` output into a token-compressed
+summary. It is not a formatting difference. **The summary is prose about the file, and it is
+confidently wrong.**
+
+This has now produced two failures that look unrelated and share one cause:
+
+- `git diff > wip.patch` writes a summary rather than a unified diff, so `git apply` rejects it
+  with `error: No valid patches in input` — and the working tree changes are gone if they were
+  reverted in the same breath.
+- A review pass reading a diff through the hook reasoned about **code that does not exist**. It
+  reported a function as `security invoker` when the file says `security definer`, and quoted a
+  `grant execute ... to authenticated` that had been replaced by a `revoke`. Those are not
+  degraded findings; they are invented facts, and they would have been acted on.
+
+Someone who has only met the first will not recognise the second. Empty or malformed output
+announces itself. A plausible fabrication does not.
+
+**The rule.** Any review, audit, or diff pass — not only a formal code review — reads files with
+the `Read` and `Grep` tools, never through `cat`, `sed`, `grep` or `git diff`. This overrides the
+general preference for doing work through the shell: that preference exists to save context, and
+here it costs correctness. Say so explicitly when dispatching a reviewer, because a subagent
+cannot tell it is being handed a summary.
+
+**The tell, so you can catch yourself.** If a symbol, grant, or line you are about to quote cannot
+be found by a raw read of the file it supposedly came from, what you read was paraphrase. Check
+before quoting, not after.
+
+When a real diff is genuinely needed — a patch file, a byte-exact comparison — route it through
+`rtk proxy git diff` or use `git format-patch`, and confirm the output starts with `diff --git`
+before trusting it. To park uncommitted work, make a temporary WIP commit rather than writing a
+patch file.
+
 ### Migration filenames are allocated across the whole repository
 
 Supabase applies migrations in the order their numeric filename prefixes sort, and the hosted
