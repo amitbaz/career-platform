@@ -92,34 +92,29 @@ COMPANY_FACET_REFRESH = timedelta(days=180)
 _LATEST_EVALUATION_ORDER = "evaluated_at.desc,created_at.desc,id.desc"
 _LATEST_MATERIAL_ORDER = "generated_at.desc,created_at.desc,id.desc"
 
-# What the advertisement itself says, and where it is read from (issue #177).
+# What the advertisement itself says, and where it is read from (issues #177,
+# #178).
 #
-# `job_hunter_jobs` still duplicates every one of these columns and still
-# carries the same values, so both halves of the select below agree today.
-# They are selected together anyway: `posting_facts` prefers the embedded
-# posting and falls back to the job row's copy, which is what keeps a row
-# written by something other than `job_hunter_upsert_job` -- a pgTAP
-# fixture, `scripts/migrate_sqlite_to_postgres.py` -- readable while
-# `posting_id` is still nullable.
+# A job row is a membership of a posting and carries no fact about the
+# advertisement any more, so every one of these columns is selected from the
+# posting and there is no second copy to fall back to.
 #
 # The embed is a PostgREST resource embedding over the `posting_id` foreign
 # key, so it costs no extra round trip: the posting arrives inside the row
-# it belongs to. It is `to-one`, so PostgREST returns an object (or null),
-# not a list.
+# it belongs to. It is `to-one`, so PostgREST returns an object; `posting_id`
+# is `not null` since #178, so it is never null.
 #
-# The column list is deliberately the one `get_job` already selected --
-# `canonical_url` and the `ats_*` triple are not in it, so the `Job` this
-# builds is identical in content to the one the same call produced before,
-# rather than quietly gaining fields the pipeline never saw.
-#
-# `url` is not in it either, and that one is a decision rather than an
-# omission: it stays the merged job row's, because a job row can stand for
-# several postings and `posting_id` names only one of them. `job_from_row`
-# carries the reasoning.
+# `url`, `canonical_url` and the `ats_*` triple are in the list now. They were
+# left off while they still lived on the job row -- a merged job row was the
+# only row that had seen every posting behind it, so its `url` was the only
+# resolved one. Merging is a posting-level decision since #176: the survivor
+# carries the folded identity columns and the resolved link, which is what
+# makes reading them here the same answer the job row used to give.
 _ADVERTISEMENT_COLUMNS = (
-    "source,title,company,location,description,source_job_id,remote,content_confidence"
+    "source,title,company,location,description,source_job_id,remote,"
+    "content_confidence,url,canonical_url,ats_provider,ats_board,ats_job_id"
 )
-_MEMBERSHIP_COLUMNS = "market_id,url"
+_MEMBERSHIP_COLUMNS = "market_id"
 _POSTING_FACT_EMBED = f"posting:job_hunter_postings({_ADVERTISEMENT_COLUMNS})"
 
 # The pair that decides whether work done against a description is still
@@ -129,6 +124,10 @@ _POSTING_FACT_EMBED = f"posting:job_hunter_postings({_ADVERTISEMENT_COLUMNS})"
 # what makes "the evaluation is current" mean the same thing on both sides.
 _DESCRIPTION_STATE_COLUMNS = "description_hash,content_confidence"
 _DESCRIPTION_STATE_EMBED = f"posting:job_hunter_postings({_DESCRIPTION_STATE_COLUMNS})"
+
+# The columns `list_jobs_for_matching` hands the Gmail matcher, which reads
+# them flat. Everything but the timestamps is the advertisement's.
+_MATCHING_POSTING_COLUMNS = "source_job_id,url,company,title"
 
 # Every id list that travels in a query-string filter (`id=in.(...)`,
 # `message_id=in.(...)`) is chunked at this many ids per request. A message
@@ -871,13 +870,19 @@ class PostgresJobStore:
     def find_job_by_canonical_url(self, url: str) -> str | None:
         """Return a job ID only when a canonical URL identifies one job.
 
-        Translates store.py:1148-1157.
+        Translates store.py:1148-1157. The canonical URL is the
+        advertisement's, so the filter is on the embedded posting (#178);
+        `!inner` makes the embed a join rather than a nullable side, which is
+        what lets the filter select rows instead of blanking the embed. The
+        rows themselves are still the caller's own -- row-level security on
+        `job_hunter_jobs` sees to that -- so the answer is a job id the caller
+        holds, exactly as before.
         """
         rows = self._client.select(
             "job_hunter_jobs",
             params={
-                "canonical_url": f"eq.{self._canonicalize_url(url)}",
-                "select": "id",
+                "posting.canonical_url": f"eq.{self._canonicalize_url(url)}",
+                "select": "id,posting:job_hunter_postings!inner(id)",
             },
         )
         return rows[0]["id"] if len(rows) == 1 else None
@@ -887,17 +892,18 @@ class PostgresJobStore:
     ) -> str | None:
         """Return a job ID only when an ATS tuple identifies one job.
 
-        Translates store.py:1159-1178.
+        Translates store.py:1159-1178. Filtered on the posting for the same
+        reason as `find_job_by_canonical_url`.
         """
         if not job_id:
             return None
         rows = self._client.select(
             "job_hunter_jobs",
             params={
-                "ats_provider": f"eq.{provider}",
-                "ats_board": f"eq.{board}",
-                "ats_job_id": f"eq.{job_id}",
-                "select": "id",
+                "posting.ats_provider": f"eq.{provider}",
+                "posting.ats_board": f"eq.{board}",
+                "posting.ats_job_id": f"eq.{job_id}",
+                "select": "id,posting:job_hunter_postings!inner(id)",
             },
         )
         return rows[0]["id"] if len(rows) == 1 else None
@@ -960,14 +966,28 @@ class PostgresJobStore:
         Ids are random uuids now, so `created_at` (with `select`'s
         `id.asc` tie-breaker) replaces `ORDER BY id` as the insertion-order
         proxy.
+
+        Four of the seven keys are the advertisement's and come from the
+        posting (#178); the rows are flattened here so `gmail_matching` keeps
+        reading one mapping per job rather than learning the shape of the
+        embed.
         """
-        return self._client.select(
+        rows = self._client.select(
             "job_hunter_jobs",
             params={
-                "select": "id,source_job_id,url,company,title,first_seen_at,last_seen_at",
+                "select": (
+                    "id,first_seen_at,last_seen_at,"
+                    f"posting:job_hunter_postings({_MATCHING_POSTING_COLUMNS})"
+                ),
                 "order": "created_at.asc",
             },
         )
+        flattened = []
+        for row in rows:
+            facts = dict(posting_facts(row))
+            facts.pop("posting", None)
+            flattened.append(facts)
+        return flattened
 
     def get_job(self, job_id: str) -> Job | None:
         """Translates store.py:2147-2169."""
@@ -975,9 +995,7 @@ class PostgresJobStore:
             "job_hunter_jobs",
             params={
                 "id": f"eq.{job_id}",
-                "select": (
-                    f"{_MEMBERSHIP_COLUMNS},{_ADVERTISEMENT_COLUMNS},{_POSTING_FACT_EMBED}"
-                ),
+                "select": f"{_MEMBERSHIP_COLUMNS},{_POSTING_FACT_EMBED}",
             },
         )
         if not rows:
@@ -985,7 +1003,7 @@ class PostgresJobStore:
         return job_from_row(rows[0])
 
     def backfill_ats_identity(self) -> int:
-        """Attribute stored jobs that have a supported ATS URL but no identity.
+        """Attribute stored postings that have a supported ATS URL but no identity.
 
         Translates store.py:399-457. SQLite's `LIKE` is case-insensitive;
         Postgres's is not, so the host-match filter below uses `ilike`
@@ -993,6 +1011,18 @@ class PostgresJobStore:
         that is already set -- only an empty/missing `ats_provider`,
         `ats_board`, or `ats_job_id` is backfilled from the parsed
         reference. Returns how many rows were updated.
+
+        The identity is the advertisement's, so this reads and writes
+        `job_hunter_postings` since #178. One run's repair therefore benefits
+        every user holding that posting, which is the same reason the columns
+        moved: an identity established once is established for everyone.
+
+        What it reads is still bounded by the caller's own corpus -- the
+        postings this user holds a membership row for, not every posting in
+        the table. A user's run should cost work proportional to what that
+        user discovered; scanning the whole shared corpus would make one
+        user's repair pass grow with everybody else's crawling, which is rule
+        2 ("cost scales with jobs, not with users") read backwards.
         """
         missing_identity = "or(" + ",".join(
             [
@@ -1011,13 +1041,20 @@ class PostgresJobStore:
         ]
         host_match = "or(" + ",".join(host_terms) + ")"
 
-        rows = self._client.select(
+        membership_rows = self._client.select(
             "job_hunter_jobs",
             params={
-                "and": f"({missing_identity},{host_match})",
-                "select": "id,url,canonical_url,ats_provider,ats_board,ats_job_id",
+                "posting.and": f"({missing_identity},{host_match})",
+                "select": (
+                    "posting:job_hunter_postings!inner"
+                    "(id,url,canonical_url,ats_provider,ats_board,ats_job_id)"
+                ),
             },
         )
+        # One posting can be held by several of this user's rows only through
+        # a bug, but de-duplicating by id costs nothing and keeps the returned
+        # count a count of postings repaired rather than of rows scanned.
+        rows = list({row["posting"]["id"]: row["posting"] for row in membership_rows}.values())
 
         updated = 0
         for row in rows:
@@ -1031,7 +1068,7 @@ class PostgresJobStore:
             if reference is None:
                 continue
             self._client.update(
-                "job_hunter_jobs",
+                "job_hunter_postings",
                 {
                     "ats_provider": row.get("ats_provider") or reference.provider,
                     "ats_board": row.get("ats_board") or reference.board,
@@ -1049,16 +1086,15 @@ class PostgresJobStore:
     def _posting_facts_of(self, job_id: str) -> dict[str, Any]:
         """Read one job's description state from the posting, in one request.
 
-        Falls back to the job row's own duplicated columns when the row has
-        no posting -- see `_POSTING_FACT_EMBED`. Returns an empty mapping
-        for an id the caller cannot read, so every comparison against it
-        answers the same way it did when the read returned no row.
+        Returns an empty mapping for an id the caller cannot read, so every
+        comparison against it answers the same way it did when the read
+        returned no row.
         """
         rows = self._client.select(
             "job_hunter_jobs",
             params={
                 "id": f"eq.{job_id}",
-                "select": f"{_DESCRIPTION_STATE_COLUMNS},{_DESCRIPTION_STATE_EMBED}",
+                "select": _DESCRIPTION_STATE_EMBED,
             },
         )
         return posting_facts(rows[0]) if rows else {}
@@ -3271,14 +3307,15 @@ class PostgresJobStore:
                 jobs = self._client.select(
                     "job_hunter_jobs",
                     params={
-                        "source": "eq.gmail:linkedin",
-                        "source_job_id": f"eq.{candidate['source_candidate_key']}",
-                        "select": "id,company,title",
+                        "posting.source": "eq.gmail:linkedin",
+                        "posting.source_job_id": f"eq.{candidate['source_candidate_key']}",
+                        "select": "id,posting:job_hunter_postings!inner(company,title)",
                     },
                 )
                 for job in jobs:
+                    facts = posting_facts(job)
                     if not _is_legacy_poisoned_linkedin_job(
-                        job.get("company") or "", job.get("title") or ""
+                        facts.get("company") or "", facts.get("title") or ""
                     ):
                         safe = False
                         break

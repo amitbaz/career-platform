@@ -8,14 +8,18 @@
 -- These assertions pin the indexes by the expression they serve, so dropping
 -- one, or rewriting a function's predicate so its index no longer matches,
 -- fails here rather than in a timed-out production run.
+--
+-- The predicates run against job_hunter_postings since #178: identity is a
+-- fact about the advertisement, so it is resolved once for everyone rather
+-- than once per user, and the indexes have no user_id to lead with.
 
 begin;
 select plan(9);
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_canonical_url_idx',
+select has_index('public', 'job_hunter_postings', 'job_hunter_postings_canonical_url_idx',
                  'canonical-URL lookup in job_hunter_upsert_job is indexed');
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_ats_idx',
+select has_index('public', 'job_hunter_postings', 'job_hunter_postings_ats_idx',
                  'ATS-triple lookup in job_hunter_upsert_job is indexed');
 
 -- These three index plain generated columns rather than expressions. An
@@ -24,13 +28,13 @@ select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_ats_idx',
 -- barrier, and as `authenticated` the lookup falls back to a sequential
 -- scan. Comparing a stored column is plain text equality, which is
 -- leakproof and does push down. See 202609070002.
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_normalized_company_title_idx',
-                 'normalized company/title lookup in job_hunter_find_job_by_identity is indexed');
+select has_index('public', 'job_hunter_postings', 'job_hunter_postings_normalized_company_title_idx',
+                 'normalized company/title lookup in job_hunter_find_posting_by_identity is indexed');
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_canonical_of_url_col_idx',
+select has_index('public', 'job_hunter_postings', 'job_hunter_postings_canonical_of_url_idx',
                  'canonicalized-url branch of the inbound anti-join is indexed');
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_normalized_identity_idx',
+select has_index('public', 'job_hunter_postings', 'job_hunter_postings_normalized_identity_idx',
                  'normalized-identity branch of the inbound anti-join is indexed');
 
 -- The generated columns are what makes those indexes reachable. Losing one,
@@ -38,7 +42,7 @@ select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_normalized_i
 -- in step, is the regression this guards.
 select is(
   (select count(*)::int from information_schema.columns
-    where table_schema = 'public' and table_name = 'job_hunter_jobs'
+    where table_schema = 'public' and table_name = 'job_hunter_postings'
       and column_name in ('normalized_identity','canonical_url_of_url',
                           'normalized_company','normalized_title')
       and is_generated = 'ALWAYS'),
@@ -46,18 +50,27 @@ select is(
   'all four normalized lookup columns are GENERATED ALWAYS, not application-maintained'
 );
 
--- The expression indexes they replace must be gone, not merely superseded:
--- leaving them costs a write on every insert and update and can never be read.
+-- The per-user copies must be gone, not merely superseded: an index over a
+-- column job_hunter_jobs no longer has costs a write on every membership row
+-- and can never be read. This covers both generations of them -- the
+-- RLS-unreachable expression indexes 202609070002 replaced, and the
+-- plain-column ones #178 took away with the columns.
 select is_empty(
   $$ select indexname from pg_indexes
       where schemaname = 'public' and tablename = 'job_hunter_jobs'
         and indexname in ('job_hunter_jobs_user_identity_idx',
                           'job_hunter_jobs_user_canonical_of_url_idx',
-                          'job_hunter_jobs_user_normalized_triple_idx') $$,
-  'the RLS-unreachable expression indexes were dropped'
+                          'job_hunter_jobs_user_normalized_triple_idx',
+                          'job_hunter_jobs_user_canonical_url_idx',
+                          'job_hunter_jobs_user_ats_idx',
+                          'job_hunter_jobs_user_normalized_company_title_idx',
+                          'job_hunter_jobs_user_canonical_of_url_col_idx',
+                          'job_hunter_jobs_user_normalized_identity_idx',
+                          'job_hunter_jobs_user_source_job_idx') $$,
+  'no identity index survives on the membership table'
 );
 
-select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_user_source_job_idx',
+select has_index('public', 'job_hunter_postings', 'job_hunter_postings_source_job_idx',
                  'source-identity branch of the inbound anti-join is indexed');
 
 -- An expression index is only legal while the functions it calls stay

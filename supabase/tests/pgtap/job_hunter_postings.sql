@@ -26,17 +26,11 @@ create extension if not exists pgtap with schema extensions;
 select no_plan();
 
 -- The migration backfilled every job row that existed before it, matching
--- them by fingerprint. A job row can still be written without a posting --
--- direct inserts bypass the RPC, which is why posting_id is nullable -- so
--- what is asserted is the backfill's own rule: no job row is left
--- unpointed while a posting for its fingerprint exists. On a freshly reset
--- local stack there are no rows to check, which is why every behavioural
--- assertion below builds its own.
-select is_empty(
-  $$ select 1 from public.job_hunter_jobs j
-      join public.job_hunter_postings p on p.fingerprint = j.fingerprint
-     where j.posting_id is null $$,
-  'the backfill left no job row unpointed at a posting it matches');
+-- them by fingerprint. #178 then closed the hole the backfill could not:
+-- posting_id is `not null`, so a row without an advertisement is no longer
+-- writable at all rather than merely absent in practice.
+select col_not_null('public', 'job_hunter_jobs', 'posting_id',
+  'a job row cannot exist without the posting it is a membership of');
 
 -- Seed users ----------------------------------------------------------------
 
@@ -94,7 +88,15 @@ select columns_are('public', 'job_hunter_postings', array[
   'ats_job_id',
   'first_seen_at',
   'last_seen_at',
-  'created_at'
+  'created_at',
+  -- The four stored generated columns identity resolution compares against,
+  -- moved here from job_hunter_jobs with the columns they are computed from
+  -- (#178). See job_hunter_lookup_indexes.sql for why they are columns
+  -- rather than expressions.
+  'normalized_identity',
+  'canonical_url_of_url',
+  'normalized_company',
+  'normalized_title'
 ], 'the posting carries what the advertisement says and how it was fetched');
 
 -- No user_id. Naming its absence separately from columns_are keeps the
@@ -155,8 +157,9 @@ select is(
 
 select isnt(
   (select j.posting_id from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
     where j.user_id = 'dddddddd-0000-0000-0000-00000000000a'
-      and j.fingerprint = 'fp-shared-posting'),
+      and p.fingerprint = 'fp-shared-posting'),
   null,
   'the upsert wrote the job row and the posting it points at in one call');
 
@@ -201,23 +204,17 @@ select is(
 
 select is(
   (select count(*)::int from public.job_hunter_jobs j
-    where j.fingerprint = 'fp-shared-posting'),
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.fingerprint = 'fp-shared-posting'),
   2,
-  'the per-user job rows themselves are untouched: one each, as before');
+  'each user holds one membership row of it, and that is all a second user costs');
 
 select is(
   (select count(distinct j.posting_id)::int from public.job_hunter_jobs j
-    where j.fingerprint = 'fp-shared-posting'),
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.fingerprint = 'fp-shared-posting'),
   1,
   'both users'' job rows point at that one row');
-
-select is(
-  (select count(*)::int from public.job_hunter_jobs j
-     join public.job_hunter_postings p on p.id = j.posting_id
-    where j.fingerprint = 'fp-shared-posting'
-      and p.fingerprint = 'fp-shared-posting'),
-  2,
-  'and it is the posting with their fingerprint');
 
 select is(
   (select p.description from public.job_hunter_postings p
@@ -322,8 +319,9 @@ select is(
 select is(
   (select p.id from public.job_hunter_postings p where p.fingerprint = 'fp-narrow'),
   (select j.posting_id from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
     where j.user_id = 'dddddddd-0000-0000-0000-00000000000b'
-      and j.fingerprint = 'fp-narrow'),
+      and p.fingerprint = 'fp-narrow'),
   'and points the job row it wrote at it');
 
 -- A merge keeps the pointer with the text. The fingerprint is
@@ -363,26 +361,41 @@ select lives_ok(
 
 select isnt(
   (select j.posting_id from public.job_hunter_jobs j
-    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-weak'),
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and p.fingerprint = 'fp-merge-weak'),
   (select j.posting_id from public.job_hunter_jobs j
-    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-strong'),
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and p.fingerprint = 'fp-merge-strong'),
   'two source-scoped fingerprints are two postings, before the merge');
 
 select lives_ok(
   $$ select public.job_hunter_merge_jobs(
        (select j.id from public.job_hunter_jobs j
-         where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-weak'),
+          join public.job_hunter_postings p on p.id = j.posting_id
+         where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and p.fingerprint = 'fp-merge-weak'),
        (select j.id from public.job_hunter_jobs j
-         where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-strong')) $$,
+          join public.job_hunter_postings p on p.id = j.posting_id
+         where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and p.fingerprint = 'fp-merge-strong')) $$,
   'merging the two job rows');
 
 select is(
   (select p.fingerprint from public.job_hunter_postings p
      join public.job_hunter_jobs j on j.posting_id = p.id
     where j.user_id = 'dddddddd-0000-0000-0000-00000000000a'
-      and j.description = 'the employer''s own copy'),
+      and p.description = 'the employer''s own copy'),
   'fp-merge-strong',
   'the survivor points at the posting whose description it kept');
+
+-- And A is left with one row, not two: merging the postings collapsed the
+-- membership rows behind them, which `unique (user_id, posting_id)` now
+-- requires (#178).
+select is(
+  (select count(*)::int from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a'
+      and p.fingerprint = 'fp-merge-strong'),
+  1,
+  'the merge left one membership row over the surviving posting');
 
 -- Readability. B never discovered this one.
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
@@ -406,7 +419,9 @@ select is(
   'any authenticated user can read any posting');
 
 select is_empty(
-  $$ select 1 from public.job_hunter_jobs j where j.fingerprint = 'fp-a-only' $$,
+  $$ select 1 from public.job_hunter_jobs j
+      join public.job_hunter_postings p on p.id = j.posting_id
+     where p.fingerprint = 'fp-a-only' $$,
   'the job row behind it stays private to A');
 
 select is_empty(

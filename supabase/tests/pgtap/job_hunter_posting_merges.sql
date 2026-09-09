@@ -162,11 +162,14 @@ select is(
   pg_temp.posting_id('fp-merge-ats'),
   'the posting carrying the ATS identity survives, whichever way round it is named');
 
+-- Two rows, not three: A held one of the two postings and B held both, and
+-- one row per user per posting is a constraint since #178, so B's pair was
+-- collapsed as part of the merge rather than left to violate it.
 select is(
   (select count(*)::int from public.job_hunter_jobs j
     where j.posting_id = pg_temp.posting_id('fp-merge-ats')),
-  3,
-  'every job row that pointed at either posting now points at the survivor');
+  2,
+  'every user who held either posting now holds exactly one row over the survivor');
 
 select is_empty(
   $$ select 1 from public.job_hunter_jobs j
@@ -178,16 +181,14 @@ select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select is(
   (select j.posting_id from public.job_hunter_jobs j
-    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'
-      and j.fingerprint = 'fp-merge-aggregator'),
+    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'),
   pg_temp.posting_id('fp-merge-ats'),
   'A''s job row follows the merge B''s run performed, without A merging anything');
 
 select is(
   (select p.description from public.job_hunter_postings p
      join public.job_hunter_jobs j on j.posting_id = p.id
-    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'
-      and j.fingerprint = 'fp-merge-aggregator'),
+    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'),
   'the full advertisement text straight from the employer ATS',
   'and A reads the surviving text, which A never fetched');
 
@@ -301,8 +302,7 @@ select is(
 
 select is(
   (select j.posting_id from public.job_hunter_jobs j
-    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'
-      and j.fingerprint = 'fp-merge-aggregator'),
+    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'),
   pg_temp.posting_id('fp-merge-ats'),
   'and A''s job row still points at the survivor');
 
@@ -354,11 +354,12 @@ select is(
   pg_temp.posting_id('fp-merge-ats'),
   'the redirect is flattened: it names the survivor, never a chain');
 
-select is(
-  (select j.posting_id from public.job_hunter_jobs j
-    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
-      and j.fingerprint = 'fp-merge-third'),
-  pg_temp.posting_id('fp-merge-ats'),
+-- B held the third posting as well, so B's rows are folded into the one row
+-- the constraint allows, over the surviving posting.
+select results_eq(
+  $$ select distinct j.posting_id from public.job_hunter_jobs j
+      where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b' $$,
+  format($$ values (%L::uuid) $$, pg_temp.posting_id('fp-merge-ats')),
   'and the third posting''s job row re-points too');
 
 select is_empty(
@@ -440,13 +441,15 @@ select lives_ok(
 
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000b');
 select lives_ok(
-  $$ select public.job_hunter_merge_jobs(
+  format($$ select public.job_hunter_merge_jobs(
        (select j.id from public.job_hunter_jobs j
          where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
-           and j.fingerprint = 'fp-merge-delegating-b'),
+           and j.posting_id = %L::uuid),
        (select j.id from public.job_hunter_jobs j
          where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
-           and j.fingerprint = 'fp-merge-delegating-a')) $$,
+           and j.posting_id = %L::uuid)) $$,
+       pg_temp.posting_id('fp-merge-delegating-b'),
+       pg_temp.posting_id('fp-merge-delegating-a')),
   'B merges its own two job rows');
 
 select pg_temp.become_postgres();
@@ -457,28 +460,36 @@ select is(
   'merging two job rows across postings merged the postings behind them');
 
 select is(
-  (select j.posting_id from public.job_hunter_jobs j
+  (select count(*)::int from public.job_hunter_jobs j
     where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000a'
-      and j.fingerprint = 'fp-merge-delegating-a'),
-  pg_temp.posting_id('fp-merge-delegating-b'),
+      and j.posting_id = pg_temp.posting_id('fp-merge-delegating-b')),
+  1,
   'so A''s row follows a merge B decided, which is what "no second authority" buys');
 
--- Neither of B's rows has any history, so the job-level survivor is the
--- older one -- the aggregator rendering. Which row survives is still a
--- per-user question and is unchanged by #176; what changed is that its
--- description no longer comes from a private comparison of the two rows but
--- from the posting the merge decided on.
+-- Which of B's two rows survived is a per-user question -- the older one,
+-- neither having any history -- but what it says about the advertisement is
+-- not a per-user question at all any more (#178): there is one row left, it
+-- points at the surviving posting, and the text is read from there.
 select is(
-  (select j.description from public.job_hunter_jobs j
+  (select count(*)::int from public.job_hunter_jobs j
     where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
-      and j.fingerprint = 'fp-merge-delegating-a'),
-  'the employer''s own rendering, fetched from the ATS',
-  'and the surviving job row carries the surviving posting''s description');
+      and j.posting_id = pg_temp.posting_id('fp-merge-delegating-b')),
+  1,
+  'B is left with exactly one membership row over the surviving posting');
 
 select is(
-  (select j.content_confidence from public.job_hunter_jobs j
+  (select p.description from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
     where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
-      and j.fingerprint = 'fp-merge-delegating-a'),
+      and j.posting_id = pg_temp.posting_id('fp-merge-delegating-b')),
+  'the employer''s own rendering, fetched from the ATS',
+  'and the surviving job row reads the surviving posting''s description');
+
+select is(
+  (select p.content_confidence from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
+      and j.posting_id = pg_temp.posting_id('fp-merge-delegating-b')),
   'official_ats',
   'with the tier that belongs to it');
 

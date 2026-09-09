@@ -1103,9 +1103,14 @@ def test_resolver_exception_preserves_candidate_and_continues_collection(store, 
     assert first.url == "https://first.test/jobs/1"
     assert {job.source for _job_id, job in result.eligible} == {"first", "second"}
     assert store.count_jobs() == 2
+    # The source and the link are the advertisement's, so they are read off
+    # the postings the caller holds membership rows for (#178).
     stored_urls = {
-        row["source"]: row["url"]
-        for row in store.client.select("job_hunter_jobs", params={"select": "source,url"})
+        row["posting"]["source"]: row["posting"]["url"]
+        for row in store.client.select(
+            "job_hunter_jobs",
+            params={"select": "posting:job_hunter_postings!inner(source,url)"},
+        )
     }
     assert stored_urls == {
         "first": "https://first.test/jobs/1",

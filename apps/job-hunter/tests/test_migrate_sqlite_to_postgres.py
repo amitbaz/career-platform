@@ -26,6 +26,26 @@ from job_hunter.supabase_client import SupabaseClient
 from scripts.migrate_sqlite_to_postgres import main as migration_main
 from scripts.migrate_sqlite_to_postgres import migrate
 
+def _memberships_for(client: SupabaseClient, fingerprint: str) -> list[dict[str, Any]]:
+    """The caller's job rows for the posting a legacy fingerprint became.
+
+    One legacy row migrates to two: the posting, which the fingerprint now
+    names, and this user's membership of it (#178). Tests that used to look a
+    job up by its fingerprint filter on the embedded posting instead.
+    """
+    return client.select(
+        "job_hunter_jobs",
+        params={
+            "posting.fingerprint": f"eq.{fingerprint}",
+            "select": "*,posting:job_hunter_postings!inner(fingerprint)",
+        },
+    )
+
+
+def _membership_for(client: SupabaseClient, fingerprint: str) -> dict[str, Any]:
+    return _memberships_for(client, fingerprint)[0]
+
+
 _SCHEMA = """
 CREATE TABLE jobs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -499,7 +519,7 @@ def test_navigation_cards_get_their_job_ids_remapped(tmp_path, supabase_client: 
     stored = supabase_client.select(
         "job_hunter_telegram_navigation_sessions", params={"session_id": "eq.s1"}
     )[0]
-    migrated_job = supabase_client.select("job_hunter_jobs", params={"fingerprint": "eq.fp-a"})[0]
+    migrated_job = _membership_for(supabase_client, "fp-a")
     assert stored["cards_json"][0]["job_id"] == migrated_job["id"]
     assert stored["cards_json"][0]["job_id"] != 41
 
@@ -534,7 +554,7 @@ def test_migration_is_rerunnable(tmp_path, supabase_client: SupabaseClient):
     first = migrate(sqlite_path, supabase_client)
     second = migrate(sqlite_path, supabase_client)
     assert first == second
-    assert len(supabase_client.select("job_hunter_jobs", params={"fingerprint": "eq.fp-x"})) == 1
+    assert len(_memberships_for(supabase_client, "fp-x")) == 1
 
 
 def test_migrate_returns_per_table_row_counts(tmp_path, supabase_client: SupabaseClient):
@@ -564,7 +584,7 @@ def test_evaluations_and_materials_and_deliveries_are_remapped_and_preserved(
 
     migrate(sqlite_path, supabase_client)
 
-    job = supabase_client.select("job_hunter_jobs", params={"fingerprint": "eq.fp-eval"})[0]
+    job = _membership_for(supabase_client, "fp-eval")
     evaluation = supabase_client.select(
         "job_hunter_evaluations", params={"job_id": f"eq.{job['id']}"}
     )[0]
@@ -683,7 +703,7 @@ def test_naive_legacy_timestamp_is_assumed_utc(tmp_path, supabase_client: Supaba
     with caplog.at_level(logging.INFO):
         migrate(sqlite_path, supabase_client)
 
-    job = supabase_client.select("job_hunter_jobs", params={"fingerprint": "eq.fp-naive"})[0]
+    job = _membership_for(supabase_client, "fp-naive")
     assert job["first_seen_at"].startswith("2026-08-01T12:00:00")
     assert any("assumed UTC" in message for message in caplog.messages)
 

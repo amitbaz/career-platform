@@ -45,12 +45,56 @@ def client(supabase_client: SupabaseClient) -> SupabaseClient:
 # on `supabase_client`). See that file for the table order and rationale.
 
 
+def _seed_jobs(
+    client: SupabaseClient,
+    *,
+    marker: str,
+    count: int = 1,
+    posting: dict | None = None,
+    first_seen_at: str = "2026-09-06T10:00:00+00:00",
+) -> list[dict]:
+    """Insert `count` postings and one membership row of the caller's per posting.
+
+    A job row is a membership of a posting since #178 and carries nothing
+    about the advertisement, so a test that wants a job row needs a posting
+    first, and a test that wants to find its own rows again marks them with
+    `market_id` -- the one free-text column the membership row still has.
+
+    One posting per row is not incidental: `unique (user_id, posting_id)`
+    means one user cannot hold two rows over one posting, which is the point
+    of the ticket.
+    """
+    postings = client.insert(
+        "job_hunter_postings",
+        [
+            {
+                "fingerprint": f"{marker}-{index}-{uuid.uuid4()}",
+                "url": f"https://example.test/{marker}/{index}",
+                "first_seen_at": first_seen_at,
+                "last_seen_at": "2026-09-06T10:00:00+00:00",
+                **(posting or {}),
+            }
+            for index in range(count)
+        ],
+    )
+    return client.insert(
+        "job_hunter_jobs",
+        [
+            {
+                "user_id": client.user_id,
+                "posting_id": row["id"],
+                "market_id": marker,
+                "first_seen_at": first_seen_at,
+                "last_seen_at": "2026-09-06T10:00:00+00:00",
+            }
+            for row in postings
+        ],
+    )
+
+
 def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None:
     user_id = client.user_id
-    job = client.insert(
-        "job_hunter_jobs",
-        [{"user_id": user_id, "fingerprint": f"fp-{uuid.uuid4()}", "source": "test", "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
-    )[0]
+    job = _seed_jobs(client, marker=f"upsert-{uuid.uuid4()}")[0]
     row = {
         "user_id": user_id,
         "job_id": job["id"],
@@ -69,10 +113,7 @@ def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None
 
 def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
     user_id = client.user_id
-    job = client.insert(
-        "job_hunter_jobs",
-        [{"user_id": user_id, "fingerprint": f"fp-{uuid.uuid4()}", "source": "test", "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
-    )[0]
+    job = _seed_jobs(client, marker=f"upsert-{uuid.uuid4()}")[0]
     base = {
         "user_id": user_id,
         "job_id": job["id"],
@@ -95,14 +136,10 @@ def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
 def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None:
     user_id = client.user_id
     marker = f"page-{uuid.uuid4()}"
-    rows = [
-        {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
-        for i in range(1100)
-    ]
-    for chunk in range(0, len(rows), 500):
-        client.insert("job_hunter_jobs", rows[chunk : chunk + 500])
+    for chunk in range(0, 1100, 500):
+        _seed_jobs(client, marker=marker, count=min(500, 1100 - chunk))
 
-    found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}"})
+    found = client.select("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
     assert len(found) == 1100, "select must page rather than silently truncate at 1000"
 
@@ -110,14 +147,10 @@ def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None
 def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient) -> None:
     user_id = client.user_id
     marker = f"stable-{uuid.uuid4()}"
-    rows = [
-        {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
-        for i in range(1100)
-    ]
-    for chunk in range(0, len(rows), 500):
-        client.insert("job_hunter_jobs", rows[chunk : chunk + 500])
+    for chunk in range(0, 1100, 500):
+        _seed_jobs(client, marker=marker, count=min(500, 1100 - chunk))
 
-    found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}"})
+    found = client.select("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
     ids = [row["id"] for row in found]
     assert ids == sorted(ids), "paging must return rows in ascending id order"
@@ -128,16 +161,12 @@ def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseC
     user_id = client.user_id
     marker = f"order-{uuid.uuid4()}"
     # Create rows with a shared sort key so id tiebreaker matters.
-    rows = [
-        {"user_id": user_id, "fingerprint": f"{marker}-{i}", "source": marker, "url": f"https://x/{i}", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}
-        for i in range(1100)
-    ]
-    for chunk in range(0, len(rows), 500):
-        client.insert("job_hunter_jobs", rows[chunk : chunk + 500])
+    for chunk in range(0, 1100, 500):
+        _seed_jobs(client, marker=marker, count=min(500, 1100 - chunk))
 
     # Read with a caller-supplied order (by id, ascending).
     # This verifies that the caller's order is passed through and tiebreaker applied.
-    found = client.select("job_hunter_jobs", params={"source": f"eq.{marker}", "order": "id.asc"})
+    found = client.select("job_hunter_jobs", params={"market_id": f"eq.{marker}", "order": "id.asc"})
 
     assert len(found) == 1100, "select must page all rows with caller order"
     ids = [row["id"] for row in found]
@@ -159,10 +188,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(
     marker = f"rls-test-{uuid.uuid4()}"
 
     # Create a high-scoring job for user A
-    job_a = client.insert(
-        "job_hunter_jobs",
-        [{"user_id": user_a_id, "fingerprint": f"fp-a-{uuid.uuid4()}", "source": marker, "url": "https://x", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
-    )[0]
+    job_a = _seed_jobs(client, marker=marker)[0]
     client.upsert(
         "job_hunter_evaluations",
         [{
@@ -177,10 +203,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(
 
     # Create a high-scoring job for user B using user B's client
     client_b = other_supabase_client
-    job_b = client_b.insert(
-        "job_hunter_jobs",
-        [{"user_id": user_b_id, "fingerprint": f"fp-b-{uuid.uuid4()}", "source": marker, "url": "https://y", "first_seen_at": "2026-09-06T10:00:00+00:00", "last_seen_at": "2026-09-06T10:00:00+00:00"}],
-    )[0]
+    job_b = _seed_jobs(client_b, marker=marker)[0]
     client_b.upsert(
         "job_hunter_evaluations",
         [{
@@ -204,8 +227,8 @@ def test_rpc_calls_a_store_function_and_respects_rls(
     # Clean up: delete evaluations first (they reference jobs), then jobs
     client.delete("job_hunter_evaluations", params={"job_id": f"eq.{job_a['id']}"})
     client_b.delete("job_hunter_evaluations", params={"job_id": f"eq.{job_b['id']}"})
-    client.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
-    client_b.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
+    client.delete("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
+    client_b.delete("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
 
 def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
@@ -257,19 +280,16 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
     marker = f"setof-test-{uuid.uuid4()}"
 
     # Create a job with distinct company and title so we can find it by identity
-    job = client.insert(
-        "job_hunter_jobs",
-        [{
-            "user_id": user_id,
-            "fingerprint": f"fp-identity-{uuid.uuid4()}",
-            "source": marker,
-            "url": "https://example.com",
+    # The identity is the advertisement's, so it goes on the posting (#178);
+    # the function answers with the caller's membership row for it.
+    job = _seed_jobs(
+        client,
+        marker=marker,
+        posting={
             "company": "Acme Corp",
             "title": "Senior Engineer",
             "location": "San Francisco",
-            "first_seen_at": "2026-09-06T10:00:00+00:00",
-            "last_seen_at": "2026-09-06T10:00:00+00:00"
-        }],
+        },
     )[0]
 
     # Call the setof uuid function and verify we get a list of strings
@@ -285,7 +305,7 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
     assert str(job["id"]) in result, "Created job should be in the identity search results"
 
     # Clean up: delete job seeded by this test
-    client.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
+    client.delete("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
 
 def test_rpc_returns_bare_scalar_values(client: SupabaseClient) -> None:
@@ -300,35 +320,15 @@ def test_rpc_returns_bare_scalar_values(client: SupabaseClient) -> None:
     # Create two jobs with the same logical identity (company/title/location)
     # so they will merge. Use distinct URLs to avoid duplicate canonical_url conflicts.
     # Give job1 an earlier first_seen_at so it's guaranteed to be the survivor.
-    job1 = client.insert(
-        "job_hunter_jobs",
-        [{
-            "user_id": user_id,
-            "fingerprint": f"fp-merge-1-{uuid.uuid4()}",
-            "source": marker,
-            "url": f"https://example.com/job1-{uuid.uuid4()}",
-            "company": "Merge Test Corp",
-            "title": "Backend Engineer",
-            "location": "New York",
-            "first_seen_at": "2026-09-01T10:00:00+00:00",
-            "last_seen_at": "2026-09-06T10:00:00+00:00"
-        }],
+    identity = {
+        "company": "Merge Test Corp",
+        "title": "Backend Engineer",
+        "location": "New York",
+    }
+    job1 = _seed_jobs(
+        client, marker=marker, posting=identity, first_seen_at="2026-09-01T10:00:00+00:00"
     )[0]
-
-    job2 = client.insert(
-        "job_hunter_jobs",
-        [{
-            "user_id": user_id,
-            "fingerprint": f"fp-merge-2-{uuid.uuid4()}",
-            "source": marker,
-            "url": f"https://example.com/job2-{uuid.uuid4()}",
-            "company": "Merge Test Corp",
-            "title": "Backend Engineer",
-            "location": "New York",
-            "first_seen_at": "2026-09-06T10:00:00+00:00",
-            "last_seen_at": "2026-09-06T10:00:00+00:00"
-        }],
-    )[0]
+    job2 = _seed_jobs(client, marker=marker, posting=identity)[0]
 
     # Call merge_jobs through rpc with retry=False (required for non-idempotent operations)
     result = client.rpc("job_hunter_merge_jobs", {
@@ -343,4 +343,4 @@ def test_rpc_returns_bare_scalar_values(client: SupabaseClient) -> None:
     assert survivor_id == str(job1["id"]), f"Survivor should be job1 (id={job1['id']}), but got {survivor_id}"
 
     # Clean up: delete the remaining job (job2 was deleted by the merge)
-    client.delete("job_hunter_jobs", params={"source": f"eq.{marker}"})
+    client.delete("job_hunter_jobs", params={"market_id": f"eq.{marker}"})

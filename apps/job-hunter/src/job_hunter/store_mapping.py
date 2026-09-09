@@ -90,25 +90,25 @@ def _to_optional_bool(value: Any) -> bool | None:
 def posting_facts(row: dict[str, Any]) -> dict[str, Any]:
     """Return whichever half of ``row`` states the advertisement's own facts.
 
-    A row selected with ``posting:job_hunter_postings(...)`` embedded says
-    every posting-level fact twice: once in the columns ``job_hunter_jobs``
-    still duplicates and once under ``posting``. The posting is the record
-    of the advertisement (issue #177), so it answers all of them.
+    A row selected with ``posting:job_hunter_postings(...)`` embedded carries
+    the advertisement's facts under ``posting`` and the caller's own facts --
+    ``market_id``, ``status``, the two timestamps -- at the top level. The
+    posting is the record of the advertisement (issues #177, #178), so it
+    answers every question about what the advertisement says.
 
     Every key the posting carries wins, including an empty or false one:
     ``company = ''`` and ``remote = false`` are answers, not absences, and a
-    per-field truthiness fallback would let a stale duplicate override them.
+    per-field truthiness fallback would let a missing embed override them.
     A key the posting was not asked for falls through to the row, so a
     column added to the select on one side only reads as itself rather than
     silently as ``""`` -- but a posting-level column belongs in
     ``_POSTING_FACT_EMBED``'s list, which is what makes the posting answer it.
 
-    ``posting_id`` is nullable, so a job row can still arrive without a
-    posting: a direct insert (pgTAP fixtures,
-    ``scripts/migrate_sqlite_to_postgres.py``) bypasses the RPC that writes
-    one. Such a row falls back to its own columns, which still carry the
-    same values, so this ticket is reversible on its own and CI is green
-    whichever order the migrate batches land in.
+    A row whose ``posting`` key was not selected -- or a mapping built by a
+    caller that never asked for the embed -- falls through unchanged. Since
+    #178 there is no duplicate copy behind it: ``job_hunter_jobs.posting_id``
+    is ``not null``, and a select that omits the embed simply does not
+    describe the advertisement at all.
     """
     posting = row.get("posting")
     return {**row, **posting} if isinstance(posting, dict) else row
@@ -122,29 +122,18 @@ def job_from_row(row: dict[str, Any]) -> Job:
     job row alone knows comes from the job row. The `Job` is identical in
     content to the one the same select produced before the posting existed.
 
-    Two fields come from the job row, for the same reason:
+    ``market_id`` is the one field that comes from the job row, because it is
+    the one field that is about this user rather than about the
+    advertisement: which of *their* markets the posting was attributed to.
 
-    - ``market_id`` is which markets *this user* matched the posting to.
-    - ``url`` is the usable URL for the *merged* row. A job row can stand
-      for several postings -- the fingerprint is source-scoped, so the same
-      advertisement on an aggregator and on the employer's ATS is two
-      postings (20260909100000), and `job_hunter_merge_jobs` collapses
-      their job rows into one whose ``url`` is the resolved canonical URL.
-      ``posting_id`` then names only one of those postings, and its ``url``
-      is whatever *that* source was seen under -- the aggregator link, not
-      the employer's. Reading it here would put the worse link in the
-      digest. ``description`` has no such problem: the merge keeps the
-      posting whose description it kept, so the pointer already names the
-      row the surviving text came from.
-
-      This is the one posting-level fact #177 leaves on the job row. #176
-      has since made merging a posting-level decision -- merging two job
-      rows across postings merges the postings behind them, and the
-      redirect is recorded once for everyone -- so the evidence a job row
-      accumulates now has somewhere else it could live. Whether `url`
-      should move there is #178's question, not an oversight here: a job
-      row still absorbs several postings, and until it stops doing so its
-      `url` is the only one resolved across all of them.
+    ``url`` used to come from the job row too. #177 kept it there because a
+    merged job row was the only row that had seen every posting behind it, so
+    its ``url`` was the only link resolved across all of them, and reading a
+    single posting's ``url`` could have put an aggregator link in the digest
+    where the employer's was known. #176 moved merging onto the posting and
+    #178 took the column off the job row: the surviving posting now carries
+    the resolved link, so reading it here is the same answer, arrived at
+    once for everyone instead of once per user.
 
     ``original_url``, ``market_hint``, ``source_page_html``, and
     ``availability`` are not persisted columns -- they stay at the `Job`
@@ -156,7 +145,7 @@ def job_from_row(row: dict[str, Any]) -> Job:
         title=facts.get("title") or "",
         company=facts.get("company") or "",
         location=facts.get("location") or "",
-        url=row.get("url") or "",
+        url=facts.get("url") or "",
         description=facts.get("description") or "",
         source_job_id=facts.get("source_job_id"),
         remote=_to_optional_bool(facts.get("remote")),

@@ -81,18 +81,16 @@ select is(
   false,
   'needs_evaluation: an evaluation current against the posting is current');
 
--- The job row's duplicate now disagrees with the posting. It is not what
--- the pipeline evaluates, so it must not decide re-evaluation.
-update public.job_hunter_jobs
-   set description_hash = 'stale-hash', content_confidence = 'stale-confidence'
- where id = (select id from subject);
+-- There is no duplicate left to disagree with the posting: #178 took the job
+-- row's copy of the description state away entirely, so the posting is not
+-- merely preferred here, it is the only answer.
+select is_empty(
+  $$ select column_name from information_schema.columns
+      where table_schema = 'public' and table_name = 'job_hunter_jobs'
+        and column_name in ('description_hash', 'content_confidence') $$,
+  'needs_evaluation: the job row has no description state of its own to go stale');
 
-select is(
-  (select needs from public.job_hunter_needs_evaluation(array[(select id from subject)])),
-  false,
-  'needs_evaluation: a stale hash on the job row does not trigger re-evaluation');
-
--- Moving the posting's own hash does.
+-- Moving the posting's own hash triggers re-evaluation.
 update public.job_hunter_postings set description_hash = 'moved-on'
  where id = (select id from subject_posting);
 
@@ -120,28 +118,17 @@ update public.job_hunter_postings set content_confidence = (
    where job_id = (select id from subject))
  where id = (select id from subject_posting);
 
--- A job row that never went through the RPC has no posting, and still
--- answers from its own columns -- posting_id is nullable until the last
--- ticket of #118 tightens it.
-insert into public.job_hunter_jobs
-  (id, user_id, fingerprint, source, url, description, description_hash,
-   content_confidence, first_seen_at, last_seen_at)
-values ('50000000-0000-0000-0000-000000000001', 'eeeeeeee-0000-0000-0000-00000000000a',
-        'fp-177-unpointed', 'test', 'https://unpointed177.example/1',
-        'unpointed', 'h-unpointed', 'official_ats',
-        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
-
-insert into public.job_hunter_evaluations
-  (user_id, job_id, total_score, decision, evaluated_at,
-   description_hash_at_eval, content_confidence_at_eval)
-values ('eeeeeeee-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001',
-        90, 'high_priority', '2026-02-01T00:00:00Z', 'h-unpointed', 'official_ats');
-
-select is(
-  (select needs from public.job_hunter_needs_evaluation(
-     array['50000000-0000-0000-0000-000000000001'::uuid])),
-  false,
-  'needs_evaluation: a job row without a posting still answers from its own columns');
+-- A job row without a posting used to be writable, and needs_evaluation fell
+-- back to its own columns for one. #178 removed both halves of that: the
+-- column is `not null`, so the row is refused at the door rather than
+-- answering from a copy that no longer exists.
+select throws_ok(
+  $$ insert into public.job_hunter_jobs (id, user_id, first_seen_at, last_seen_at)
+     values ('50000000-0000-0000-0000-000000000001',
+             'eeeeeeee-0000-0000-0000-00000000000a',
+             '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z') $$,
+  '23502', null,
+  'a job row without a posting cannot be written at all');
 
 -- Inbound candidates -------------------------------------------------------------
 
@@ -165,14 +152,13 @@ values
    'm177-identity', 'cand-177-identity', 'lever',
    '', 'acme  177 GmbH', 'Senior  Backend Engineer', 'BERLIN', now());
 
--- The job row's own description_hash and content_confidence are still the
--- junk the re-evaluation section wrote, and the posting's are current. Both
--- candidates are excluded, so the completeness check read the posting.
+-- The posting's description state is current and its evaluation is complete,
+-- so both candidates are excluded: the completeness check read the posting.
 select is_empty(
   $$ select c->>'id' from public.job_hunter_eligible_inbound_jobs() c
       where c->>'id' in ('60000000-0000-0000-0000-000000000001',
                          '60000000-0000-0000-0000-000000000002') $$,
-  'eligible_inbound_jobs: a stale hash on the job row does not make a candidate eligible');
+  'eligible_inbound_jobs: a candidate whose posting has a current evaluation is not eligible');
 
 -- Moving the posting's description does: the advertisement changed, so the
 -- evaluation is no longer current and the candidate needs materializing again.
@@ -188,11 +174,12 @@ select results_eq(
             ('60000000-0000-0000-0000-000000000002'::text) $$,
   'eligible_inbound_jobs: a changed posting description makes both matches eligible again');
 
--- Matching is still the job row's. A merged row's url and identity cover
--- every posting merged into it, while posting_id names one of them, so
--- moving these predicates onto the posting would lose matches the row still
--- makes. Put the posting's description back, then junk the *posting's* url
--- and identity: both candidates must go back to being excluded.
+-- Matching is the posting's too since #178: the job row has no url or
+-- identity of its own left to match on, and the postings are merged (#176),
+-- so the survivor carries the resolved link and the folded identity that a
+-- merged job row used to be the only holder of. Put the posting's description
+-- back, then junk the posting's url and identity: both candidates stop
+-- matching anything the user holds and become eligible again.
 update public.job_hunter_postings set
   description_hash = (select description_hash_at_eval from public.job_hunter_evaluations
                        where job_id = (select id from subject)),
@@ -203,11 +190,14 @@ update public.job_hunter_postings set
   location = 'Some Other City'
  where id = (select id from subject_posting);
 
-select is_empty(
+select results_eq(
   $$ select c->>'id' from public.job_hunter_eligible_inbound_jobs() c
       where c->>'id' in ('60000000-0000-0000-0000-000000000001',
-                         '60000000-0000-0000-0000-000000000002') $$,
-  'eligible_inbound_jobs: the candidate still matches on the job row''s url and identity');
+                         '60000000-0000-0000-0000-000000000002')
+      order by 1 $$,
+  $$ values ('60000000-0000-0000-0000-000000000001'::text),
+            ('60000000-0000-0000-0000-000000000002'::text) $$,
+  'eligible_inbound_jobs: a candidate matches on the posting''s url and identity, so junking them makes it eligible');
 
 select * from finish();
 rollback;
