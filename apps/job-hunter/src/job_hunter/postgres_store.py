@@ -46,6 +46,7 @@ from job_hunter.store_mapping import (
     job_from_row,
     material_from_row,
     navigation_session_from_row,
+    posting_facts,
     to_iso,
     touch,
 )
@@ -65,6 +66,44 @@ _FOREIGN_KEY_VIOLATION = "23503"
 # -- see the two methods' docstrings) fallback.
 _LATEST_EVALUATION_ORDER = "evaluated_at.desc,created_at.desc,id.desc"
 _LATEST_MATERIAL_ORDER = "generated_at.desc,created_at.desc,id.desc"
+
+# What the advertisement itself says, and where it is read from (issue #177).
+#
+# `job_hunter_jobs` still duplicates every one of these columns and still
+# carries the same values, so both halves of the select below agree today.
+# They are selected together anyway: `posting_facts` prefers the embedded
+# posting and falls back to the job row's copy, which is what keeps a row
+# written by something other than `job_hunter_upsert_job` -- a pgTAP
+# fixture, `scripts/migrate_sqlite_to_postgres.py` -- readable while
+# `posting_id` is still nullable.
+#
+# The embed is a PostgREST resource embedding over the `posting_id` foreign
+# key, so it costs no extra round trip: the posting arrives inside the row
+# it belongs to. It is `to-one`, so PostgREST returns an object (or null),
+# not a list.
+#
+# The column list is deliberately the one `get_job` already selected --
+# `canonical_url` and the `ats_*` triple are not in it, so the `Job` this
+# builds is identical in content to the one the same call produced before,
+# rather than quietly gaining fields the pipeline never saw.
+#
+# `url` is not in it either, and that one is a decision rather than an
+# omission: it stays the merged job row's, because a job row can stand for
+# several postings and `posting_id` names only one of them. `job_from_row`
+# carries the reasoning.
+_ADVERTISEMENT_COLUMNS = (
+    "source,title,company,location,description,source_job_id,remote,content_confidence"
+)
+_MEMBERSHIP_COLUMNS = "market_id,url"
+_POSTING_FACT_EMBED = f"posting:job_hunter_postings({_ADVERTISEMENT_COLUMNS})"
+
+# The pair that decides whether work done against a description is still
+# current: `needs_evaluation` compares both against what the evaluation
+# recorded. They describe the advertisement, so they are read from the
+# posting -- the same text the pipeline is handed by `get_job`, which is
+# what makes "the evaluation is current" mean the same thing on both sides.
+_DESCRIPTION_STATE_COLUMNS = "description_hash,content_confidence"
+_DESCRIPTION_STATE_EMBED = f"posting:job_hunter_postings({_DESCRIPTION_STATE_COLUMNS})"
 
 # Every id list that travels in a query-string filter (`id=in.(...)`,
 # `message_id=in.(...)`) is chunked at this many ids per request. A message
@@ -788,8 +827,7 @@ class PostgresJobStore:
             params={
                 "id": f"eq.{job_id}",
                 "select": (
-                    "source,title,company,location,url,description,"
-                    "source_job_id,remote,market_id,content_confidence"
+                    f"{_MEMBERSHIP_COLUMNS},{_ADVERTISEMENT_COLUMNS},{_POSTING_FACT_EMBED}"
                 ),
             },
         )
@@ -859,6 +897,23 @@ class PostgresJobStore:
     # Evaluations
     # ------------------------------------------------------------------
 
+    def _posting_facts_of(self, job_id: str) -> dict[str, Any]:
+        """Read one job's description state from the posting, in one request.
+
+        Falls back to the job row's own duplicated columns when the row has
+        no posting -- see `_POSTING_FACT_EMBED`. Returns an empty mapping
+        for an id the caller cannot read, so every comparison against it
+        answers the same way it did when the read returned no row.
+        """
+        rows = self._client.select(
+            "job_hunter_jobs",
+            params={
+                "id": f"eq.{job_id}",
+                "select": f"{_DESCRIPTION_STATE_COLUMNS},{_DESCRIPTION_STATE_EMBED}",
+            },
+        )
+        return posting_facts(rows[0]) if rows else {}
+
     def needs_evaluation(self, job_id: str) -> bool:
         """Translates store.py:1999-2034.
 
@@ -885,14 +940,10 @@ class PostgresJobStore:
         if evaluation["status"] == "failed":
             return True
 
-        jobs = self._client.select(
-            "job_hunter_jobs",
-            params={"id": f"eq.{job_id}", "select": "description_hash,content_confidence"},
-        )
-        job_row = jobs[0] if jobs else {}
-        if evaluation["description_hash_at_eval"] != (job_row.get("description_hash") or ""):
+        facts = self._posting_facts_of(job_id)
+        if evaluation["description_hash_at_eval"] != (facts.get("description_hash") or ""):
             return True
-        if evaluation["content_confidence_at_eval"] != (job_row.get("content_confidence") or ""):
+        if evaluation["content_confidence_at_eval"] != (facts.get("content_confidence") or ""):
             return True
         return False
 
@@ -937,14 +988,10 @@ class PostgresJobStore:
         )
 
     def _write_evaluation(self, job_id: str, evaluation: Evaluation) -> None:
-        jobs = self._client.select(
-            "job_hunter_jobs",
-            params={"id": f"eq.{job_id}", "select": "description_hash,content_confidence"},
-        )
-        job_row = jobs[0] if jobs else {}
-        description_hash = job_row.get("description_hash") or ""
+        facts = self._posting_facts_of(job_id)
+        description_hash = facts.get("description_hash") or ""
         content_confidence_value = (
-            evaluation.content_confidence or job_row.get("content_confidence") or ""
+            evaluation.content_confidence or facts.get("content_confidence") or ""
         )
         self._client.upsert(
             "job_hunter_evaluations",

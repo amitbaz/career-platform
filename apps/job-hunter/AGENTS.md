@@ -52,13 +52,26 @@ Migration rules:
    own ledger and no user reaches them at all.) It adds
    `job_hunter_upsert_posting`, and re-creates both `job_hunter_upsert_job`, to write the
    posting and the job row in one call, and `job_hunter_merge_jobs`, so a merged job keeps
-   the posting whose description it kept. Nothing reads a posting yet (#174).
+   the posting whose description it kept (#174).
    `20260909130000_job_hunter_posting_batches.sql` adds `job_hunter_posting_staging` and
    `job_hunter_merge_posting_batch`, which persists a whole crawl batch of postings with one
    set-based statement instead of one upsert per listing, plus
    `job_hunter_preferred_description`, which states the "better description wins" ladder once;
    it re-creates `job_hunter_upsert_job` again so a payload that already names its posting
-   keeps it (#182).) Job Hunter's runtime reads and writes these tables through
+   keeps it (#182).
+   `20260909150000_job_hunter_read_posting_facts.sql` moves the readers onto the posting
+   (#177): `job_hunter_needs_evaluation` and `job_hunter_eligible_inbound_jobs` both decide
+   whether the work already done on a job is still current from the posting's description
+   hash and content confidence, and `job_hunter_upsert_job` is re-created once more so a job
+   row always points at the posting its description came from — without that, an update that
+   keeps a better description from a second fingerprint leaves the row pointing at the weaker
+   posting everything now reads it from. `job_hunter_jobs` keeps its duplicated columns and
+   keeps the same values in them, so each ticket in the sequence is reversible on its own.
+   What did **not** move is matching — `url` on the hydrated `Job`, and the URL and
+   identity predicates of `job_hunter_eligible_inbound_jobs`. Those ask which of a user's
+   rows covers an advertisement, and a job row accumulates evidence from every posting
+   merged into it while `posting_id` names one of them, so the job row is the better
+   answer. Match on the job row; decide currency from the posting.) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
 
@@ -152,6 +165,17 @@ Pytest is the test runner. Run the full suite with `pytest -q`, a single file wi
 Follow **red -> green -> refactor**: write a failing test, make it pass minimally, then improve both implementation and test. New behavior and bug fixes should be test-driven whenever practical. Preserve existing behavior with regression tests before changing code that is not already covered.
 
 Before considering a change complete, run the relevant focused tests while iterating and then run the full `pytest -q` suite.
+
+**Give a store-backed test a fingerprint nobody else uses.** `conftest.py` clears every
+`job_hunter_*` table between tests except `job_hunter_postings`, which it cannot: a posting has
+no owner and there is deliberately no delete policy on it (#174). A posting therefore outlives
+the test that created it, and its identity columns and description are only *improved* by a
+later upsert, never overwritten. Two tests sharing a fingerprint — the same `source_job_id`, or
+the same company/title/location when neither passes a `url` — resolve to one posting, and since
+#177 the readers take their facts from it, so the second test reads the first one's data. The
+same happens across runs and across two suites running at once under different seed users.
+Build the fingerprint from a `uuid.uuid4()` unless the test is specifically about two payloads
+resolving to the same posting.
 
 ## Source Code Documentation
 

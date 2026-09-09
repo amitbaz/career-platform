@@ -2,15 +2,25 @@
 
 These run against the local Supabase stack through the `store` fixture, so
 they exercise the real functions, real RLS, and a real token.
+
+Every fingerprint below is made unique per run. A posting is global, has no
+owner and cannot be deleted by anyone (20260909100000), so a fixed
+fingerprint would resolve to the row an earlier run -- or a suite running
+right now under a different seed user -- left behind, and the readers that
+take their facts from the posting (#177) would answer from someone else's
+description.
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 import pytest
 
 from job_hunter.models import Evaluation, Job
+
+_RUN = uuid.uuid4().hex
 
 
 def _make_job(
@@ -18,7 +28,7 @@ def _make_job(
 ) -> Job:
     return Job(
         source="test",
-        source_job_id=fingerprint,
+        source_job_id=f"{fingerprint}-{_RUN}",
         url=url,
         company="Acme",
         title=title,
@@ -133,7 +143,9 @@ def test_upsert_logical_jobs_skips_a_job_that_fails_on_replay(store, monkeypatch
         return original_rpc(function, payload, **kwargs)
 
     def failing_for_bad(job, **kwargs):
-        if job.source_job_id == "skip-bad":
+        # `_make_job` makes the fingerprint unique per run, so this matches
+        # the prefix rather than the whole value.
+        if job.source_job_id.startswith("skip-bad"):
             raise RuntimeError("this one job is malformed")
         return original_single(job)
 
@@ -313,21 +325,29 @@ def test_needs_evaluation_bulk_agrees_when_the_description_changed_since_evaluat
     store.save_evaluation(job_id, _make_evaluation(job_id))
 
     # Same fingerprint (source_job_id), different title -> different
-    # description text -> a new description_hash, deterministically
-    # overwritten because upsert_job matches by fingerprint alone.
-    store.upsert_job(_make_job("diff-desc", "Engineer V2", "https://example.test/dd"))
+    # description text -> a new description_hash on the posting, which is
+    # what decides re-evaluation (#177). The second title is longer on
+    # purpose: the posting keeps the better description, so an equally
+    # trustworthy but shorter re-fetch would leave it -- and the evaluation
+    # that was made against it -- unchanged.
+    store.upsert_job(
+        _make_job("diff-desc", "Engineer V2 with more detail", "https://example.test/dd")
+    )
 
     assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is True
 
 
 def test_needs_evaluation_bulk_agrees_when_content_confidence_changed_since_evaluation(store):
     job_id, _, _ = store.upsert_job(
-        _make_job("diff-conf", "Engineer", "https://example.test/dcf", content_confidence="official_ats")
+        _make_job("diff-conf", "Engineer", "https://example.test/dcf", content_confidence="partial_unknown")
     )
     store.save_evaluation(job_id, _make_evaluation(job_id))
 
+    # An upgrade, not a downgrade. The posting keeps the more trustworthy
+    # tier, so a weaker re-fetch leaves nothing for the evaluation to be
+    # stale against (#177).
     store.upsert_job(
-        _make_job("diff-conf", "Engineer", "https://example.test/dcf", content_confidence="partial_unknown")
+        _make_job("diff-conf", "Engineer", "https://example.test/dcf", content_confidence="official_ats")
     )
 
     assert store.needs_evaluation_bulk([job_id])[job_id] is store.needs_evaluation(job_id) is True
@@ -348,7 +368,9 @@ def test_needs_evaluation_bulk_agrees_on_which_evaluation_is_latest(store):
 
     # The job changes after eval_old, so eval_old is now stale relative to
     # the job's current state.
-    store.upsert_job(_make_job("diff-order", "Engineer V2", "https://example.test/do"))
+    store.upsert_job(
+        _make_job("diff-order", "Engineer V2 with more detail", "https://example.test/do")
+    )
 
     # eval_new: saved after the change, so it matches the job's *current*
     # state. If the SQL picked the oldest evaluation instead of the
@@ -365,7 +387,9 @@ def test_needs_evaluation_bulk_maps_each_id_to_its_own_verdict(store):
 
     stale_id, _, _ = store.upsert_job(_make_job("diff-mix-stale", "Engineer V1", "https://example.test/dms"))
     store.save_evaluation(stale_id, _make_evaluation(stale_id))
-    store.upsert_job(_make_job("diff-mix-stale", "Engineer V2", "https://example.test/dms"))
+    store.upsert_job(
+        _make_job("diff-mix-stale", "Engineer V2 with more detail", "https://example.test/dms")
+    )
 
     failed_id, _, _ = store.upsert_job(_make_job("diff-mix-failed", "Engineer", "https://example.test/dmf"))
     store.save_evaluation(failed_id, _make_evaluation(failed_id, status="failed"))

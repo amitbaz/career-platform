@@ -54,6 +54,15 @@ ones on the job; the facets moved there in #175, and the rest of #118 moves what
 Both words were used interchangeably before #118 — they are two rows now, and the shared
 rows are the posting and its facets.
 
+What the advertisement says is read from the posting (#177): the `Job` the pipeline is
+handed is composed from the posting plus the user's membership row, and whether the work
+already done on a job is still current — its evaluation, its facets — is decided from the
+posting's description hash. The job row still carries the same values in its own columns,
+and it stays the thing matched *against*: its `url` is the one resolved across every
+posting it stands for and its identity columns are backfilled from each, so a lookup
+asking "does this user already hold this advertisement" gets a better answer from the job
+row than from any single posting.
+
 **Source** — one origin of postings. A feed, a public ATS board, a targeted search
 backend, a watched company, or staged email.
 

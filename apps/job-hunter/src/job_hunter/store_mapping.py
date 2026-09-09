@@ -86,28 +86,84 @@ def _to_optional_bool(value: Any) -> bool | None:
     return bool(value)
 
 
+def posting_facts(row: dict[str, Any]) -> dict[str, Any]:
+    """Return whichever half of ``row`` states the advertisement's own facts.
+
+    A row selected with ``posting:job_hunter_postings(...)`` embedded says
+    every posting-level fact twice: once in the columns ``job_hunter_jobs``
+    still duplicates and once under ``posting``. The posting is the record
+    of the advertisement (issue #177), so it answers all of them.
+
+    Every key the posting carries wins, including an empty or false one:
+    ``company = ''`` and ``remote = false`` are answers, not absences, and a
+    per-field truthiness fallback would let a stale duplicate override them.
+    A key the posting was not asked for falls through to the row, so a
+    column added to the select on one side only reads as itself rather than
+    silently as ``""`` -- but a posting-level column belongs in
+    ``_POSTING_FACT_EMBED``'s list, which is what makes the posting answer it.
+
+    ``posting_id`` is nullable, so a job row can still arrive without a
+    posting: a direct insert (pgTAP fixtures,
+    ``scripts/migrate_sqlite_to_postgres.py``) bypasses the RPC that writes
+    one. Such a row falls back to its own columns, which still carry the
+    same values, so this ticket is reversible on its own and CI is green
+    whichever order the migrate batches land in.
+    """
+    posting = row.get("posting")
+    return {**row, **posting} if isinstance(posting, dict) else row
+
+
 def job_from_row(row: dict[str, Any]) -> Job:
     """Map a ``job_hunter_jobs`` PostgREST row to a `Job`.
+
+    Composed from the posting plus the caller's membership row: everything
+    the advertisement itself says comes from `posting_facts`, and what the
+    job row alone knows comes from the job row. The `Job` is identical in
+    content to the one the same select produced before the posting existed.
+
+    Two fields come from the job row, for the same reason:
+
+    - ``market_id`` is which markets *this user* matched the posting to.
+    - ``url`` is the usable URL for the *merged* row. A job row can stand
+      for several postings -- the fingerprint is source-scoped, so the same
+      advertisement on an aggregator and on the employer's ATS is two
+      postings (20260909100000), and `job_hunter_merge_jobs` collapses
+      their job rows into one whose ``url`` is the resolved canonical URL.
+      ``posting_id`` then names only one of those postings, and its ``url``
+      is whatever *that* source was seen under -- the aggregator link, not
+      the employer's. Reading it here would put the worse link in the
+      digest. ``description`` has no such problem: the merge keeps the
+      posting whose description it kept, so the pointer already names the
+      row the surviving text came from.
+
+      This is the one posting-level fact #177 leaves on the job row, and it
+      holds only because merging across fingerprints is still per-user:
+      `job_hunter_merge_jobs` collapses two of *one user's* job rows, and
+      nothing yet merges the postings behind them, so the job row is the
+      only row that has seen all of them. #176 moves identity resolution
+      and merging to the posting level; when a posting is one advertisement
+      across sources, this is worth revisiting and `url` can move with it.
 
     ``original_url``, ``market_hint``, ``source_page_html``, and
     ``availability`` are not persisted columns -- they stay at the `Job`
     dataclass defaults.
     """
+    facts = posting_facts(row)
     return Job(
-        source=row.get("source") or "",
-        title=row.get("title") or "",
-        company=row.get("company") or "",
-        location=row.get("location") or "",
+        source=facts.get("source") or "",
+        title=facts.get("title") or "",
+        company=facts.get("company") or "",
+        location=facts.get("location") or "",
         url=row.get("url") or "",
-        description=row.get("description") or "",
-        source_job_id=row.get("source_job_id"),
-        remote=_to_optional_bool(row.get("remote")),
-        canonical_url=row.get("canonical_url") or "",
-        ats_provider=row.get("ats_provider"),
-        ats_board=row.get("ats_board"),
-        ats_job_id=row.get("ats_job_id"),
+        description=facts.get("description") or "",
+        source_job_id=facts.get("source_job_id"),
+        remote=_to_optional_bool(facts.get("remote")),
+        canonical_url=facts.get("canonical_url") or "",
+        ats_provider=facts.get("ats_provider"),
+        ats_board=facts.get("ats_board"),
+        ats_job_id=facts.get("ats_job_id"),
         market_id=row.get("market_id") or None,
-        content_confidence=row.get("content_confidence") or "",
+        content_confidence=facts.get("content_confidence") or "",
     )
 
 
