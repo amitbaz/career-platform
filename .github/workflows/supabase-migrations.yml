@@ -45,11 +45,13 @@ jobs:
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: supabase db push --dry-run
 
+      # --yes is required: db push prompts for confirmation, and without it the
+      # step hangs until the job times out rather than failing.
       - name: Apply
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: supabase db push
+        run: supabase db push --yes
 
       - name: Report what is applied
         env:
