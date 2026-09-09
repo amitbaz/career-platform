@@ -411,8 +411,16 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 
 -- The inventory, so a definer function added later and granted to
 -- `authenticated` is a decision somebody made rather than an accident nobody
--- saw. job_hunter_get_provider_credentials is the one that remains: it reads
--- the caller's own provider credentials and writes nothing shared.
+-- saw. Two remain, and neither can write anything:
+--
+--   * job_hunter_get_provider_credentials reads the caller's own provider
+--     credentials.
+--   * job_hunter_find_job_by_identity reads which of the caller's rows already
+--     cover an advertisement. It is definer only so it can reach
+--     job_hunter_find_posting_by_identity, which is revoked from users because
+--     its user argument would let one user search another's corpus; this one
+--     takes no user argument and reads auth.uid(), which inside a definer is
+--     still the caller's.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -421,8 +429,18 @@ select is(
       and p.prosecdef
       and p.proname like 'job\_hunter\_%'
       and has_function_privilege('authenticated', p.oid, 'execute')),
-  array['job_hunter_get_provider_credentials'],
-  'exactly one security definer function is reachable by authenticated, and it writes nothing shared');
+  array['job_hunter_find_job_by_identity', 'job_hunter_get_provider_credentials'],
+  'only read-only security definers are reachable by authenticated');
+
+-- And the one they must not reach: the posting lookup that names whose corpus
+-- to search. A user who could call this could ask which advertisements any
+-- other user holds.
+select throws_ok(
+  $$ select * from public.job_hunter_find_posting_by_identity(
+       'Acme', 'Engineer', 'Remote',
+       'eeeeeeee-0000-0000-0000-000000000002'::uuid) $$,
+  '42501', null,
+  'a user cannot ask which advertisements another user already holds');
 
 
 -- 6. The privileged role still writes everything -------------------------------

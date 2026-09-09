@@ -55,20 +55,21 @@ def as_b(other_supabase_client: SupabaseClient) -> SupabaseClient:
 
 
 @pytest.fixture
-def a_row(as_a: SupabaseClient):
+def a_row(as_a: SupabaseClient, seed_postings):
     """A row owned by user A, removed when the test finishes.
 
     A job row is a membership of a posting since #178, so the advertisement
-    is written first. It is deliberately not cleaned up: postings are shared
-    and carry no delete policy, which is the point of the table.
+    is written first -- over the privileged connection, because since #179 no
+    user may write a posting at all. It is deliberately not cleaned up:
+    postings are shared and carry no delete policy, which is the point of the
+    table.
 
     `market_id` stands in for the title this test used to write. It is one of
     the few columns a membership row still has, and being per-user it is the
     right one to prove another user cannot rewrite it.
     """
     now = datetime.now(timezone.utc).isoformat()
-    posting = as_a.insert(
-        "job_hunter_postings",
+    posting_id = seed_postings(
         [
             {
                 "fingerprint": f"isolation-test-{uuid.uuid4()}",
@@ -76,14 +77,14 @@ def a_row(as_a: SupabaseClient):
                 "first_seen_at": now,
                 "last_seen_at": now,
             }
-        ],
+        ]
     )[0]
     rows = as_a.insert(
         TABLE,
         [
             {
                 "user_id": as_a.user_id,
-                "posting_id": posting["id"],
+                "posting_id": posting_id,
                 "market_id": "original-market",
                 "first_seen_at": now,
                 "last_seen_at": now,
@@ -118,8 +119,20 @@ def test_b_cannot_delete_as_row(as_b, a_row):
     assert as_b.delete(TABLE, params={"id": f"eq.{a_row['id']}"}) == []
 
 
-def test_b_cannot_insert_a_row_claiming_a_as_owner(as_a, as_b):
+def test_b_cannot_insert_a_row_claiming_a_as_owner(as_a, as_b, seed_postings):
     now = datetime.now(timezone.utc).isoformat()
+    # The posting exists already -- seeded privileged, as ingestion writes one
+    # -- so the refusal below is unambiguously about the membership row's
+    # owner rather than about B being unable to write a posting either (#179).
+    posting_id = seed_postings(
+        [
+            {
+                "fingerprint": f"forged-{uuid.uuid4()}",
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+        ]
+    )[0]
 
     with pytest.raises(SupabasePermissionError):
         as_b.insert(
@@ -127,16 +140,7 @@ def test_b_cannot_insert_a_row_claiming_a_as_owner(as_a, as_b):
             [
                 {
                     "user_id": as_a.user_id,
-                    "posting_id": as_b.insert(
-                        "job_hunter_postings",
-                        [
-                            {
-                                "fingerprint": f"forged-{uuid.uuid4()}",
-                                "first_seen_at": now,
-                                "last_seen_at": now,
-                            }
-                        ],
-                    )[0]["id"],
+                    "posting_id": posting_id,
                     "first_seen_at": now,
                     "last_seen_at": now,
                 }

@@ -15,7 +15,12 @@ from job_hunter.candidate_context import get_candidate_context
 from job_hunter.canonical import CanonicalResolver, parse_supported_ats_url
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.cover_letter import generate_cover_letter
-from job_hunter.discovery import collect_candidates, metric_source_label
+from job_hunter.discovery import (
+    DiscoveryResult,
+    DiscoveryStats,
+    collect_candidates,
+    metric_source_label,
+)
 from job_hunter.company_facets import (
     CompanyEvidence,
     CompanyFacetExtractionError,
@@ -610,6 +615,19 @@ def _extract_and_store_facets(
     so counting it as an extraction failure would make a run that behaved
     correctly look unhealthy.
     """
+    # Recorded before the call and for both callers, not after and not per
+    # call site: a read that *fails* leaves the posting uncurrent, and the
+    # extract_facets queue holds a message for it that would otherwise be
+    # drained moments later in this same run and buy the same non-answer
+    # again. Telling the store here is what makes the queue leave it for a
+    # later run, which is where a retry belongs (#185's own rule; the
+    # duplicate only became reachable once #179 made every run hold the
+    # ingestion connection).
+    try:
+        store.note_facet_read_attempt(job_id)
+    except Exception:
+        logger.exception("could not record the facet read attempt for job_id=%s", job_id)
+
     try:
         facets = extract_facets(PostingFacts.from_job(job), ai)
     except (AITemporaryCapacity, PlatformAllowanceExhausted):
@@ -803,6 +821,11 @@ def _extract_facets_for_run(
             logger.exception("draining the extract_facets queue failed")
         else:
             for outcome in drained:
+                if outcome.skipped:
+                    # A message for a posting something else had already read.
+                    # Draining it cost nothing, so counting it would report a
+                    # run reading one advertisement three times.
+                    continue
                 summary.facet_extraction_attempted += 1
                 if outcome.failed:
                     summary.facet_extraction_failed += 1
@@ -1422,12 +1445,34 @@ def run_pipeline(
     platform key has none, and does no extraction.
     """
     http = http or HttpClient()
-    try:
-        backfilled = store.backfill_ats_identity()
-        if backfilled:
-            logger.info("backfilled ATS identity on %s stored jobs", backfilled)
-    except Exception:
-        logger.exception("ATS identity backfill failed")
+
+    # Whether this run can add to the corpus at all (#179). Postings, their
+    # facets, company facts and ATS board health have no user dimension and
+    # are writable only by the privileged ingestion role, so a deployment
+    # with no direct Postgres connection can score and deliver but cannot
+    # discover or enrich. That mode is supported deliberately -- a run that
+    # still delivers from existing postings is worth having during a
+    # transient outage, and refusing to start would turn a degraded day into
+    # an outage -- but it is a different thing from the pre-#179 fallback,
+    # which was merely slower and converged on the same state. This one is
+    # scoring-only over a corpus that can never update, so it is skipped
+    # rather than attempted, and the run summary reports the zeroes.
+    can_ingest = store.can_write_shared_rows
+    if not can_ingest:
+        logger.warning(
+            "no direct Postgres connection: this run cannot write shared rows, so "
+            "discovery and enrichment are skipped entirely. It will score and "
+            "deliver from the postings that already exist, and the corpus will not "
+            "change until SUPABASE_DB_URL is configured again."
+        )
+
+    if can_ingest:
+        try:
+            backfilled = store.backfill_ats_identity()
+            if backfilled:
+                logger.info("backfilled ATS identity on %s stored jobs", backfilled)
+        except Exception:
+            logger.exception("ATS identity backfill failed")
 
     try:
         sync_manual_watch_seeds(store, settings.policy.manual_company_watch)
@@ -1493,14 +1538,24 @@ def run_pipeline(
             candidate_context.load_error or "none",
         )
     preferences = candidate_context.preferences if candidate_context is not None else None
-    discovery = collect_candidates(
-        sources,
-        store,
-        http,
-        settings.policy,
-        resolver=resolver,
-        preferences=preferences,
-    )
+    if can_ingest:
+        discovery = collect_candidates(
+            sources,
+            store,
+            http,
+            settings.policy,
+            resolver=resolver,
+            preferences=preferences,
+        )
+    else:
+        # An empty crawl rather than a skipped one, so everything downstream
+        # -- ranking, the shortlist, the digest, the counters -- runs its
+        # normal path over nothing new. The pending-evaluation queue is what
+        # this run still has to work with, and it is read below.
+        discovery = DiscoveryResult(
+            eligible=[], rediscovered_job_ids=[], stats=DiscoveryStats()
+        )
+    summary.postings_written = discovery.stats.postings_discovered
     search_planned, search_attempted, search_succeeded, search_results = (
         _aggregate_targeted_search_stats(base_sources)
     )
@@ -1700,14 +1755,18 @@ def run_pipeline(
     #
     # The run's whole facet budget is `max_jobs_per_run`, and the inline reads
     # have already spent part of it, so the queue drain gets what is left.
-    _extract_facets_for_run(
-        [(job_id, None) for job_id in pending_evaluation_ids if job_id in needs_facets]
-        + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
-        store,
-        ai,
-        summary,
-        limit=max(0, settings.policy.max_jobs_per_run - summary.facet_extraction_attempted),
-    )
+    #
+    # Skipped entirely without the privileged connection (#179): facets are a
+    # shared row, so the provider call would be paid for and then refused.
+    if can_ingest:
+        _extract_facets_for_run(
+            [(job_id, None) for job_id in pending_evaluation_ids if job_id in needs_facets]
+            + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
+            store,
+            ai,
+            summary,
+            limit=max(0, settings.policy.max_jobs_per_run - summary.facet_extraction_attempted),
+        )
 
     # Company enrichment runs last, after every posting read this run makes.
     #
@@ -1725,16 +1784,20 @@ def run_pipeline(
     # and ordering rather than this one's. For a fact cached for 180 days and
     # amortised over every role that employer publishes, a one-run delay is
     # not worth a single lost offer.
-    _enrich_companies_for_run(
-        ranked,
-        company_facets,
-        store,
-        ai,
-        summary,
-        limit=_company_extraction_limit(
-            settings.policy.max_jobs_per_run - summary.facet_extraction_attempted
-        ),
-    )
+    #
+    # Skipped for the same reason as the facet pass without the privileged
+    # connection: a company row is shared.
+    if can_ingest:
+        _enrich_companies_for_run(
+            ranked,
+            company_facets,
+            store,
+            ai,
+            summary,
+            limit=_company_extraction_limit(
+                settings.policy.max_jobs_per_run - summary.facet_extraction_attempted
+            ),
+        )
 
     logger.info(
         "evaluation_capacity selected=%s evaluated=%s blocked_by_facets=%s "

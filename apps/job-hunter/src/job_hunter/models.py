@@ -611,6 +611,15 @@ class RunSummary:
     # unenriched and the next run retries it, which is recovery, not damage.
     facet_extraction_attempted: int = 0
     facet_extraction_failed: int = 0
+    # Postings this run added to the shared corpus (#179). Reported beside
+    # the facet counters because the pair is what tells a degraded run from a
+    # quiet one: since the corpus is writable only by the privileged
+    # ingestion role, a deployment that has lost its direct connection scores
+    # and delivers exactly as before while adding nothing and reading
+    # nothing, and without this counter the run summary looked identical to a
+    # week when the job market was slow. Zero here is a fact worth printing,
+    # not an absence worth omitting.
+    postings_written: int = 0
     # Jobs scored this run against facets an earlier run had already stored
     # -- this user's earlier run or, since #175, any user's. Counted beside
     # the extractions because the pair is the shared-extraction claim made

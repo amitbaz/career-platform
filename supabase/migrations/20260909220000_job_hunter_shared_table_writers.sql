@@ -154,7 +154,141 @@ revoke all on function public.job_hunter_upsert_posting(jsonb)
   from public, anon, authenticated, service_role;
 
 
--- 3. The job-upsert path moves to the privileged connection ------------------
+-- 3. The identity ladder's weakest rung follows the user -----------------------
+--
+-- job_hunter_find_posting_by_identity answers "does *this caller* already hold
+-- a row covering this advertisement", and it read auth.uid() to know who that
+-- was. Under the old definer job_hunter_upsert_job that still worked: a
+-- definer function does not change auth.uid(), which stays the caller's.
+--
+-- Over the privileged connection there is no caller. auth.uid() is null, the
+-- join finds no rows, and the rung returns nothing -- silently, because
+-- "returns nothing" is also its honest answer for a listing nobody has seen
+-- before. Cross-source deduplication would have quietly stopped happening,
+-- and the only sign would have been a slowly growing corpus of the same
+-- advertisement seen on three aggregators.
+--
+-- So the user comes in as an argument here too. The scoping this function
+-- documents is unchanged and is the whole point of it: the weakest rung is
+-- deliberately willing to call two renderings of "Acme / Senior Product
+-- Engineer / Remote" the same advertisement, which is a reasonable bet about
+-- one user's own corpus and a catastrophic one about everybody's.
+
+create or replace function public.job_hunter_find_posting_by_identity(
+  p_company text, p_title text, p_location text, p_user_id uuid
+) returns setof uuid
+language plpgsql
+stable
+security invoker
+set search_path = ''
+as $$
+declare
+  v_uid uuid := p_user_id;
+  v_company text := public.job_hunter_normalize_company(p_company);
+  v_title text := public.job_hunter_normalize_tokens(p_title);
+begin
+  if v_uid is null or v_company = '' or v_title = '' then
+    return;
+  end if;
+
+  return query
+  with matches as (
+    select p.id as posting_id,
+           p.location as posting_location,
+           j.created_at as job_created_at,
+           j.id as job_id
+      from public.job_hunter_postings p
+      join public.job_hunter_jobs j
+        on j.posting_id = p.id and j.user_id = v_uid
+     where p.normalized_company = v_company
+       and p.normalized_title = v_title
+       and public.job_hunter_locations_compatible(p_location, p.location)
+  )
+  select m.posting_id
+    from matches m
+   where not exists (
+           select 1
+             from matches l
+             join matches r on l.job_id < r.job_id
+            where not public.job_hunter_locations_compatible(
+                        l.posting_location, r.posting_location)
+         )
+   order by m.job_created_at, m.job_id;
+end $$;
+
+comment on function public.job_hunter_find_posting_by_identity(text, text, text, uuid) is
+  'The postings p_user_id already holds a membership row for whose normalized '
+  'company, title and compatible location identify one advertisement -- '
+  'nothing when the matches disagree about location. The identity itself '
+  'lives on the posting since #178; the question it answers is still the '
+  'per-user coverage question 202609070002 asked of job rows, because this '
+  'rung is weak enough that asking it of the whole shared corpus would '
+  'collapse unrelated advertisements irreversibly. Since #179 the user is an '
+  'argument rather than auth.uid(), because its only caller now runs as the '
+  'privileged ingestion role, where auth.uid() is null and the rung would '
+  'silently match nothing.';
+
+revoke all on function public.job_hunter_find_posting_by_identity(text, text, text, uuid)
+  from public, anon, authenticated, service_role;
+
+-- job_hunter_find_job_by_identity is the store's read of the same question,
+-- reached over PostgREST as the user, and it has to be re-created here: its
+-- body named the three-argument function that is dropped below, and a body
+-- referring to a function that no longer exists fails at call time rather than
+-- at drop time -- which surfaces as a 404 from PostgREST long after the
+-- migration looked clean.
+--
+-- It becomes SECURITY DEFINER, which is the sixth and last definer in this
+-- schema, and the reason is worth stating because "add a definer" is exactly
+-- what this migration spends its length narrowing:
+--
+--   * The four-argument posting lookup must NOT be callable by a user. Its
+--     new argument names whose corpus to search, so a user who could call it
+--     could ask which advertisements any other user holds. That is why it is
+--     revoked above.
+--   * This function asks the same question but cannot be misdirected: it takes
+--     no user argument at all and derives the user from auth.uid(), which
+--     inside a definer function is still the caller's id, not the owner's.
+--     Both the delegate call and the join carry that value.
+--   * It writes nothing. It is `stable`, it selects, and there is no shared
+--     table anywhere in its reach.
+--
+-- The alternative was to inline the identity rule here -- the normalization,
+-- the location-compatibility test and the ambiguity rule that returns nothing
+-- when two matches disagree about location. Two copies of that rule would
+-- drift, and the copy nobody noticed drifting is the one that merges two
+-- different jobs at one employer.
+
+create or replace function public.job_hunter_find_job_by_identity(
+  p_company text, p_title text, p_location text
+) returns setof uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select j.id
+    from public.job_hunter_find_posting_by_identity(
+           p_company, p_title, p_location, (select auth.uid())) as f(posting_id)
+    join public.job_hunter_jobs j
+      on j.posting_id = f.posting_id
+     and j.user_id = (select auth.uid())
+   order by j.created_at, j.id;
+$$;
+
+comment on function public.job_hunter_find_job_by_identity(text, text, text) is
+  'The caller''s membership rows for the postings a normalized company, title '
+  'and compatible location identify. The identity itself is a fact about the '
+  'advertisement and is matched on job_hunter_postings (#178); which rows are '
+  'searched is still the caller''s own, because the question is whether they '
+  'already hold this advertisement. SECURITY DEFINER since #179 only so it can '
+  'reach job_hunter_find_posting_by_identity, which is revoked from users '
+  'because its user argument would otherwise let one user search another''s '
+  'corpus. This function takes no such argument: it reads auth.uid(), which is '
+  'still the caller''s inside a definer, and it writes nothing.';
+
+
+-- 4. The job-upsert path moves to the privileged connection ------------------
 --
 -- job_hunter_upsert_job is re-created with the caller's user id as an argument
 -- rather than read from auth.uid(). Everything else is 20260909210000's body,
@@ -286,7 +420,8 @@ begin
       select f from public.job_hunter_find_posting_by_identity(
         coalesce(p_job->>'company', ''),
         coalesce(p_job->>'title', ''),
-        coalesce(p_job->>'location', '')) f
+        coalesce(p_job->>'location', ''),
+        v_uid) f
     loop
       v_resolved := public.job_hunter_resolve_posting(v_candidate);
       if not (v_resolved = any(v_candidates)) then
@@ -518,7 +653,7 @@ comment on function public.job_hunter_merge_jobs(uuid, uuid, uuid) is
   'because collapsing two postings is a write every other user sees.';
 
 
--- 4. The old signatures go -----------------------------------------------------
+-- 5. The old signatures go -----------------------------------------------------
 --
 -- Dropped rather than left revoked. A revoked overload is still a function a
 -- future migration can grant back by accident, and PostgREST would still list
@@ -529,9 +664,10 @@ comment on function public.job_hunter_merge_jobs(uuid, uuid, uuid) is
 drop function public.job_hunter_upsert_jobs(jsonb);
 drop function public.job_hunter_upsert_job(jsonb);
 drop function public.job_hunter_merge_jobs(uuid, uuid);
+drop function public.job_hunter_find_posting_by_identity(text, text, text);
 
 
--- 5. Nobody but the owner may execute any of them -----------------------------
+-- 6. Nobody but the owner may execute any of them -----------------------------
 --
 -- `revoke all ... from public` is the one that matters: a newly created
 -- function is executable by PUBLIC by default, so listing only anon,

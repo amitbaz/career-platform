@@ -95,7 +95,8 @@ select has_function('public', 'job_hunter_eligible_inbound_jobs', array[]::text[
   'job_hunter_eligible_inbound_jobs exists');
 select has_function('public', 'job_hunter_find_job_by_identity', array['text', 'text', 'text'],
   'job_hunter_find_job_by_identity exists');
-select has_function('public', 'job_hunter_find_posting_by_identity', array['text', 'text', 'text'],
+select has_function('public', 'job_hunter_find_posting_by_identity',
+  array['text', 'text', 'text', 'uuid'],
   'job_hunter_find_posting_by_identity exists');
 select has_function('public', 'job_hunter_get_provider_credentials', array[]::text[],
   'job_hunter_get_provider_credentials exists');
@@ -122,7 +123,13 @@ select has_function('public', 'job_hunter_get_provider_credentials', array[]::te
 --     on each per-user table they touch is exactly that same predicate, so the
 --     two express one restriction. Asserted below rather than assumed.
 --
--- Since #179 the definer-ness of the last three buys much less than it did,
+--   * job_hunter_find_job_by_identity (#179), definer only so it can reach
+--     job_hunter_find_posting_by_identity, which is revoked from users because
+--     its user argument would otherwise let one user search another's corpus.
+--     This one takes no user argument: it reads auth.uid(), which inside a
+--     definer is still the caller's, and it writes nothing.
+--
+-- Since #179 the definer-ness of the middle three buys much less than it did,
 -- because none of them is reachable by `authenticated` any more: the job
 -- upsert and both merges take the user they act for as an argument and run on
 -- ingestion's privileged connection, where there is no auth.uid() to read.
@@ -136,10 +143,11 @@ select is(
     where n.nspname = 'public'
       and p.proname like 'job\_hunter\_%'
       and p.prosecdef),
-  array['job_hunter_collapse_job_rows', 'job_hunter_get_provider_credentials',
+  array['job_hunter_collapse_job_rows', 'job_hunter_find_job_by_identity',
+        'job_hunter_get_provider_credentials',
         'job_hunter_merge_jobs', 'job_hunter_merge_postings',
         'job_hunter_upsert_job'],
-  'credential retrieval, the merges, the row collapse and the job upsert are the only public.job_hunter_* security definers');
+  'credential retrieval, the identity read, the merges, the row collapse and the job upsert are the only public.job_hunter_* security definers');
 
 -- The collapse is internal to the schema: no role may call it at all, which
 -- is what keeps "fold these two membership rows" reachable only as a

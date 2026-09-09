@@ -46,6 +46,7 @@ def test_both_clients_are_the_claimed_slot_s_users(
 
 def test_the_claimed_users_exist_in_the_database(
     supabase_client: SupabaseClient,
+    seed_postings,
 ) -> None:
     """A slot whose users seed.sql never created must fail here, not later.
 
@@ -59,22 +60,25 @@ def test_the_claimed_users_exist_in_the_database(
     seed users", which would name the wrong cause.
     """
     now = datetime.now(timezone.utc).isoformat()
-    posting = supabase_client.insert(
-        "job_hunter_postings",
+    # The posting is seeded over the privileged connection because no user may
+    # write one (#179). The membership row below is still written as the user,
+    # which is what this test is about: it is the write that resolves the
+    # foreign key into `auth.users`.
+    posting_id = seed_postings(
         [
             {
                 "fingerprint": f"seed-slot-check-{uuid.uuid4()}",
                 "first_seen_at": now,
                 "last_seen_at": now,
             }
-        ],
+        ]
     )[0]
     rows = supabase_client.insert(
         "job_hunter_jobs",
         [
             {
                 "user_id": supabase_client.user_id,
-                "posting_id": posting["id"],
+                "posting_id": posting_id,
                 "first_seen_at": now,
                 "last_seen_at": now,
             }

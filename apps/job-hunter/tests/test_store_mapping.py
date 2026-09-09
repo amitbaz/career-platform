@@ -85,16 +85,19 @@ def test_touch_updated_at_advances_on_a_second_call() -> None:
     assert from_iso(second) > from_iso(first)
 
 
-def _insert_membership(client: SupabaseClient, **posting_fields) -> dict:
+def _insert_membership(client: SupabaseClient, seed_postings, **posting_fields) -> dict:
     """Write an advertisement and the caller's membership of it, and read it back.
 
     Two rows since #178: everything the advertisement says goes on the
     posting, and the job row carries only the caller's own facts. The read
     asks for the posting as an embed, which is the shape `job_from_row`
     composes a `Job` from.
+
+    The posting is seeded over the privileged connection (#179); the
+    membership row and the read back stay on PostgREST, because the shape
+    PostgREST returns is what this file is about.
     """
-    posting = client.insert(
-        "job_hunter_postings",
+    posting_id = seed_postings(
         [
             {
                 "fingerprint": f"fp-{uuid.uuid4()}",
@@ -102,14 +105,14 @@ def _insert_membership(client: SupabaseClient, **posting_fields) -> dict:
                 "last_seen_at": "2026-09-06T10:00:00+00:00",
                 **posting_fields,
             }
-        ],
+        ]
     )[0]
     inserted = client.insert(
         "job_hunter_jobs",
         [
             {
                 "user_id": client.user_id,
-                "posting_id": posting["id"],
+                "posting_id": posting_id,
                 "market_id": "eu",
                 "first_seen_at": "2026-09-06T10:00:00+00:00",
                 "last_seen_at": "2026-09-06T10:00:00+00:00",
@@ -130,15 +133,14 @@ def _insert_membership(client: SupabaseClient, **posting_fields) -> dict:
 
 
 @pytest.mark.integration
-def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient) -> None:
+def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient, seed_postings) -> None:
     """Insert a job, read it back through PostgREST, and map it.
 
     Exercises the `remote` nullable-boolean conversion (Postgres/PostgREST
     give True/False/None, unlike SQLite's 1/0/None) against an actual
     response rather than a hand-written dict.
     """
-    row = _insert_membership(
-        supabase_client,
+    row = _insert_membership(supabase_client, seed_postings,
         source="greenhouse",
         title="Senior Backend Engineer",
         company="Acme Corp",
@@ -172,9 +174,8 @@ def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient)
 
 
 @pytest.mark.integration
-def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient) -> None:
-    row = _insert_membership(
-        supabase_client, source="test", url="https://example.com/jobs/2", remote=None
+def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient, seed_postings) -> None:
+    row = _insert_membership(supabase_client, seed_postings, source="test", url="https://example.com/jobs/2", remote=None
     )
     job = job_from_row(row)
 
@@ -182,9 +183,8 @@ def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient) 
 
 
 @pytest.mark.integration
-def test_job_from_row_maps_false_remote(supabase_client: SupabaseClient) -> None:
-    row = _insert_membership(
-        supabase_client, source="test", url="https://example.com/jobs/3", remote=False
+def test_job_from_row_maps_false_remote(supabase_client: SupabaseClient, seed_postings) -> None:
+    row = _insert_membership(supabase_client, seed_postings, source="test", url="https://example.com/jobs/3", remote=False
     )
     job = job_from_row(row)
 

@@ -44,6 +44,7 @@ from job_hunter.ai import (
 from job_hunter.facets import FacetExtractionError, PostingFacts, extract_facets
 from job_hunter.models import JobFacets
 from job_hunter.stage_queue import (
+    DeferredToALaterRun,
     PermanentStageFailure,
     QueueMessage,
     QuotaExhausted,
@@ -61,6 +62,11 @@ if TYPE_CHECKING:
 #: provider signal.
 _ALLOWANCE_RETRY_DELAY_SECONDS = 15 * 60
 
+#: How long a message deferred because this run already read its posting waits
+#: before being offered again. Longer than the allowance delay because the
+#: condition clears when the run ends, not when a provider window reopens.
+_ALREADY_ATTEMPTED_RETRY_DELAY_SECONDS = 60 * 60
+
 
 class _ConnectionLease(Protocol):
     def connection(self): ...
@@ -73,6 +79,26 @@ class ExtractedFacets:
 
 
 @dataclass(frozen=True)
+class FacetsAlreadyCurrent:
+    """The posting was read before this message was drained.
+
+    A posting is enqueued once per job persist, and one crawl persists in
+    three phases -- the raw listings, the unique jobs they dedupe to, and the
+    canonical-resolution tail -- so the same advertisement is routinely
+    enqueued several times before anything has read it. The run's inline pass
+    then reads it once and the queue still holds the rest.
+
+    Without this, each of those messages spent a platform call on an
+    advertisement that already had current facets, which is the one cost the
+    whole shared-extraction design exists to pay once (#125, #175). Draining
+    them is still right -- the message has to leave the queue -- so this is a
+    success that spent nothing, not a failure.
+    """
+
+    posting_id: str
+
+
+@dataclass(frozen=True)
 class FacetExtractionOutcome:
     """What draining one message from the queue did, for the run log.
 
@@ -80,24 +106,50 @@ class FacetExtractionOutcome:
     `extract_facets` could not read -- the same bucket `pipeline.py`'s inline
     reads count as `extraction_parse_failures`. A vanished posting or a
     storage failure is a failure but not a parse failure.
+
+    `skipped` is a message drained without a provider call, because the
+    posting already had current facets. It is neither an attempt nor a
+    failure: counting it as an attempt would report a run reading the same
+    advertisement three times when it read it once.
     """
 
     failed: bool
     parse_failure: bool = False
+    skipped: bool = False
 
 
 class ExtractFacetsStage:
     """Read one posting's objective facts and store them, once, for everyone."""
 
-    def __init__(self, database: _ConnectionLease, ai: "AIProvider") -> None:
+    def __init__(
+        self,
+        database: _ConnectionLease,
+        ai: "AIProvider",
+        *,
+        already_attempted: frozenset[str] = frozenset(),
+    ) -> None:
         self._database = database
         self._ai = ai
+        #: Postings the surrounding run has already spent a read on, whether
+        #: that read succeeded or failed. A failed one leaves the posting
+        #: uncurrent, so without this the message for it would be drained in
+        #: the same run and buy the same non-answer again -- which is what
+        #: this module's dead-letter-immediately rule exists to prevent.
+        self._already_attempted = already_attempted
 
-    def __call__(self, message: QueueMessage) -> ExtractedFacets:
+    def __call__(self, message: QueueMessage) -> ExtractedFacets | FacetsAlreadyCurrent:
         posting_id = self._posting_id(message)
-        posting = self._read_posting(posting_id)
-        if posting is None:
+        if posting_id in self._already_attempted:
+            raise DeferredToALaterRun(_ALREADY_ATTEMPTED_RETRY_DELAY_SECONDS)
+        exists, posting = self._read_posting_needing_facets(posting_id)
+        if not exists:
             raise PermanentStageFailure(f"posting_id={posting_id} no longer exists")
+        if posting is None:
+            # Read since this message was enqueued -- by the run's inline pass,
+            # by an earlier message for the same posting, or by another user's
+            # run entirely. Spending a call here would buy the same answer
+            # twice against the platform key's one allowance.
+            return FacetsAlreadyCurrent(posting_id=posting_id)
 
         try:
             facets = extract_facets(posting, self._ai)
@@ -133,21 +185,40 @@ class ExtractFacetsStage:
                 "extract_facets posting_id must be a UUID"
             ) from error
 
-    def _read_posting(self, posting_id: str) -> PostingFacts | None:
+    def _read_posting_needing_facets(
+        self, posting_id: str
+    ) -> tuple[bool, PostingFacts | None]:
+        """`(the posting exists, what to read -- or None if already read)`.
+
+        The two answers are separated because they mean opposite things to the
+        caller: a posting that is gone is a dead letter, and a posting that has
+        already been read is a message to delete quietly.
+
+        Currency is decided by exactly the mechanism that gates re-extraction
+        everywhere else -- the posting's `description_hash` against the hash
+        the stored facets were read at -- so an edited advertisement is still
+        re-read, and there is no second notion of "changed" here.
+        """
         try:
             with self._database.connection() as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(
-                        "select title, company, location, remote, description, "
-                        "content_confidence, source "
-                        "from public.job_hunter_postings where id = %s",
+                        "select p.title, p.company, p.location, p.remote, "
+                        "       p.description, p.content_confidence, p.source, "
+                        "       (f.posting_id is not null "
+                        "        and f.description_hash_at_extraction "
+                        "            is not distinct from p.description_hash) "
+                        "  from public.job_hunter_postings p "
+                        "  left join public.job_hunter_job_facets f "
+                        "    on f.posting_id = p.id "
+                        " where p.id = %s",
                         (posting_id,),
                     )
                     row = cursor.fetchone()
         except Exception as error:
             raise TransientStageFailure("reading the posting failed") from error
         if row is None:
-            return None
+            return False, None
         (
             title,
             company,
@@ -156,8 +227,11 @@ class ExtractFacetsStage:
             description,
             content_confidence,
             source,
+            facets_current,
         ) = row
-        return PostingFacts.from_posting_row(
+        if facets_current:
+            return True, None
+        return True, PostingFacts.from_posting_row(
             {
                 "title": title,
                 "company": company,

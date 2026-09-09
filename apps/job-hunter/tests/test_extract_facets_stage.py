@@ -19,10 +19,15 @@ from job_hunter.ai import (
     CredentialUnavailable,
     PlatformAllowanceExhausted,
 )
-from job_hunter.extract_facets_stage import ExtractedFacets, ExtractFacetsStage
+from job_hunter.extract_facets_stage import (
+    ExtractedFacets,
+    ExtractFacetsStage,
+    FacetsAlreadyCurrent,
+)
 from job_hunter.facets import FacetExtractionError
 from job_hunter.models import Compensation, JobFacets
 from job_hunter.stage_queue import (
+    DeferredToALaterRun,
     PermanentStageFailure,
     QueueMessage,
     QuotaExhausted,
@@ -32,6 +37,10 @@ from job_hunter.stage_queue import (
 
 POSTING_ID = str(uuid.uuid4())
 
+# The stage reads the posting and whether its facets are already current in
+# one statement, so the row carries that last flag (#179 exposed why: a
+# posting is enqueued once per persist phase, and the messages after the
+# first must not each buy the same answer again).
 _POSTING_ROW = (
     "Backend Engineer",  # title
     "Acme",  # company
@@ -40,7 +49,10 @@ _POSTING_ROW = (
     "Hire anywhere in the EU.",  # description
     "official_ats",  # content_confidence
     "ashby",  # source
+    False,  # facets already current
 )
+
+_POSTING_ROW_ALREADY_READ = (*_POSTING_ROW[:-1], True)
 
 _FACETS = JobFacets(
     seniority="senior",
@@ -69,7 +81,7 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
-        if "select title" in sql:
+        if "select p.title" in sql:
             if self._plan.get("read_error"):
                 raise self._plan["read_error"]
             self._row = self._plan.get("posting_row")
@@ -165,6 +177,56 @@ def test_extracts_and_stores_facets(monkeypatch):
     result = stage(_message({"posting_id": POSTING_ID}))
 
     assert result == ExtractedFacets(posting_id=POSTING_ID, facets=_FACETS)
+
+
+def test_a_posting_already_read_is_drained_without_a_provider_call(monkeypatch):
+    """The message leaves the queue, and nothing is spent on it.
+
+    A posting is enqueued once per job persist, and one crawl persists in
+    three phases, so the same advertisement arrives here several times. The
+    run's inline pass reads it once; every message after that must be a
+    no-op, or the platform key pays three times for one answer -- the exact
+    cost the shared-extraction design exists to pay once (#125, #175).
+    """
+
+    def must_not_be_called(posting, ai):
+        raise AssertionError("a posting with current facets must not be read again")
+
+    monkeypatch.setattr(stage_module, "extract_facets", must_not_be_called)
+    stage = _stage({"posting_row": _POSTING_ROW_ALREADY_READ})
+
+    result = stage(_message({"posting_id": POSTING_ID}))
+
+    assert result == FacetsAlreadyCurrent(posting_id=POSTING_ID)
+
+
+def test_a_posting_this_run_already_read_is_left_for_a_later_run(monkeypatch):
+    """A failed read leaves the posting uncurrent; its message must not retry now.
+
+    The run's inline pass and this queue reach the same postings from
+    different directions. When the inline read fails, nothing is stored, so
+    the currency check above cannot help -- and draining the message in the
+    same run spends a second call on the same non-answer, which is exactly
+    what this module's dead-letter-immediately rule exists to prevent.
+
+    Deferring rather than dead-lettering is the point: the message survives
+    for a later run, which is the durability the queue exists for.
+    """
+
+    def must_not_be_called(posting, ai):
+        raise AssertionError("a posting this run already read must not be read again")
+
+    monkeypatch.setattr(stage_module, "extract_facets", must_not_be_called)
+    stage = ExtractFacetsStage(
+        FakeDatabase({"posting_row": _POSTING_ROW}),
+        object(),
+        already_attempted=frozenset({POSTING_ID}),
+    )
+
+    with pytest.raises(DeferredToALaterRun) as excinfo:
+        stage(_message({"posting_id": POSTING_ID}))
+
+    assert excinfo.value.retry_after_seconds > 0
 
 
 def test_writing_facets_failing_is_transient(monkeypatch):

@@ -11,6 +11,7 @@ per-listing, reach the same postings for the same input.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from contextlib import contextmanager
@@ -41,35 +42,28 @@ def job_fingerprint(job: Job) -> str:
 
 
 class RecordingClient:
-    """Records every RPC and answers `job_hunter_upsert_jobs` plausibly."""
+    """Records every PostgREST call this store makes.
+
+    Since #179 the job upsert is not one of them: it writes a posting, which
+    is a shared row, so it goes over the privileged connection instead. This
+    fake therefore refuses every RPC, which is the assertion -- a job payload
+    that reaches PostgREST is a payload on the wrong transport.
+    """
+
+    user_id = "11111111-1111-1111-1111-111111111111"
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
 
     def rpc(self, function, payload=None, *, retry=True):
         self.calls.append((function, payload or {}))
-        if function == "job_hunter_upsert_jobs":
-            return [
-                {
-                    "input_index": index,
-                    "id": f"job-{index}",
-                    "is_new": True,
-                    "description_changed": False,
-                }
-                for index, _job in enumerate(payload["p_jobs"])
-            ]
-        if function == "job_hunter_upsert_job":
-            return [{"id": "job-0", "is_new": True, "description_changed": False}]
-        raise AssertionError(f"unexpected rpc: {function}")
+        raise AssertionError(
+            f"{function} reached PostgREST; shared-table writes go over the "
+            "direct connection since #179"
+        )
 
-    @property
-    def sent_jobs(self) -> list[dict]:
-        return [
-            job
-            for function, payload in self.calls
-            if function == "job_hunter_upsert_jobs"
-            for job in payload["p_jobs"]
-        ]
+    def select(self, table, params=None):
+        return []
 
 
 def _job(title: str = "Frontend Engineer", **overrides) -> Job:
@@ -100,15 +94,29 @@ def test_merge_posting_batch_is_empty_without_a_direct_connection():
     assert batch.newly_discovered == 0
 
 
+def test_a_job_upsert_is_refused_outright_without_a_direct_connection():
+    """Since #179 there is no per-listing fallback left to degrade to.
+
+    A job upsert writes `job_hunter_postings`, which no user may write, so a
+    store with no privileged connection cannot persist a listing at all. The
+    pipeline is what keeps this from happening in a real run -- it skips
+    ingestion entirely when `can_write_shared_rows` is false -- and this is
+    what makes forgetting to ask fail loudly rather than half-writing.
+    """
+    store = PostgresJobStore(RecordingClient())
+
+    assert store.can_write_shared_rows is False
+    with pytest.raises(postgres_store.SharedWriteUnavailable):
+        store.upsert_logical_job(_job())
+
+
 def test_a_job_upsert_carries_no_posting_id_when_the_batch_resolved_none():
-    client = RecordingClient()
-    store = PostgresJobStore(client)
+    database = QueueRecordingDatabase()
+    store = PostgresJobStore(RecordingClient(), database)
 
-    store.upsert_logical_jobs(
-        [_job()], posting_batch=store.merge_posting_batch([_job()])
-    )
+    store.upsert_logical_jobs([_job()], posting_batch=PostingBatch())
 
-    assert "posting_id" not in client.sent_jobs[0]
+    assert "posting_id" not in database.job_payloads[0]
 
 
 def test_merging_an_empty_list_never_reaches_the_connection():
@@ -139,8 +147,8 @@ def test_a_failed_merge_degrades_to_the_per_listing_path(caplog):
 
 
 def test_a_resolved_posting_id_travels_with_the_job_that_resolved_it():
-    client = RecordingClient()
-    store = PostgresJobStore(client)
+    database = QueueRecordingDatabase()
+    store = PostgresJobStore(RecordingClient(), database)
     jobs = [_job("Frontend Engineer"), _job("Backend Engineer")]
     batch = PostingBatch(
         posting_ids={job_fingerprint(jobs[0]): "posting-a"}, newly_discovered=1
@@ -148,16 +156,35 @@ def test_a_resolved_posting_id_travels_with_the_job_that_resolved_it():
 
     store.upsert_logical_jobs(jobs, posting_batch=batch)
 
-    sent = client.sent_jobs
+    sent = database.job_payloads
     assert sent[0]["posting_id"] == "posting-a"
     # The second job's advertisement was not in the batch, so it resolves its
     # own posting inside the upsert, exactly as it did before #182.
     assert "posting_id" not in sent[1]
 
 
-def test_a_replayed_job_keeps_the_posting_its_batch_resolved(monkeypatch):
+def test_every_job_upsert_names_this_store_s_own_user():
+    """The user is an argument now, so it is worth asserting which one.
+
+    `job_hunter_upsert_job` no longer reads `auth.uid()` -- it writes shared
+    rows and runs as the privileged role, which has no user identity (#179).
+    Nothing but this argument stops one user's crawl writing another user's
+    membership rows, so a store must always pass its own.
+    """
     client = RecordingClient()
-    store = PostgresJobStore(client)
+    database = QueueRecordingDatabase()
+    store = PostgresJobStore(client, database)
+
+    store.upsert_logical_jobs([_job("Frontend Engineer")])
+    store.upsert_logical_job(_job("Backend Engineer"))
+    store.upsert_job(_job("Platform Engineer"))
+
+    assert database.upsert_users == [client.user_id] * 3
+
+
+def test_a_replayed_job_keeps_the_posting_its_batch_resolved(monkeypatch):
+    database = QueueRecordingDatabase()
+    store = PostgresJobStore(RecordingClient(), database)
     job = _job()
     batch = PostingBatch(posting_ids={job_fingerprint(job): "posting-a"})
 
@@ -168,12 +195,7 @@ def test_a_replayed_job_keeps_the_posting_its_batch_resolved(monkeypatch):
 
     store.upsert_logical_jobs([job], posting_batch=batch)
 
-    replayed = [
-        payload["p_job"]
-        for function, payload in client.calls
-        if function == "job_hunter_upsert_job"
-    ]
-    assert replayed[0]["posting_id"] == "posting-a"
+    assert database.job_payloads[0]["posting_id"] == "posting-a"
 
 
 def test_a_staging_row_says_the_same_thing_the_job_payload_says():
@@ -216,6 +238,10 @@ class QueueRecordingCursor:
         self._database = database
         self._rows = []
         self._row = None
+        # psycopg leaves this None for a statement with no result set, and
+        # `_shared_write` reads it to decide whether there is anything to
+        # fetch. A tuple stands in for the column descriptions it would carry.
+        self.description = None
 
     def __enter__(self):
         return self
@@ -231,7 +257,21 @@ class QueueRecordingCursor:
         self._database.statements.append(statement)
         self._row = None
         self._rows = []
-        if "pgmq.send" in statement:
+        self.description = ("result",)
+        if "job_hunter_upsert_jobs" in statement:
+            payloads = json.loads(params[0])
+            self._database.job_payloads.extend(payloads)
+            self._database.upsert_users.append(params[1])
+            self._rows = [
+                (index, f"job-{index}", True, False)
+                for index, _payload in enumerate(payloads)
+            ]
+        elif "job_hunter_upsert_job(" in statement:
+            payload = json.loads(params[0])
+            self._database.job_payloads.append(payload)
+            self._database.upsert_users.append(params[1])
+            self._rows = [("job-0", True, False)]
+        elif "pgmq.send" in statement:
             self._row = (7,)
         elif "pgmq.read" in statement:
             self._rows = [(7, {"batch_id": self._database.batch_id}, 0)]
@@ -264,10 +304,15 @@ class QueueRecordingConnection:
 
 
 class QueueRecordingDatabase:
-    def __init__(self, fingerprint):
+    def __init__(self, fingerprint=None):
         self.fingerprint = fingerprint
         self.batch_id = None
         self.statements: list[str] = []
+        #: The job payloads that reached `job_hunter_upsert_job(s)`, in order,
+        #: and the user id each call named. Since #179 that argument is the
+        #: only thing telling the database whose membership row to write.
+        self.job_payloads: list[dict] = []
+        self.upsert_users: list[str] = []
 
     @contextmanager
     def connection(self):
@@ -432,3 +477,44 @@ def test_a_batched_job_upsert_points_at_the_posting_the_merge_resolved(
         {"p_posting_id": batch.posting_ids[job_fingerprint(jobs[0])]},
     )
     assert rows[0]["posting_id"] == resolved[0]
+
+
+# Which transport carried the write (#179) -----------------------------------------
+#
+# The acceptance criterion these serve is deliberately narrow: a test that
+# passes because CI happens to supply a DB URL, while never asserting which
+# connection carried the write, does not cover the ticket. These name the
+# transport.
+
+
+def test_no_shared_table_write_reaches_postgrest():
+    """Every write to a table with no user goes over the direct connection.
+
+    `RecordingClient.rpc` raises, and the client is handed no write methods it
+    would answer, so anything that reached PostgREST here would fail loudly
+    rather than pass quietly. The assertions are on the SQL the privileged
+    connection actually saw.
+    """
+    database = QueueRecordingDatabase()
+    store = PostgresJobStore(RecordingClient(), database)
+
+    store.upsert_logical_job(_job())
+
+    assert any(
+        "job_hunter_upsert_job(" in statement for statement in database.statements
+    )
+    assert database.job_payloads, "the payload never reached the direct connection"
+
+
+def test_a_store_without_the_connection_says_so_rather_than_writing():
+    """The degraded mode is a question a caller can ask, not an exception to catch.
+
+    `run_pipeline` asks this before it crawls or enriches, which is what keeps
+    a deployment with no SUPABASE_DB_URL from spending a crawl's worth of
+    network on rows the database will refuse.
+    """
+    with_connection = PostgresJobStore(RecordingClient(), QueueRecordingDatabase())
+    without = PostgresJobStore(RecordingClient())
+
+    assert with_connection.can_write_shared_rows is True
+    assert without.can_write_shared_rows is False

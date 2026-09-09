@@ -66,6 +66,30 @@ class QuotaExhausted(RuntimeError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class DeferredToALaterRun(RuntimeError):
+    """This run has already done the work this message asks for.
+
+    Not a failure and not a shortage: the message is fine, it is simply
+    redundant *right now*. The run that would drain it has already spent a
+    call on the same subject and either stored the answer or failed to get
+    one, and repeating that inside one run buys nothing.
+
+    Handled exactly as `QuotaExhausted` is -- released back to the queue
+    without counting an attempt -- because the message must survive to be
+    tried by a later run. Dead-lettering it would throw away the durability
+    the queue exists for; deleting it would lose the retry for a posting
+    nothing may rediscover.
+    """
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        if retry_after_seconds < 0:
+            raise ValueError("retry_after_seconds must not be negative")
+        super().__init__(
+            f"already handled by this run; retry after {retry_after_seconds}s"
+        )
+        self.retry_after_seconds = retry_after_seconds
+
+
 class StageQueue(Protocol):
     """Storage operations the runner needs, independent of Postgres."""
 
@@ -158,6 +182,19 @@ class StageRunner:
                 logger.warning(
                     "stage_queue_result: stage=%s message_id=%s "
                     "failure_class=quota action=release delay_seconds=%s",
+                    message.stage.value,
+                    message.message_id,
+                    error.retry_after_seconds,
+                )
+            except DeferredToALaterRun as error:
+                self._queue.release(
+                    message, delay_seconds=error.retry_after_seconds
+                )
+                # Info rather than warning: nothing is wrong, and a run that
+                # crawled a few hundred listings will defer a few of them.
+                logger.info(
+                    "stage_queue_result: stage=%s message_id=%s "
+                    "failure_class=deferred action=release delay_seconds=%s",
                     message.stage.value,
                     message.message_id,
                     error.retry_after_seconds,
