@@ -146,20 +146,29 @@ Job Hunter's Python environment is independent of pnpm. Install it with
 
 ### A green Job Hunter run is only evidence if the store tests ran
 
-Every test that touches the database asks for the `_stack_env` fixture, and that fixture calls
-`pytest.skip` when any of the `SUPABASE_TEST_*` variables is unset (`apps/job-hunter/tests/
-conftest.py:253`). So a run with the stack environment missing **skips every store-backed test,
-reports success, and exits 0**. Nothing about the output says the coverage was switched off; it
-just says `passed`.
+Every test that touches the database asks for the `_stack_env` fixture. At session start,
+`apps/job-hunter/tests/conftest.py` now requires all three core stack variables. If all are absent,
+pytest stops once before collection and names them; if only some are present, it does the same and
+names the missing ones. A partial environment is a configuration error even when an opt-out is
+present, because silently accepting a typo would recreate the original false pass.
 
-**Read the skip count, not the pass count.** With the environment exported the suite skips
-nothing, so `0 skipped` is the invariant that says the run meant something. A run reporting
-several hundred skips — currently around 663 — is a run in which roughly two thirds of the suite
-did not execute, whatever the exit code was.
+A deliberate non-database run has to say so explicitly. Either form is supported:
 
-This is the same failure class as a workspace without its own `.venv`, one layer down: there, the
-right suite runs against the wrong source tree; here, the right tree runs with most of its
-coverage silently disabled. Both produce a green run that is not evidence. Neither is announced.
+```bash
+JOB_HUNTER_ALLOW_MISSING_STACK=1 pnpm job-hunter:test
+pnpm job-hunter:test --allow-missing-stack
+```
+
+Both opt-outs are honored only when none of `SUPABASE_TEST_URL`,
+`SUPABASE_TEST_PUBLISHABLE_KEY`, and `SUPABASE_TEST_SIGNING_KEY_B64` is set. In that deliberate
+mode `_stack_env` skips store-backed tests and says which opt-out authorized it. With all three
+variables present, missing stack configuration cannot skip a store-backed test: the guard either
+lets that fixture run or has already failed the session.
+
+Do not turn this into a global `0 skipped` assertion. Legitimate skips exist and vary by branch;
+the enforced claim is narrower: **store-backed tests were not skipped because the core stack
+environment was missing.** This is the same failure class as a workspace without its own `.venv`,
+one layer down — both otherwise produce a green run that is not evidence.
 
 **Reverting your source proves much less here than it would elsewhere.** Most of this store is
 SQL — `job_hunter_merge_jobs`, `job_hunter_upsert_job` and their siblings are database functions,
