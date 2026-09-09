@@ -174,19 +174,46 @@ select is(
 select is(
   (select jobname from cron.job
     where command like '%lever:acme%'),
-  'job-hunter-enqueue-crawl-source-lever-acme',
+  'job-hunter-enqueue-crawl-source-'
+    || public.job_hunter_source_schedule_slug('lever:acme'),
   'a source key with punctuation becomes a usable job name');
 
 select alike(
   (select command from cron.job
-    where jobname = 'job-hunter-enqueue-crawl-source-remotive'),
+    where jobname = 'job-hunter-enqueue-crawl-source-'
+      || public.job_hunter_source_schedule_slug('remotive')),
   'select pgmq.send(%',
   'the scheduled command only sends a queue message');
 select unalike(
   (select command from cron.job
-    where jobname = 'job-hunter-enqueue-crawl-source-remotive'),
+    where jobname = 'job-hunter-enqueue-crawl-source-'
+      || public.job_hunter_source_schedule_slug('remotive')),
   '%job_hunter_merge_posting_batch%',
   'pg_cron performs no resolve_persist work');
+
+-- A second regression, via a different route: collapsing every run of
+-- non-alnum characters to one hyphen is not injective. Two distinct
+-- Greenhouse board tokens that differ only in separator character -- both
+-- legal in real board slugs -- must not collapse onto the same job name.
+select lives_ok(
+  $$ select public.job_hunter_schedule_stage_enqueue(
+       'crawl_source', '* * * * *', '{"source_key":"greenhouse:foo-bar"}'::jsonb,
+       'greenhouse:foo-bar') $$,
+  'a source key with a hyphen separator can be scheduled');
+select lives_ok(
+  $$ select public.job_hunter_schedule_stage_enqueue(
+       'crawl_source', '0 * * * *', '{"source_key":"greenhouse:foo_bar"}'::jsonb,
+       'greenhouse:foo_bar') $$,
+  'and a source key that differs only by underscore vs hyphen');
+select isnt(
+  public.job_hunter_source_schedule_slug('greenhouse:foo-bar'),
+  public.job_hunter_source_schedule_slug('greenhouse:foo_bar'),
+  'separator-only differences produce distinct slugs');
+select is(
+  (select count(*)::int from cron.job
+    where jobname like 'job-hunter-enqueue-crawl-source-greenhouse%'),
+  2,
+  'two keys differing only by separator still produce two cron entries');
 
 -- Omitting the key keeps the stage-wide name, for a stage with one schedule.
 select lives_ok(

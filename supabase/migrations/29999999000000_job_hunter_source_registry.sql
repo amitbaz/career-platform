@@ -219,11 +219,17 @@ language sql
 immutable
 set search_path = ''
 as $$
-  -- Lower-cased, punctuation collapsed to single hyphens, trimmed. Long keys
-  -- keep a hash tail so two that share a prefix cannot land on one job name
-  -- after truncation -- which would reintroduce the collapse this fixes.
+  -- Lower-cased, punctuation collapsed to single hyphens, trimmed, for a
+  -- human-readable prefix. Collapsing every run of non-alnum characters to
+  -- one hyphen is not injective -- 'lever:acme', 'lever.acme', 'lever_acme'
+  -- and 'lever acme' all collapse to 'lever-acme', and real ATS board
+  -- tokens use both '-' and '_' -- so the hash of the ORIGINAL key (never
+  -- the collapsed slug) is appended unconditionally, not only past a length
+  -- threshold, to guarantee two different keys never produce the same job
+  -- name. Only a key with no alnum characters at all (or the empty string)
+  -- yields '', which the caller treats as "no usable job-name form".
   select case
-           when length(v.slug) <= 40 then v.slug
+           when v.slug = '' then ''
            else left(v.slug, 31) || '-' ||
                 left(encode(sha256(convert_to(p_key, 'UTF8')), 'hex'), 8)
          end
@@ -235,9 +241,9 @@ as $$
 $$;
 
 comment on function public.job_hunter_source_schedule_slug(text) is
-  'A source key rendered as a pg_cron job-name fragment: lower case, '
-  'punctuation collapsed, hashed tail past 40 characters so two long keys '
-  'cannot collide (issue #184).';
+  'A source key rendered as a pg_cron job-name fragment: a lower-cased, '
+  'punctuation-collapsed prefix plus an unconditional hash of the original '
+  'key, since the collapsed prefix alone is not injective (issue #184).';
 
 drop function if exists public.job_hunter_schedule_stage_enqueue(text, text, jsonb);
 
