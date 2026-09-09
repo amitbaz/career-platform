@@ -20,7 +20,7 @@ claim we cannot support, and claims are expensive to walk back once someone has 
 | Objective facts about a posting are extracted once and shared, at a measured $0.00159 per posting. Cost scales with postings, not users. | Continuous ingestion delivers a match sooner than the competitor's nightly evening batch. Architecturally true; **no end-to-end number exists.** |
 | Roughly 14,000 postings seen per run, 209 newly discovered. | Match quality is better than title-matching or than the competitor's five-dimension model. **Currently an assertion.** |
 | Gross margin of about 91% at a hundred subscribers; break-even between one and two. | Interview preparation grounded in the user's own evidence is a differentiator. **Not built; concept only.** |
-| A learned ATS registry, per-key quota ledgers, row-level security, and a corpus that persists between runs. | |
+| A learned ATS registry, per-key quota ledgers, row-level security, and a corpus that persists between runs. | Unlimited watching — that the market can be crawled once for everybody. **Extraction is shared today; discovery is not.** #203 and #204 are what make it true. |
 
 **The uncomfortable summary: the only thing we can claim today that the competitor cannot is
 our cost structure, and nobody buys a cost structure.** Every customer-facing differentiator
@@ -80,20 +80,36 @@ Weekly billing is a deliberate signal: this is a sprint, not a subscription, can
 land a job. That is well judged for a temporary need and lowers the commitment to start. It
 also annualises to about £363, which is a large number nobody is shown.
 
-### The weakness in their model, and why we do not share it
+### The weakness in their model, and the half of it we have actually fixed
 
 **They meter scans because scanning costs them per user.** A free-tier job seeker gets three
 scans a week and has to decide when to spend one. That is the opposite of relief — it makes
 the user ration the thing that is supposed to remove their anxiety.
 
-**Our architecture removes that constraint.** Objective extraction happens once per posting
-and is shared, so watching the market is close to free for us however many users are watching.
-The per-user cost is only the subjective scoring and the application packs.
+**Half of that constraint is removed in our architecture today, and half is not.** The
+distinction matters enough to state precisely, because an earlier version of this document got
+it wrong:
 
-**So we can offer what they structurally cannot: unlimited watching.** "Gili watches
-everything, always" is a promise their unit economics do not permit without rebuilding, and it
-falls directly out of the #118 and #174–#179 work. This is the strongest strategic finding in
-this document: their metering is a symptom of per-user scanning, and ours does not have to be.
+- **Extraction is shared, and that is built.** A posting's objective facts are read once and
+  reused by every user, at a measured $0.00159 per posting. AI cost is bounded by postings
+  rather than by users. This was #175's achievement and it holds.
+- **Discovery is still per-user, and that is not built.** All four discovery tables —
+  `job_hunter_ats_registry`, `job_hunter_company_watch`, `job_hunter_search_api_usage` and
+  `job_hunter_gmail_sync_state` — carry `user_id`, and the pipeline builds its source list from
+  that per-user state under row-level security. **N users means N crawls of substantially the
+  same market**, and `job_hunter_jobs` still produces N job rows per posting.
+
+**The consequence for pricing is direct.** A licensed feed's quota is a *platform* quota —
+Adzuna's is 2,500 calls a month on the key — so if each user's crawl spends from it, the
+ceiling divides by user count in exactly the way theirs does. On today's code we have the
+weakness we would be criticising.
+
+**So "Gili watches everything, always" is a promise about the architecture we are building,
+not the one we have.** The strategic insight stands and the competitor still cannot easily
+copy it: their metering is a symptom of per-user scanning, and ours does not have to be. But
+the tense is future, and **#203 (share learned ATS boards across users) and #204 (share
+automatic company watches against the company entity) are what make it present.** Until they
+land it belongs in the believe column, and it should not appear on a landing page.
 
 ### Recommendation
 
@@ -115,9 +131,18 @@ than as a discount — **we should not compete on being cheaper**, because with 
 price is not where the contest is, and undercutting a funded competitor signals inferiority.
 The number needs validating against willingness to pay; the structure does not.
 
-**Do not launch a free tier that meters scans.** Copying their free tier would import the
-weakness we do not have. A free tier should cap *packs* and *scoring depth* and leave watching
-untouched.
+**Do not launch a free tier that meters scans — but argue it from where we are going, not
+from where we are.** The reasoning is that scan-metering is a permanent tax in their
+architecture and a temporary one in ours: once #203 and #204 land, crawling is shared and a
+scan cap would be an artificial limit rather than a real cost. Building the pricing around a
+cap we intend to remove would mean re-teaching customers later.
+
+**The honest caveat, which is a launch-sequencing constraint rather than a pricing one:** on
+today's code discovery is per-user, so an unlimited-watching promise made before #203 and #204
+land would be sold against a cost we are still paying per user — and against a licensed
+feed's platform quota, that is the binding limit before the AI quota is. **Unlimited watching
+should not be advertised until discovery is shared.** That makes #203 and #204 pricing
+prerequisites, not just efficiency work.
 
 ## What this means for the roadmap
 
@@ -127,5 +152,7 @@ Nothing here asks for a ticket that does not exist. It changes emphasis:
   claim only once #189 measures it.
 - **#80** moves from "nice to have" to the experiment that unlocks the second half of the
   positioning.
+- **#203 and #204** are pricing prerequisites, not efficiency work: they are what turns
+  unlimited watching from an intention into a claim, and they gate advertising it.
 - **The web posting surface**, already on the launch-precondition list, should not be built
   before `docs/voice.md` exists.
