@@ -65,7 +65,19 @@ def _posting_id(store, job_id: str) -> str:
 
 
 def _overwrite_posting(store, posting_id: str, values: dict) -> None:
-    store._client.update("job_hunter_postings", values, params={"id": f"eq.{posting_id}"})
+    """Drive the posting and the job row apart, as ingestion could.
+
+    Over the privileged connection since #179: a posting is not writable by a
+    user at all, so a fixture that wrote one through PostgREST would be
+    testing a path that no longer exists. Nothing about what these tests
+    assert changes -- they are about which of the two rows the readers
+    follow.
+    """
+    assignments = ", ".join(f"{column} = %s" for column in values)
+    store._shared_write(
+        f"update public.job_hunter_postings set {assignments} where id = %s::uuid",
+        (*values.values(), posting_id),
+    )
 
 
 # get_job ---------------------------------------------------------------------

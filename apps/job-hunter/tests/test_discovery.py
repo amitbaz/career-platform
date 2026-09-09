@@ -511,13 +511,18 @@ def test_collect_candidates_reports_the_postings_each_batch_discovered(
     assert result.stats.postings_discovered == 4
 
 
-def test_collect_candidates_reports_no_postings_without_a_direct_connection(
+def test_collect_candidates_counts_the_postings_it_added_to_the_corpus(
     store, policy
 ):
-    """The `store` fixture holds no ingestion connection, which is the point.
+    """`postings_discovered` is what the run summary reports as written (#179).
 
-    Every posting is then resolved inside its own job upsert, exactly as
-    before #182, and the run still reports what it discovered for this user.
+    This used to be the "no direct connection" case, where the count was
+    zero because every posting was resolved inside its own job upsert. Since
+    #179 there is no such run: a crawl without the privileged connection
+    cannot write a posting at all and the pipeline does not start one. What
+    is left worth pinning is that the number counts advertisements new to
+    the corpus, not rows new to this user -- the two differ the moment a
+    second user discovers something the first already has.
     """
     job = Job(
         source="devjobs",
@@ -530,7 +535,7 @@ def test_collect_candidates_reports_no_postings_without_a_direct_connection(
 
     result = collect_candidates([FakeSource([job])], store, NoOpHttp(), policy)
 
-    assert result.stats.postings_discovered == 0
+    assert result.stats.postings_discovered == 1
     assert result.stats.newly_discovered == 1
 
 
@@ -1781,14 +1786,14 @@ class CountingClient:
 
 
 def test_collect_candidates_request_count_does_not_grow_with_job_count(
-    supabase_client, policy
+    supabase_client, ingestion_database, policy
 ):
     """Twenty jobs must not cost twenty times what one job costs."""
     from job_hunter.postgres_store import PostgresJobStore
 
     def run_with(job_count: int) -> int:
         client = CountingClient(supabase_client)
-        store = PostgresJobStore(client)
+        store = PostgresJobStore(client, ingestion_database)
         jobs = [
             Job(
                 source="test",
@@ -1817,7 +1822,7 @@ def test_collect_candidates_request_count_does_not_grow_with_job_count(
 
 
 def test_collect_candidates_request_count_does_not_grow_with_rejected_job_count(
-    supabase_client, policy
+    supabase_client, ingestion_database, policy
 ):
     """The prefilter-rejection path must stay batched too.
 
@@ -1832,7 +1837,7 @@ def test_collect_candidates_request_count_does_not_grow_with_rejected_job_count(
 
     def run_with(job_count: int) -> int:
         client = CountingClient(supabase_client)
-        store = PostgresJobStore(client)
+        store = PostgresJobStore(client, ingestion_database)
         jobs = [
             Job(
                 source="test",
@@ -1881,7 +1886,7 @@ class _PerJobAtsResolver:
 
 
 def test_collect_candidates_resolver_tail_costs_only_what_it_resolves(
-    supabase_client, policy
+    supabase_client, ingestion_database, policy
 ):
     """Record the cost of the one path `collect_candidates` did NOT batch.
 
@@ -1912,7 +1917,7 @@ def test_collect_candidates_resolver_tail_costs_only_what_it_resolves(
 
     def run_with(job_count: int) -> int:
         client = CountingClient(supabase_client)
-        store = PostgresJobStore(client)
+        store = PostgresJobStore(client, ingestion_database)
         jobs = [
             Job(
                 source="arbeitnow",
@@ -1960,7 +1965,7 @@ def test_collect_candidates_resolver_tail_costs_only_what_it_resolves(
 
 
 def test_collect_candidates_resolver_tail_is_free_for_already_canonical_jobs(
-    supabase_client, policy
+    supabase_client, ingestion_database, policy
 ):
     """#160: a job resolved to what it already was costs no request at all.
 
@@ -1977,7 +1982,7 @@ def test_collect_candidates_resolver_tail_is_free_for_already_canonical_jobs(
 
     def run_with(job_count: int) -> int:
         client = CountingClient(supabase_client)
-        store = PostgresJobStore(client)
+        store = PostgresJobStore(client, ingestion_database)
         jobs = [
             Job(
                 source="lever",
@@ -2022,7 +2027,7 @@ def test_collect_candidates_resolver_tail_is_free_for_already_canonical_jobs(
 
 
 def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
-    supabase_client, policy
+    supabase_client, ingestion_database, policy
 ):
     """Twenty jobs on one ATS board must cost the same registry traffic as one.
 
@@ -2042,7 +2047,7 @@ def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
 
     def run_with(job_count: int) -> int:
         client = CountingClient(supabase_client)
-        store = PostgresJobStore(client)
+        store = PostgresJobStore(client, ingestion_database)
         jobs = [
             Job(
                 source="test",
@@ -2095,13 +2100,19 @@ def test_collect_candidates_harvests_ats_board_with_observed_not_attributed_mark
     record "germany_eu" instead of the observed "london", silently losing
     the invariant this test guards.
     """
+    # A board identifier nobody else uses, for the same reason a store-backed
+    # test needs its own fingerprint: `job_hunter_ats_boards` is shared, has no
+    # owner, and is not truncated between tests, so a board another test paused
+    # or rejected would drop out of `list_due_ats_boards` here and fail this
+    # test for a reason that has nothing to do with market hints.
+    board = f"acme-hint-{uuid.uuid4().hex[:12]}"
     job = Job(
         source="ashby",
         source_job_id="1",
         title="Senior Product Engineer",
         company="Acme",
         location="Berlin",
-        url="https://jobs.lever.co/acme/observed-hint-job",
+        url=f"https://jobs.lever.co/{board}/observed-hint-job",
         description="React TypeScript remote role based in Berlin.",
         remote=True,
         market_hint="london",
@@ -2114,7 +2125,7 @@ def test_collect_candidates_harvests_ats_board_with_observed_not_attributed_mark
     assert result.eligible[0][1].market_id == "germany_eu"
 
     boards = store.list_due_ats_boards(datetime.now(timezone.utc))
-    matching = [b for b in boards if b.board_identifier == "acme" and b.provider == "lever"]
+    matching = [b for b in boards if b.board_identifier == board and b.provider == "lever"]
     assert len(matching) == 1
     assert matching[0].market_hint == "london"
 
@@ -2914,7 +2925,7 @@ def test_format_phase_cost_renders_every_phase_dearest_first():
 
 
 def test_recording_eligibility_does_not_scale_with_the_eligible_jobs(
-    supabase_client, policy
+    supabase_client, ingestion_database, policy
 ):
     """Twenty eligible jobs on one board cost no more registry writes than one.
 
@@ -2928,7 +2939,7 @@ def test_recording_eligibility_does_not_scale_with_the_eligible_jobs(
 
     def run_with(job_count: int) -> tuple[int, int]:
         client = CountingClient(supabase_client)
-        store = PostgresJobStore(client)
+        store = PostgresJobStore(client, ingestion_database)
         jobs = [
             Job(
                 source="arbeitnow",

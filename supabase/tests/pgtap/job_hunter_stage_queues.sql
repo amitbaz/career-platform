@@ -169,6 +169,17 @@ select unalike(
 
 -- Operational metrics, with no user identity anywhere in the path -----------
 
+-- Cleared first, inside this transaction, so the assertion below is about the
+-- one row this test writes. The dead-letter table is shared operational state
+-- with no user dimension and nothing truncates it between runs, so a Job
+-- Hunter suite that legitimately dead-lettered a message -- a facet response
+-- with a seniority outside the vocabulary, say -- leaves rows behind that make
+-- a global "depth is zero" assertion fail for a reason that has nothing to do
+-- with the metrics function. The whole file rolls back, so this deletes
+-- nothing anyone keeps, and `pnpm db:test` holds the stack lock exclusively,
+-- so there is no concurrent writer to block.
+delete from public.job_hunter_stage_dead_letters;
+
 insert into public.job_hunter_stage_dead_letters
   (stage, message_id, payload, failure_class, error, attempt_count)
 values

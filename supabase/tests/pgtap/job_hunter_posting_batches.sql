@@ -355,8 +355,11 @@ select is(
   'and reaches a posting identical to the one the per-listing loop reached');
 
 -- A job payload that already names its posting ---------------------------------
-
-select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
+--
+-- Since #179 the job upsert is a shared-table write, so it runs as the
+-- privileged ingestion role with the user it acts for supplied. The scenario
+-- is the same one: a staged batch has already resolved this listing's posting,
+-- and the upsert must keep it rather than resolving a second.
 
 -- Written in two statements deliberately: a job row the function inserts is
 -- invisible to a join in the same statement, so reading it back has to be a
@@ -369,7 +372,8 @@ select * from public.job_hunter_upsert_job(jsonb_build_object(
   'company', 'Initech',
   'url', 'https://example.test/jhpb/job',
   'posting_id', (select p.id from public.job_hunter_postings p
-                  where p.fingerprint = 'jhpb-dup')::text));
+                  where p.fingerprint = 'jhpb-dup')::text),
+  'eeeeeeee-0000-0000-0000-00000000000a'::uuid);
 
 select is(
   (select j.posting_id from public.job_hunter_jobs j
@@ -387,7 +391,8 @@ select * from public.job_hunter_upsert_job(jsonb_build_object(
   'source', 'test',
   'title', 'Data Scientist',
   'company', 'Initech',
-  'url', 'https://example.test/jhpb/job2'));
+  'url', 'https://example.test/jhpb/job2'),
+  'eeeeeeee-0000-0000-0000-00000000000a'::uuid);
 
 select isnt(
   (select j.posting_id from public.job_hunter_jobs j

@@ -40,6 +40,13 @@ begin
   execute 'set local role authenticated';
 end $$;
 
+create function pg_temp.become_postgres() returns void
+language plpgsql as $$
+begin
+  execute 'reset role';
+  perform set_config('request.jwt.claims', '', true);
+end $$;
+
 -- Shape ---------------------------------------------------------------------
 
 select has_table('public', 'job_hunter_companies', 'the employer has a table of its own');
@@ -115,11 +122,15 @@ select is(
   true,
   'row level security is on');
 
+-- Reads open, writes closed (#179): a company row is what an employer is to
+-- everybody, so everyone reads it and only the privileged ingestion role
+-- writes it. The revoked grants and the 42501 a user gets are proved in
+-- job_hunter_shared_writes.sql; this pins the policy half.
 select is(
   (select array_agg(polname::text order by polname)
      from pg_policy where polrelid = 'public.job_hunter_companies'::regclass),
-  array['insert_authenticated', 'select_authenticated', 'update_authenticated'],
-  'read and write are open to authenticated users; nobody may delete a shared company row');
+  array['select_authenticated'],
+  'reads are open to authenticated users; nobody but the privileged role writes a company row');
 
 -- Behaviour -----------------------------------------------------------------
 
@@ -131,9 +142,9 @@ select is(
   public.job_hunter_normalize_company('Acme Payments'),
   'a trailing legal suffix does not make a second employer');
 
--- User A reads the company once.
-select pg_temp.authenticate_as('cccccccc-0000-0000-0000-000000000005');
-
+-- Enrichment reads the company once, as the privileged role. Before #179 this
+-- ran as whichever user's run got there first; the row is the same, and what
+-- changed is that no user can write one by hand.
 select lives_ok(
   $$ insert into public.job_hunter_companies
        (identity, display_name, industry, business_model, stage, size_band,
@@ -141,7 +152,7 @@ select lives_ok(
      values (public.job_hunter_normalize_company('Acme Payments Ltd'),
              'Acme Payments Ltd', 'fintech', 'b2b_saas', 'series_a', '51_200',
              'europe', 'gemini-test', now()) $$,
-  'the user who read the company may store what it says');
+  'enrichment stores what it read about the employer');
 
 -- An out-of-vocabulary value must not reach the table by any path, or the
 -- filters above stop meaning anything.
@@ -162,39 +173,53 @@ select lives_ok(
       where identity = public.job_hunter_normalize_company('Acme Payments') $$,
   'unknown is a value every dimension may carry');
 
--- User B, who never read it, gets the answer anyway. This is the whole
--- issue: their run costs no provider call for this employer.
+-- Both users get the answer, and neither paid a provider call for this
+-- employer in their own run. This is the whole issue.
+select pg_temp.authenticate_as('cccccccc-0000-0000-0000-000000000005');
+
+select is(
+  (select business_model from public.job_hunter_companies
+    where identity = public.job_hunter_normalize_company('Acme Payments Ltd')),
+  'b2b_saas',
+  'the first user reads the company facts');
+
 select pg_temp.authenticate_as('cccccccc-0000-0000-0000-000000000006');
 
 select is(
   (select business_model from public.job_hunter_companies
     where identity = public.job_hunter_normalize_company('Acme Payments Ltd')),
   'b2b_saas',
-  'a second user reads the company facts the first user paid for');
+  'a second user reads the company facts nobody charged them for');
+
+-- Neither of them may write it. Employer facts feed ordering and scoring for
+-- every user, so one user rewriting them changes what everyone else is shown.
+select throws_ok(
+  $$ update public.job_hunter_companies
+        set stage = 'series_b', extracted_at = now()
+      where identity = public.job_hunter_normalize_company('Acme Payments') $$,
+  '42501', null,
+  'a user cannot rewrite the employer facts everyone is ranked against');
+
+select throws_ok(
+  $$ delete from public.job_hunter_companies
+      where identity = public.job_hunter_normalize_company('Acme Payments') $$,
+  '42501', null,
+  'nor take a shared reading away from the others');
+
+-- A refresh, on the transport it now runs on, still replaces the answer.
+select pg_temp.become_postgres();
 
 select lives_ok(
   $$ update public.job_hunter_companies
         set stage = 'series_b', extracted_at = now()
       where identity = public.job_hunter_normalize_company('Acme Payments') $$,
-  'a second user may refresh the facts once the interval has passed');
+  'enrichment refreshes the facts once the interval has passed');
 
 select is(
   (select count(*)::int from public.job_hunter_companies
     where identity = public.job_hunter_normalize_company('Acme Payments')),
   1,
   'a refresh replaces the answer rather than appending a second one');
-
--- Nobody may take a shared row away from the others.
-select lives_ok(
-  $$ delete from public.job_hunter_companies
-      where identity = public.job_hunter_normalize_company('Acme Payments') $$,
-  'a delete is refused silently by row-level security rather than erroring');
-
-select is(
-  (select count(*)::int from public.job_hunter_companies
-    where identity = public.job_hunter_normalize_company('Acme Payments')),
-  1,
-  'and the row is still there: no user may delete another user''s reading');
 
 -- The search profile's company preferences ----------------------------------
 --

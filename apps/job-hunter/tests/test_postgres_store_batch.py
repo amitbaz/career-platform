@@ -13,10 +13,24 @@ description.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
 import pytest
+
+
+def _batched_payloads(statement: str, params) -> list[dict] | None:
+    """The job payloads a `_shared_write` call carried, or None if it is not one.
+
+    Since #179 the batch upsert is a statement over the privileged connection
+    rather than a PostgREST RPC, so a test that wants to count chunks or make
+    one fail intercepts `_shared_write` and looks at the SQL. This keeps that
+    knowledge in one place.
+    """
+    if "job_hunter_upsert_jobs" not in statement:
+        return None
+    return json.loads(params[0])
 
 from job_hunter.models import Evaluation, Job
 
@@ -89,14 +103,15 @@ def test_upsert_logical_jobs_chunks_by_the_configured_size(store, monkeypatch):
 
     monkeypatch.setattr(module, "_JOB_UPSERT_CHUNK_SIZE", 2)
     calls: list[int] = []
-    original = store._client.rpc
+    original = store._shared_write
 
-    def counting_rpc(function, payload=None, **kwargs):
-        if function == "job_hunter_upsert_jobs":
-            calls.append(len(payload["p_jobs"]))
-        return original(function, payload, **kwargs)
+    def counting_write(statement, params=()):
+        payloads = _batched_payloads(statement, params)
+        if payloads is not None:
+            calls.append(len(payloads))
+        return original(statement, params)
 
-    monkeypatch.setattr(store._client, "rpc", counting_rpc)
+    monkeypatch.setattr(store, "_shared_write", counting_write)
 
     jobs = [_make_job(f"chunk-{i}", f"Engineer {i}", f"https://example.test/c{i}") for i in range(5)]
     results = store.upsert_logical_jobs(jobs)
@@ -111,16 +126,16 @@ def test_upsert_logical_jobs_replays_a_failed_chunk_one_job_at_a_time(store, mon
         _make_job("fallback-1", "Frontend Engineer", "https://example.test/f1"),
         _make_job("fallback-2", "Backend Engineer", "https://example.test/f2"),
     ]
-    original = store._client.rpc
+    original = store._shared_write
     failed_once = {"done": False}
 
-    def flaky_rpc(function, payload=None, **kwargs):
-        if function == "job_hunter_upsert_jobs" and not failed_once["done"]:
+    def flaky_write(statement, params=()):
+        if _batched_payloads(statement, params) is not None and not failed_once["done"]:
             failed_once["done"] = True
             raise RuntimeError("chunk exploded")
-        return original(function, payload, **kwargs)
+        return original(statement, params)
 
-    monkeypatch.setattr(store._client, "rpc", flaky_rpc)
+    monkeypatch.setattr(store, "_shared_write", flaky_write)
 
     results = store.upsert_logical_jobs(jobs)
 
@@ -134,13 +149,13 @@ def test_upsert_logical_jobs_skips_a_job_that_fails_on_replay(store, monkeypatch
         _make_job("skip-good", "Frontend Engineer", "https://example.test/g1"),
         _make_job("skip-bad", "Backend Engineer", "https://example.test/b1"),
     ]
-    original_rpc = store._client.rpc
+    original_write = store._shared_write
     original_single = store.upsert_logical_job
 
-    def failing_batch(function, payload=None, **kwargs):
-        if function == "job_hunter_upsert_jobs":
+    def failing_batch(statement, params=()):
+        if _batched_payloads(statement, params) is not None:
             raise RuntimeError("chunk exploded")
-        return original_rpc(function, payload, **kwargs)
+        return original_write(statement, params)
 
     def failing_for_bad(job, **kwargs):
         # `_make_job` makes the fingerprint unique per run, so this matches
@@ -149,7 +164,7 @@ def test_upsert_logical_jobs_skips_a_job_that_fails_on_replay(store, monkeypatch
             raise RuntimeError("this one job is malformed")
         return original_single(job)
 
-    monkeypatch.setattr(store._client, "rpc", failing_batch)
+    monkeypatch.setattr(store, "_shared_write", failing_batch)
     monkeypatch.setattr(store, "upsert_logical_job", failing_for_bad)
 
     results = store.upsert_logical_jobs(jobs)
@@ -172,19 +187,19 @@ def test_upsert_logical_jobs_raises_when_every_chunk_fails(store, monkeypatch):
     from job_hunter import postgres_store as module
 
     monkeypatch.setattr(module, "_JOB_UPSERT_CHUNK_SIZE", 1)
-    original_rpc = store._client.rpc
+    original_write = store._shared_write
     replayed: list[str] = []
 
-    def always_failing_batch(function, payload=None, **kwargs):
-        if function == "job_hunter_upsert_jobs":
+    def always_failing_batch(statement, params=()):
+        if _batched_payloads(statement, params) is not None:
             raise RuntimeError("statement timeout")
-        return original_rpc(function, payload, **kwargs)
+        return original_write(statement, params)
 
     def recording_single(job, **kwargs):
         replayed.append(job.source_job_id)
         return ("00000000-0000-0000-0000-000000000001", False, False)
 
-    monkeypatch.setattr(store._client, "rpc", always_failing_batch)
+    monkeypatch.setattr(store, "_shared_write", always_failing_batch)
     monkeypatch.setattr(store, "upsert_logical_job", recording_single)
 
     jobs = [
@@ -211,17 +226,17 @@ def test_upsert_logical_jobs_tolerates_isolated_chunk_failures(store, monkeypatc
     from job_hunter import postgres_store as module
 
     monkeypatch.setattr(module, "_JOB_UPSERT_CHUNK_SIZE", 1)
-    original_rpc = store._client.rpc
+    original_write = store._shared_write
     chunk_number = {"n": 0}
 
-    def failing_on_even_chunks(function, payload=None, **kwargs):
-        if function == "job_hunter_upsert_jobs":
+    def failing_on_even_chunks(statement, params=()):
+        if _batched_payloads(statement, params) is not None:
             chunk_number["n"] += 1
             if chunk_number["n"] % 2 == 1:
                 raise RuntimeError("one bad posting")
-        return original_rpc(function, payload, **kwargs)
+        return original_write(statement, params)
 
-    monkeypatch.setattr(store._client, "rpc", failing_on_even_chunks)
+    monkeypatch.setattr(store, "_shared_write", failing_on_even_chunks)
 
     jobs = [
         _make_job(f"scattered-{i}", f"Engineer {i}", f"https://example.test/sc{i}")
@@ -235,10 +250,11 @@ def test_upsert_logical_jobs_tolerates_isolated_chunk_failures(store, monkeypatc
 
 
 def test_upsert_logical_jobs_on_empty_input_makes_no_request(store, monkeypatch):
-    def exploding_rpc(*args, **kwargs):
+    def exploding(*args, **kwargs):
         raise AssertionError("no request should be made for an empty batch")
 
-    monkeypatch.setattr(store._client, "rpc", exploding_rpc)
+    monkeypatch.setattr(store._client, "rpc", exploding)
+    monkeypatch.setattr(store, "_shared_write", exploding)
 
     assert store.upsert_logical_jobs([]) == []
 

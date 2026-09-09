@@ -488,7 +488,7 @@ def build_legacy_db(
     return db_path
 
 
-def test_navigation_cards_get_their_job_ids_remapped(tmp_path, supabase_client: SupabaseClient):
+def test_navigation_cards_get_their_job_ids_remapped(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     sqlite_path = build_legacy_db(
         tmp_path,
         jobs=[{"id": 41, "fingerprint": "fp-a", "title": "Dev"}],
@@ -514,7 +514,7 @@ def test_navigation_cards_get_their_job_ids_remapped(tmp_path, supabase_client: 
         ],
     )
 
-    migrate(sqlite_path, supabase_client)
+    migrate(sqlite_path, supabase_client, ingestion_database)
 
     stored = supabase_client.select(
         "job_hunter_telegram_navigation_sessions", params={"session_id": "eq.s1"}
@@ -524,7 +524,7 @@ def test_navigation_cards_get_their_job_ids_remapped(tmp_path, supabase_client: 
     assert stored["cards_json"][0]["job_id"] != 41
 
 
-def test_cards_whose_job_did_not_migrate_are_dropped(tmp_path, supabase_client: SupabaseClient):
+def test_cards_whose_job_did_not_migrate_are_dropped(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     sqlite_path = build_legacy_db(
         tmp_path,
         jobs=[],
@@ -541,7 +541,7 @@ def test_cards_whose_job_did_not_migrate_are_dropped(tmp_path, supabase_client: 
         ],
     )
 
-    migrate(sqlite_path, supabase_client)
+    migrate(sqlite_path, supabase_client, ingestion_database)
 
     stored = supabase_client.select(
         "job_hunter_telegram_navigation_sessions", params={"session_id": "eq.s2"}
@@ -549,20 +549,20 @@ def test_cards_whose_job_did_not_migrate_are_dropped(tmp_path, supabase_client: 
     assert stored == [] or stored[0]["cards_json"] == []
 
 
-def test_migration_is_rerunnable(tmp_path, supabase_client: SupabaseClient):
+def test_migration_is_rerunnable(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     sqlite_path = build_legacy_db(tmp_path, jobs=[{"id": 1, "fingerprint": "fp-x", "title": "Dev"}])
-    first = migrate(sqlite_path, supabase_client)
-    second = migrate(sqlite_path, supabase_client)
+    first = migrate(sqlite_path, supabase_client, ingestion_database)
+    second = migrate(sqlite_path, supabase_client, ingestion_database)
     assert first == second
     assert len(_memberships_for(supabase_client, "fp-x")) == 1
 
 
-def test_migrate_returns_per_table_row_counts(tmp_path, supabase_client: SupabaseClient):
+def test_migrate_returns_per_table_row_counts(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     sqlite_path = build_legacy_db(
         tmp_path,
         jobs=[{"id": 1, "fingerprint": "fp-count", "title": "Dev"}],
     )
-    counts = migrate(sqlite_path, supabase_client)
+    counts = migrate(sqlite_path, supabase_client, ingestion_database)
     assert counts["jobs"] == 1
     assert counts["job_sources"] == 0
     # Rebuilt on the next real run -- never migrated.
@@ -572,7 +572,7 @@ def test_migrate_returns_per_table_row_counts(tmp_path, supabase_client: Supabas
 
 
 def test_evaluations_and_materials_and_deliveries_are_remapped_and_preserved(
-    tmp_path, supabase_client: SupabaseClient
+    tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
     sqlite_path = build_legacy_db(
         tmp_path,
@@ -582,7 +582,7 @@ def test_evaluations_and_materials_and_deliveries_are_remapped_and_preserved(
         deliveries=[{"job_id": 5, "delivery_type": "telegram_message", "delivered_at": "2026-08-01T02:00:00+00:00"}],
     )
 
-    migrate(sqlite_path, supabase_client)
+    migrate(sqlite_path, supabase_client, ingestion_database)
 
     job = _membership_for(supabase_client, "fp-eval")
     evaluation = supabase_client.select(
@@ -603,7 +603,7 @@ def test_evaluations_and_materials_and_deliveries_are_remapped_and_preserved(
 
 
 def test_evaluation_row_is_dropped_when_its_job_did_not_migrate(
-    tmp_path, supabase_client: SupabaseClient
+    tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
     sqlite_path = build_legacy_db(
         tmp_path,
@@ -611,13 +611,13 @@ def test_evaluation_row_is_dropped_when_its_job_did_not_migrate(
         evaluations=[{"job_id": 999, "total_score": 50, "evaluated_at": "2026-08-01T00:00:00+00:00"}],
     )
 
-    counts = migrate(sqlite_path, supabase_client)
+    counts = migrate(sqlite_path, supabase_client, ingestion_database)
 
     assert counts["evaluations"] == 0
 
 
 def test_company_watch_nulls_dangling_discovered_from_job_id(
-    tmp_path, supabase_client: SupabaseClient
+    tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
     sqlite_path = build_legacy_db(
         tmp_path,
@@ -633,7 +633,7 @@ def test_company_watch_nulls_dangling_discovered_from_job_id(
         ],
     )
 
-    counts = migrate(sqlite_path, supabase_client)
+    counts = migrate(sqlite_path, supabase_client, ingestion_database)
 
     assert counts["company_watch"] == 1
     row = supabase_client.select(
@@ -642,7 +642,7 @@ def test_company_watch_nulls_dangling_discovered_from_job_id(
     assert row["discovered_from_job_id"] is None
 
 
-def test_review_delivery_event_id_is_remapped(tmp_path, supabase_client: SupabaseClient):
+def test_review_delivery_event_id_is_remapped(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     sqlite_path = build_legacy_db(
         tmp_path,
         application_events=[
@@ -658,7 +658,7 @@ def test_review_delivery_event_id_is_remapped(tmp_path, supabase_client: Supabas
         review_deliveries=[{"event_id": 7, "delivered_at": "2026-08-02T00:00:00+00:00"}],
     )
 
-    migrate(sqlite_path, supabase_client)
+    migrate(sqlite_path, supabase_client, ingestion_database)
 
     event = supabase_client.select(
         "job_hunter_application_events", params={"source_message_id": "eq.msg-7"}
@@ -671,7 +671,7 @@ def test_review_delivery_event_id_is_remapped(tmp_path, supabase_client: Supabas
 
 
 def test_review_delivery_is_dropped_when_its_event_did_not_migrate(
-    tmp_path, supabase_client: SupabaseClient
+    tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
     sqlite_path = build_legacy_db(
         tmp_path,
@@ -679,12 +679,12 @@ def test_review_delivery_is_dropped_when_its_event_did_not_migrate(
         review_deliveries=[{"event_id": 999, "delivered_at": "2026-08-02T00:00:00+00:00"}],
     )
 
-    counts = migrate(sqlite_path, supabase_client)
+    counts = migrate(sqlite_path, supabase_client, ingestion_database)
 
     assert counts["review_deliveries"] == 0
 
 
-def test_naive_legacy_timestamp_is_assumed_utc(tmp_path, supabase_client: SupabaseClient, caplog):
+def test_naive_legacy_timestamp_is_assumed_utc(tmp_path, supabase_client: SupabaseClient, ingestion_database, caplog):
     import logging
 
     sqlite_path = build_legacy_db(
@@ -701,27 +701,27 @@ def test_naive_legacy_timestamp_is_assumed_utc(tmp_path, supabase_client: Supaba
     )
 
     with caplog.at_level(logging.INFO):
-        migrate(sqlite_path, supabase_client)
+        migrate(sqlite_path, supabase_client, ingestion_database)
 
     job = _membership_for(supabase_client, "fp-naive")
     assert job["first_seen_at"].startswith("2026-08-01T12:00:00")
     assert any("assumed UTC" in message for message in caplog.messages)
 
 
-def test_tables_absent_from_the_sqlite_file_migrate_as_zero(tmp_path, supabase_client: SupabaseClient):
+def test_tables_absent_from_the_sqlite_file_migrate_as_zero(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     db_path = tmp_path / "empty.sqlite3"
     conn = sqlite3.connect(str(db_path))
     conn.executescript(_SCHEMA)
     conn.commit()
     conn.close()
 
-    counts = migrate(db_path, supabase_client)
+    counts = migrate(db_path, supabase_client, ingestion_database)
 
     assert all(value == 0 for value in counts.values())
 
 
 def test_ai_usage_rows_are_carried_with_their_token_accounting(
-    tmp_path, supabase_client: SupabaseClient
+    tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
     """The AI ledger must survive the move, values intact.
 
@@ -747,7 +747,7 @@ def test_ai_usage_rows_are_carried_with_their_token_accounting(
         ],
     )
 
-    counts = migrate(sqlite_path, supabase_client)
+    counts = migrate(sqlite_path, supabase_client, ingestion_database)
 
     assert counts["gemini_usage"] == 1
     stored = supabase_client.select(
@@ -769,7 +769,7 @@ def test_ai_usage_rows_are_carried_with_their_token_accounting(
 
 
 def test_gemini_usage_row_without_a_run_id_becomes_unknown(
-    tmp_path, supabase_client: SupabaseClient
+    tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
     """`run_id` is nullable in SQLite and NOT NULL in Postgres.
 
@@ -790,7 +790,7 @@ def test_gemini_usage_row_without_a_run_id_becomes_unknown(
         ],
     )
 
-    migrate(sqlite_path, supabase_client)
+    migrate(sqlite_path, supabase_client, ingestion_database)
 
     stored = supabase_client.select(
         "job_hunter_ai_usage", params={"purpose": "eq.evaluation"}

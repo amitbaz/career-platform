@@ -94,21 +94,25 @@ def _build_ingestion_database() -> IngestionDatabase | None:
     """
     dsn = load_ingestion_dsn()
     if dsn is None:
-        logger.info(
-            "no SUPABASE_DB_URL is configured: a crawl batch will be persisted "
-            "one posting at a time over PostgREST rather than with one merge"
+        logger.warning(
+            "no SUPABASE_DB_URL is configured: this run cannot write shared rows "
+            "(postings, their facets, company facts, ATS board health), so it will "
+            "skip discovery and enrichment entirely and deliver from the postings "
+            "that already exist. The corpus will not change until it is configured."
         )
         return None
     try:
         return IngestionDatabase(dsn)
     except Exception:
-        # The fast path is a saving, never a dependency. Constructing the pool
-        # is where a missing or unloadable psycopg lands, and letting that
-        # reach main() would turn a run that delivers slowly into a run that
-        # delivers nothing.
+        # Since #179 this is no longer "the fast path is unavailable, take the
+        # slow one": the shared corpus is writable only over this connection,
+        # so a run without it delivers from what it already has and adds
+        # nothing. Still not a reason to refuse to start -- a degraded day is
+        # better than an outage -- but it is a warning, not a note.
         logger.exception(
             "SUPABASE_DB_URL is set but ingestion could not open a direct "
-            "Postgres connection; persisting one posting at a time instead"
+            "Postgres connection; this run will skip discovery and enrichment and "
+            "deliver from the postings that already exist"
         )
         return None
 
@@ -193,7 +197,8 @@ def _run_with(
     )
     logger.info(
         "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
-        "blocked_by_facets=%d facets_extracted=%d facets_reused=%d facets_failed=%d",
+        "blocked_by_facets=%d postings_written=%d facets_extracted=%d "
+        "facets_reused=%d facets_failed=%d",
         summary.ready_to_apply,
         summary.possible_matches,
         summary.skipped,
@@ -201,6 +206,13 @@ def _run_with(
         # Jobs the stored facets disqualified without a scoring call (#127):
         # the saving this run made against the user's own provider quota.
         summary.blocked_by_facets,
+        # What this run added to the shared corpus (#179). Reported next to
+        # the facet counters because the two zeroes together are the
+        # signature of a run with no direct Postgres connection: it scored
+        # and delivered from postings that already existed and could add
+        # nothing. Without this number that run reads exactly like a quiet
+        # week, which is the failure mode rule 5 in AGENTS.md is about.
+        summary.postings_written,
         # Facet extraction is shared, best-effort work: it is reported here so
         # a run whose enrichment is quietly failing is visible, but it never
         # decides the exit code -- a run that delivered its digest succeeded.

@@ -47,6 +47,7 @@ def client(supabase_client: SupabaseClient) -> SupabaseClient:
 
 def _seed_jobs(
     client: SupabaseClient,
+    seed_postings,
     *,
     marker: str,
     count: int = 1,
@@ -63,9 +64,12 @@ def _seed_jobs(
     One posting per row is not incidental: `unique (user_id, posting_id)`
     means one user cannot hold two rows over one posting, which is the point
     of the ticket.
+
+    The postings go in over the privileged connection (`seed_postings`) since
+    #179; the membership rows stay on PostgREST as the user, because these are
+    tests about what the client does over that transport.
     """
-    postings = client.insert(
-        "job_hunter_postings",
+    posting_ids = seed_postings(
         [
             {
                 "fingerprint": f"{marker}-{index}-{uuid.uuid4()}",
@@ -75,26 +79,26 @@ def _seed_jobs(
                 **(posting or {}),
             }
             for index in range(count)
-        ],
+        ]
     )
     return client.insert(
         "job_hunter_jobs",
         [
             {
                 "user_id": client.user_id,
-                "posting_id": row["id"],
+                "posting_id": posting_id,
                 "market_id": marker,
                 "first_seen_at": first_seen_at,
                 "last_seen_at": "2026-09-06T10:00:00+00:00",
             }
-            for row in postings
+            for posting_id in posting_ids
         ],
     )
 
 
-def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None:
+def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient, seed_postings) -> None:
     user_id = client.user_id
-    job = _seed_jobs(client, marker=f"upsert-{uuid.uuid4()}")[0]
+    job = _seed_jobs(client, seed_postings, marker=f"upsert-{uuid.uuid4()}")[0]
     row = {
         "user_id": user_id,
         "job_id": job["id"],
@@ -111,9 +115,9 @@ def test_upsert_is_idempotent_on_the_natural_key(client: SupabaseClient) -> None
     assert len(stored) == 1
 
 
-def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
+def test_upsert_updates_the_conflicting_row(client: SupabaseClient, seed_postings) -> None:
     user_id = client.user_id
-    job = _seed_jobs(client, marker=f"upsert-{uuid.uuid4()}")[0]
+    job = _seed_jobs(client, seed_postings, marker=f"upsert-{uuid.uuid4()}")[0]
     base = {
         "user_id": user_id,
         "job_id": job["id"],
@@ -133,22 +137,22 @@ def test_upsert_updates_the_conflicting_row(client: SupabaseClient) -> None:
     assert stored[0]["total_score"] == 91
 
 
-def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient) -> None:
+def test_select_pages_past_the_postgrest_row_cap(client: SupabaseClient, seed_postings) -> None:
     user_id = client.user_id
     marker = f"page-{uuid.uuid4()}"
     for chunk in range(0, 1100, 500):
-        _seed_jobs(client, marker=marker, count=min(500, 1100 - chunk))
+        _seed_jobs(client, seed_postings, marker=marker, count=min(500, 1100 - chunk))
 
     found = client.select("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
     assert len(found) == 1100, "select must page rather than silently truncate at 1000"
 
 
-def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient) -> None:
+def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient, seed_postings) -> None:
     user_id = client.user_id
     marker = f"stable-{uuid.uuid4()}"
     for chunk in range(0, 1100, 500):
-        _seed_jobs(client, marker=marker, count=min(500, 1100 - chunk))
+        _seed_jobs(client, seed_postings, marker=marker, count=min(500, 1100 - chunk))
 
     found = client.select("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
@@ -157,12 +161,12 @@ def test_select_paging_returns_rows_in_stable_order(client: SupabaseClient) -> N
     assert len(set(ids)) == len(ids), "paging must not duplicate rows"
 
 
-def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseClient) -> None:
+def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseClient, seed_postings) -> None:
     user_id = client.user_id
     marker = f"order-{uuid.uuid4()}"
     # Create rows with a shared sort key so id tiebreaker matters.
     for chunk in range(0, 1100, 500):
-        _seed_jobs(client, marker=marker, count=min(500, 1100 - chunk))
+        _seed_jobs(client, seed_postings, marker=marker, count=min(500, 1100 - chunk))
 
     # Read with a caller-supplied order (by id, ascending).
     # This verifies that the caller's order is passed through and tiebreaker applied.
@@ -176,7 +180,7 @@ def test_select_paging_preserves_caller_order_with_id_tiebreak(client: SupabaseC
 
 
 def test_rpc_calls_a_store_function_and_respects_rls(
-    client: SupabaseClient, other_supabase_client: SupabaseClient
+    client: SupabaseClient, other_supabase_client: SupabaseClient, seed_postings
 ) -> None:
     """Test that RPC functions return correct data and respect row-level security.
 
@@ -188,7 +192,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(
     marker = f"rls-test-{uuid.uuid4()}"
 
     # Create a high-scoring job for user A
-    job_a = _seed_jobs(client, marker=marker)[0]
+    job_a = _seed_jobs(client, seed_postings, marker=marker)[0]
     client.upsert(
         "job_hunter_evaluations",
         [{
@@ -203,7 +207,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(
 
     # Create a high-scoring job for user B using user B's client
     client_b = other_supabase_client
-    job_b = _seed_jobs(client_b, marker=marker)[0]
+    job_b = _seed_jobs(client_b, seed_postings, marker=marker)[0]
     client_b.upsert(
         "job_hunter_evaluations",
         [{
@@ -231,7 +235,7 @@ def test_rpc_calls_a_store_function_and_respects_rls(
     client_b.delete("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
 
 
-def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
+def test_rpc_respects_retry_false(client: SupabaseClient, seed_postings) -> None:
     """Verify that retry=False suppresses retries on transient failures.
 
     Monkeypatches the HTTP layer to return 502 errors and verifies:
@@ -270,7 +274,7 @@ def test_rpc_respects_retry_false(client: SupabaseClient) -> None:
         assert call_count == max_retries_plus_one, f"With retry=True, {max_retries_plus_one} requests should be made, but got {call_count}"
 
 
-def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
+def test_rpc_returns_setof_scalar_values(client: SupabaseClient, seed_postings) -> None:
     """Verify that setof scalar functions return a list of plain values.
 
     job_hunter_find_job_by_identity returns setof uuid, which PostgREST
@@ -282,8 +286,7 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
     # Create a job with distinct company and title so we can find it by identity
     # The identity is the advertisement's, so it goes on the posting (#178);
     # the function answers with the caller's membership row for it.
-    job = _seed_jobs(
-        client,
+    job = _seed_jobs(client, seed_postings,
         marker=marker,
         posting={
             "company": "Acme Corp",
@@ -311,36 +314,27 @@ def test_rpc_returns_setof_scalar_values(client: SupabaseClient) -> None:
 def test_rpc_returns_bare_scalar_values(client: SupabaseClient) -> None:
     """Verify that bare scalar functions return a one-element list with the scalar value.
 
-    job_hunter_merge_jobs returns a bare scalar uuid, which PostgREST
-    serializes as a JSON string. _parse wraps it into a one-element list: ['uuid'].
+    job_hunter_canonicalize_url returns a bare scalar text, which PostgREST
+    serializes as a JSON string. _parse wraps it into a one-element list.
+
+    This used to call job_hunter_merge_jobs, the only other bare-scalar RPC.
+    Since #179 that one is a shared-table write and is revoked from every role
+    a user can hold, so it is no longer reachable over this transport at all --
+    which is asserted in supabase/tests/pgtap/job_hunter_shared_writes.sql. The
+    subject here was never the merge; it was the shape _parse returns, and a
+    reachable bare-scalar function proves that just as well.
     """
-    user_id = client.user_id
-    marker = f"merge-test-{uuid.uuid4()}"
-
-    # Create two jobs with the same logical identity (company/title/location)
-    # so they will merge. Use distinct URLs to avoid duplicate canonical_url conflicts.
-    # Give job1 an earlier first_seen_at so it's guaranteed to be the survivor.
-    identity = {
-        "company": "Merge Test Corp",
-        "title": "Backend Engineer",
-        "location": "New York",
-    }
-    job1 = _seed_jobs(
-        client, marker=marker, posting=identity, first_seen_at="2026-09-01T10:00:00+00:00"
-    )[0]
-    job2 = _seed_jobs(client, marker=marker, posting=identity)[0]
-
-    # Call merge_jobs through rpc with retry=False (required for non-idempotent operations)
-    result = client.rpc("job_hunter_merge_jobs", {
-        "p_survivor": job1["id"],
-        "p_duplicate": job2["id"]
-    }, retry=False)
+    result = client.rpc(
+        "job_hunter_canonicalize_url",
+        {"p_url": "https://example.test/jobs/1?utm_source=newsletter#apply"},
+    )
 
     assert isinstance(result, list), "Result should be a list"
-    assert len(result) == 1, f"Bare scalar result should be a one-element list, got {len(result)} elements"
-    survivor_id = result[0]
-    assert isinstance(survivor_id, str), f"Bare scalar result should contain a string, got {type(survivor_id)}"
-    assert survivor_id == str(job1["id"]), f"Survivor should be job1 (id={job1['id']}), but got {survivor_id}"
-
-    # Clean up: delete the remaining job (job2 was deleted by the merge)
-    client.delete("job_hunter_jobs", params={"market_id": f"eq.{marker}"})
+    assert len(result) == 1, (
+        f"Bare scalar result should be a one-element list, got {len(result)} elements"
+    )
+    canonical = result[0]
+    assert isinstance(canonical, str), (
+        f"Bare scalar result should contain a string, got {type(canonical)}"
+    )
+    assert canonical == "https://example.test/jobs/1"

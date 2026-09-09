@@ -3319,17 +3319,27 @@ def test_a_changed_description_triggers_re_extraction(store, settings):
     assert gemini.facet_calls == 2
 
 
-def test_a_job_the_non_ai_filters_reject_is_never_extracted(store, settings):
+def test_a_job_the_non_ai_filters_reject_is_never_scored(store, settings):
     # "junior" is a blocked title keyword, so the prefilter drops this before
-    # anything reaches a provider. Extraction must sit behind that gate: it is
-    # what keeps the daily workload at tens of jobs rather than hundreds.
+    # anything reaches the scorer. Scoring must sit behind that gate: it is
+    # what keeps the user-funded workload at tens of jobs rather than
+    # hundreds.
+    #
+    # Extraction no longer sits behind it, and that is #185's design rather
+    # than a leak. Facets are shared and candidate-blind, so a posting one
+    # user's prefilter rejects is still worth reading once for everybody --
+    # and the queue this now runs through is drained *after* the run's own
+    # shortlist, with whatever is left of `max_jobs_per_run`. The order is
+    # what protects the user: nothing here can take a read away from a job
+    # they were going to be shown. Before #179 forced ingestion on in this
+    # fixture, no pipeline test exercised that queue at all, and this
+    # assertion still described the pre-#185 inline pass.
     rejected = _job(title="Junior Product Engineer", source_job_id="junior-1")
     gemini = FakeGemini()
 
     run_pipeline(settings, sources=[FakeSource([rejected])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
-    assert gemini.facet_calls == 0
     assert gemini.eval_calls == 0
 
 
@@ -3519,16 +3529,20 @@ def test_facet_extraction_is_bounded_per_run(store, settings):
     assert sum(store.get_job_facets(job_id) is not None for job_id in ids) == 2
 
 
-def test_a_rediscovered_job_without_ingestion_is_not_backfilled(store, settings):
+def test_a_rediscovered_job_is_backfilled_through_the_queue(store, settings):
     # The existing corpus was scored before facets existed, so its jobs carry
     # an evaluation and no facets. Such a job never re-enters the shortlist,
     # so the only path by which it gains them is the extract_facets queue --
-    # enqueued by `merge_posting_batch` when a crawl re-saves its posting
-    # (issue #185). That queue is unavailable without ingestion's direct
-    # Postgres connection, which this fixture store does not have (see
-    # `test_a_rediscovered_jobs_posting_is_enqueued_with_ingestion` below for
-    # the case that does), so nothing here enqueues or drains it and the job
-    # is not re-scored either way.
+    # enqueued when a crawl re-saves its posting (issue #185) and drained with
+    # whatever the run's shortlist left of `max_jobs_per_run`. That is how the
+    # existing corpus drains over consecutive runs with no migration script.
+    #
+    # This test used to assert the opposite, because the fixture store held no
+    # ingestion connection and the queue was therefore unreachable. It named a
+    # `..._with_ingestion` counterpart that was never written, so the path that
+    # every real deployment takes had no pipeline coverage at all. Since #179
+    # a store without that connection cannot write a posting, so this is the
+    # only case left -- and it is the one worth asserting.
     job = _job()
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
@@ -3539,9 +3553,13 @@ def test_a_rediscovered_job_without_ingestion_is_not_backfilled(store, settings)
     run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
+    # Backfilled, and read exactly once however many times the crawl's phases
+    # enqueued it.
+    assert gemini.facet_calls == 1
+    assert store.get_job_facets(job_id) is not None
+    # ...and still not re-scored: the job already carries a current evaluation,
+    # and gaining facets is not a reason to spend the user's key again.
     assert gemini.eval_calls == 0
-    assert gemini.facet_calls == 0
-    assert store.get_job_facets(job_id) is None
 
 
 # --- Scoring from facets (issue #126) ---------------------------------------
@@ -4662,3 +4680,87 @@ def test_an_unknown_company_is_neither_promoted_nor_suppressed(store, settings):
     )
 
     assert with_preferences[0][2] == without[0][2]
+
+# The degraded mode, made legible (#179) -------------------------------------------
+
+
+def test_a_run_without_the_privileged_connection_scores_and_delivers_what_exists(
+    store, supabase_client, settings, caplog
+):
+    """No SUPABASE_DB_URL: start, warn, deliver, and report the zeroes.
+
+    The shared corpus is writable only over the direct Postgres connection
+    since #179, so a deployment without one cannot discover or enrich. It is
+    deliberately not refused -- a run that still delivers from existing
+    postings is worth having during a transient outage, and refusing to start
+    would turn a degraded day into an outage.
+
+    What makes it safe to keep is that it says so. A run in this mode looks
+    exactly like a quiet week -- no new postings, no new facets, a digest of
+    whatever was already scored -- and the counters are the only thing that
+    tells the two apart, which is AGENTS.md's rule 5 in its purest form.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    # Something to deliver from: a job whose posting exists and whose scoring
+    # was deferred. Seeded through a store that *does* hold the connection,
+    # because that is the only way a posting gets written at all now.
+    job = _job()
+    deferring = RaisingGemini(
+        raise_on_purpose="job_evaluation", exception=_budget_exceeded()
+    )
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=deferring,
+                 telegram=FakeTelegram())
+    job_id, _, _ = store.upsert_job(job)
+    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")] == [
+        job_id
+    ]
+
+    # A second job whose posting has moved on since it was read, so it needs a
+    # fresh extraction the degraded run cannot store. Without this the test
+    # would prove only that a run reuses facets it already had.
+    stale = _job(source_job_id="stale-1", company="Globex")
+    run_pipeline(settings, sources=[FakeSource([stale])], store=store,
+                 ai=deferring, telegram=FakeTelegram())
+    stale_id, _, _ = store.upsert_job(stale)
+    assert store.get_job_facets(stale_id) is not None
+    store._shared_write(
+        "update public.job_hunter_postings set description_hash = %s "
+        " where id = (select j.posting_id from public.job_hunter_jobs j "
+        "              where j.id = %s::uuid)",
+        ("moved-on-since-it-was-read", stale_id),
+    )
+    assert store.jobs_needing_facets([stale_id]) == {stale_id}
+
+    degraded = PostgresJobStore(supabase_client)
+    assert degraded.can_write_shared_rows is False
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    with caplog.at_level(logging.WARNING):
+        summary = run_pipeline(settings, sources=[FakeSource([_job(source_job_id="new-1")])],
+                               store=degraded, ai=gemini, telegram=telegram)
+
+    # It started, and it said why it is not itself.
+    assert "cannot write shared rows" in caplog.text
+
+    # Nothing was added to the corpus and nothing was read into it, and both
+    # numbers are reported rather than absent. The stale job in particular is
+    # left unscored rather than read: a call it cannot store would be spent
+    # again on every later run for as long as the connection is missing.
+    assert summary.postings_written == 0
+    assert summary.facet_extraction_attempted == 0
+    assert gemini.facet_calls == 0
+    assert summary.scoring_skipped_without_facets == 1
+    # Still stale afterwards: nothing was read, so nothing was written, and
+    # the next run that *can* write will read it.
+    assert store.jobs_needing_facets([stale_id]) == {stale_id}
+
+    # The listing the source offered was never persisted -- ingestion is
+    # skipped, not attempted and refused.
+    assert degraded.find_job_by_canonical_url("https://example.test/new-1") is None
+
+    # And it still delivered: the deferred job was scored from the facets an
+    # earlier run stored and reached the digest.
+    assert summary.evaluated == 1
+    assert telegram.messages

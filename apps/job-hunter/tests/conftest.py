@@ -9,8 +9,10 @@ Only tests that ask for `supabase_client`, `other_supabase_client`, or
 the stack isn't configured, and cleans both seed users' rows from every
 per-user job_hunter_* table (in foreign-key-safe order) before and after the
 test runs. The shared tables -- the posting and its facets -- are not
-cleaned and cannot be; `_postings_unique_to_this_test` keeps each test on
-postings of its own instead. Every other test in the suite is unaffected. Deletes go through each user's own
+cleaned; since #179 no user may delete a row in one, and even the privileged
+role should not, because they are shared with every concurrent suite.
+`_postings_unique_to_this_test` keeps each test on postings of its own
+instead. Every other test in the suite is unaffected. Deletes go through each user's own
 client and token, never a service_role key, so a truncation bug cannot
 reach another user's data.
 
@@ -26,6 +28,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import uuid
 from contextlib import ExitStack, contextmanager
@@ -42,6 +45,14 @@ _REQUIRED = (
     "SUPABASE_TEST_URL",
     "SUPABASE_TEST_PUBLISHABLE_KEY",
     "SUPABASE_TEST_SIGNING_KEY_B64",
+    # Ingestion's direct, privileged connection. Required since #179, where it
+    # stopped being an optimisation: the shared tables are writable only by the
+    # privileged role, so a stack without this URL cannot persist a posting, a
+    # facet, a company or a board at all. A suite run against such a stack
+    # would not be a slower version of the real one -- it would be one where
+    # every write path under test is unreachable, which is exactly the "green
+    # because it never ran" failure #208 exists to stop.
+    "SUPABASE_TEST_DB_URL",
 )
 _ALLOW_MISSING_STACK_ENV = "JOB_HUNTER_ALLOW_MISSING_STACK"
 _ALLOW_MISSING_STACK_OPTION = "--allow-missing-stack"
@@ -88,17 +99,11 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     state = "not configured" if stack_is_absent else "partially configured"
     raise pytest.UsageError(
         f"local Supabase stack is {state}; missing {', '.join(missing)}. "
-        "Configure all three required variables for the full suite. For a deliberate "
-        "non-database run, unset all three and set JOB_HUNTER_ALLOW_MISSING_STACK=1 or pass "
+        "Configure all four required variables for the full suite. For a deliberate "
+        "non-database run, unset all four and set JOB_HUNTER_ALLOW_MISSING_STACK=1 or pass "
         "--allow-missing-stack; partial configuration always fails."
     )
 
-# SUPABASE_TEST_DB_URL is deliberately NOT in _REQUIRED. It is ingestion's
-# direct, privileged connection (#182), which is optional in production too:
-# without it a run persists each posting inside its own job upsert and still
-# delivers. Tests that need it ask for it themselves and skip when it is
-# absent, so a developer who has only the PostgREST settings still gets a
-# green run of everything else.
 
 # The seed users belong to whichever pool slot this run claimed; ask the
 # `seed_users` fixture rather than naming a UUID. RLS only lets users
@@ -367,20 +372,138 @@ def other_supabase_client(
 
 
 @pytest.fixture
-def store(supabase_client: SupabaseClient):
-    from job_hunter.postgres_store import PostgresJobStore
+def ingestion_database():
+    """Ingestion's privileged connection, as a run holds one (#179).
 
-    return PostgresJobStore(supabase_client)
+    Every store fixture gets one, because since #179 a store without one
+    cannot write a posting, a facet, a company or a board -- so a store
+    built without one is not a store under test, it is the degraded mode.
+    Tests that want *that* build their own store with `ingestion=None`.
+
+    Closed at the end of each test so a suite does not accumulate one pool
+    per test against a pooler with a bounded client budget.
+    """
+    from job_hunter.pg import IngestionDatabase
+
+    database = IngestionDatabase(os.environ["SUPABASE_TEST_DB_URL"])
+    try:
+        # Purged on the way in rather than on the way out. A test is entitled
+        # to close the store it was given -- some assert exactly that -- and a
+        # psycopg pool cannot be reopened, so a teardown purge would fail for
+        # a reason that has nothing to do with the test. Cleaning before each
+        # test protects every test that runs after this one, which is the
+        # whole point; the last test of a session leaves its messages for the
+        # first test of the next.
+        _purge_stage_queues(database)
+        yield database
+    finally:
+        database.close()
+
+
+#: The one stage queue a leftover message can make a test lie about, named as
+#: `postgres_stage_queue._QUEUE_NAMES` names it. Duplicated rather than
+#: imported so a rename there fails this cleanup loudly instead of silently
+#: cleaning nothing.
+_EXTRACT_FACETS_QUEUE_TABLE = "pgmq.q_job_hunter_extract_facets"
+
+
+def _purge_stage_queues(database) -> None:
+    """Drop orphaned extract_facets messages before every store-backed test.
+
+    The queues are shared engine machinery with no user dimension, so the
+    seed-user partitioning that keeps two concurrent runs apart does not reach
+    them: a message another test left behind is drained by the next test that
+    runs a pipeline, and it is drained *at the platform key's expense*. That
+    turns "this run read one posting" into "this run read one posting and four
+    of somebody else's", which is both a false assertion and a real cost.
+
+    Orphaned, not all, and that distinction is what makes this safe to do on a
+    stack another suite is using. A message names a posting; this run's own
+    leftovers name postings whose membership rows `_clean_seed_users` has
+    already deleted, so nothing holds them any more. A concurrently running
+    suite's in-flight messages name postings it still holds a row on, and are
+    left alone. The rule reads the same way outside the tests: a queued read
+    for an advertisement nobody is a member of is work nobody asked for.
+
+    Bounded wait and best-effort. Losing the race costs a test that may see
+    another suite's messages; raising would fail a suite that did nothing
+    wrong.
+    """
+    try:
+        with database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("set local lock_timeout = '5s'")
+                cursor.execute(
+                    f"delete from {_EXTRACT_FACETS_QUEUE_TABLE} q "
+                    " where q.message ? 'posting_id' "
+                    "   and not exists ("
+                    "         select 1 from public.job_hunter_jobs j "
+                    "          where j.posting_id = (q.message->>'posting_id')::uuid)"
+                )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "could not clear orphaned messages from %s before this test; a "
+            "concurrent suite is using it, so a facet-read count here may "
+            "include its messages",
+            _EXTRACT_FACETS_QUEUE_TABLE,
+        )
 
 
 @pytest.fixture
-def other_store(other_supabase_client: SupabaseClient):
+def seed_postings(ingestion_database):
+    """Insert postings the way ingestion does, and return their ids.
+
+    Since #179 a posting is writable only by the privileged role, so a test
+    that needs one to hang a membership row off cannot insert it through
+    PostgREST as a user any more. This is the seam that used to be
+    `client.insert("job_hunter_postings", ...)`, and it is a fixture rather
+    than a helper so the connection is the same one the store under test
+    holds.
+
+    Takes whole rows so a caller can pin whichever columns its assertion is
+    about and leave the rest to their defaults, exactly as the PostgREST
+    insert did.
+    """
+
+    def _seed(rows: list[dict]) -> list[str]:
+        ids: list[str] = []
+        with ingestion_database.connection() as connection:
+            with connection.cursor() as cursor:
+                for row in rows:
+                    columns = ", ".join(row)
+                    placeholders = ", ".join(["%s"] * len(row))
+                    cursor.execute(
+                        f"insert into public.job_hunter_postings ({columns}) "
+                        f"values ({placeholders}) returning id",
+                        tuple(row.values()),
+                    )
+                    ids.append(str(cursor.fetchone()[0]))
+        return ids
+
+    return _seed
+
+
+@pytest.fixture
+def store(supabase_client: SupabaseClient, ingestion_database):
+    from job_hunter.postgres_store import PostgresJobStore
+
+    return PostgresJobStore(supabase_client, ingestion_database)
+
+
+@pytest.fixture
+def other_store(other_supabase_client: SupabaseClient, ingestion_database):
     """A second user's store, on the same stack and the same postings.
 
     What the two users share is exactly what #175 makes shared: the posting
     row and its facets. Everything either one writes about their own
     relationship to a job stays invisible to the other.
+
+    It shares the ingestion connection with `store`, which is faithful: the
+    privileged role has no user identity, so there is not a second one to
+    hold. What keeps the two users apart is the user id each store passes
+    into `job_hunter_upsert_job`, and a test that proves isolation is
+    proving that argument is honoured.
     """
     from job_hunter.postgres_store import PostgresJobStore
 
-    return PostgresJobStore(other_supabase_client)
+    return PostgresJobStore(other_supabase_client, ingestion_database)

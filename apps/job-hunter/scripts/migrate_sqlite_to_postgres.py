@@ -74,8 +74,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from job_hunter.config import load_supabase_settings
+from job_hunter.config import load_ingestion_dsn, load_supabase_settings
 from job_hunter.http import HttpClient
+from job_hunter.pg import IngestionDatabase
 from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient
 
@@ -147,7 +148,39 @@ def _upsert_one(
     return rows[0]
 
 
-def migrate(sqlite_path: Path, client: SupabaseClient) -> dict[str, int]:
+def _upsert_posting(ingestion: Any, posting: dict[str, Any]) -> str:
+    """Write one advertisement over the privileged connection, and return its id.
+
+    Since #179 `job_hunter_postings` is writable only by the ingestion role,
+    so this one write in the migration cannot go through the user's client
+    the way every other write here does. Everything else this script writes
+    is per-user and stays exactly where it was.
+
+    Idempotent like the rest of the script: a second run of the same file
+    conflicts on the fingerprint and updates rather than duplicating. It
+    overwrites rather than merging because a legacy row is this owner's whole
+    record of the advertisement and there is nothing else yet to preserve.
+    """
+    columns = list(posting)
+    placeholders = ", ".join(["%s"] * len(columns))
+    assignments = ", ".join(
+        f"{column} = excluded.{column}" for column in columns if column != "fingerprint"
+    )
+    with ingestion.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"insert into public.job_hunter_postings ({', '.join(columns)}) "
+                f"values ({placeholders}) "
+                f"on conflict (fingerprint) do update set {assignments} "
+                "returning id",
+                tuple(posting.values()),
+            )
+            return str(cursor.fetchone()[0])
+
+
+def migrate(
+    sqlite_path: Path, client: SupabaseClient, ingestion: Any
+) -> dict[str, int]:
     """Migrate one legacy SQLite database into Postgres for ``client``'s user.
 
     Returns the number of rows migrated per destination table (Postgres
@@ -155,11 +188,17 @@ def migrate(sqlite_path: Path, client: SupabaseClient) -> dict[str, int]:
     the legacy table names this function reads, since that is the caller's
     frame of reference). Re-running with the same file and client is safe:
     every write is an upsert against a user-scoped unique key.
+
+    ``ingestion`` is the privileged Postgres connection. It is required rather
+    than optional because a legacy job row becomes an advertisement plus a
+    membership of it (#178), and since #179 nobody but the ingestion role may
+    write the advertisement -- so a migration without it could not write a
+    single job.
     """
     counts: dict[str, int] = {}
     conn = sqlite3.connect(str(sqlite_path))
     try:
-        job_id_map = _migrate_jobs(conn, client, counts)
+        job_id_map = _migrate_jobs(conn, client, ingestion, counts)
         _migrate_job_sources(conn, client, job_id_map, counts)
         _migrate_evaluations(conn, client, job_id_map, counts)
         _migrate_materials(conn, client, job_id_map, counts)
@@ -182,7 +221,10 @@ def migrate(sqlite_path: Path, client: SupabaseClient) -> dict[str, int]:
 
 
 def _migrate_jobs(
-    conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
+    conn: sqlite3.Connection,
+    client: SupabaseClient,
+    ingestion: Any,
+    counts: dict[str, int],
 ) -> dict[int, str]:
     job_id_map: dict[int, str] = {}
     migrated = 0
@@ -213,12 +255,10 @@ def _migrate_jobs(
             "first_seen_at": first_seen_at,
             "last_seen_at": last_seen_at,
         }
-        posting_row = _upsert_one(
-            client, "job_hunter_postings", posting, on_conflict="fingerprint"
-        )
+        posting_id = _upsert_posting(ingestion, posting)
         payload = {
             "user_id": client.user_id,
-            "posting_id": posting_row["id"],
+            "posting_id": posting_id,
             "market_id": row.get("market_id") or "",
             "status": row.get("status") or "new",
             "first_seen_at": first_seen_at,
@@ -779,7 +819,18 @@ def main(argv: list[str] | None = None) -> int:
         settings,
         AccessTokenMinter(settings.user_id, settings.signing_key_jwk),
     )
-    counts = migrate(args.sqlite, client)
+    dsn = load_ingestion_dsn()
+    if dsn is None:
+        parser.error(
+            "SUPABASE_DB_URL is not set. Since #179 a job's advertisement is "
+            "written only by the privileged ingestion role, so this migration "
+            "needs the direct Postgres connection as well as the user's."
+        )
+    ingestion = IngestionDatabase(dsn)
+    try:
+        counts = migrate(args.sqlite, client, ingestion)
+    finally:
+        ingestion.close()
 
     width = max(len(name) for name in counts)
     print(f"\nMigrated into {settings.url}:")

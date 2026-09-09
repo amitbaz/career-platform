@@ -89,14 +89,32 @@ select unnest(array[
 -- A membership row needs an advertisement to be a membership of (#178), so
 -- every seeded job row gets its own posting. The postings are shared and
 -- carry no user_id, which is why this helper takes none.
+--
+-- SECURITY DEFINER since #179, and only for the shared parents: a posting and
+-- an ATS board are now writable by the privileged role alone, so seeding one
+-- while acting as a user would fail with 42501 and every per-user isolation
+-- check below would be measuring a fixture that never loaded. The functions
+-- are owned by postgres, so definer here means "seed this the way ingestion
+-- would". Every per-user row stays an ordinary invoker insert, made while
+-- acting as its owner, because passing that table's own policy is the thing
+-- under test.
 create function pg_temp.job_hunter_seed_posting() returns uuid
-language plpgsql as $$
+language plpgsql security definer as $$
 declare
   v_id uuid;
 begin
   insert into public.job_hunter_postings (fingerprint, first_seen_at, last_seen_at)
   values (gen_random_uuid()::text, now(), now()) returning id into v_id;
   return v_id;
+end $$;
+
+create function pg_temp.job_hunter_seed_ats_board(p_board_identifier text) returns void
+language plpgsql security definer as $$
+begin
+  insert into public.job_hunter_ats_boards
+    (provider, board_identifier, first_seen_at, last_seen_at)
+  values ('greenhouse', p_board_identifier, now(), now())
+  on conflict (provider, board_identifier) do nothing;
 end $$;
 
 create function pg_temp.job_hunter_seed_row(p_table text, p_owner uuid) returns uuid
@@ -122,10 +140,7 @@ begin
       declare
         v_board_identifier text := gen_random_uuid()::text;
       begin
-        insert into public.job_hunter_ats_boards
-          (provider, board_identifier, first_seen_at, last_seen_at)
-        values ('greenhouse', v_board_identifier, now(), now())
-        on conflict (provider, board_identifier) do nothing;
+        perform pg_temp.job_hunter_seed_ats_board(v_board_identifier);
         insert into public.job_hunter_ats_registry (user_id, provider, board_identifier)
         values (p_owner, 'greenhouse', v_board_identifier) returning id into v_id;
       end;
@@ -289,14 +304,15 @@ select unnest(array[
 -- row, and so per-user isolation is the property they deliberately do not
 -- have. What they do have -- one row per fingerprint, one set of facets per
 -- posting, one row per employer, readable by anyone authenticated and
--- deletable by no one -- is asserted in job_hunter_postings.sql,
--- job_hunter_job_facets.sql and job_hunter_companies.sql.
+-- writable by nobody but the privileged ingestion role (issue #179) -- is
+-- asserted in job_hunter_postings.sql, job_hunter_job_facets.sql,
+-- job_hunter_companies.sql and job_hunter_shared_writes.sql.
 --
 -- Where a merged-away posting went (issue #176) is shared for the same
 -- reason: a merge decided once for everyone is useless if only its author
--- can see it. It is the strictest of the four -- reads open, no write
--- policy at all, because every write happens inside the security-definer
--- job_hunter_merge_postings -- and is asserted in
+-- can see it. It arrived with no write policy at all, because every write
+-- happens inside the security-definer job_hunter_merge_postings, and since
+-- #179 that is the shape all five carry. It is asserted in
 -- job_hunter_posting_merges.sql.
 -- This view is the enforced list. `apps/job-hunter/AGENTS.md` describes the
 -- same set in prose, and prose does not fail -- which is not a hypothetical:
@@ -318,6 +334,31 @@ select unnest(array[
   'job_hunter_posting_merges',
   'job_hunter_ats_boards'
 ]) as table_name;
+
+-- What being on that list obliges (#179): reads open to authenticated, writes
+-- revoked from every role a user can hold. This is driven from the list rather
+-- than written out per table, so a sixth shared table added above with its
+-- write grants still open fails here rather than being closed by whoever
+-- happens to remember. The behavioural half -- the 42501 a user actually gets,
+-- and the definer functions that would otherwise write these tables on their
+-- behalf -- is job_hunter_shared_writes.sql.
+select is(
+  (select array_agg(t.table_name order by t.table_name)
+     from pg_temp.job_hunter_shared_tables t
+    where has_table_privilege('authenticated', 'public.' || t.table_name, 'select')),
+  (select array_agg(t.table_name order by t.table_name)
+     from pg_temp.job_hunter_shared_tables t),
+  'every shared table is readable by authenticated: that is what makes it shared');
+
+select is(
+  (select array_agg(t.table_name || ' ' || v.verb || ' ' || r.role_name
+                    order by t.table_name, v.verb, r.role_name)
+     from pg_temp.job_hunter_shared_tables t
+     cross join (values ('insert'), ('update'), ('delete')) as v(verb)
+     cross join (values ('anon'), ('authenticated'), ('service_role')) as r(role_name)
+    where has_table_privilege(r.role_name, 'public.' || t.table_name, v.verb)),
+  null,
+  'and none of them may be written by any role a user can hold');
 
 -- Ingestion's own scratch and operational state (issues #182 and #183), which
 -- is neither per-user nor user-readable. No role a user can hold reaches it;

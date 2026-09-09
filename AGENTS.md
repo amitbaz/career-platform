@@ -147,10 +147,16 @@ Job Hunter's Python environment is independent of pnpm. Install it with
 ### A green Job Hunter run is only evidence if the store tests ran
 
 Every test that touches the database asks for the `_stack_env` fixture. At session start,
-`apps/job-hunter/tests/conftest.py` now requires all three core stack variables. If all are absent,
+`apps/job-hunter/tests/conftest.py` now requires all four core stack variables. If all are absent,
 pytest stops once before collection and names them; if only some are present, it does the same and
 names the missing ones. A partial environment is a configuration error even when an opt-out is
 present, because silently accepting a typo would recreate the original false pass.
+
+`SUPABASE_TEST_DB_URL` is the fourth, and it became required with #179. It is ingestion's
+direct, privileged connection, and since the shared tables are writable only by that role, a
+stack without it cannot persist a posting, a facet, a company or a board at all — so a suite
+run against one would be a suite in which every write path under test is unreachable, which is
+the same failure class this guard exists to stop.
 
 A deliberate non-database run has to say so explicitly. Either form is supported:
 
@@ -160,7 +166,8 @@ pnpm job-hunter:test --allow-missing-stack
 ```
 
 Both opt-outs are honored only when none of `SUPABASE_TEST_URL`,
-`SUPABASE_TEST_PUBLISHABLE_KEY`, and `SUPABASE_TEST_SIGNING_KEY_B64` is set. In that deliberate
+`SUPABASE_TEST_PUBLISHABLE_KEY`, `SUPABASE_TEST_SIGNING_KEY_B64` and `SUPABASE_TEST_DB_URL`
+is set. In that deliberate
 mode `_stack_env` skips store-backed tests and says which opt-out authorized it. With all three
 variables present, missing stack configuration cannot skip a store-backed test: the guard either
 lets that fixture run or has already failed the session.

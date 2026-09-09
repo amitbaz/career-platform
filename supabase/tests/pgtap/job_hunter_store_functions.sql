@@ -9,9 +9,14 @@
 -- Two users are seeded. Both own a comparable fixture set, so every check
 -- proves two things at once: the caller gets its OWN rows back (not an
 -- empty result that would pass vacuously), and it never gets the other
--- user's rows. Nothing here disables RLS or seeds rows as a superuser --
--- every fixture row is inserted while acting as its owner, so it must pass
--- that table's insert_own policy to exist at all.
+-- user's rows. Nothing here disables RLS for a per-user table: every per-user
+-- fixture row is inserted while acting as its owner, so it must pass that
+-- table's insert_own policy to exist at all.
+--
+-- The shared tables are the exception, and since #179 they have to be: a
+-- posting has no owner and no user may write one, so postings are seeded as
+-- the privileged role -- which is what ingestion is -- and the session drops
+-- back to the user immediately afterwards.
 begin;
 create extension if not exists pgtap with schema extensions;
 select no_plan();
@@ -40,9 +45,43 @@ begin
   perform set_config('request.jwt.claims', '', true);
 end $$;
 
+-- Since #179 the job upsert and the job merge are shared-table writes, so they
+-- run as the privileged ingestion role and take the user they act for as an
+-- argument. These two helpers are that transport, in miniature: drop to the
+-- owner, make the call for the named user, and hand the session back to that
+-- user so every assertion around them still reads under their row-level
+-- security. Only where the write happens has changed; who it is for, and what
+-- each scenario below asserts, has not.
+create function pg_temp.upsert_job_as(p_user uuid, p_job jsonb)
+returns table (id uuid, is_new boolean, description_changed boolean)
+language plpgsql as $$
+declare
+  v_row record;
+begin
+  perform pg_temp.become_postgres();
+  select * into v_row from public.job_hunter_upsert_job(p_job, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  id := v_row.id;
+  is_new := v_row.is_new;
+  description_changed := v_row.description_changed;
+  return next;
+end $$;
+
+create function pg_temp.merge_jobs_as(p_user uuid, p_survivor uuid, p_duplicate uuid)
+returns uuid
+language plpgsql as $$
+declare
+  v_id uuid;
+begin
+  perform pg_temp.become_postgres();
+  v_id := public.job_hunter_merge_jobs(p_survivor, p_duplicate, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  return v_id;
+end $$;
+
 -- Signatures ------------------------------------------------------------------
 
-select has_function('public', 'job_hunter_upsert_job', array['jsonb'],
+select has_function('public', 'job_hunter_upsert_job', array['jsonb', 'uuid'],
   'job_hunter_upsert_job exists');
 select has_function('public', 'job_hunter_upsert_posting', array['jsonb'],
   'job_hunter_upsert_posting exists');
@@ -50,13 +89,14 @@ select has_function('public', 'job_hunter_pending_delivery_jobs', array['integer
   'job_hunter_pending_delivery_jobs exists');
 select has_function('public', 'job_hunter_pending_review_events', array['double precision'],
   'job_hunter_pending_review_events exists');
-select has_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
+select has_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid', 'uuid'],
   'job_hunter_merge_jobs exists');
 select has_function('public', 'job_hunter_eligible_inbound_jobs', array[]::text[],
   'job_hunter_eligible_inbound_jobs exists');
 select has_function('public', 'job_hunter_find_job_by_identity', array['text', 'text', 'text'],
   'job_hunter_find_job_by_identity exists');
-select has_function('public', 'job_hunter_find_posting_by_identity', array['text', 'text', 'text'],
+select has_function('public', 'job_hunter_find_posting_by_identity',
+  array['text', 'text', 'text', 'uuid'],
   'job_hunter_find_posting_by_identity exists');
 select has_function('public', 'job_hunter_get_provider_credentials', array[]::text[],
   'job_hunter_get_provider_credentials exists');
@@ -78,12 +118,24 @@ select has_function('public', 'job_hunter_get_provider_credentials', array[]::te
 --     the same cross-user requirement. It is revoked from every role and
 --     takes its user explicitly rather than reading auth.uid().
 --   * job_hunter_upsert_job (#178), definer so that identity resolution can
---     reach the posting merge without that merge becoming callable on any two
---     posting ids an authenticated user cares to name. Neither it nor
---     merge_jobs relied on RLS: every statement in both carries its own
---     `user_id = (select auth.uid())` predicate, and RLS on each per-user
---     table they touch is exactly that same predicate, so the two express one
---     restriction. Asserted below rather than assumed.
+--     reach the posting merge. Neither it nor merge_jobs relied on RLS: every
+--     statement in both carries its own `user_id = v_uid` predicate, and RLS
+--     on each per-user table they touch is exactly that same predicate, so the
+--     two express one restriction. Asserted below rather than assumed.
+--
+--   * job_hunter_find_job_by_identity (#179), definer only so it can reach
+--     job_hunter_find_posting_by_identity, which is revoked from users because
+--     its user argument would otherwise let one user search another's corpus.
+--     This one takes no user argument: it reads auth.uid(), which inside a
+--     definer is still the caller's, and it writes nothing.
+--
+-- Since #179 the definer-ness of the middle three buys much less than it did,
+-- because none of them is reachable by `authenticated` any more: the job
+-- upsert and both merges take the user they act for as an argument and run on
+-- ingestion's privileged connection, where there is no auth.uid() to read.
+-- What is left is a guarantee that the merge machinery works whichever
+-- privileged role connects. `job_hunter_shared_writes.sql` is what proves the
+-- unreachability; this file only pins the population.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -91,10 +143,11 @@ select is(
     where n.nspname = 'public'
       and p.proname like 'job\_hunter\_%'
       and p.prosecdef),
-  array['job_hunter_collapse_job_rows', 'job_hunter_get_provider_credentials',
+  array['job_hunter_collapse_job_rows', 'job_hunter_find_job_by_identity',
+        'job_hunter_get_provider_credentials',
         'job_hunter_merge_jobs', 'job_hunter_merge_postings',
         'job_hunter_upsert_job'],
-  'credential retrieval, the merges, the row collapse and the job upsert are the only public.job_hunter_* security definers');
+  'credential retrieval, the identity read, the merges, the row collapse and the job upsert are the only public.job_hunter_* security definers');
 
 -- The collapse is internal to the schema: no role may call it at all, which
 -- is what keeps "fold these two membership rows" reachable only as a
@@ -171,12 +224,14 @@ select is(
 
 -- Fixtures for user A ------------------------------------------------------------
 
-select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
-
 -- The advertisement and the membership of it are two rows since #178. The
 -- posting carries everything about the advertisement -- including the
 -- fingerprint, which names it rather than one user's copy -- and the job row
 -- carries the user, the market and the funnel status.
+--
+-- The postings are seeded as the owner, because since #179 that is the only
+-- role that may write one. Everything per-user below is still seeded and read
+-- as the user it belongs to, which is what the isolation assertions need.
 insert into public.job_hunter_postings
   (id, fingerprint, source, source_job_id, url, canonical_url,
    company, title, location, description, description_hash, content_confidence,
@@ -210,6 +265,8 @@ values
    'gmail:greenhouse', 'cand-key-1', 'https://inbound.example/7', 'https://inbound.example/7',
    'Inbound Materialized Co', 'Inbound Engineer', 'Salzburg', 'inbound desc', 'h-inbound', 'aggregator_text',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 insert into public.job_hunter_jobs
   (id, user_id, posting_id, first_seen_at, last_seen_at)
@@ -307,7 +364,7 @@ values
 -- rows. An empty result would not prove isolation, only that the fixture
 -- failed to load.
 
-select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
+select pg_temp.become_postgres();
 
 insert into public.job_hunter_postings
   (id, fingerprint, source, source_job_id, url, canonical_url,
@@ -318,6 +375,8 @@ values
    'greenhouse', 'gb-1', 'https://b.example/1', 'https://b.example/1',
    'B Deliver Co', 'B Staff Engineer', 'Berlin', 'b desc', 'h-b', 'official_ats',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 
 insert into public.job_hunter_jobs
   (id, user_id, posting_id, first_seen_at, last_seen_at)
@@ -446,7 +505,7 @@ select is_empty(
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 select results_eq(
-  $$ select is_new, description_changed from public.job_hunter_upsert_job(
+  $$ select is_new, description_changed from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"fingerprint":"fp-upsert-1","source":"greenhouse","source_job_id":"u1",
          "url":"https://up.example/1","canonical_url":"https://up.example/1",
          "company":"Upsert Test Co","title":"Data Engineer","location":"Vienna",
@@ -455,7 +514,7 @@ select results_eq(
   'upsert_job: a fingerprint never seen before inserts a new job');
 
 select results_eq(
-  $$ select is_new, description_changed from public.job_hunter_upsert_job(
+  $$ select is_new, description_changed from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"fingerprint":"fp-upsert-1","source":"greenhouse","source_job_id":"u1",
          "url":"https://up.example/1","canonical_url":"https://up.example/1",
          "company":"Upsert Test Co","title":"Data Engineer","location":"Vienna",
@@ -494,7 +553,7 @@ select is(
 
 -- The identity path must find the same row even when the fingerprint changes.
 select results_eq(
-  $$ select is_new from public.job_hunter_upsert_job(
+  $$ select is_new from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"fingerprint":"fp-upsert-1-changed","source":"lever","source_job_id":"u2",
          "url":"https://up.example/1","canonical_url":"https://up.example/1",
          "company":"Upsert Test Co Ltd","title":"Data  Engineer","location":"Vienna",
@@ -509,7 +568,7 @@ select results_eq(
 -- logical mode and missed by the fingerprint mode.
 
 select results_eq(
-  $$ select is_new from public.job_hunter_upsert_job(
+  $$ select is_new from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"fingerprint":"fp-mode-base","source":"greenhouse","source_job_id":"mb",
          "url":"https://mode.example/1","canonical_url":"https://mode.example/1",
          "company":"Mode Test Co","title":"Mode Engineer","location":"Vienna",
@@ -518,7 +577,7 @@ select results_eq(
   'match_mode: the baseline job is inserted');
 
 select results_eq(
-  $$ select is_new from public.job_hunter_upsert_job(
+  $$ select is_new from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"match_mode":"fingerprint","fingerprint":"fp-mode-other","source":"greenhouse",
          "source_job_id":"mo","url":"https://mode.example/1",
          "canonical_url":"https://mode.example/1",
@@ -543,7 +602,7 @@ select is(
   'match_mode fingerprint: no discovery source is recorded, matching upsert_job which never called _record_job_source');
 
 select results_eq(
-  $$ select is_new from public.job_hunter_upsert_job(
+  $$ select is_new from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"fingerprint":"fp-mode-third","source":"greenhouse","source_job_id":"mt",
          "url":"https://mode.example/1","canonical_url":"https://mode.example/1",
          "company":"Mode Test Co","title":"Mode Engineer","location":"Vienna",
@@ -559,14 +618,14 @@ select is(
   'match_mode logical: the duplicate the fingerprint mode created is merged away');
 
 select throws_ok(
-  $$ select * from public.job_hunter_upsert_job(
+  $$ select * from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
        '{"match_mode":"nonsense","fingerprint":"fp-mode-bad"}'::jsonb) $$,
   null, null,
   'match_mode: an unrecognized mode raises rather than silently defaulting');
 
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 select results_eq(
-  $$ select is_new from public.job_hunter_upsert_job(
+  $$ select is_new from pg_temp.upsert_job_as('22222222-0000-0000-0000-00000000000b'::uuid, 
        '{"fingerprint":"fp-upsert-1","source":"greenhouse","source_job_id":"u1",
          "url":"https://up.example/1","canonical_url":"https://up.example/1",
          "company":"Upsert Test Co","title":"Data Engineer","location":"Vienna",
@@ -594,7 +653,7 @@ select is(
 
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 select throws_ok(
-  $$ select public.job_hunter_merge_jobs('10000000-0000-0000-0000-000000000005',
+  $$ select pg_temp.merge_jobs_as('22222222-0000-0000-0000-00000000000b'::uuid, '10000000-0000-0000-0000-000000000005',
                                          '10000000-0000-0000-0000-000000000006') $$,
   null, null,
   'merge_jobs: B cannot merge A''s jobs');
@@ -602,7 +661,7 @@ select throws_ok(
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 select is(
-  (select public.job_hunter_merge_jobs('10000000-0000-0000-0000-000000000005',
+  (select pg_temp.merge_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, '10000000-0000-0000-0000-000000000005',
                                        '10000000-0000-0000-0000-000000000006')::text),
   '10000000-0000-0000-0000-000000000006',
   'merge_jobs: the job carrying application-event history survives even when passed as the duplicate');
@@ -662,13 +721,13 @@ select is(
   'merge_jobs: a colliding source keeps the latest last_seen_at');
 
 select is(
-  (select public.job_hunter_merge_jobs('10000000-0000-0000-0000-000000000006',
+  (select pg_temp.merge_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, '10000000-0000-0000-0000-000000000006',
                                        '10000000-0000-0000-0000-000000000006')::text),
   '10000000-0000-0000-0000-000000000006',
   'merge_jobs: merging a job with itself is a no-op');
 
 select throws_ok(
-  $$ select public.job_hunter_merge_jobs('10000000-0000-0000-0000-000000000006',
+  $$ select pg_temp.merge_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, '10000000-0000-0000-0000-000000000006',
                                          '99999999-0000-0000-0000-000000000099') $$,
   null, null,
   'merge_jobs: a missing job raises rather than silently half-merging');
@@ -691,6 +750,8 @@ select is(
 
 -- A survivor can itself be merged away later. Redirects are repointed when
 -- that happens, so a reader never has to walk a chain to a deleted row.
+select pg_temp.become_postgres();
+
 insert into public.job_hunter_postings
   (id, fingerprint, source, url, company, title, location,
    description, description_hash, content_confidence, first_seen_at, last_seen_at)
@@ -699,6 +760,8 @@ values
    'fp-merge-third', '', 'https://m.example/third', 'Merge Co', 'Merge Engineer',
    'Zurich', 'third description', 'h-third', 'aggregator_text',
    '2025-12-31T00:00:00Z', '2025-12-31T00:00:00Z');
+
+select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 insert into public.job_hunter_jobs
   (id, user_id, posting_id, first_seen_at, last_seen_at)
@@ -721,7 +784,7 @@ values
    '2025-12-31T00:00:00Z');
 
 select is(
-  (select public.job_hunter_merge_jobs('10000000-0000-0000-0000-000000000009',
+  (select pg_temp.merge_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, '10000000-0000-0000-0000-000000000009',
                                        '10000000-0000-0000-0000-000000000006')::text),
   '10000000-0000-0000-0000-000000000009',
   'merge_jobs: the earlier first_seen_at decides when history is equal');

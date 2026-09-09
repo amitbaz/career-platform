@@ -15,6 +15,7 @@ migrations own the schema now (see `supabase/migrations/`).
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections import defaultdict
@@ -25,7 +26,11 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
-from job_hunter.extract_facets_stage import ExtractFacetsStage, FacetExtractionOutcome
+from job_hunter.extract_facets_stage import (
+    ExtractFacetsStage,
+    FacetExtractionOutcome,
+    FacetsAlreadyCurrent,
+)
 from job_hunter.facets import FacetExtractionError
 from job_hunter.gmail_models import AUTO_CONFIDENCE_THRESHOLD, ExtractedJob
 from job_hunter.job_identity import normalize_company_name
@@ -46,6 +51,7 @@ from job_hunter.postgres_stage_queue import PostgresStageQueue
 from job_hunter.resolve_persist import PostingBatch, ResolvePersistStage
 from job_hunter.search_profile import SearchProfile
 from job_hunter.stage_queue import (
+    DeferredToALaterRun,
     PermanentStageFailure,
     QuotaExhausted,
     Stage,
@@ -69,6 +75,20 @@ if TYPE_CHECKING:
     from job_hunter.ai import AIProvider
 
 logger = logging.getLogger(__name__)
+
+
+class SharedWriteUnavailable(RuntimeError):
+    """A shared-table write was attempted with no privileged connection.
+
+    Since #179 the tables with no user dimension are writable only by the
+    ingestion role, over the direct Postgres connection. A deployment
+    without one is supported and does not crash: it skips ingestion and
+    enrichment entirely and delivers from the postings it already has. This
+    is raised when something tries to write anyway, because at that point
+    the run has already spent the work that produced the row and the only
+    honest outcome is a loud failure rather than a silently discarded write.
+    """
+
 
 # Postgres SQLSTATE for foreign_key_violation, which PostgREST reports in the
 # body of a 409. A write against a job id that `merge_jobs` has already
@@ -284,6 +304,13 @@ class PostgresJobStore:
     ) -> None:
         self._client = client
         self._ingestion = ingestion
+        #: Postings this store has already asked for facet extraction on, so
+        #: one crawl's three persist phases enqueue an advertisement once
+        #: rather than three times. See `_enqueue_needing_facets`.
+        self._enqueued_postings: set[str] = set()
+        #: Postings this run has already spent a read on, successful or not.
+        #: See `note_facet_read_attempt`.
+        self._facet_read_attempts: set[str] = set()
 
     @property
     def client(self) -> SupabaseClient:
@@ -313,6 +340,61 @@ class PostgresJobStore:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+    # ------------------------------------------------------------------
+    # The privileged writer (#179)
+    # ------------------------------------------------------------------
+
+    @property
+    def can_write_shared_rows(self) -> bool:
+        """Whether this store can write the tables that have no user.
+
+        Since #179 `job_hunter_postings`, `job_hunter_job_facets`,
+        `job_hunter_companies`, `job_hunter_ats_boards` and
+        `job_hunter_posting_merges` are writable only by the privileged
+        ingestion role. Callers use this to *skip* work rather than to attempt
+        a write and handle the refusal: a run with no connection has nothing
+        to ingest and nothing to enrich, and pretending otherwise would spend
+        a crawl's worth of network -- and the platform key's allowance -- on
+        rows the database will not accept.
+
+        "Configured" is not enough to answer with, which is why this consults
+        the pool as well. `IngestionDatabase` opens lazily and latches
+        unreachable on its first failed lease, so a wrong or dead
+        `SUPABASE_DB_URL` produces a store that would otherwise report itself
+        able to write right up until the first write. Asked again between
+        phases, this turns that into the same skip a missing DSN gets.
+        """
+        if self._ingestion is None:
+            return False
+        return not self._ingestion.unavailable
+
+    def _shared_write(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple]:
+        """Run one shared-table write over the direct connection.
+
+        Every write to a table with no user dimension goes through here, so
+        "which transport carried this write" has one answer and one place to
+        read it. Returns whatever the statement returns, so a caller can use
+        `returning`; a statement with no result set gives an empty list.
+
+        Raises `SharedWriteUnavailable` when there is no connection. That is
+        a programming error rather than a deployment one by the time it is
+        reached: `can_write_shared_rows` is what a caller is expected to ask
+        first, and this is what makes forgetting to ask fail loudly instead
+        of half-writing a run.
+        """
+        if self._ingestion is None:
+            raise SharedWriteUnavailable(
+                "this run has no direct Postgres connection, so it cannot write "
+                "shared rows; check store.can_write_shared_rows before ingesting "
+                "or enriching"
+            )
+        with self._ingestion.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                if cursor.description is None:
+                    return []
+                return cursor.fetchall()
 
     # ------------------------------------------------------------------
     # Jobs
@@ -365,6 +447,24 @@ class PostgresJobStore:
             "original_url": job.original_url or "",
         }
 
+    def _upsert_job_rpc(self, payload: dict[str, Any]) -> tuple[str, bool, bool]:
+        """Persist one job payload over the privileged connection (#179).
+
+        `job_hunter_upsert_job` writes `job_hunter_postings` and may merge
+        two of them, which is a write every other user sees, so it is
+        reachable only by the ingestion role and takes the user it acts for
+        as an argument rather than reading `auth.uid()`. The user is this
+        store's own -- the store is per-user for everything else, and
+        nothing here may write a row for anybody else.
+        """
+        rows = self._shared_write(
+            "select id, is_new, description_changed "
+            "from public.job_hunter_upsert_job(%s::jsonb, %s::uuid)",
+            (json.dumps(payload), self._client.user_id),
+        )
+        job_id, is_new, description_changed = rows[0]
+        return str(job_id), bool(is_new), bool(description_changed)
+
     def upsert_job(self, job: Job) -> tuple[str, bool, bool]:
         """Insert or update a job record, matched by fingerprint alone.
 
@@ -376,9 +476,9 @@ class PostgresJobStore:
         """
         payload = self._job_payload(job)
         payload["match_mode"] = "fingerprint"
-        row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
-        self._enqueue_needing_facets_for_job_ids([row["id"]])
-        return row["id"], row["is_new"], row["description_changed"]
+        job_id, is_new, description_changed = self._upsert_job_rpc(payload)
+        self._enqueue_needing_facets_for_job_ids([job_id])
+        return job_id, is_new, description_changed
 
     def upsert_logical_job(
         self, job: Job, *, posting_batch: PostingBatch | None = None
@@ -392,14 +492,16 @@ class PostgresJobStore:
 
         `posting_batch` is the batch this job's advertisement was already
         merged in, where there was one (#182). Without it the call resolves
-        its own posting, which is what every caller that does not stage a
-        batch first -- the Gmail paths, a deployment with no direct Postgres
-        connection -- gets.
+        its own posting, which is what a caller that does not stage a batch
+        first -- the Gmail paths, the webhook -- gets. Since #179 there is
+        no longer a "no direct connection" case here: without one there is
+        no job upsert at all, because the posting it would write is a
+        shared row.
         """
         payload = self._batch_job_payload(job, posting_batch)
-        row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
-        self._enqueue_needing_facets_for_job_ids([row["id"]])
-        return row["id"], row["is_new"], row["description_changed"]
+        job_id, is_new, description_changed = self._upsert_job_rpc(payload)
+        self._enqueue_needing_facets_for_job_ids([job_id])
+        return job_id, is_new, description_changed
 
     def merge_posting_batch(self, jobs: list[Job]) -> PostingBatch:
         """Stage, enqueue, and consume one crawl batch of postings.
@@ -504,13 +606,39 @@ class PostgresJobStore:
     def _enqueue_needing_facets(self, posting_ids: Iterable[str]) -> int:
         """Enqueue every posting in `posting_ids` with no current facets (#185).
 
-        A posting already current costs one join and no queue send.
+        A posting already current costs one join and no queue send, and a
+        posting this store has already enqueued costs neither.
+
+        That second filter matters more than it looks. One crawl persists in
+        three phases -- the raw listings, the unique jobs they dedupe to, and
+        the canonical-resolution tail -- and every one of them enqueues, so
+        without it the same advertisement arrives on the queue three times
+        before anything has read it once. The consumer skips a posting that
+        has since been read, which handles the case where one of those
+        messages succeeded; this handles the case where none of them has run
+        yet, and the case the consumer cannot: an extraction that *failed*
+        leaves the posting uncurrent, so its two siblings would each spend
+        another call on the same non-answer -- exactly what
+        `extract_facets_stage`'s dead-letter-immediately rule exists to
+        prevent, defeated by there being three messages rather than one.
+
+        The set lives for the length of this store, which is the length of a
+        run. A posting whose description improves later in the same run is
+        therefore not re-enqueued until the next one, which is the right
+        trade: the alternative is paying to read an advertisement twice in
+        one day.
 
         Failing to enqueue is logged but never raised: the caller's own
         outcome must not be held hostage to a queue send for work nobody is
         waiting on this run.
         """
-        ids = sorted({posting_id for posting_id in posting_ids if posting_id})
+        ids = sorted(
+            {
+                posting_id
+                for posting_id in posting_ids
+                if posting_id and posting_id not in self._enqueued_postings
+            }
+        )
         if not ids or self._ingestion is None:
             return 0
         queue = PostgresStageQueue(self._ingestion)
@@ -535,6 +663,11 @@ class PostgresJobStore:
                         {"posting_id": posting_id},
                         connection=connection,
                     )
+                    # Recorded per send rather than for the whole batch up
+                    # front: a send that throws must leave its posting
+                    # unmarked, or the crawl's later phases skip it and the
+                    # advertisement is never enqueued at all this run.
+                    self._enqueued_postings.add(posting_id)
                     enqueued += 1
         except Exception:
             logger.exception(
@@ -542,6 +675,24 @@ class PostgresJobStore:
             )
             return enqueued
         return enqueued
+
+    def note_facet_read_attempt(self, job_id: str) -> None:
+        """Record that this run has spent a facet read on `job_id`'s posting.
+
+        The run's inline pass and the durable queue read the same postings
+        from different directions, and a read that *failed* leaves the posting
+        uncurrent -- so without this, the message for it is drained moments
+        later in the same run and buys the same non-answer a second time.
+        `extract_facets_stage` refuses those messages and leaves them in the
+        queue for a later run, which is where a retry belongs.
+
+        Costs one read to resolve the posting, against a provider call that
+        costs seconds. A job with no posting records nothing, because there is
+        no shared row for the queue to hold a message about either.
+        """
+        posting_id = self._posting_for_job(job_id)
+        if posting_id:
+            self._facet_read_attempts.add(posting_id)
 
     def drain_extract_facets_queue(
         self, ai: "AIProvider", *, limit: int
@@ -563,7 +714,9 @@ class PostgresJobStore:
             return []
         queue = PostgresStageQueue(self._ingestion)
         runner = StageRunner(queue, visibility_timeout_seconds=5 * 60)
-        stage = ExtractFacetsStage(self._ingestion, ai)
+        stage = ExtractFacetsStage(
+            self._ingestion, ai, already_attempted=frozenset(self._facet_read_attempts)
+        )
         outcomes: list[FacetExtractionOutcome] = []
 
         def handler(message):
@@ -577,15 +730,22 @@ class PostgresJobStore:
                     )
                 )
                 raise
-            except QuotaExhausted:
+            except (QuotaExhausted, DeferredToALaterRun):
                 # Never spent, never a failure -- exactly like
-                # PlatformAllowanceExhausted in the inline pass.
+                # PlatformAllowanceExhausted in the inline pass. A deferral is
+                # the same shape: the message goes back to the queue and this
+                # run reports nothing about it.
                 raise
             except Exception:
                 outcomes.append(FacetExtractionOutcome(failed=True))
                 raise
             else:
-                outcomes.append(FacetExtractionOutcome(failed=False))
+                outcomes.append(
+                    FacetExtractionOutcome(
+                        failed=False,
+                        skipped=isinstance(result, FacetsAlreadyCurrent),
+                    )
+                )
                 return result
 
         try:
@@ -696,17 +856,20 @@ class PostgresJobStore:
     def _upsert_job_chunk(
         self, chunk: list[Job], posting_batch: PostingBatch | None = None
     ) -> list[tuple[str, bool, bool]]:
-        rows = self._client.rpc(
-            "job_hunter_upsert_jobs",
-            {"p_jobs": [self._batch_job_payload(job, posting_batch) for job in chunk]},
+        payloads = [self._batch_job_payload(job, posting_batch) for job in chunk]
+        rows = self._shared_write(
+            "select input_index, id, is_new, description_changed "
+            "from public.job_hunter_upsert_jobs(%s::jsonb, %s::uuid)",
+            (json.dumps(payloads), self._client.user_id),
         )
         if len(rows) != len(chunk):
             raise SupabaseRequestError(
                 f"job_hunter_upsert_jobs returned {len(rows)} rows for {len(chunk)} jobs"
             )
-        ordered = sorted(rows, key=lambda row: row["input_index"])
+        ordered = sorted(rows, key=lambda row: row[0])
         return [
-            (row["id"], row["is_new"], row["description_changed"]) for row in ordered
+            (str(job_id), bool(is_new), bool(description_changed))
+            for _input_index, job_id, is_new, description_changed in ordered
         ]
 
     def _upsert_jobs_individually(
@@ -727,22 +890,29 @@ class PostgresJobStore:
                 results.append(None)
         return results
 
-    def merge_jobs(self, survivor_id: str, duplicate_id: str) -> str:
+    def merge_jobs(self, survivor_id: str, duplicate_id: str) -> str | None:
         """Transactionally merge a duplicate job and all attached records.
 
         Translates store.py:906-1038 (`merge_jobs`/`_merge_jobs`) into a
-        single call to `job_hunter_merge_jobs`, which returns a bare scalar
-        uuid -- a one-element list, not a row dict. `retry=False` is
-        required: the merge is not idempotent, and `HttpClient` retries
-        POST on 5xx, so a retried merge on a transient error would merge
-        the same duplicate twice.
+        single call to `job_hunter_merge_jobs`.
+
+        Since #178 this merges the *postings* behind two of one user's rows,
+        which re-points every other affected user's row as well, so since
+        #179 it runs over the privileged connection with the user supplied
+        rather than through PostgREST as that user. The retry hazard that
+        made the old PostgREST call pass `retry=False` goes with it: this
+        connection issues the statement once and does not replay it.
         """
-        result = self._client.rpc(
-            "job_hunter_merge_jobs",
-            {"p_survivor": survivor_id, "p_duplicate": duplicate_id},
-            retry=False,
+        rows = self._shared_write(
+            "select public.job_hunter_merge_jobs(%s::uuid, %s::uuid, %s::uuid)",
+            (survivor_id, duplicate_id, self._client.user_id),
         )
-        return result[0]
+        survivor = rows[0][0] if rows else None
+        # `job_hunter_merge_jobs` returns NULL when this user holds no row on
+        # the surviving posting. `str()` would turn that into the string
+        # "None", which reads as a job id everywhere downstream -- the
+        # PostgREST call this replaced returned None, and so does this.
+        return None if survivor is None else str(survivor)
 
     def resolve_merged_job_id(self, job_id: str) -> str | None:
         """Where a merged-away job's records belong now, or None if it still exists.
@@ -1067,14 +1237,19 @@ class PostgresJobStore:
                     break
             if reference is None:
                 continue
-            self._client.update(
-                "job_hunter_postings",
-                {
-                    "ats_provider": row.get("ats_provider") or reference.provider,
-                    "ats_board": row.get("ats_board") or reference.board,
-                    "ats_job_id": row.get("ats_job_id") or reference.job_id,
-                },
-                params={"id": f"eq.{row['id']}"},
+            # The posting is a shared row, so the repair is a privileged
+            # write since #179. The read above stays on PostgREST: it is
+            # bounded by this user's own memberships, which is the point.
+            self._shared_write(
+                "update public.job_hunter_postings set "
+                "  ats_provider = %s, ats_board = %s, ats_job_id = %s "
+                " where id = %s::uuid",
+                (
+                    row.get("ats_provider") or reference.provider,
+                    row.get("ats_board") or reference.board,
+                    row.get("ats_job_id") or reference.job_id,
+                    row["id"],
+                ),
             )
             updated += 1
         return updated
@@ -1300,35 +1475,68 @@ class PostgresJobStore:
         return rows[0].get("posting_id")
 
     def _write_posting_facets(self, posting_id: str, facets: JobFacets) -> None:
-        postings = self._client.select(
-            "job_hunter_postings",
-            params={"id": f"eq.{posting_id}", "select": "description_hash"},
-        )
-        posting_row = postings[0] if postings else {}
+        """Store one posting's facets, over the privileged connection (#179).
+
+        The hash the extraction was made against is read inside the same
+        statement rather than in a round trip of its own. That is not only a
+        request saved: it removes the window in which the posting's
+        description changed between the read and the write, which would have
+        stamped facets read from the old text as current against the new.
+
+        A posting that disappeared between the extraction and this write --
+        merged away, its facets discarded by the merge (#125's rule at the
+        posting level) -- writes nothing at all rather than failing: the
+        select supplying the row finds nothing, so the insert has no row to
+        insert. The caller's foreign-key branch stays for the PostgREST-era
+        shape of that failure and costs nothing when it never fires.
+        """
         compensation = facets.compensation
-        self._client.upsert(
-            "job_hunter_job_facets",
-            [
-                {
-                    "posting_id": posting_id,
-                    "description_hash_at_extraction": posting_row.get("description_hash") or "",
-                    "seniority": facets.seniority,
-                    "remote_policy": facets.remote_policy,
-                    "relocation_policy": facets.relocation_policy,
-                    "hiring_regions": facets.hiring_regions,
-                    "stack": facets.stack,
-                    "compensation_disclosed": compensation.disclosed,
-                    "compensation_currency": compensation.currency,
-                    "compensation_min": compensation.minimum,
-                    "compensation_max": compensation.maximum,
-                    "compensation_period": compensation.period,
-                    "requirements_json": facets.requirements,
-                    "source_supplied": facets.source_supplied,
-                    "model": facets.model,
-                    "extracted_at": to_iso(datetime.now(timezone.utc)),
-                }
-            ],
-            on_conflict="posting_id",
+        self._shared_write(
+            """
+            insert into public.job_hunter_job_facets (
+              posting_id, description_hash_at_extraction, seniority,
+              remote_policy, relocation_policy, hiring_regions, stack,
+              compensation_disclosed, compensation_currency, compensation_min,
+              compensation_max, compensation_period, requirements_json,
+              source_supplied, model, extracted_at)
+            select
+              p.id, p.description_hash, %s, %s, %s, %s::text[], %s::text[],
+              %s, %s, %s, %s, %s, %s::jsonb, %s::text[], %s, %s::timestamptz
+              from public.job_hunter_postings p where p.id = %s::uuid
+            on conflict (posting_id) do update set
+              description_hash_at_extraction = excluded.description_hash_at_extraction,
+              seniority = excluded.seniority,
+              remote_policy = excluded.remote_policy,
+              relocation_policy = excluded.relocation_policy,
+              hiring_regions = excluded.hiring_regions,
+              stack = excluded.stack,
+              compensation_disclosed = excluded.compensation_disclosed,
+              compensation_currency = excluded.compensation_currency,
+              compensation_min = excluded.compensation_min,
+              compensation_max = excluded.compensation_max,
+              compensation_period = excluded.compensation_period,
+              requirements_json = excluded.requirements_json,
+              source_supplied = excluded.source_supplied,
+              model = excluded.model,
+              extracted_at = excluded.extracted_at
+            """,
+            (
+                facets.seniority,
+                facets.remote_policy,
+                facets.relocation_policy,
+                list(facets.hiring_regions),
+                list(facets.stack),
+                compensation.disclosed,
+                compensation.currency,
+                compensation.minimum,
+                compensation.maximum,
+                compensation.period,
+                json.dumps(facets.requirements),
+                list(facets.source_supplied),
+                facets.model,
+                to_iso(datetime.now(timezone.utc)),
+                posting_id,
+            ),
         )
 
     def get_job_facets(self, job_id: str) -> JobFacets | None:
@@ -1553,24 +1761,41 @@ class PostgresJobStore:
             )
             return
         now = to_iso(datetime.now(timezone.utc))
-        self._client.upsert(
-            "job_hunter_companies",
-            [
-                {
-                    "identity": facets.identity,
-                    "display_name": facets.display_name,
-                    "industry": facets.industry,
-                    "business_model": facets.business_model,
-                    "stage": facets.stage,
-                    "size_band": facets.size_band,
-                    "headquarters_region": facets.headquarters_region,
-                    "source_supplied": facets.source_supplied,
-                    "model": facets.model,
-                    "extracted_at": now,
-                    "updated_at": now,
-                }
-            ],
-            on_conflict="identity",
+        # Over the privileged connection since #179: an employer's facts feed
+        # every user's ranking, so they are ingestion's to write.
+        self._shared_write(
+            """
+            insert into public.job_hunter_companies (
+              identity, display_name, industry, business_model, stage,
+              size_band, headquarters_region, source_supplied, model,
+              extracted_at, updated_at)
+            values (%s, %s, %s, %s, %s, %s, %s, %s::text[], %s,
+                    %s::timestamptz, %s::timestamptz)
+            on conflict (identity) do update set
+              display_name = excluded.display_name,
+              industry = excluded.industry,
+              business_model = excluded.business_model,
+              stage = excluded.stage,
+              size_band = excluded.size_band,
+              headquarters_region = excluded.headquarters_region,
+              source_supplied = excluded.source_supplied,
+              model = excluded.model,
+              extracted_at = excluded.extracted_at,
+              updated_at = excluded.updated_at
+            """,
+            (
+                facets.identity,
+                facets.display_name,
+                facets.industry,
+                facets.business_model,
+                facets.stage,
+                facets.size_band,
+                facets.headquarters_region,
+                list(facets.source_supplied),
+                facets.model,
+                now,
+                now,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1940,6 +2165,14 @@ class PostgresJobStore:
         created -- i.e. the board is new to this user's crawl, whether or
         not another user already discovered it. `job_hunter_ats_boards` has
         no `updated_at` column, so no `touch` here.
+
+        Since #179 the board half runs over the privileged connection, which
+        is also what collapses the old read-then-write into one statement:
+        PostgREST could not express "keep the stored value when the new one
+        is blank" or "reactivate only an unrejected board", so both were
+        decided in Python from a row read a moment earlier. In SQL they are
+        the `on conflict` clause, and the window in which another run's
+        write landed between the read and the write closes with them.
         """
         provider = provider.strip().lower()
         if provider not in _SUPPORTED_ATS_PROVIDERS:
@@ -1947,44 +2180,32 @@ class PostgresJobStore:
         board_identifier = board_identifier.strip()
         now = to_iso(datetime.now(timezone.utc))
 
-        existing_board = self._client.select(
-            "job_hunter_ats_boards",
-            params={
-                "provider": f"eq.{provider}",
-                "board_identifier": f"eq.{board_identifier}",
-                "select": "id,company_name,market_hint,active,rejected_reason",
-                "limit": "1",
-            },
+        self._shared_write(
+            """
+            insert into public.job_hunter_ats_boards
+              (provider, board_identifier, company_name, market_hint,
+               first_seen_at, last_seen_at)
+            values (%s, %s, %s, %s, %s::timestamptz, %s::timestamptz)
+            on conflict (provider, board_identifier) do update set
+              -- A blank argument means "no new information", not "clear
+              -- what is stored".
+              company_name = coalesce(nullif(excluded.company_name, ''),
+                                      public.job_hunter_ats_boards.company_name),
+              market_hint = coalesce(nullif(excluded.market_hint, ''),
+                                     public.job_hunter_ats_boards.market_hint),
+              last_seen_at = excluded.last_seen_at,
+              -- Ordinary rediscovery reactivates a board paused by health
+              -- backoff, but never one rejected as an aggregator: that
+              -- verdict is undone only by clear_ats_board_rejection.
+              -- paused_until and consecutive_failures are left alone, so a
+              -- board becomes due naturally rather than by being seen again.
+              active = case
+                when public.job_hunter_ats_boards.rejected_reason is null then true
+                else public.job_hunter_ats_boards.active
+              end
+            """,
+            (provider, board_identifier, company_name, market_hint, now, now),
         )
-        if not existing_board:
-            self._client.upsert(
-                "job_hunter_ats_boards",
-                [
-                    {
-                        "provider": provider,
-                        "board_identifier": board_identifier,
-                        "company_name": company_name,
-                        "market_hint": market_hint,
-                        "first_seen_at": now,
-                        "last_seen_at": now,
-                    }
-                ],
-                on_conflict="provider,board_identifier",
-            )
-        else:
-            row = existing_board[0]
-            self._client.update(
-                "job_hunter_ats_boards",
-                {
-                    # COALESCE(NULLIF(?, ''), col): a blank argument means
-                    # "no new information", not "clear what is stored".
-                    "company_name": company_name or row["company_name"],
-                    "market_hint": market_hint or row["market_hint"],
-                    "last_seen_at": now,
-                    "active": True if row["rejected_reason"] is None else row["active"],
-                },
-                params={"id": f"eq.{row['id']}"},
-            )
 
         existing_registry = self._client.select(
             "job_hunter_ats_registry",
@@ -2073,13 +2294,11 @@ class PostgresJobStore:
         method (see `sources/learned_ats.py`'s per-run exclusion).
         """
         timestamp = to_iso(_require_aware(now))
-        self._client.update(
-            "job_hunter_ats_boards",
-            {"active": False, "rejected_reason": reason, "last_checked_at": timestamp},
-            params={
-                "provider": f"eq.{provider}",
-                "board_identifier": f"eq.{board_identifier}",
-            },
+        self._shared_write(
+            "update public.job_hunter_ats_boards "
+            "   set active = false, rejected_reason = %s, last_checked_at = %s::timestamptz "
+            " where provider = %s and board_identifier = %s",
+            (reason, timestamp, provider, board_identifier),
         )
 
     def clear_ats_board_rejection(self, provider: str, board_identifier: str) -> None:
@@ -2115,10 +2334,11 @@ class PostgresJobStore:
                 row["board_identifier"].lower(),
             ) != wanted:
                 continue
-            self._client.update(
-                "job_hunter_ats_boards",
-                {"active": True, "rejected_reason": None},
-                params={"id": f"eq.{row['id']}"},
+            self._shared_write(
+                "update public.job_hunter_ats_boards "
+                "   set active = true, rejected_reason = null "
+                " where id = %s::uuid",
+                (row["id"],),
             )
 
     def list_due_ats_boards(self, now: datetime) -> list[AtsRegistryEntry]:
@@ -2181,19 +2401,12 @@ class PostgresJobStore:
     ) -> None:
         """Record a successful scan and clear the shared board's failure backoff."""
         timestamp = to_iso(_require_aware(now))
-        self._client.update(
-            "job_hunter_ats_boards",
-            {
-                "last_checked_at": timestamp,
-                "last_success_at": timestamp,
-                "last_job_count": job_count,
-                "consecutive_failures": 0,
-                "paused_until": None,
-            },
-            params={
-                "provider": f"eq.{provider}",
-                "board_identifier": f"eq.{board_identifier}",
-            },
+        self._shared_write(
+            "update public.job_hunter_ats_boards set "
+            "   last_checked_at = %s::timestamptz, last_success_at = %s::timestamptz, "
+            "   last_job_count = %s, consecutive_failures = 0, paused_until = null "
+            " where provider = %s and board_identifier = %s",
+            (timestamp, timestamp, job_count, provider, board_identifier),
         )
 
     def record_ats_scan_failure(
@@ -2226,31 +2439,37 @@ class PostgresJobStore:
         immediately fails again resumes from its prior strike count and can
         re-deactivate right away, not after three fresh strikes.
 
-        Like `record_watch_failure`, the self-referential counter update
-        becomes a read followed by a write.
+        The self-referential counter update was a read followed by a write
+        only because PostgREST cannot express `col = col + 1`. Over the
+        privileged connection (#179) it is one statement, so the increment
+        and the threshold comparison see the same value and two runs failing
+        the same board concurrently cannot both read the same count and both
+        write it back as one more.
+
+        A board that is not there is left alone, exactly as before: the
+        `where` matches nothing and nothing is written.
         """
         normalized_now = _require_aware(now)
-        rows = self._client.select(
-            "job_hunter_ats_boards",
-            params={
-                "provider": f"eq.{provider}",
-                "board_identifier": f"eq.{board_identifier}",
-                "select": "id,consecutive_failures",
-                "limit": "1",
-            },
-        )
-        if not rows:
-            return
-        failures = rows[0]["consecutive_failures"] + 1
-        values: dict[str, Any] = {
-            "last_checked_at": to_iso(normalized_now),
-            "consecutive_failures": failures,
-            "paused_until": to_iso(normalized_now + _HEALTH_PAUSE),
-        }
-        if permanent and failures >= _STALE_BOARD_DEACTIVATION_THRESHOLD:
-            values["active"] = False
-        self._client.update(
-            "job_hunter_ats_boards", values, params={"id": f"eq.{rows[0]['id']}"}
+        self._shared_write(
+            """
+            update public.job_hunter_ats_boards set
+              last_checked_at = %s::timestamptz,
+              consecutive_failures = consecutive_failures + 1,
+              paused_until = %s::timestamptz,
+              active = case
+                when %s and consecutive_failures + 1 >= %s then false
+                else active
+              end
+             where provider = %s and board_identifier = %s
+            """,
+            (
+                to_iso(normalized_now),
+                to_iso(normalized_now + _HEALTH_PAUSE),
+                permanent,
+                _STALE_BOARD_DEACTIVATION_THRESHOLD,
+                provider,
+                board_identifier,
+            ),
         )
 
     def record_ats_eligible_jobs(
@@ -3520,6 +3739,18 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
     {
         "client",
         "close",
+        # A property, and a question rather than an action: whether this store
+        # holds the privileged connection the shared tables need (#179). A dry
+        # run answers it truthfully, because the pipeline uses it to decide
+        # what to skip and a dry run should skip exactly what a real run would.
+        "can_write_shared_rows",
+        # Classified as a read because it persists nothing: it resolves a job
+        # to its posting and remembers, in this store's own memory, that the
+        # run has spent a facet call on it. A dry run wants that bookkeeping
+        # to happen exactly as a real run does -- suppressing it would let the
+        # queue re-read a posting the run already read -- and letting it
+        # happen writes no row.
+        "note_facet_read_attempt",
         "get_job_facets",
         "jobs_needing_facets",
         "get_company_facets",

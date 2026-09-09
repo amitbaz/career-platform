@@ -18,6 +18,10 @@ _REQUIRED_STACK_ENV = (
     "SUPABASE_TEST_URL",
     "SUPABASE_TEST_PUBLISHABLE_KEY",
     "SUPABASE_TEST_SIGNING_KEY_B64",
+    # Required since #179: the shared tables are writable only over this
+    # connection, so a stack without it cannot run a single write path this
+    # suite is about.
+    "SUPABASE_TEST_DB_URL",
 )
 _ALLOW_MISSING_STACK_ENV = "JOB_HUNTER_ALLOW_MISSING_STACK"
 _JOB_HUNTER_ROOT = Path(__file__).resolve().parents[1]

@@ -25,8 +25,10 @@ Migration rules:
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
    `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and twenty-seven
    SQL functions — all `security invoker` except `job_hunter_get_provider_credentials`,
-   `job_hunter_merge_postings`, `job_hunter_merge_jobs`, `job_hunter_collapse_job_rows` and
-   `job_hunter_upsert_job`, which are `security definer` — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
+   `job_hunter_merge_postings`, `job_hunter_merge_jobs`, `job_hunter_collapse_job_rows`,
+   `job_hunter_upsert_job` and `job_hunter_find_job_by_identity`, which are
+   `security definer`; of those, only the credential retrieval and the identity read are
+   reachable by `authenticated`, and neither writes anything (#179) — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
    `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`, and
    `supabase/migrations/20260907104935_job_hunter_gmail_candidate_eligibility.sql`, which drops
    `job_hunter_unmaterialized_inbound_jobs` and adds `job_hunter_gmail_candidate_complete` and
@@ -48,10 +50,14 @@ Migration rules:
    `job_hunter_jobs.posting_id` points at. It, `job_hunter_job_facets`,
    `job_hunter_companies` (#198), `job_hunter_posting_merges` (#176) and `job_hunter_ats_boards`
    (#203) are the five Job Hunter tables shared between users: none has a `user_id`, and any
-   authenticated user may read any row of any of them. The first three and the fifth may also
-   be written by any authenticated user for now; the fourth may be written by nobody, because
-   every write to it happens inside `job_hunter_merge_postings`. None has a
-   delete policy: a shared row must not be removable out from under the other users. (The two
+   authenticated user may read any row of any of them. **None may be written by any user**
+   (#179): `insert`, `update` and `delete` are revoked from `anon`, `authenticated` and
+   `service_role` on all five, the write policies are dropped, and every write arrives over
+   ingestion's direct Postgres connection as the privileged role. That is the pattern of
+   record for any table shared between users, and
+   `supabase/tests/pgtap/job_hunter_shared_writes.sql` is what fails when it stops holding —
+   including through a `security definer` function, which consults neither grants nor
+   policies and is therefore a write path in its own right. (The two
    `job_hunter_platform_*` tables also have no `user_id`, but they are the platform key's
    own ledger and no user reaches them at all.) It adds
    `job_hunter_upsert_posting`, and re-creates both `job_hunter_upsert_job`, to write the
@@ -139,8 +145,24 @@ Migration rules:
    dimension. Matching, delivery and every per-user read stay on PostgREST under row-level
    security, and `job_hunter_posting_staging` and `job_hunter_merge_posting_batch` are
    deliberately unreachable by `anon` and `authenticated` — neither a grant nor a policy lets
-   a user near them. The connection is optional: without it a run resolves each posting inside
-   its own job upsert and delivers the same digest, more slowly.
+   a user near them.
+
+   **`SUPABASE_DB_URL` must connect as the role that owns the migrations.**
+   The shared-table writers are revoked from every named role and granted back
+   to none, so only the owner can execute them; that is `postgres` today. A
+   least-privilege ingestion role would need `grant execute` on them before it
+   could write anything, and the symptom of forgetting is a run that logs
+   individual postings failing rather than one that says it cannot write.
+
+   **The connection is not optional for writing (#179).** Since the shared tables are
+   writable only by the privileged role, a deployment with no `SUPABASE_DB_URL` cannot
+   discover or enrich at all: `run_pipeline` asks `store.can_write_shared_rows` and skips
+   ingestion and enrichment entirely rather than paying for a crawl the database will refuse.
+   It still starts and still delivers, from the postings that already exist, and it says so —
+   `cli.py` warns at startup and the run summary reports `postings_written=0` alongside the
+   facet counters, because a stale corpus and a quiet job market are otherwise the same log
+   line. Do not read this as the pre-#179 fallback: that one was slower and converged on the
+   same state, this one is scoring-only over a corpus that cannot change.
    `tests/integration/test_supabase_isolation.py` proves those policies hold by writing and
    deleting a throwaway row in a local stack.
 

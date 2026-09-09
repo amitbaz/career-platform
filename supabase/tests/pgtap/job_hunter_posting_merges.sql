@@ -59,6 +59,39 @@ language sql stable as $$
   select p.id from public.job_hunter_postings p where p.fingerprint = p_fingerprint;
 $$;
 
+-- Since #179 the job upsert and the job merge write shared rows, so they run
+-- as the privileged ingestion role and take the user they act for as an
+-- argument. These helpers are that transport in miniature: drop to the owner,
+-- make the call for the named user, hand the session back to them. Every
+-- scenario below is still "this user's crawl finds this listing"; only the
+-- role making the write moved.
+create function pg_temp.upsert_job_as(p_user uuid, p_job jsonb)
+returns table (id uuid, is_new boolean, description_changed boolean)
+language plpgsql as $$
+declare
+  v_row record;
+begin
+  perform pg_temp.become_postgres();
+  select * into v_row from public.job_hunter_upsert_job(p_job, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  id := v_row.id;
+  is_new := v_row.is_new;
+  description_changed := v_row.description_changed;
+  return next;
+end $$;
+
+create function pg_temp.merge_jobs_as(p_user uuid, p_survivor uuid, p_duplicate uuid)
+returns uuid
+language plpgsql as $$
+declare
+  v_id uuid;
+begin
+  perform pg_temp.become_postgres();
+  v_id := public.job_hunter_merge_jobs(p_survivor, p_duplicate, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  return v_id;
+end $$;
+
 -- Shape ---------------------------------------------------------------------
 
 select has_table('public', 'job_hunter_posting_merges',
@@ -87,7 +120,7 @@ select has_function('public', 'job_hunter_resolve_posting', array['uuid'],
 
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-aggregator',
        'source', 'remoteok',
        'source_job_id', 'ro-176',
@@ -101,7 +134,7 @@ select lives_ok(
 
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000b');
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-aggregator',
        'source', 'remoteok',
        'source_job_id', 'ro-176',
@@ -118,7 +151,7 @@ select lives_ok(
 -- rows on its own: what is under test here is the posting merge, not the
 -- per-user one that already existed.
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-ats',
        'source', 'greenhouse',
        'source_job_id', 'gh-176',
@@ -280,7 +313,7 @@ select is(
 
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-aggregator',
        'source', 'remoteok',
        'source_job_id', 'ro-176',
@@ -327,7 +360,7 @@ select is(
 
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000b');
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-third',
        'source', 'linkedin',
        'source_job_id', 'li-176',
@@ -394,7 +427,7 @@ select throws_ok(
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000b');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-delegating-a',
        'source', 'remoteok',
        'source_job_id', 'ro-177',
@@ -407,7 +440,7 @@ select lives_ok(
   'B holds one job row for the aggregator rendering');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-delegating-b',
        'source', 'greenhouse',
        'source_job_id', 'gh-177',
@@ -427,7 +460,7 @@ select lives_ok(
 -- the decision was recorded globally rather than inside B's merge.
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-merge-delegating-a',
        'source', 'remoteok',
        'source_job_id', 'ro-177',
@@ -441,7 +474,7 @@ select lives_ok(
 
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000b');
 select lives_ok(
-  format($$ select public.job_hunter_merge_jobs(
+  format($$ select pg_temp.merge_jobs_as('eeeeeeee-0000-0000-0000-00000000000b'::uuid, 
        (select j.id from public.job_hunter_jobs j
          where j.user_id = 'eeeeeeee-0000-0000-0000-00000000000b'
            and j.posting_id = %L::uuid),
@@ -506,7 +539,7 @@ select is(
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-thin-ats',
        'source', 'greenhouse',
        'source_job_id', 'gh-thin',
@@ -523,7 +556,7 @@ select lives_ok(
   'the employer''s listing is discovered with almost no text');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-fat-aggregator',
        'source', 'remoteok',
        'source_job_id', 'ro-thin',
@@ -676,27 +709,35 @@ select isnt(
   null,
   'a user who merged nothing can still read where a posting went');
 
+-- Since #179 the refusal comes from the grant rather than from the missing
+-- policy, so all three are errors rather than silent no-ops. The absence of a
+-- write policy is still asserted, in job_hunter_shared_writes.sql, because
+-- neither half of the refusal may be the only one.
 select throws_ok(
   format($$ insert into public.job_hunter_posting_merges (duplicate_id, survivor_id)
             values (%L::uuid, %L::uuid) $$,
          pg_temp.posting_id('fp-merge-ats'),
          pg_temp.posting_id('fp-merge-aggregator')),
   '42501',
-  'new row violates row-level security policy for table "job_hunter_posting_merges"',
+  'permission denied for table job_hunter_posting_merges',
   'no user can write a redirect by hand');
 
-select is_empty(
-  $$ update public.job_hunter_posting_merges set survivor_id = duplicate_id returning 1 $$,
+select throws_ok(
+  $$ update public.job_hunter_posting_merges set survivor_id = duplicate_id $$,
+  '42501',
+  'permission denied for table job_hunter_posting_merges',
   'nor rewrite one');
 
-select is_empty(
-  $$ delete from public.job_hunter_posting_merges returning 1 $$,
+select throws_ok(
+  $$ delete from public.job_hunter_posting_merges $$,
+  '42501',
+  'permission denied for table job_hunter_posting_merges',
   'nor delete one out from under everyone else');
 
--- Nor reach the merge itself. job_hunter_merge_postings is revoked from
--- every role a user can hold, so the only way to a posting merge is
--- job_hunter_merge_jobs -- which acts on two job rows the caller already
--- owns, rather than on any two posting ids they can name.
+-- Nor reach either merge. job_hunter_merge_postings was already revoked from
+-- every role a user can hold; since #179 job_hunter_merge_jobs is too, because
+-- collapsing two postings is a write every other user sees however the caller
+-- reached it. Both now happen on ingestion's privileged connection.
 select throws_ok(
   format($$ select public.job_hunter_merge_postings(%L::uuid, %L::uuid) $$,
          pg_temp.posting_id('fp-merge-ats'),
@@ -704,6 +745,14 @@ select throws_ok(
   '42501',
   'permission denied for function job_hunter_merge_postings',
   'and no user can collapse two postings they merely know the ids of');
+
+select throws_ok(
+  format($$ select public.job_hunter_merge_jobs(%L::uuid, %L::uuid, %L::uuid) $$,
+         gen_random_uuid(), gen_random_uuid(),
+         'eeeeeeee-0000-0000-0000-00000000000a'),
+  '42501',
+  'permission denied for function job_hunter_merge_jobs',
+  'nor reach the posting merge through the job-level entry point that used to be theirs');
 
 select pg_temp.become_postgres();
 

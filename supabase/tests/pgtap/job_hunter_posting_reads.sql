@@ -41,11 +41,39 @@ begin
   execute 'set local role authenticated';
 end $$;
 
+create function pg_temp.become_postgres() returns void
+language plpgsql as $$
+begin
+  execute 'reset role';
+  perform set_config('request.jwt.claims', '', true);
+end $$;
+
+-- Since #179 a posting is written only by the privileged ingestion role, so
+-- both the RPC that creates one and the updates below that fabricate posting
+-- state are bracketed by a switch to the owner and back. The readers under
+-- test -- job_hunter_needs_evaluation and job_hunter_eligible_inbound_jobs --
+-- are still called as the user, which is the whole point: what changed is who
+-- may write the posting, not who reads from it.
+create function pg_temp.upsert_job_as(p_user uuid, p_job jsonb)
+returns table (id uuid, is_new boolean, description_changed boolean)
+language plpgsql as $$
+declare
+  v_row record;
+begin
+  perform pg_temp.become_postgres();
+  select * into v_row from public.job_hunter_upsert_job(p_job, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  id := v_row.id;
+  is_new := v_row.is_new;
+  description_changed := v_row.description_changed;
+  return next;
+end $$;
+
 select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 -- One job, written through the RPC so it has a posting and points at it.
 create temp table subject as
-select id from public.job_hunter_upsert_job(jsonb_build_object(
+select id from pg_temp.upsert_job_as('eeeeeeee-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
   'fingerprint', 'fp-177',
   'match_mode', 'fingerprint',
   'source', 'greenhouse',
@@ -58,10 +86,22 @@ select id from public.job_hunter_upsert_job(jsonb_build_object(
   'description', 'the shared description',
   'content_confidence', 'official_ats'));
 
+-- Owned by postgres, not by `authenticated`. A view runs with its owner's
+-- privileges, so one owned by `authenticated` and read while acting as the
+-- owner resolves auth.uid() to null and returns nothing -- which since #179
+-- would silently make every posting update below a no-op against zero rows,
+-- and every assertion that follows would pass or fail for the wrong reason.
+-- `authenticated` needs an explicit grant to read it back.
+select pg_temp.become_postgres();
+
 create temp view subject_posting as
   select p.* from public.job_hunter_postings p
     join public.job_hunter_jobs j on j.posting_id = p.id
    where j.id = (select id from subject);
+
+grant select on subject_posting to authenticated;
+
+select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select isnt_empty($$ select 1 from subject_posting $$,
                   'the upsert RPC gave the job a posting to read from');
@@ -91,20 +131,24 @@ select is_empty(
   'needs_evaluation: the job row has no description state of its own to go stale');
 
 -- Moving the posting's own hash triggers re-evaluation.
+select pg_temp.become_postgres();
 update public.job_hunter_postings set description_hash = 'moved-on'
  where id = (select id from subject_posting);
+select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select is(
   (select needs from public.job_hunter_needs_evaluation(array[(select id from subject)])),
   true,
   'needs_evaluation: the posting''s description hash decides re-evaluation');
 
+select pg_temp.become_postgres();
 update public.job_hunter_postings set content_confidence = 'aggregator_text'
  where id = (select id from subject_posting);
 update public.job_hunter_postings set description_hash = (
   select description_hash_at_eval from public.job_hunter_evaluations
    where job_id = (select id from subject))
  where id = (select id from subject_posting);
+select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select is(
   (select needs from public.job_hunter_needs_evaluation(array[(select id from subject)])),
@@ -113,10 +157,12 @@ select is(
 
 -- Back to current, so the inbound assertions below start from a job whose
 -- evaluation is complete.
+select pg_temp.become_postgres();
 update public.job_hunter_postings set content_confidence = (
   select content_confidence_at_eval from public.job_hunter_evaluations
    where job_id = (select id from subject))
  where id = (select id from subject_posting);
+select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 -- A job row without a posting used to be writable, and needs_evaluation fell
 -- back to its own columns for one. #178 removed both halves of that: the
@@ -162,8 +208,10 @@ select is_empty(
 
 -- Moving the posting's description does: the advertisement changed, so the
 -- evaluation is no longer current and the candidate needs materializing again.
+select pg_temp.become_postgres();
 update public.job_hunter_postings set description_hash = 'moved-on-again'
  where id = (select id from subject_posting);
+select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select results_eq(
   $$ select c->>'id' from public.job_hunter_eligible_inbound_jobs() c
@@ -180,6 +228,7 @@ select results_eq(
 -- merged job row used to be the only holder of. Put the posting's description
 -- back, then junk the posting's url and identity: both candidates stop
 -- matching anything the user holds and become eligible again.
+select pg_temp.become_postgres();
 update public.job_hunter_postings set
   description_hash = (select description_hash_at_eval from public.job_hunter_evaluations
                        where job_id = (select id from subject)),
@@ -189,6 +238,7 @@ update public.job_hunter_postings set
   title = 'Some Other Title',
   location = 'Some Other City'
  where id = (select id from subject_posting);
+select pg_temp.authenticate_as('eeeeeeee-0000-0000-0000-00000000000a');
 
 select results_eq(
   $$ select c->>'id' from public.job_hunter_eligible_inbound_jobs() c
