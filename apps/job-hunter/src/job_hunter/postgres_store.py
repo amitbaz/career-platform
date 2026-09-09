@@ -20,10 +20,13 @@ import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, TypeVar
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
+from job_hunter.extract_facets_stage import ExtractFacetsStage, FacetExtractionOutcome
+from job_hunter.facets import FacetExtractionError
 from job_hunter.gmail_models import AUTO_CONFIDENCE_THRESHOLD, ExtractedJob
 from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import (
@@ -42,7 +45,12 @@ from job_hunter.pg import IngestionDatabase
 from job_hunter.postgres_stage_queue import PostgresStageQueue
 from job_hunter.resolve_persist import PostingBatch, ResolvePersistStage
 from job_hunter.search_profile import SearchProfile
-from job_hunter.stage_queue import Stage, StageRunner
+from job_hunter.stage_queue import (
+    PermanentStageFailure,
+    QuotaExhausted,
+    Stage,
+    StageRunner,
+)
 from job_hunter.store_mapping import (
     ats_entry_from_row,
     company_facets_from_row,
@@ -56,6 +64,9 @@ from job_hunter.store_mapping import (
     touch,
 )
 from job_hunter.supabase_client import SupabaseClient, SupabaseRequestError
+
+if TYPE_CHECKING:
+    from job_hunter.ai import AIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -367,6 +378,7 @@ class PostgresJobStore:
         payload = self._job_payload(job)
         payload["match_mode"] = "fingerprint"
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
+        self._enqueue_needing_facets_for_job_ids([row["id"]])
         return row["id"], row["is_new"], row["description_changed"]
 
     def upsert_logical_job(
@@ -387,6 +399,7 @@ class PostgresJobStore:
         """
         payload = self._batch_job_payload(job, posting_batch)
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
+        self._enqueue_needing_facets_for_job_ids([row["id"]])
         return row["id"], row["is_new"], row["description_changed"]
 
     def merge_posting_batch(self, jobs: list[Job]) -> PostingBatch:
@@ -455,6 +468,132 @@ class PostgresJobStore:
             batch_id,
         )
         return PostingBatch()
+
+    def _enqueue_needing_facets_for_job_ids(self, job_ids: Iterable[str]) -> int:
+        """Resolve `job_ids` to their postings and enqueue extraction (#185).
+
+        Called from every job-persist path -- `upsert_job`,
+        `upsert_logical_job`, and `upsert_logical_jobs` -- rather than only
+        from the `merge_posting_batch` fast path. `job_hunter_upsert_job`
+        resolves a posting internally whenever the caller has not already
+        merged one, including both fallbacks `merge_posting_batch` itself
+        takes (no direct connection, or the staged batch left queued), and
+        does not return which posting it chose. Asking again here, once per
+        persist call, is what keeps those fallbacks from being a second
+        "postings that never get extracted" path -- there is no separate
+        backfill step, so a posting nothing ever enqueues extraction for
+        stays unread forever.
+        """
+        ids = sorted({job_id for job_id in job_ids if job_id})
+        if not ids or self._ingestion is None:
+            return 0
+        posting_ids: set[str] = set()
+        for chunk in _chunked(ids, _URL_FILTER_CHUNK_SIZE):
+            try:
+                rows = self._client.select(
+                    "job_hunter_jobs",
+                    params={"id": f"in.({','.join(chunk)})", "select": "posting_id"},
+                )
+            except Exception:
+                logger.exception("could not resolve posting ids for facet enqueue")
+                continue
+            posting_ids.update(
+                row["posting_id"] for row in rows if row.get("posting_id")
+            )
+        return self._enqueue_needing_facets(posting_ids)
+
+    def _enqueue_needing_facets(self, posting_ids: Iterable[str]) -> int:
+        """Enqueue every posting in `posting_ids` with no current facets (#185).
+
+        A posting already current costs one join and no queue send.
+
+        Failing to enqueue is logged but never raised: the caller's own
+        outcome must not be held hostage to a queue send for work nobody is
+        waiting on this run.
+        """
+        ids = sorted({posting_id for posting_id in posting_ids if posting_id})
+        if not ids or self._ingestion is None:
+            return 0
+        queue = PostgresStageQueue(self._ingestion)
+        enqueued = 0
+        try:
+            with self._ingestion.connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "select p.id from public.job_hunter_postings p "
+                        "left join public.job_hunter_job_facets f "
+                        "on f.posting_id = p.id "
+                        "where p.id = any(%s) and ("
+                        "f.posting_id is null or "
+                        "f.description_hash_at_extraction is distinct from p.description_hash"
+                        ")",
+                        (ids,),
+                    )
+                    needing = [str(row[0]) for row in cursor.fetchall()]
+                for posting_id in needing:
+                    queue.enqueue(
+                        Stage.EXTRACT_FACETS,
+                        {"posting_id": posting_id},
+                        connection=connection,
+                    )
+                    enqueued += 1
+        except Exception:
+            logger.exception(
+                "could not enqueue facet extraction for %s posting(s)", len(ids)
+            )
+            return enqueued
+        return enqueued
+
+    def drain_extract_facets_queue(
+        self, ai: "AIProvider", *, limit: int
+    ) -> list[FacetExtractionOutcome]:
+        """Drain up to `limit` messages from the durable extract_facets queue.
+
+        This is the backfill half of objective extraction (#185): postings
+        the run's crawl enqueued because nothing in the corpus had current
+        facets for them. Unlike the inline pass it replaces, a failure here
+        retries or dead-letters durably through `stage_queue.py` instead of
+        vanishing with a cancelled run.
+
+        Extraction spends only the platform key (`CallClass.SHARED_EXTRACTION`
+        inside `extract_facets`), so this must never be handed a user's
+        credential; the caller passing `ai` is trusted to have already
+        resolved the platform one.
+        """
+        if self._ingestion is None or limit <= 0:
+            return []
+        queue = PostgresStageQueue(self._ingestion)
+        runner = StageRunner(queue, visibility_timeout_seconds=5 * 60)
+        stage = ExtractFacetsStage(self._ingestion, ai)
+        outcomes: list[FacetExtractionOutcome] = []
+
+        def handler(message):
+            try:
+                result = stage(message)
+            except PermanentStageFailure as error:
+                outcomes.append(
+                    FacetExtractionOutcome(
+                        failed=True,
+                        parse_failure=isinstance(error.__cause__, FacetExtractionError),
+                    )
+                )
+                raise
+            except QuotaExhausted:
+                # Never spent, never a failure -- exactly like
+                # PlatformAllowanceExhausted in the inline pass.
+                raise
+            except Exception:
+                outcomes.append(FacetExtractionOutcome(failed=True))
+                raise
+            else:
+                outcomes.append(FacetExtractionOutcome(failed=False))
+                return result
+
+        try:
+            runner.run_once(Stage.EXTRACT_FACETS, handler, batch_size=limit)
+        except Exception:
+            logger.exception("draining the extract_facets queue failed")
+        return outcomes
 
     @staticmethod
     def _staging_row(batch_id: str, ordinal: int, job: Job) -> tuple[Any, ...]:
@@ -537,6 +676,9 @@ class PostgresJobStore:
                 results.extend(self._upsert_jobs_individually(chunk, posting_batch))
             else:
                 consecutive_failures = 0
+        self._enqueue_needing_facets_for_job_ids(
+            result[0] for result in results if result is not None
+        )
         return results
 
     def _batch_job_payload(
@@ -3234,6 +3376,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_logical_job": ("id", "bool", "bool"),
     "upsert_logical_jobs": "job_upsert_results",
     "merge_posting_batch": "posting_batch",
+    "drain_extract_facets_queue": "empty_list",
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
@@ -3367,6 +3510,14 @@ def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
             # job upserts write nothing either, so nothing downstream reads a
             # posting id that would have to be fabricated here.
             return PostingBatch()
+    elif shape == "empty_list":
+        def _write(self, *args: Any, **kwargs: Any) -> list[Any]:
+            # `drain_extract_facets_queue` must never spend the platform key
+            # or write a facet row in a dry run; an empty queue is exactly
+            # what a store with no direct Postgres connection drains, and
+            # every caller already treats "nothing drained" as "nothing to
+            # report" rather than an error.
+            return []
 
     elif shape == "job_upsert_results":
         def _write(
