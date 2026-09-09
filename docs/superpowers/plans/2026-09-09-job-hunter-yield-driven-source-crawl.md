@@ -14,9 +14,10 @@
 
 - **Branch:** `feat/job-hunter-yield-driven-source-crawl`, based on `ab35e3f`. Never commit to `main`.
 - **Blocked behind #179.** Tasks 1–3 are pure Python and may proceed now. Tasks 4–10 touch the schema or `supabase/tests/pgtap/job_hunter_isolation.sql` and must not start until `feat/job-hunter-shared-table-writers` merges to `main` and this branch is rebased onto it.
-- **One migration file** for the whole ticket: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`. `PLACEHOLDER` is deliberately not a timestamp. The real timestamp is allocated at pull-request open, in merge order, per PR #202 — ask for it then.
+- **One migration file** for the whole ticket: `supabase/migrations/29999999000000_job_hunter_source_registry.sql`. `29999999000000` is deliberately a year-2999 sentinel, not a real timestamp. The real timestamp is allocated at pull-request open, in merge order, per PR #202 — ask for it then.
 - **Tests:** `pnpm job-hunter:test` with `SUPABASE_TEST_URL`, `SUPABASE_TEST_PUBLISHABLE_KEY`, `SUPABASE_TEST_SIGNING_KEY_B64` **and `SUPABASE_TEST_DB_URL`** exported. The last one became required at `conftest.py:55` in the #179 merge (`a975945`): without it no posting, facet, company or board can be persisted at all, so every write path under test is unreachable. Get it from `supabase status -o env` as `export SUPABASE_TEST_DB_URL="$DB_URL"`. Partial configuration always fails loudly since #208; a run that names one of these variables is that, not your diff. This worktree needs its own `.venv` first (present and verified).
 - **Tasks 1–3 only** may use `JOB_HUNTER_ALLOW_MISSING_STACK=1` — they touch no database. Tasks 4–10 must never use it: the escape hatch on a schema task is exactly how a migration gets verified by nothing.
+- **The placeholder filename MUST be numeric.** `supabase db reset` **silently skips** any migration whose filename does not start with a number — no error, no warning, and the migration is simply never applied. A word-placeholder like `PLACEHOLDER_...` therefore produces a migration that no test ever runs, while pgTAP either fails confusingly or, worse, passes against objects left on the shared stack by an earlier hand-application. `29999999000000` is the right sentinel and the one `AGENTS.md:421` names: numeric so the CLI applies it, year 2999 so nobody mistakes it for real, and sorting last so it can never sort before an applied migration. **Verify a migration only after `pnpm db:reset`**, never against a stack you have hand-applied to — the reset is what proves the committed tree stands on its own.
 - **pgTAP runs as `pnpm db:test`, never as a bare `supabase test db`.** The bare form scans all of `supabase/tests/`, which contains `202608310001_planned_practice_sessions.verify.sql` — a standalone psql script that RAISEs rather than emitting TAP, so the run always ends `No plan found in TAP output / Result: FAIL` on a perfectly green tree. `pnpm db:test` scopes to `supabase/tests/pgtap/` and also takes the shared stack lock, which matters with parallel agents. Same for `pnpm db:reset` over `supabase db reset`. (`--linked=false` is also not a valid flag on CLI 2.116; it takes `--local`.)
 - **A new shared table or `security definer` function must join #179's enforced inventories**, or their assertions fail: `pg_temp.job_hunter_shared_tables` and `pg_temp.job_hunter_ingestion_tables` in `job_hunter_isolation.sql`, the read-only-definer list in `job_hunter_shared_writes.sql`, and both the function array and the definer list in `job_hunter_store_functions.sql`. Shared *knowledge* goes on the shared-tables list; shared *machinery* goes on the ingestion list.
 - **Any new stage's test fixture gets the ingestion connection.** #185 shipped two live platform-key cost defects — a posting enqueued once per persist phase (three per crawl) and a failed read re-draining the same message in the same run — and both were invisible because the store fixture held no `IngestionDatabase` while production always sets `SUPABASE_DB_URL`. Both are fixed on `main` as of `a975945`, along with a per-run enqueue dedup that Task 9's stage must not defeat.
@@ -42,7 +43,7 @@
 - `apps/job-hunter/tests/test_source_schedule.py`
 - `apps/job-hunter/tests/test_crawl_source.py`
 - `apps/job-hunter/tests/test_http_conditional.py`
-- `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`
+- `supabase/migrations/29999999000000_job_hunter_source_registry.sql`
 - `supabase/tests/pgtap/job_hunter_source_registry.sql`
 
 **Modified:**
@@ -572,7 +573,7 @@ git commit -m "feat(job-hunter): derive crawl cadence from measured novelty (#18
 ### Task 4: `job_hunter_sources` and the display-credit resolver
 
 **Files:**
-- Create: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`
+- Create: `supabase/migrations/29999999000000_job_hunter_source_registry.sql`
 - Create: `supabase/tests/pgtap/job_hunter_source_registry.sql`
 
 **Interfaces:**
@@ -672,7 +673,7 @@ Expected: FAIL — `relation "public.job_hunter_sources" does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql` with this as its first section:
+Create `supabase/migrations/29999999000000_job_hunter_source_registry.sql` with this as its first section:
 
 ```sql
 -- Sources become an entity, and crawling follows measured novelty (issue #184).
@@ -797,7 +798,7 @@ Expected: PASS — `job_hunter_source_registry.sql .. ok`, 11/11
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql supabase/tests/pgtap/job_hunter_source_registry.sql
+git add supabase/migrations/29999999000000_job_hunter_source_registry.sql supabase/tests/pgtap/job_hunter_source_registry.sql
 git commit -m "feat(job-hunter): give sources a row, a kind and a display obligation (#184)"
 ```
 
@@ -806,7 +807,7 @@ git commit -m "feat(job-hunter): give sources a row, a kind and a display obliga
 ### Task 5: The crawl ledger and the cursor store
 
 **Files:**
-- Modify: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql` (append)
+- Modify: `supabase/migrations/29999999000000_job_hunter_source_registry.sql` (append)
 - Modify: `supabase/tests/pgtap/job_hunter_source_registry.sql` (append; raise `plan(11)` to `plan(17)`)
 
 **Interfaces:**
@@ -859,7 +860,7 @@ Expected: FAIL — `relation "public.job_hunter_source_crawls" does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`:
+Append to `supabase/migrations/29999999000000_job_hunter_source_registry.sql`:
 
 ```sql
 -- The crawl ledger ---------------------------------------------------------
@@ -960,7 +961,7 @@ Expected: PASS — 17/17
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql supabase/tests/pgtap/job_hunter_source_registry.sql
+git add supabase/migrations/29999999000000_job_hunter_source_registry.sql supabase/tests/pgtap/job_hunter_source_registry.sql
 git commit -m "feat(job-hunter): record per-source crawl novelty and cursors (#184)"
 ```
 
@@ -971,7 +972,7 @@ git commit -m "feat(job-hunter): record per-source crawl novelty and cursors (#1
 `job_hunter_schedule_stage_enqueue` derives its `pg_cron` job name from the stage alone. `cron.schedule` replaces by name, so N per-source schedules install under one name and each silently replaces the last: exactly one source is ever visited, and it presents as a quiet job market rather than an error. The existing pgTAP asserts that literal name and therefore locks the defect in.
 
 **Files:**
-- Modify: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql` (append)
+- Modify: `supabase/migrations/29999999000000_job_hunter_source_registry.sql` (append)
 - Modify: `supabase/tests/pgtap/job_hunter_stage_queues.sql:155–166`
 - Modify: `supabase/tests/pgtap/job_hunter_store_functions.sql:150–172`
 
@@ -1082,7 +1083,7 @@ Expected: FAIL — `function public.job_hunter_schedule_stage_enqueue(unknown, u
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`:
+Append to `supabase/migrations/29999999000000_job_hunter_source_registry.sql`:
 
 ```sql
 -- One cron entry per source, not one per stage -----------------------------
@@ -1200,7 +1201,7 @@ Expected: PASS — `job_hunter_stage_queues.sql` and `job_hunter_store_functions
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql supabase/tests/pgtap/job_hunter_stage_queues.sql supabase/tests/pgtap/job_hunter_store_functions.sql
+git add supabase/migrations/29999999000000_job_hunter_source_registry.sql supabase/tests/pgtap/job_hunter_stage_queues.sql supabase/tests/pgtap/job_hunter_store_functions.sql
 git commit -m "fix(job-hunter): stop per-source cron schedules replacing each other (#184)"
 ```
 
@@ -1211,7 +1212,7 @@ git commit -m "fix(job-hunter): stop per-source cron schedules replacing each ot
 The owner's decision on #184: the quota is a property of the API key, not of a person. This moves the table, its uniqueness rule, its index, and its position in the enforced private-data inventory, and carries this month's already-spent count across.
 
 **Files:**
-- Modify: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql` (append)
+- Modify: `supabase/migrations/29999999000000_job_hunter_source_registry.sql` (append)
 - Modify: `supabase/tests/pgtap/job_hunter_isolation.sql` (remove `job_hunter_search_api_usage` from the table list at **line 74** and its seed `when` arm at **lines 172–173**)
 - Modify: `supabase/tests/pgtap/job_hunter_write_idempotency.sql` — **two** places, not one: **lines 22–23** and **lines 51–52**
 - Modify: `apps/job-hunter/tests/conftest.py` — the cleanup list entry is at **line 165**
@@ -1282,7 +1283,7 @@ Expected: FAIL — `relation "public.job_hunter_platform_search_usage" does not 
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`:
+Append to `supabase/migrations/29999999000000_job_hunter_source_registry.sql`:
 
 ```sql
 -- The external search allowance becomes a platform ledger ------------------
@@ -1367,7 +1368,7 @@ Expected: PASS — all pgTAP files green, including `job_hunter_isolation.sql` w
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql supabase/tests/pgtap/
+git add supabase/migrations/29999999000000_job_hunter_source_registry.sql supabase/tests/pgtap/
 git commit -m "feat(job-hunter): make the search allowance a platform ledger (#184)"
 ```
 
@@ -2131,7 +2132,7 @@ git commit -m "feat(job-hunter): crawl one source per queue message (#184)"
 ### Task 10: Install the schedules, and correct what this made stale
 
 **Files:**
-- Modify: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql` (append)
+- Modify: `supabase/migrations/29999999000000_job_hunter_source_registry.sql` (append)
 - Modify: `supabase/migrations/20260909200000_job_hunter_ats_boards.sql` (comment only)
 - Modify: `supabase/tests/pgtap/job_hunter_source_registry.sql` (append; raise `plan(22)` to `plan(25)`)
 - Modify: `apps/job-hunter/AGENTS.md`
@@ -2175,7 +2176,7 @@ Expected: FAIL — `function public.job_hunter_reschedule_sources() does not exi
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`:
+Append to `supabase/migrations/29999999000000_job_hunter_source_registry.sql`:
 
 ```sql
 -- The yield-driven scheduler -----------------------------------------------
@@ -2420,7 +2421,7 @@ git fetch origin -q
 gh pr list --state open --json number,headRefName   # a PR branch you have not fetched
 ```
 
-  Take the next `YYYYMMDDHHMMSS` slot above everything that returns, in **UTC** (`date -u`) — the local date can be a day ahead of UTC and a timestamp from the wrong one sorts wrong. Then rename `PLACEHOLDER_job_hunter_source_registry.sql` to `<timestamp>_job_hunter_source_registry.sql` and update every reference to it, including `AGENTS.md`.
+  Take the next `YYYYMMDDHHMMSS` slot above everything that returns, in **UTC** (`date -u`) — the local date can be a day ahead of UTC and a timestamp from the wrong one sorts wrong. Then rename `29999999000000_job_hunter_source_registry.sql` to `<timestamp>_job_hunter_source_registry.sql` and update every reference to it, including `AGENTS.md`.
 
   The rule about not reaching for "the next number after the highest on `main`" is about placeholders chosen at *dispatch*, when other agents are choosing simultaneously and none of you can see the others. At PR-open, with the enumeration above returning nothing in flight, the next slot is correct by construction — that is what "issued in merge order" means. What makes it correct is that the enumeration ran *now*, not that a human said the number.
 
