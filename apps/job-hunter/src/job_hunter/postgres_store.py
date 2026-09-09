@@ -3666,11 +3666,6 @@ class PostgresJobStore:
 # delegate it straight to the real store, and a "dry" run would mutate the
 # live database.
 _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
-    # Not a database write -- it records in memory that this run has spent a
-    # facet read on a posting, so the queue does not spend a second one. A dry
-    # run wants that bookkeeping to happen exactly as a real run does, but it
-    # is classified here rather than as a read because it mutates the store.
-    "note_facet_read_attempt": None,
     "upsert_job": ("id", "bool", "bool"),
     "upsert_logical_job": ("id", "bool", "bool"),
     "upsert_logical_jobs": "job_upsert_results",
@@ -3732,6 +3727,13 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         # run answers it truthfully, because the pipeline uses it to decide
         # what to skip and a dry run should skip exactly what a real run would.
         "can_write_shared_rows",
+        # Classified as a read because it persists nothing: it resolves a job
+        # to its posting and remembers, in this store's own memory, that the
+        # run has spent a facet call on it. A dry run wants that bookkeeping
+        # to happen exactly as a real run does -- suppressing it would let the
+        # queue re-read a posting the run already read -- and letting it
+        # happen writes no row.
+        "note_facet_read_attempt",
         "get_job_facets",
         "jobs_needing_facets",
         "get_company_facets",
