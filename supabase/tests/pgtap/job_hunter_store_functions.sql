@@ -101,7 +101,7 @@ select has_function('public', 'job_hunter_find_posting_by_identity',
 select has_function('public', 'job_hunter_get_provider_credentials', array[]::text[],
   'job_hunter_get_provider_credentials exists');
 
--- Five security-definer exceptions, and no more. Every store and normalizer
+-- Six security-definer exceptions, and no more. Every store and normalizer
 -- function must continue to run with the caller's own privileges so one
 -- user's call cannot read another user's rows.
 --
@@ -129,6 +129,11 @@ select has_function('public', 'job_hunter_get_provider_credentials', array[]::te
 --     This one takes no user argument: it reads auth.uid(), which inside a
 --     definer is still the caller's, and it writes nothing.
 --
+--   * job_hunter_posting_display_credit (#184), definer because the display
+--     obligation is resolved from a posting, not a session, and a surface
+--     rendering a digest should not need one. It takes no user argument
+--     either, and it writes nothing.
+--
 -- Since #179 the definer-ness of the middle three buys much less than it did,
 -- because none of them is reachable by `authenticated` any more: the job
 -- upsert and both merges take the user they act for as an argument and run on
@@ -146,8 +151,8 @@ select is(
   array['job_hunter_collapse_job_rows', 'job_hunter_find_job_by_identity',
         'job_hunter_get_provider_credentials',
         'job_hunter_merge_jobs', 'job_hunter_merge_postings',
-        'job_hunter_upsert_job'],
-  'credential retrieval, the identity read, the merges, the row collapse and the job upsert are the only public.job_hunter_* security definers');
+        'job_hunter_posting_display_credit', 'job_hunter_upsert_job'],
+  'credential retrieval, the identity read, the merges, the row collapse, the display credit and the job upsert are the only public.job_hunter_* security definers');
 
 -- The collapse is internal to the schema: no role may call it at all, which
 -- is what keeps "fold these two membership rows" reachable only as a
@@ -211,6 +216,7 @@ select is(
     'job_hunter_normalize_tokens',
     'job_hunter_pending_delivery_jobs',
     'job_hunter_pending_review_events',
+    'job_hunter_posting_display_credit',
     'job_hunter_preferred_description',
     'job_hunter_record_ats_eligible_jobs',
     'job_hunter_resolve_posting',
@@ -220,7 +226,7 @@ select is(
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs',
     'job_hunter_upsert_posting'],
-  'exactly the twenty-seven expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the twenty-eight expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

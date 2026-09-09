@@ -326,13 +326,18 @@ select unnest(array[
 -- fails until it is. Update the AGENTS.md paragraph in the same commit, by
 -- hand, and do not trust a clean merge to have kept it true. #215 is filed
 -- to derive that inventory rather than write it twice.
+--
+-- job_hunter_sources (issue #184) joins this list for the same reason as
+-- the others: a source's kind and display obligation are true for every
+-- user, not one user's private note about it.
 create view pg_temp.job_hunter_shared_tables as
 select unnest(array[
   'job_hunter_postings',
   'job_hunter_job_facets',
   'job_hunter_companies',
   'job_hunter_posting_merges',
-  'job_hunter_ats_boards'
+  'job_hunter_ats_boards',
+  'job_hunter_sources'
 ]) as table_name;
 
 -- What being on that list obliges (#179): reads open to authenticated, writes
