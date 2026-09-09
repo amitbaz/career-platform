@@ -90,6 +90,8 @@ STRUCTURED_REMOTE_SOURCES = frozenset({"ashby"})
 
 # One retry for transient provider 5xx/timeout failures, matching evaluation.
 _FACET_MAX_ATTEMPTS = 2
+# One fresh sample when a completed response still fails the facet parser.
+_FACET_PARSE_MAX_ATTEMPTS = 2
 
 
 class FacetExtractionError(ValueError):
@@ -195,6 +197,56 @@ _FIELD_INSTRUCTIONS = {
         "demands it. Do not invent requirements the posting does not state or clearly imply."
     ),
 }
+
+_COMPENSATION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "disclosed": {"type": "BOOLEAN"},
+        "currency": {"type": "STRING"},
+        "minimum": {"type": "INTEGER", "minimum": 0, "nullable": True},
+        "maximum": {"type": "INTEGER", "minimum": 0, "nullable": True},
+        "period": {"type": "STRING", "enum": sorted(VALID_PERIODS)},
+    },
+    "required": ["disclosed", "currency", "minimum", "maximum", "period"],
+}
+
+_REQUIREMENT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "requirement": {"type": "STRING", "minLength": 1},
+        "depth": {"type": "STRING", "enum": sorted(VALID_DEPTHS)},
+        "kind": {"type": "STRING", "enum": sorted(VALID_REQUIREMENT_KINDS)},
+    },
+    "required": ["requirement", "depth", "kind"],
+}
+
+_FACET_SCHEMAS = {
+    "seniority": {"type": "STRING", "enum": sorted(VALID_SENIORITY)},
+    "remote_policy": {"type": "STRING", "enum": sorted(VALID_REMOTE_POLICY)},
+    "relocation_policy": {
+        "type": "STRING",
+        "enum": sorted(VALID_RELOCATION_POLICY),
+    },
+    "hiring_regions": {
+        "type": "ARRAY",
+        "items": {"type": "STRING", "enum": sorted(VALID_REGIONS)},
+    },
+    "stack": {
+        "type": "ARRAY",
+        "items": {"type": "STRING", "minLength": 1},
+    },
+    "compensation": _COMPENSATION_SCHEMA,
+    "requirements": {"type": "ARRAY", "items": _REQUIREMENT_SCHEMA},
+}
+
+
+def _facet_response_schema(requested: list[str]) -> dict[str, Any]:
+    """Describe exactly the residue `_parse_facets` will read."""
+    return {
+        "type": "OBJECT",
+        "properties": {name: _FACET_SCHEMAS[name] for name in requested},
+        "required": list(requested),
+    }
 
 _TIER_PROMPT_HINTS = {
     content_confidence.OFFICIAL_ATS: "This is the official employer/ATS posting text.",
@@ -446,33 +498,45 @@ def extract_facets(posting: PostingFacts, ai: "AIProvider") -> JobFacets:
     # whole of that decision: it selects the credential and the quota inside
     # the port, and there is no argument here through which a user's key could
     # be reached instead.
-    try:
-        raw = ai.generate_text(
-            _build_facet_prompt(posting, requested),
-            call_class=CallClass.SHARED_EXTRACTION,
-            purpose="job_facets",
-            thinking_level="low",
-            max_output_tokens=4000,
-            json_mode=True,
-            max_attempts=_FACET_MAX_ATTEMPTS,
-        )
-    except AITemporaryCapacity:
-        # Rolling capacity, not the allowance: the platform key has budget
-        # left and this call may go through in a moment. The caller decides
-        # whether to wait, so this passes through untranslated.
-        raise
-    except (AIBudgetExceeded, AIQuotaPaused, CredentialUnavailable) as exc:
-        # Three different refusals -- our own daily ceiling, the provider's
-        # persisted pause, and no platform key at all -- with one meaning for
-        # every caller: the platform cannot pay for this posting to be read
-        # today, and nobody else may be asked to. Translating them here, at
-        # the only shared-extraction call site, is what stops a caller from
-        # catching `AIBudgetExceeded` and mistaking the platform's exhaustion
-        # for the user's own.
-        raise PlatformAllowanceExhausted(
-            f"the platform key cannot fund extraction: {exc}"
-        ) from exc
-    values = _parse_facets(raw, requested)
+    prompt = _build_facet_prompt(posting, requested)
+    schema = _facet_response_schema(requested)
+    for parse_attempt in range(1, _FACET_PARSE_MAX_ATTEMPTS + 1):
+        try:
+            raw = ai.generate_text(
+                prompt,
+                call_class=CallClass.SHARED_EXTRACTION,
+                purpose="job_facets",
+                thinking_level="low",
+                max_output_tokens=4000,
+                json_mode=True,
+                json_schema=schema,
+                max_attempts=_FACET_MAX_ATTEMPTS,
+            )
+        except AITemporaryCapacity:
+            # Rolling capacity, not the allowance: the platform key has budget
+            # left and this call may go through in a moment. The caller decides
+            # whether to wait, so this passes through untranslated.
+            raise
+        except (AIBudgetExceeded, AIQuotaPaused, CredentialUnavailable) as exc:
+            # Three different refusals -- our own daily ceiling, the provider's
+            # persisted pause, and no platform key at all -- with one meaning for
+            # every caller: the platform cannot pay for this posting to be read
+            # today, and nobody else may be asked to. Translating them here, at
+            # the only shared-extraction call site, is what stops a caller from
+            # catching `AIBudgetExceeded` and mistaking the platform's exhaustion
+            # for the user's own.
+            raise PlatformAllowanceExhausted(
+                f"the platform key cannot fund extraction: {exc}"
+            ) from exc
+
+        try:
+            values = _parse_facets(raw, requested)
+        except FacetExtractionError:
+            if parse_attempt == _FACET_PARSE_MAX_ATTEMPTS:
+                raise
+        else:
+            break
+
     values.update(supplied)
 
     return JobFacets(

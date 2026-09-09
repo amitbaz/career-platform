@@ -9,6 +9,11 @@
 -- RLS filters rather than errors: a select with no matching policy
 -- returns zero rows, it does not raise. Only writes that fail a policy's
 -- WITH CHECK raise 42501. The assertions below match that behaviour.
+--
+-- Two tables are deliberately absent: job_hunter_postings (#174) and
+-- job_hunter_job_facets (#175). Both hold one row per advertisement rather
+-- than one per user, and shared readability is the property they have --
+-- asserted in their own files. Anything with a user_id belongs here.
 begin;
 create extension if not exists pgtap with schema extensions;
 select no_plan();
@@ -71,8 +76,7 @@ select unnest(array[
   'job_hunter_telegram_navigation_sessions',
   'job_hunter_search_profiles',
   'job_hunter_search_profile_markets',
-  'job_hunter_job_merges',
-  'job_hunter_job_facets'
+  'job_hunter_job_merges'
 ]) as table_name;
 
 -- Minimal row per table -----------------------------------------------------------
@@ -170,10 +174,6 @@ begin
          remote_policy, relocation_policy, sponsorship_policy)
       values (p_owner, v_profile, gen_random_uuid()::text, 0.5, 'EUR', 90000,
               'preferred', 'selective', 'not_required') returning id into v_id;
-    when 'job_hunter_job_facets' then
-      v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
-      insert into public.job_hunter_job_facets (user_id, job_id, extracted_at)
-      values (p_owner, v_job, now()) returning id into v_id;
     when 'job_hunter_job_merges' then
       -- duplicate_id names a deleted row and carries no foreign key, so a
       -- fresh uuid is a faithful seed; survivor_id does need a real job.
@@ -256,15 +256,18 @@ select unnest(array[
   'job_hunter_platform_ai_quota_state'
 ]) as table_name;
 
--- The shared table, for the same reason in reverse. A posting (issue #174)
--- is one advertisement in the world, not one user's copy of it: it has no
--- user_id and every authenticated user may read every row, so per-user
--- isolation is the property it deliberately does not have. What it does
--- have -- one row per fingerprint, readable by anyone authenticated and
--- deletable by no one -- is asserted in job_hunter_postings.sql.
+-- The shared tables, for the same reason in reverse. A posting (issue #174)
+-- is one advertisement in the world, not one user's copy of it, and its
+-- facets (issue #175) are what that advertisement says to everybody:
+-- neither has a user_id, every authenticated user may read every row, and
+-- so per-user isolation is the property they deliberately do not have. What
+-- they do have -- one row per fingerprint and one set of facets per
+-- posting, readable by anyone authenticated and deletable by no one -- is
+-- asserted in job_hunter_postings.sql and job_hunter_job_facets.sql.
 create view pg_temp.job_hunter_shared_tables as
 select unnest(array[
-  'job_hunter_postings'
+  'job_hunter_postings',
+  'job_hunter_job_facets'
 ]) as table_name;
 
 -- Ingestion's own scratch space (issue #182), which is neither per-user nor
@@ -293,8 +296,8 @@ select is(
   'every public.job_hunter_* table is covered by an isolation check');
 
 select is(
-  (select count(*)::int from pg_temp.job_hunter_tables), 22,
-  'twenty-two Job Hunter tables are under test');
+  (select count(*)::int from pg_temp.job_hunter_tables), 21,
+  'twenty-one Job Hunter tables are under test');
 
 select pg_temp.check_isolation(
   t.table_name,

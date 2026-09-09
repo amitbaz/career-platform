@@ -33,13 +33,6 @@ def model() -> str:
     return f"gemini-platform-{uuid.uuid4()}"
 
 
-@pytest.fixture
-def other_store(other_supabase_client):
-    from job_hunter.postgres_store import PostgresJobStore
-
-    return PostgresJobStore(other_supabase_client)
-
-
 def _user_tracker(store, model: str) -> AIUsageTracker:
     return AIUsageTracker(
         store, AIQuotaSettings(rpm=10, tpm=1000, rpd=100), model, provider=PROVIDER

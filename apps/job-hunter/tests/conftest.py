@@ -7,8 +7,10 @@ Supabase stack rather than an in-process engine. Start it with
 Only tests that ask for `supabase_client`, `other_supabase_client`, or
 `store` touch the stack at all: requesting one of them skips the test when
 the stack isn't configured, and cleans both seed users' rows from every
-job_hunter_* table (in foreign-key-safe order) before and after the test
-runs. Every other test in the suite is unaffected. Deletes go through each user's own
+per-user job_hunter_* table (in foreign-key-safe order) before and after the
+test runs. The shared tables -- the posting and its facets -- are not
+cleaned and cannot be; `_postings_unique_to_this_test` keeps each test on
+postings of its own instead. Every other test in the suite is unaffected. Deletes go through each user's own
 client and token, never a service_role key, so a truncation bug cannot
 reach another user's data.
 
@@ -22,8 +24,10 @@ behind `scripts/stack_lock.py`.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import uuid
 from contextlib import ExitStack, contextmanager
 
 import pytest
@@ -65,7 +69,13 @@ _REQUIRED = (
 #   job_hunter_deliveries         -> job_hunter_jobs               (job_id, user_id)
 #   job_hunter_pending_ai_work    -> job_hunter_jobs               (job_id, user_id) on delete cascade
 #   job_hunter_job_merges         -> job_hunter_jobs               (survivor_id, user_id) on delete cascade
-#   job_hunter_job_facets         -> job_hunter_jobs               (job_id, user_id) on delete cascade
+#
+# job_hunter_job_facets is deliberately absent, and so is job_hunter_postings.
+# Since #175 neither carries a user_id -- both hang off the shared
+# advertisement rather than off one person's copy of it -- so there is nothing
+# for a per-user delete to match, and neither table has a delete policy for a
+# user to delete through. `_postings_unique_to_this_test` is what keeps them
+# from leaking between tests instead.
 #
 # job_hunter_job_merges also holds a duplicate_id, deliberately without a
 # foreign key: it names the row the merge deleted, which is the whole point of
@@ -94,7 +104,6 @@ _TABLES_CHILD_FIRST = (
     "job_hunter_deliveries",
     "job_hunter_pending_ai_work",
     "job_hunter_job_merges",
-    "job_hunter_job_facets",
     "job_hunter_ats_registry",
     "job_hunter_ai_usage",
     "job_hunter_ai_quota_state",
@@ -204,6 +213,43 @@ def _capture_suspended(config: pytest.Config):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _postings_unique_to_this_test():
+    """Give each test postings no other test or run can collide with.
+
+    A posting is shared: `job_hunter_postings` has no user_id, and since
+    #175 neither do the facets hanging off it, so neither table is cleaned
+    between tests the way per-user rows are. Two tests that wrote the same
+    fingerprint would therefore read each other's facets -- the next test in
+    this file, a later suite run on this machine, or a worktree running at
+    the same time. Salting the fingerprint with one value per test gives
+    each test postings of its own.
+
+    Relationships inside a test are untouched: the same `Job` still hashes
+    to the same fingerprint, so deduplication, merging and re-discovery
+    behave exactly as they do in production, including across several
+    pipeline runs in one test. Autouse because the salt has to be in place
+    before the first store write, whether or not the test asked for a store.
+
+    The cost is that each store-backed test leaves a posting and its facets
+    behind: nothing can delete them, since neither table has a delete policy
+    for a user to delete through. They accumulate on the local stack until
+    the next `pnpm db:reset`, which is cheap next to a suite that reads
+    another run's answers.
+    """
+    from job_hunter import postgres_store
+
+    salt = uuid.uuid4().hex
+    real = postgres_store.job_fingerprint
+
+    def salted(job) -> str:
+        return hashlib.sha256(f"{salt}:{real(job)}".encode("utf-8")).hexdigest()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(postgres_store, "job_fingerprint", salted)
+        yield
+
+
 @pytest.fixture(scope="session")
 def _stack_env() -> None:
     missing = [name for name in _REQUIRED if not os.environ.get(name)]
@@ -270,3 +316,16 @@ def store(supabase_client: SupabaseClient):
     from job_hunter.postgres_store import PostgresJobStore
 
     return PostgresJobStore(supabase_client)
+
+
+@pytest.fixture
+def other_store(other_supabase_client: SupabaseClient):
+    """A second user's store, on the same stack and the same postings.
+
+    What the two users share is exactly what #175 makes shared: the posting
+    row and its facets. Everything either one writes about their own
+    relationship to a job stays invisible to the other.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    return PostgresJobStore(other_supabase_client)

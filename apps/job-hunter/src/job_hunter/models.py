@@ -150,8 +150,8 @@ class JobFacets:
     """The objective facts a posting states about itself (issue #125).
 
     A facet is identical for every user -- it is a property of the posting,
-    not of anyone reading it -- so facets are extracted once per posting and
-    reused by every later run. See `facets.py` for the extraction, which is
+    not of anyone reading it -- so facets are stored on the posting (#175),
+    extracted once, and reused by every later run of every user. See `facets.py` for the extraction, which is
     deliberately unable to see anything per-user, and CONTEXT.md for the
     objective-extraction / subjective-scoring split this is one half of.
 
@@ -174,8 +174,9 @@ class JobFacets:
     #: rather than from the model, so the split can be measured.
     source_supplied: list[str] = field(default_factory=list)
     #: The description hash these facets were read at. Stamped by the store
-    #: from the job row, so invalidation reuses exactly the mechanism that
-    #: gates re-evaluation rather than inventing a second one.
+    #: from the posting (#175), so invalidation reuses exactly the mechanism
+    #: that gates re-evaluation rather than inventing a second one -- and an
+    #: edited advertisement is re-read once rather than once per user.
     description_hash_at_extraction: str = ""
     model: str = ""
 
@@ -533,6 +534,17 @@ class RunSummary:
     # unenriched and the next run retries it, which is recovery, not damage.
     facet_extraction_attempted: int = 0
     facet_extraction_failed: int = 0
+    # Jobs scored this run against facets an earlier run had already stored
+    # -- this user's earlier run or, since #175, any user's. Counted beside
+    # the extractions because the pair is the shared-extraction claim made
+    # measurable: reuse is the work the platform did not pay for again, and
+    # a deployment where it stays near zero is paying per user for something
+    # it believes it pays for once.
+    facets_reused: int = 0
+    # Final parser failures after the one fresh-sample retry. These are job
+    # outcomes, not raw malformed samples: a first bad response that recovers
+    # on retry did not leave extraction failed.
+    extraction_parse_failures: int = 0
     # Jobs the stored facets disqualified for this user before any scoring
     # call was dispatched (issue #127). Deliberately not part of
     # `evaluation_attempted`/`evaluated`: no provider call was made, and a
@@ -554,3 +566,5 @@ class RunSummary:
     # run keeps scoring every job whose posting was already read, and nobody
     # was charged for the postings it did not read.
     scoring_deferred_by_read_budget: int = 0
+    # Subjective scoring responses still unparseable after their one retry.
+    scoring_parse_failures: int = 0

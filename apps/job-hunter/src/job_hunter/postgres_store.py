@@ -1011,50 +1011,75 @@ class PostgresJobStore:
     # ------------------------------------------------------------------
 
     def save_job_facets(self, job_id: str, facets: JobFacets) -> None:
-        """Persist a job's objective facets, replacing any earlier set.
+        """Persist the facets of the posting `job_id` is a copy of (#175).
 
-        The description hash is read off the job row here rather than taken
-        from the caller, exactly as `_write_evaluation` does: there is one
-        notion of "the description this was computed at", and it lives on the
-        job. That is what makes `jobs_needing_facets` reuse the existing
-        invalidation mechanism instead of inventing a second one.
+        Facets belong to the advertisement, not to the user who found it, so
+        the row is keyed on `job_hunter_postings` and replaces whatever was
+        there before -- including a set another user's run wrote. The caller
+        keeps passing job ids because that is what the pipeline holds; the
+        translation to a posting belongs here.
 
-        Unlike `save_evaluation`, this deliberately does **not** follow a
-        merge. Facets describe the posting they were read from; the surviving
-        row of a merge is a different posting with its own description, and
-        writing these facets against it would stamp them with *that* row's
-        description hash -- pinning one posting's facts to another's text as
-        permanently current, with no path back to re-extraction. An
-        evaluation survives that treatment because the next description change
-        recomputes it; facets stamped this way would never expire. A job
-        merged away mid-run is therefore left unenriched, and the survivor is
-        extracted from its own text on a later run.
+        The description hash is read off the posting rather than taken from
+        the caller, exactly as `_write_evaluation` reads it off the job:
+        there is one notion of "the description this was computed at", and
+        for a shared extraction it is the posting's. That is what makes a
+        changed description cost one re-extraction rather than one per user.
+
+        A job with no posting is left unenriched. That covers the job merged
+        away mid-run -- its row is gone, so it resolves to no posting, and
+        the facets are discarded rather than stamped on the survivor, which
+        would pin one posting's facts to another posting's text as
+        permanently current. It also covers a job row written without going
+        through `job_hunter_upsert_job`, which is the only other way a job
+        can lack one.
         """
+        posting_id = self._posting_for_job(job_id)
+        if posting_id is None:
+            logger.info(
+                "job_id=%s resolves to no posting (merged away mid-run, or "
+                "never pointed at one); discarding its facets",
+                job_id,
+            )
+            return
         try:
-            self._write_job_facets(job_id, facets)
+            self._write_posting_facets(posting_id, facets)
         except SupabaseRequestError as error:
             if error.code != _FOREIGN_KEY_VIOLATION:
                 raise
             logger.info(
-                "job_id=%s was merged away mid-run; discarding its facets rather "
-                "than stamping them on the survivor",
-                job_id,
+                "posting_id=%s disappeared mid-run; discarding the facets read "
+                "from it",
+                posting_id,
             )
 
-    def _write_job_facets(self, job_id: str, facets: JobFacets) -> None:
-        jobs = self._client.select(
+    def _posting_for_job(self, job_id: str) -> str | None:
+        """The posting a job is one user's copy of, or None when it has none.
+
+        None is also what an unreadable job id gives, which is the same
+        answer for the purposes of every caller here: there is no shared row
+        to read facets from or write them to.
+        """
+        rows = self._client.select(
             "job_hunter_jobs",
-            params={"id": f"eq.{job_id}", "select": "description_hash"},
+            params={"id": f"eq.{job_id}", "select": "posting_id", "limit": "1"},
         )
-        job_row = jobs[0] if jobs else {}
+        if not rows:
+            return None
+        return rows[0].get("posting_id")
+
+    def _write_posting_facets(self, posting_id: str, facets: JobFacets) -> None:
+        postings = self._client.select(
+            "job_hunter_postings",
+            params={"id": f"eq.{posting_id}", "select": "description_hash"},
+        )
+        posting_row = postings[0] if postings else {}
         compensation = facets.compensation
         self._client.upsert(
             "job_hunter_job_facets",
             [
                 {
-                    "user_id": self._client.user_id,
-                    "job_id": job_id,
-                    "description_hash_at_extraction": job_row.get("description_hash") or "",
+                    "posting_id": posting_id,
+                    "description_hash_at_extraction": posting_row.get("description_hash") or "",
                     "seniority": facets.seniority,
                     "remote_policy": facets.remote_policy,
                     "relocation_policy": facets.relocation_policy,
@@ -1071,21 +1096,28 @@ class PostgresJobStore:
                     "extracted_at": to_iso(datetime.now(timezone.utc)),
                 }
             ],
-            on_conflict="job_id",
+            on_conflict="posting_id",
         )
 
     def get_job_facets(self, job_id: str) -> JobFacets | None:
-        """Return a job's stored facets, or None when it has never been extracted.
+        """Return the posting's stored facets, or None when never extracted.
+
+        Whoever extracted them: the row is keyed on the posting and readable
+        by every authenticated user, so a run reads what another user's run
+        paid for rather than paying again.
 
         None means "not extracted yet", never "this posting states nothing":
         a posting that states nothing is stored with every facet at its
         unknown/empty value, which is a fact about the posting and worth
         keeping.
         """
+        posting_id = self._posting_for_job(job_id)
+        if posting_id is None:
+            return None
         rows = self._client.select(
             "job_hunter_job_facets",
             params={
-                "job_id": f"eq.{job_id}",
+                "posting_id": f"eq.{posting_id}",
                 "select": (
                     "seniority,remote_policy,relocation_policy,hiring_regions,stack,"
                     "compensation_disclosed,compensation_currency,compensation_min,"
@@ -1100,18 +1132,27 @@ class PostgresJobStore:
         return job_facets_from_row(rows[0])
 
     def jobs_needing_facets(self, job_ids: list[str]) -> set[str]:
-        """Which of `job_ids` have no current facets, in two requests per chunk.
+        """Which of `job_ids` sit on a posting nobody has current facets for.
 
-        A job needs extraction when it has no facet row at all, or when the
-        description it was extracted at is not the description the job carries
-        now -- the same comparison `needs_evaluation` makes against
-        `description_hash_at_eval`, deliberately reusing the one mechanism
-        rather than adding a second notion of a changed posting.
+        A job needs extraction when its posting has no facet row at all, or
+        when the description that row was extracted at is not the
+        description the *posting* carries now -- the same comparison
+        `needs_evaluation` makes against `description_hash_at_eval`,
+        deliberately reusing the one mechanism rather than adding a second
+        notion of a changed posting. Reading the hash off the posting rather
+        than off each user's job row is what makes an edited advertisement
+        cost one re-extraction instead of one per user.
 
-        An id with no readable job row is left out entirely. Row-level
-        security filters such a row before this sees it, and there is no
-        description to extract from either way: reporting it as needing work
-        would send the pipeline into a call it can only fail.
+        Three requests per chunk: the jobs, their postings, and the facets on
+        those postings.
+
+        An id with no readable job row, or a job row with no posting, is left
+        out entirely. Row-level security filters the first before this sees
+        it, and neither has a shared row to read or write: reporting one as
+        needing work would send the pipeline into a call whose result it
+        could not store. `pipeline._facets_for_scoring` asks this again for
+        the single job before it reads, so the absence here means "no work to
+        do" there rather than "read it anyway".
         """
         unique_ids = list(dict.fromkeys(job_ids))
         if not unique_ids:
@@ -1119,28 +1160,42 @@ class PostgresJobStore:
 
         needing: set[str] = set()
         for chunk in _chunked(unique_ids, _URL_FILTER_CHUNK_SIZE):
-            id_filter = f"in.({','.join(chunk)})"
             job_rows = self._client.select(
                 "job_hunter_jobs",
-                params={"id": id_filter, "select": "id,description_hash"},
+                params={"id": f"in.({','.join(chunk)})", "select": "id,posting_id"},
+            )
+            posting_ids = sorted(
+                {row["posting_id"] for row in job_rows if row.get("posting_id")}
+            )
+            if not posting_ids:
+                continue
+            posting_filter = f"in.({','.join(posting_ids)})"
+            posting_rows = self._client.select(
+                "job_hunter_postings",
+                params={"id": posting_filter, "select": "id,description_hash"},
             )
             facet_rows = self._client.select(
                 "job_hunter_job_facets",
                 params={
-                    "job_id": id_filter,
-                    "select": "job_id,description_hash_at_extraction",
+                    "posting_id": posting_filter,
+                    "select": "posting_id,description_hash_at_extraction",
                 },
             )
+            current_hash = {
+                row["id"]: row.get("description_hash") or "" for row in posting_rows
+            }
             extracted_at_hash = {
-                row["job_id"]: row.get("description_hash_at_extraction") or ""
+                row["posting_id"]: row.get("description_hash_at_extraction") or ""
                 for row in facet_rows
             }
             for row in job_rows:
-                job_id = row["id"]
-                if job_id not in extracted_at_hash:
-                    needing.add(job_id)
-                elif extracted_at_hash[job_id] != (row.get("description_hash") or ""):
-                    needing.add(job_id)
+                posting_id = row.get("posting_id")
+                if not posting_id:
+                    continue
+                if posting_id not in extracted_at_hash:
+                    needing.add(row["id"])
+                elif extracted_at_hash[posting_id] != current_hash.get(posting_id, ""):
+                    needing.add(row["id"])
         return needing
 
     # ------------------------------------------------------------------

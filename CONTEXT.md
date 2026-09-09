@@ -28,7 +28,7 @@ Several code and schema names survive it (`evaluation.py`, `job_hunter_evaluatio
 `job_evaluation` provider purpose): they name the artefact subjective scoring persists,
 which is still an `Evaluation`, not the combined call.
 
-**Facet** — one structured objective fact stored on a job: hiring-eligible regions,
+**Facet** — one structured objective fact stored on a posting: hiring-eligible regions,
 remote policy, seniority, compensation, a stated requirement and its depth. Facets are
 what make filtering possible without reading a description.
 
@@ -50,9 +50,9 @@ the higher content confidence wins.
 `posting_id`. What a job says that the posting does not is everything about that user's
 relationship to it: which markets it matched, where it sits in their funnel, and every
 per-user artefact hanging off it. Objective facts belong on the posting and subjective
-ones on the job; today every facet still hangs off the job, and moving them is what the
-rest of #118 does. Both words were used interchangeably before #118 — they are two rows
-now, and only the posting row is shared.
+ones on the job; the facets moved there in #175, and the rest of #118 moves what is left.
+Both words were used interchangeably before #118 — they are two rows now, and the shared
+rows are the posting and its facets.
 
 **Source** — one origin of postings. A feed, a public ATS board, a targeted search
 backend, a watched company, or staged email.
