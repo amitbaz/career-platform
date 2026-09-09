@@ -20,6 +20,13 @@ Four rules follow, and they decide most judgement calls in this repository:
    next surface can exist.
 4. **Measure quality claims; do not assert them.** Yield per source is already recorded. A claim
    about match quality without a number behind it is a hypothesis, and should be written as one.
+5. **An empty result must carry its reason.** Report what was attempted, not only what was
+   produced, and report it where the emptiness is reported. This system's characteristic failure
+   is silence that looks like a normal quiet day: an exhausted AI quota, a cancelled run, a
+   corpus that can no longer be written, and a user missing the accumulated ATS rejections that
+   stop worthless boards being re-crawled all present identically as "delivered a digest, found
+   nothing new" — which is also what a genuinely quiet week looks like. A startup warning is not
+   enough, because by day three it has scrolled out of the log.
 
 Use the vocabulary in [CONTEXT.md](CONTEXT.md) — in code, tests, issues and specs. The terms
 there exist because their synonyms have already caused confusion here.
@@ -197,9 +204,21 @@ the push.
 - **Check other worktrees' branches, not just `main`.** An in-flight branch may already carry a
   migration later than anything on `main`, and picking a timestamp from `main` alone will sort
   wrong.
-- **A ticket may pre-assign your timestamp.** When two tickets that both add migrations can be
-  worked in parallel, the timestamps are allocated on the issues rather than chosen independently.
-  Use the assigned one.
+- **Ask for your timestamp when you open the PR, not when you start.** Allocating at dispatch
+  fixes an ordering using information that only exists at merge time, and every parallel agent
+  makes it worse — on 2026-09-09 that mechanism produced three separate hazards in one day, none
+  of them involving a line of wrong code: two tickets silently held the same number, and twice a
+  ticket's assigned number would have sorted before an already-applied migration. Write a
+  placeholder while you work, and ask whoever owns the board for the real number when the branch
+  is ready. Issued in merge order, it is correct by construction.
+- **If a ticket already carries an assigned timestamp, use it** — older issues pre-assign, and the
+  number on the issue always wins over one you pick yourself.
+- **If you reach mergeable state while a lower unmerged timestamp is still open, ask to be
+  renumbered downward rather than waiting.** The cost is a file rename on an unmerged branch. The
+  cost of waiting is a blocked agent. Never renumber a ticket that has work in flight to
+  accommodate one that has none — move the one with nothing written.
+- **An abandoned number stays empty.** Timestamps must be ordered, not contiguous; re-using a
+  freed number recreates the hazard that freed it.
 
 ### When another session is in your way
 
