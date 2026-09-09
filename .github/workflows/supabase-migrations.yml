@@ -1,0 +1,58 @@
+# Apply migrations to the live Supabase project when they reach main (#190).
+#
+# Nobody pushes migrations by hand. A worktree sitting on an unmerged branch that pushes
+# first can permanently block a lower-numbered migration on another branch, because
+# Supabase refuses a filename that sorts before one already applied. Making this the only
+# path removes that possibility rather than discouraging it -- see AGENTS.md.
+name: Apply Supabase migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+  workflow_dispatch:
+
+# Two applications must never overlap: the second would race the first's advisory locks
+# and could report success against a half-applied set.
+concurrency:
+  group: supabase-migrations
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment in repository settings to gate
+    # production behind an approval. Without that, a merge applies unattended.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link the project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase link --project-ref "${{ vars.SUPABASE_PROJECT_REF }}"
+
+      - name: Show what would be applied
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push --dry-run
+
+      - name: Apply
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push
+
+      - name: Report what is applied
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase migration list
