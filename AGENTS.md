@@ -188,9 +188,14 @@ supabase migration repair --local --status applied <version>
 If your objects are already installed from an earlier hand-apply that skipped this, drop and
 re-apply them before repairing, so the row and the objects agree. And **never repair a version
 that is not yours.** A row claiming a version somebody else's migration owns is worse than a
-missing one: a missing row gets investigated, a wrong row gets trusted. This has already happened
-once — stage-queue functions were recorded under a version that a different, since-merged
-migration owns, so the ledger matched `main` while the objects did not.
+missing one: a missing row gets investigated, a wrong row gets trusted.
+
+**A missing row is not merely absent — it is read as belonging to the highest recorded version.**
+This happened on 2026-09-09: stage-queue objects were hand-applied with no row at all, the
+highest recorded version was a different, since-merged migration, and a reader who checked the
+ledger reasonably concluded the stage functions had arrived with it. They had not. The inference
+is sound and the answer is wrong, which is why recording your own row is not a courtesy — it is
+what stops the next agent's cheap check producing a confident wrong attribution.
 
 **And know what a reset costs other people.** `pnpm db:reset` serialises against other runs
 through the stack lock, so it will not corrupt anyone mid-statement — but it still drops every
