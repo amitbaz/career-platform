@@ -133,6 +133,31 @@ class PostingFacts:
             stated_hiring_regions=tuple(sorted(scope.regions)),
         )
 
+    @classmethod
+    def from_posting_row(cls, row: dict[str, Any]) -> "PostingFacts":
+        """Build directly from a `job_hunter_postings` row (issue #185).
+
+        The `extract_facets` queue stage reads the posting straight off its
+        shared table rather than through a `Job` -- there is no per-user job
+        row to route through once extraction lives downstream of
+        `resolve_persist`. Delegates to `from_job` on a transient `Job` built
+        from the row rather than re-deriving `determine_hiring_scope`'s
+        reading a second way: a posting and a job still carry the same title
+        and description today, and this is the one seam that would need to
+        change if that ever stopped being true.
+        """
+        return cls.from_job(
+            Job(
+                source=row.get("source") or "",
+                title=row.get("title") or "",
+                company=row.get("company") or "",
+                location=row.get("location") or "",
+                description=row.get("description") or "",
+                remote=row.get("remote"),
+                content_confidence=row.get("content_confidence") or "",
+            )
+        )
+
 
 def source_supplied_facets(posting: PostingFacts) -> dict[str, Any]:
     """Return the facets already known before any provider call is made.

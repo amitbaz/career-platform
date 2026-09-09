@@ -3471,7 +3471,7 @@ def test_running_out_of_shared_budget_only_defers_the_unread_posting(store, sett
 
 
 def test_facet_extraction_is_bounded_per_run(store, settings):
-    # The backfill has to drain over consecutive runs rather than in one call
+    # The corpus has to drain over consecutive runs rather than in one call
     # storm. The bound is the shortlist size the search profile already sets
     # as how much AI work one run may do.
     jobs = [_job(source_job_id=f"bounded-{index}", company=f"Bounded {index}")
@@ -3481,24 +3481,26 @@ def test_facet_extraction_is_bounded_per_run(store, settings):
 
     job_hunter.pipeline._extract_facets_for_run(
         [(job_id, None) for job_id in ids],
-        [],
         store,
         gemini,
         RunSummary(),
-        limit=4,
+        limit=2,
     )
 
-    # Half the budget is reserved for the backfill, and there is none here, so
-    # the shortlist half is what bounds this.
     assert gemini.facet_calls == 2
     assert sum(store.get_job_facets(job_id) is not None for job_id in ids) == 2
 
 
-def test_a_rediscovered_job_is_backfilled_without_being_re_scored(store, settings):
+def test_a_rediscovered_job_without_ingestion_is_not_backfilled(store, settings):
     # The existing corpus was scored before facets existed, so its jobs carry
     # an evaluation and no facets. Such a job never re-enters the shortlist,
-    # which makes the backfill pass the only path by which it gains them --
-    # and it must not cost a second scoring call.
+    # so the only path by which it gains them is the extract_facets queue --
+    # enqueued by `merge_posting_batch` when a crawl re-saves its posting
+    # (issue #185). That queue is unavailable without ingestion's direct
+    # Postgres connection, which this fixture store does not have (see
+    # `test_a_rediscovered_jobs_posting_is_enqueued_with_ingestion` below for
+    # the case that does), so nothing here enqueues or drains it and the job
+    # is not re-scored either way.
     job = _job()
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
@@ -3510,8 +3512,8 @@ def test_a_rediscovered_job_is_backfilled_without_being_re_scored(store, setting
                  telegram=FakeTelegram())
 
     assert gemini.eval_calls == 0
-    assert gemini.facet_calls == 1
-    assert store.get_job_facets(job_id) is not None
+    assert gemini.facet_calls == 0
+    assert store.get_job_facets(job_id) is None
 
 
 # --- Scoring from facets (issue #126) ---------------------------------------
@@ -3640,41 +3642,6 @@ def test_a_scoring_response_missing_a_support_verdict_is_not_partially_read(
     assert summary.ready_to_apply == 0
 
 
-def test_the_backfill_keeps_its_share_when_the_shortlist_is_full(store, settings):
-    # Spending the budget in priority order alone would mean a productive day
-    # leaves nothing for the corpus, and the backfill would only ever progress
-    # on quiet days -- which is not a backfill.
-    shortlist = [store.upsert_job(_job(source_job_id=f"short-{i}", company=f"Short {i}"))[0]
-                 for i in range(4)]
-    older = [store.upsert_job(_job(source_job_id=f"old-{i}", company=f"Old {i}"))[0]
-             for i in range(4)]
-    gemini = FakeGemini()
-
-    job_hunter.pipeline._extract_facets_for_run(
-        [(job_id, None) for job_id in shortlist],
-        older,
-        store,
-        gemini,
-        RunSummary(),
-        limit=4,
-    )
-
-    assert sum(store.get_job_facets(job_id) is not None for job_id in shortlist) == 2
-    assert sum(store.get_job_facets(job_id) is not None for job_id in older) == 2
-
-
-def test_an_unspent_shortlist_allowance_flows_to_the_backfill(store, settings):
-    older = [store.upsert_job(_job(source_job_id=f"drain-{i}", company=f"Drain {i}"))[0]
-             for i in range(4)]
-    gemini = FakeGemini()
-
-    job_hunter.pipeline._extract_facets_for_run(
-        [], older, store, gemini, RunSummary(), limit=4
-    )
-
-    assert sum(store.get_job_facets(job_id) is not None for job_id in older) == 4
-
-
 def test_rolling_capacity_skips_do_not_consume_the_runs_facet_budget(store, settings):
     # A skip never reached the provider, so it costs no budget. Counting it
     # would let sustained rolling pressure burn a whole run's allowance
@@ -3696,7 +3663,7 @@ def test_rolling_capacity_skips_do_not_consume_the_runs_facet_budget(store, sett
     summary = RunSummary()
 
     job_hunter.pipeline._extract_facets_for_run(
-        [], ids, store, gemini, summary, limit=2
+        [(job_id, None) for job_id in ids], store, gemini, summary, limit=2
     )
 
     assert gemini.refusals == 2

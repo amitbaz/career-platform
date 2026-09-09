@@ -120,6 +120,40 @@ def test_posting_facts_carries_only_the_postings_own_fields():
     }
 
 
+def test_posting_facts_from_posting_row_matches_from_job():
+    row = {
+        "title": "Backend Engineer",
+        "company": "Acme",
+        "location": "Berlin",
+        "remote": True,
+        "description": "Must hire in the EU.",
+        "content_confidence": OFFICIAL_ATS,
+        "source": "ashby",
+    }
+    job = Job(
+        source=row["source"],
+        title=row["title"],
+        company=row["company"],
+        location=row["location"],
+        description=row["description"],
+        remote=row["remote"],
+        content_confidence=row["content_confidence"],
+    )
+
+    assert PostingFacts.from_posting_row(row) == PostingFacts.from_job(job)
+
+
+def test_posting_facts_from_posting_row_defaults_missing_fields():
+    posting = PostingFacts.from_posting_row({})
+
+    assert posting.title == ""
+    assert posting.company == ""
+    assert posting.location == ""
+    assert posting.remote is None
+    assert posting.description == ""
+    assert posting.source == ""
+
+
 def test_facets_module_never_imports_candidate_aware_types():
     # Convention would not survive a refactor; the import graph will.
     source = inspect.getsource(facets_module)
