@@ -71,6 +71,40 @@ surface is on the launch-precondition list and will otherwise establish a voice 
 
 ## Pricing
 
+### The customer does not stay, and that changes everything
+
+**This product succeeds by making itself unnecessary.** Someone subscribes while they are
+looking, finds a job, and leaves. That is structural, not a retention failure to be solved, and
+every economic figure written before this section assumed a subscriber base that persists.
+It does not.
+
+**So the metric is lifetime value across one search, not monthly revenue.** How long a search
+runs, from published 2026 figures: the median duration of unemployment is about 11 weeks and
+the average about 24; most white-collar professionals take three to six months. **Tech job
+seekers average 9.7 months — the longest of any industry by a wide margin**, which matters
+because that is the audience the current corpus actually serves. Take four months as the
+planning figure and treat tech as materially longer.
+
+**This reverses the billing-rhythm recommendation below.** That recommendation argued for
+monthly because "the promise is a standing relationship". The promise is not a standing
+relationship, and the earlier reasoning was built on a premise that does not hold.
+
+| | LTV over a 4-month search | Maximum sustainable acquisition cost |
+| --- | --- | --- |
+| Monthly at £12.50 | **£50** | £17 |
+| Weekly at £6.99 | **£119** | £40 |
+
+**The decisive argument is not that weekly feels urgent — it is that monthly at £12.50 cannot
+fund customer acquisition at all.** With no long tail of loyal subscribers, the business is
+acquisition, forever, against a lifetime value capped by the nature of the product. A £17
+ceiling rules out paid channels before anyone has designed a campaign; £40 makes them marginal
+but possible. That bound should be known before any distribution idea is proposed.
+
+**Weekly is also the more honest offer.** When someone lands a job they cancel, and they lose
+at most a week rather than a month. A rhythm that stops when the need stops is a better deal
+for the customer *and* worth more to us, which is rare enough to say out loud rather than treat
+as a trick.
+
 ### What theirs signals
 
 £6.99 a week, metered on *scans* and *packs*, billed weekly. Free tier is 3 scans and 3 packs
@@ -113,23 +147,21 @@ land it belongs in the believe column, and it should not appear on a landing pag
 
 ### Recommendation
 
-**One monthly price. Unlimited watching and scoring. Application packs metered.**
+**Weekly billing at or near £6.99. Unlimited watching and scoring. Application packs metered.**
 
-- Monthly rather than weekly, because the promise is "I am watching so you don't have to",
-  which is a standing relationship, not a sprint. It also reads as a normal subscription
-  rather than a countdown.
-- Unlimited watching as the headline, because it is true, it is differentiated, and it is the
-  direct product of the architecture.
+- Weekly rather than monthly, for the reasons in "The customer does not stay" above: the
+  rhythm follows from the customer leaving when the product works, and it roughly doubles
+  lifetime value over the same search.
+- Unlimited watching as the headline, because it is true once discovery is shared, it is
+  differentiated, and it is the direct product of the architecture.
 - Packs metered, because they are the genuinely per-user expensive action and a cap there is
   honest rather than artificial.
 
-**Starting price: £12–15 a month, founder's call on the exact number.** The reasoning: fixed
-cost is about $50 a month and break-even is one to two subscribers, so the floor is
-fixed-cost-over-subscribers rather than marginal cost, and there is room almost immediately.
-It sits at roughly half their annualised rate while reading as an ordinary subscription rather
-than as a discount — **we should not compete on being cheaper**, because with 91% gross margin
-price is not where the contest is, and undercutting a funded competitor signals inferiority.
-The number needs validating against willingness to pay; the structure does not.
+**Match the competitor's price rather than undercutting it.** Fixed cost is about $50 a month
+and break-even is one to two subscribers, so there is room almost immediately — but with 91%
+gross margin price is not where the contest is, and undercutting a funded competitor competes
+on the one axis where we have no advantage to defend while signalling inferiority.
+**Founder's call:** the exact number, and whether to sit slightly under, at, or above theirs.
 
 ### The free tier
 
@@ -161,6 +193,20 @@ Five scored matches a day with reasons is a genuinely useful product. It is a cu
 shortlist, it arrives every morning, and a patient job seeker could run their whole search on
 it. That is the test the tier has to pass.
 
+#### What the free tier is actually for
+
+**It is where people live between job searches, not primarily a conversion funnel.** Because
+the customer leaves when they find a job, the free tier is the only thing that keeps the
+relationship alive afterwards: someone who found work through us stays on free, dormant, with a
+warm profile, and returns in two or three years when they are looking again. That same person
+is also the one who tells a friend who is searching *now* — which matters more than usual for a
+product whose entire business is acquisition.
+
+**So the free tier is the memory of a customer and the referral surface.** Two consequences:
+there must be an explicit "I found a job" action that pauses scoring and keeps the profile, and
+that moment is the most valuable event in the product — the referral moment, the testimonial
+moment, and the outcome data that would settle the match-quality question.
+
 #### What makes someone pay
 
 Not "more of the same". **The upgrade buys the moment after you find something.**
@@ -191,19 +237,25 @@ tier a hard prerequisite, not merely a consequence of retiring bring-your-own-ke
 comfortable:** 100 free users cost **$29.20 a month**, 1,000 cost **$292**. A paying user's own
 AI is $2.92 a month against roughly $16 of revenue.
 
-**The real limit is the ratio of free to paying users**, at £12.50 a month:
+**The real limit is the ratio of *active* free users to paying ones**, and "active" is
+load-bearing. A dormant alumnus is not being scored, so they consume no requests and cost
+essentially nothing. Only free users actively searching count against this ratio, which is a
+far smaller number than the total free base.
 
-| Free per paying user | AI cost per paying user | Gross margin |
+At weekly billing — £6.99, about £30 a month equivalent:
+
+| Active free per paying user | AI cost per paying user | Gross margin |
 | --- | --- | --- |
-| 5 | $4.38 | 73% |
-| 10 | $5.84 | 64% |
-| 20 | $8.76 | 46% |
-| 50 | $17.52 | **−8%** |
+| 10 | $5.84 | 85% |
+| 20 | $8.76 | 78% |
+| 50 | $17.52 | 56% |
+| 100 | $32.12 | 19% |
 
-Ordinary freemium conversion is 2–5%, which is 20 to 50 free users per paying one. **At five
-scored matches a day the tier stays profitable down to about a 3% conversion rate and goes
-negative below it.** That makes the daily score count the dial: if conversion comes in worse
-than 3%, drop free from five matches to three rather than adding friction elsewhere.
+**The weekly rhythm fixes the free tier's economics as well as acquisition.** At the monthly
+price these went negative at fifty free users per payer; at weekly, fifty *active* free users
+still returns 56%. The daily score count remains the dial if conversion disappoints, but there
+is far more room than the earlier arithmetic suggested — and that arithmetic was wrong in its
+denominator, counting dormant users as though they were being scored.
 
 #### Launch shape differs from intended shape, and the difference is #203 and #204
 
