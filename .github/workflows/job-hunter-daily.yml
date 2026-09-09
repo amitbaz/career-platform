@@ -60,4 +60,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           SUPABASE_SIGNING_KEY_B64: ${{ secrets.SUPABASE_SIGNING_KEY_B64 }}
+          # Ingestion's direct, pooled Postgres connection (#182) -- the same
+          # session-pooler string supabase-migrations.yml pushes with. Only
+          # the crawl uses it, and only for the shared postings tables;
+          # matching and every per-user read stay on PostgREST under row-level
+          # security. Unset it and the run persists each posting inside its own
+          # job upsert, slower and otherwise identical.
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python -m job_hunter run

@@ -101,18 +101,20 @@ select is(
     'job_hunter_gmail_candidate_complete',
     'job_hunter_locations_compatible',
     'job_hunter_merge_jobs',
+    'job_hunter_merge_posting_batch',
     'job_hunter_needs_evaluation',
     'job_hunter_normalize_company',
     'job_hunter_normalize_text',
     'job_hunter_normalize_tokens',
     'job_hunter_pending_delivery_jobs',
     'job_hunter_pending_review_events',
+    'job_hunter_preferred_description',
     'job_hunter_record_ats_eligible_jobs',
     'job_hunter_set_job_markets',
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs',
     'job_hunter_upsert_posting'],
-  'exactly the nineteen expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the twenty-one expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

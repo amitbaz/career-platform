@@ -267,6 +267,16 @@ select unnest(array[
   'job_hunter_postings'
 ]) as table_name;
 
+-- Ingestion's own scratch space (issue #182), which is neither per-user nor
+-- shared: a crawl COPYs a batch of listings into it over a privileged
+-- connection and the merge empties it again. No role a user can hold reaches
+-- it at all, which is asserted -- alongside the merge that consumes it -- in
+-- job_hunter_posting_batches.sql.
+create view pg_temp.job_hunter_ingestion_tables as
+select unnest(array[
+  'job_hunter_posting_staging'
+]) as table_name;
+
 -- Guard: every job_hunter_ table in the schema is in the list under test,
 -- so a table added to the migration without a test fails here.
 select is(
@@ -277,7 +287,9 @@ select is(
      union all
      select table_name from pg_temp.job_hunter_platform_tables
      union all
-     select table_name from pg_temp.job_hunter_shared_tables) as covered),
+     select table_name from pg_temp.job_hunter_shared_tables
+     union all
+     select table_name from pg_temp.job_hunter_ingestion_tables) as covered),
   'every public.job_hunter_* table is covered by an isolation check');
 
 select is(

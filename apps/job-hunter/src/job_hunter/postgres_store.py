@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 
@@ -37,6 +37,7 @@ from job_hunter.models import (
     ProviderCredentials,
 )
 from job_hunter.normalize import job_fingerprint
+from job_hunter.pg import IngestionDatabase
 from job_hunter.search_profile import SearchProfile
 from job_hunter.store_mapping import (
     ats_entry_from_row,
@@ -111,6 +112,55 @@ _ID_ARRAY_CHUNK_SIZE = 1000
 # problem.
 _CONSECUTIVE_CHUNK_FAILURE_LIMIT = 3
 
+# The staging columns `merge_posting_batch` COPYs into, in the order the rows
+# it builds are written. Named here rather than inline so the COPY header and
+# the row builder cannot drift apart -- COPY reports neither a wrong order nor
+# a wrong width as anything but a type error somewhere down the batch.
+_POSTING_STAGING_COLUMNS = (
+    "batch_id",
+    "ordinal",
+    "fingerprint",
+    "source",
+    "source_job_id",
+    "url",
+    "canonical_url",
+    "company",
+    "title",
+    "location",
+    "remote",
+    "description",
+    "content_confidence",
+    "ats_provider",
+    "ats_board",
+    "ats_job_id",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PostingBatch:
+    """What one staged crawl batch resolved to (issue #182).
+
+    `posting_ids` maps a listing's fingerprint to the posting it resolved to,
+    so a caller can hand each job payload the posting it is a copy of instead
+    of making `job_hunter_upsert_job` resolve one per listing. It has one
+    entry per *distinct* fingerprint, not one per listing: collapsing the
+    duplicates inside a batch is half of what the merge is for.
+
+    `newly_discovered` counts the postings the merge inserted -- advertisements
+    nobody had a row for before this batch. It is a count of postings and not
+    of job rows: `DiscoveryStats.newly_discovered` stays the per-user figure it
+    has always been, and the two differ whenever a run re-discovers an
+    advertisement another user already found.
+
+    An empty batch is what a store with no direct Postgres connection returns,
+    and it is not an error: every caller then falls back to resolving each
+    posting inside its own job upsert, exactly as it did before #182.
+    """
+
+    posting_ids: dict[str, str] = field(default_factory=dict)
+    newly_discovered: int = 0
+
+
 _T = TypeVar("_T")
 
 
@@ -179,8 +229,11 @@ class PostgresJobStore:
     need to change.
     """
 
-    def __init__(self, client: SupabaseClient) -> None:
+    def __init__(
+        self, client: SupabaseClient, ingestion: IngestionDatabase | None = None
+    ) -> None:
         self._client = client
+        self._ingestion = ingestion
 
     @property
     def client(self) -> SupabaseClient:
@@ -197,7 +250,13 @@ class PostgresJobStore:
         return self._client
 
     def close(self) -> None:
-        pass
+        """Release the ingestion pool, if this store was given one.
+
+        The PostgREST client holds nothing to release; a connection pool
+        does, and the store is what owns it for the length of a run.
+        """
+        if self._ingestion is not None:
+            self._ingestion.close()
 
     def __enter__(self) -> "PostgresJobStore":
         return self
@@ -270,25 +329,131 @@ class PostgresJobStore:
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
         return row["id"], row["is_new"], row["description_changed"]
 
-    def upsert_logical_job(self, job: Job) -> tuple[str, bool, bool]:
+    def upsert_logical_job(
+        self, job: Job, *, posting_batch: PostingBatch | None = None
+    ) -> tuple[str, bool, bool]:
         """Persist a source-independent logical job and its provenance.
 
         Translates store.py:744-905. Identity is resolved from strongest to
         weakest exact evidence (canonical URL, ATS triple, normalized
         company/title/location, fingerprint) and every duplicate found is
         merged into one survivor. The return shape matches `upsert_job`.
+
+        `posting_batch` is the batch this job's advertisement was already
+        merged in, where there was one (#182). Without it the call resolves
+        its own posting, which is what every caller that does not stage a
+        batch first -- the Gmail paths, a deployment with no direct Postgres
+        connection -- gets.
         """
-        payload = self._job_payload(job)
+        payload = self._batch_job_payload(job, posting_batch)
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
         return row["id"], row["is_new"], row["description_changed"]
 
-    def upsert_logical_jobs(self, jobs: list[Job]) -> list[tuple[str, bool, bool] | None]:
+    def merge_posting_batch(self, jobs: list[Job]) -> PostingBatch:
+        """Persist a whole crawl batch of postings with one set-based merge.
+
+        Bulk-loads every listing into `job_hunter_posting_staging` under a
+        fresh batch identifier and then calls `job_hunter_merge_posting_batch`
+        once. That single statement normalizes the batch, collapses the
+        duplicates inside it, resolves each listing against existing postings
+        by the fingerprint computed here, inserts what is new, updates what
+        changed, reports which postings were genuinely new, and clears the
+        batch from staging. The identity rules are the ones
+        `job_hunter_upsert_posting` applies per listing; what changes is that
+        they are applied once over a set rather than once per listing.
+
+        Needs the direct Postgres connection: `COPY` and a set-based statement
+        are the two things PostgREST cannot express, which is the whole reason
+        ingestion holds one (#182). Without it -- no `SUPABASE_DB_URL`, or a
+        connection that will not open -- this returns an empty batch, and the
+        caller then lets `job_hunter_upsert_job` resolve each posting inside
+        its own upsert, exactly as it did before. A failure is logged rather
+        than raised for the same reason: a run that cannot take the fast path
+        should still deliver, and the phase breakdown will show it did not.
+
+        Staged rows and the merge share one transaction, so a batch is either
+        merged or still in staging and never half of each.
+        """
+        if self._ingestion is None or not jobs:
+            return PostingBatch()
+
+        batch_id = str(uuid.uuid4())
+        columns = ", ".join(_POSTING_STAGING_COLUMNS)
+        try:
+            with self._ingestion.connection() as connection:
+                with connection.cursor() as cursor:
+                    with cursor.copy(
+                        f"copy public.job_hunter_posting_staging ({columns}) from stdin"
+                    ) as copy:
+                        for ordinal, job in enumerate(jobs):
+                            copy.write_row(self._staging_row(batch_id, ordinal, job))
+                    cursor.execute(
+                        "select fingerprint, posting_id, is_new "
+                        "from public.job_hunter_merge_posting_batch(%s)",
+                        (batch_id,),
+                    )
+                    rows = cursor.fetchall()
+        except Exception:
+            logger.exception(
+                "staged posting merge failed for %s listing(s); falling back to "
+                "resolving each posting inside its own job upsert",
+                len(jobs),
+            )
+            return PostingBatch()
+
+        return PostingBatch(
+            posting_ids={
+                fingerprint: str(posting_id)
+                for fingerprint, posting_id, _is_new in rows
+                if posting_id is not None
+            },
+            newly_discovered=sum(1 for _f, _id, is_new in rows if is_new),
+        )
+
+    @staticmethod
+    def _staging_row(batch_id: str, ordinal: int, job: Job) -> tuple[Any, ...]:
+        """One staging row, in `_POSTING_STAGING_COLUMNS` order.
+
+        Deliberately the same values `_job_payload` sends for the same job:
+        the merge and the per-listing upsert must not be able to disagree
+        about what was fetched.
+        """
+        return (
+            batch_id,
+            ordinal,
+            job_fingerprint(job),
+            job.source or "",
+            job.source_job_id,
+            job.url or "",
+            job.canonical_url or "",
+            job.company or "",
+            job.title or "",
+            job.location or "",
+            job.remote,
+            job.description or "",
+            job.content_confidence or "",
+            job.ats_provider,
+            job.ats_board,
+            job.ats_job_id,
+        )
+
+    def upsert_logical_jobs(
+        self, jobs: list[Job], *, posting_batch: PostingBatch | None = None
+    ) -> list[tuple[str, bool, bool] | None]:
         """Persist many logical jobs in as few round trips as possible.
 
         Returns one entry per input job, in input order, so a caller can zip
         the results back onto the list it passed. An entry is ``None`` when
         that job could not be persisted and was skipped -- callers must
         handle it.
+
+        `posting_batch` is what `merge_posting_batch` returned for these same
+        jobs, if anything. Each payload then carries the posting it resolved
+        to, and the per-element loop inside `job_hunter_upsert_jobs` no longer
+        pays an insert, a read and an update against `job_hunter_postings` for
+        every listing -- including the many listings of one advertisement that
+        the batch already collapsed. Omitting it is safe: every payload then
+        resolves its own posting, as before #182.
 
         Each chunk is one transaction on the server, so a failure rolls the
         whole chunk back. Rather than paying for a savepoint per row inside
@@ -310,7 +475,7 @@ class PostgresJobStore:
         consecutive_failures = 0
         for chunk in _chunked(jobs, _JOB_UPSERT_CHUNK_SIZE):
             try:
-                results.extend(self._upsert_job_chunk(chunk))
+                results.extend(self._upsert_job_chunk(chunk, posting_batch))
             except Exception as error:
                 consecutive_failures += 1
                 if consecutive_failures >= _CONSECUTIVE_CHUNK_FAILURE_LIMIT:
@@ -323,14 +488,30 @@ class PostgresJobStore:
                     "batch job upsert failed for %s jobs; retrying them one at a time",
                     len(chunk),
                 )
-                results.extend(self._upsert_jobs_individually(chunk))
+                results.extend(self._upsert_jobs_individually(chunk, posting_batch))
             else:
                 consecutive_failures = 0
         return results
 
-    def _upsert_job_chunk(self, chunk: list[Job]) -> list[tuple[str, bool, bool]]:
+    def _batch_job_payload(
+        self, job: Job, posting_batch: PostingBatch | None
+    ) -> dict[str, Any]:
+        payload = self._job_payload(job)
+        posting_id = (
+            posting_batch.posting_ids.get(payload["fingerprint"])
+            if posting_batch is not None
+            else None
+        )
+        if posting_id:
+            payload["posting_id"] = posting_id
+        return payload
+
+    def _upsert_job_chunk(
+        self, chunk: list[Job], posting_batch: PostingBatch | None = None
+    ) -> list[tuple[str, bool, bool]]:
         rows = self._client.rpc(
-            "job_hunter_upsert_jobs", {"p_jobs": [self._job_payload(job) for job in chunk]}
+            "job_hunter_upsert_jobs",
+            {"p_jobs": [self._batch_job_payload(job, posting_batch) for job in chunk]},
         )
         if len(rows) != len(chunk):
             raise SupabaseRequestError(
@@ -342,12 +523,14 @@ class PostgresJobStore:
         ]
 
     def _upsert_jobs_individually(
-        self, chunk: list[Job]
+        self, chunk: list[Job], posting_batch: PostingBatch | None = None
     ) -> list[tuple[str, bool, bool] | None]:
         results: list[tuple[str, bool, bool] | None] = []
         for job in chunk:
             try:
-                results.append(self.upsert_logical_job(job))
+                results.append(
+                    self.upsert_logical_job(job, posting_batch=posting_batch)
+                )
             except Exception:
                 logger.exception(
                     "dropping a job that could not be persisted: source=%s url=%s",
@@ -2798,6 +2981,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_job": ("id", "bool", "bool"),
     "upsert_logical_job": ("id", "bool", "bool"),
     "upsert_logical_jobs": "job_upsert_results",
+    "merge_posting_batch": "posting_batch",
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
@@ -2919,6 +3103,15 @@ def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
             # moved under it: hand the caller its own id back. Synthesizing a
             # uuid here instead would put an id naming no row into the digest.
             return job_id
+    elif shape == "posting_batch":
+        def _write(self, *args: Any, **kwargs: Any) -> PostingBatch:
+            # An empty batch is exactly what a store with no direct Postgres
+            # connection returns, and every caller already handles it by
+            # letting each job upsert resolve its own posting. A dry run's
+            # job upserts write nothing either, so nothing downstream reads a
+            # posting id that would have to be fabricated here.
+            return PostingBatch()
+
     elif shape == "job_upsert_results":
         def _write(
             self, jobs: list[Any] | None = None, *args: Any, **kwargs: Any

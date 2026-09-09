@@ -272,6 +272,23 @@ def load_supabase_settings() -> SupabaseSettings:
     )
 
 
+def load_ingestion_dsn() -> str | None:
+    """The direct Postgres connection ingestion uses, if the deployment has one.
+
+    `SUPABASE_DB_URL` is the same session-pooler connection string
+    `.github/workflows/supabase-migrations.yml` already pushes migrations
+    with -- a pooled, privileged connection, which is what makes `COPY` and
+    set-based statements available to the crawl (#182).
+
+    Optional, and deliberately so. Without it every posting is resolved inside
+    its own job upsert over PostgREST, exactly as before: the run is slower and
+    produces the same postings. Missing configuration must never be the
+    difference between a run that delivers and one that does not, so this
+    returns None rather than raising the way `_require_env` would.
+    """
+    return os.environ.get("SUPABASE_DB_URL") or None
+
+
 def _decode_signing_key(encoded: str) -> dict:
     """Decode the base64-encoded private JWK.
 
