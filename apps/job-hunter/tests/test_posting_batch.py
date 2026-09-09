@@ -16,14 +16,27 @@ import uuid
 
 import pytest
 
+from job_hunter import postgres_store
 from job_hunter.models import Job
-from job_hunter.normalize import job_fingerprint
 from job_hunter.pg import IngestionDatabase
 from job_hunter.postgres_store import (
     _POSTING_STAGING_COLUMNS,
     PostgresJobStore,
     PostingBatch,
 )
+
+
+def job_fingerprint(job: Job) -> str:
+    """The fingerprint the store will actually compute for this job.
+
+    Resolved through the module rather than imported from `normalize`,
+    because conftest's `_postings_unique_to_this_test` salts
+    `postgres_store.job_fingerprint` per test (#175): postings are shared and
+    cannot be cleaned between tests, so each test gets fingerprints of its
+    own. A test that imported the unsalted function would be asking the store
+    about a posting it never wrote.
+    """
+    return postgres_store.job_fingerprint(job)
 
 
 class RecordingClient:
