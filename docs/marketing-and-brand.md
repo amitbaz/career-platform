@@ -1,10 +1,12 @@
 # Marketing and brand direction
 
-Last updated: 2026-09-07
+Last updated: 2026-09-09
 
-Status: brand exploration in progress. Direction 2 (illustration and editorial type) with the
-working name Caddie is the current base, without a mascot. The llama direction is retired.
-The final identity and logo remain open. This document preserves the
+Status: brand exploration in progress. **The name is Gili**, confirmed 2026-09-09, replacing
+the working name Caddie. Direction 2 (illustration and editorial type) is the current base,
+without a mascot. The llama direction is retired. The final identity and logo remain open.
+**No trademark or app-store search has been run on Gili — see the naming section before any
+identity work begins.** This document preserves the
 marketing discussion and distinguishes agreed direction from proposals and open decisions. Use it
 as the shared reference for future marketing, landing-page, and visual-identity work.
 
@@ -43,17 +45,25 @@ Consequences for the brand:
 - **Initial focus:** speak to job seekers across professions, covering both finding jobs
   and preparing for interviews. Geography, language, and the first paid-ad targeting segment
   remain open.
-- **Working name: Caddie.** Chosen because a caddie carries your bag, walks beside you, knows
-  the course, and hands you the right club at the right moment, which covers both the
-  "does the legwork" and the "gets you ready" halves.
-  Not trademark-, domain-, or app-store-checked yet. Earlier placeholder "Stride" is retired;
-  it said movement, and the target user wants to stop carrying weight, not move faster.
+- **Name: Gili**, confirmed 2026-09-09. Domains held: `gili.careers` and `heygili.com`. It
+  carries two meanings and both are on-brief. In Hebrew, Gili means "my joy" — which is why the
+  name needs no teaching to the founder's own language and reads as a warm given name rather
+  than a concept. Underneath it sits the ghillie: the Highland attendant who guides you on the
+  hunt and carries your gear, which is the same idea that made Caddie attractive and is why the
+  name fits this product specifically. **It is also personal — the founder's cousin is Gili.**
+  That is recorded deliberately: it is why this name survived where four passes of
+  better-argued candidates did not, and a reader who assumes it was chosen on the ghillie
+  meaning alone will misunderstand the decision. **The name is chosen, not cleared: no
+  trademark or app-store search has been run.** Full reasoning, the rejected names and the
+  outstanding legal check are in the naming section below. Earlier placeholder "Stride" is retired; it said movement, and the
+  target user wants to stop carrying weight, not move faster.
 - **Visual base: illustration and editorial type** (brand exploration direction 2). Warm
   expressive line illustration, Newsreader serif for display, Inter for text, palette of
   paper, ink, clay (primary action), sage (progress), amber (celebration), plum (illustration
   depth). Chosen over a mascot-first concept and a geometric-progress concept.
-- **Current choice: direction 2 + Caddie, no mascot.** The founder reversed the llama
-  decision. Continue from `direction-2-illustration-v2.pen`; do not carry the llama or its
+- **Current choice: direction 2 + Gili, no mascot.** The founder reversed the llama
+  decision. The visual direction is unchanged by the rename; only the wordmark and the
+  monogram are affected, and neither is approved yet. Continue from `direction-2-illustration-v2.pen`; do not carry the llama or its
   silhouette mark into new work.
 - **Logo:** the current direction 2 file contains a flag mark with the Newsreader wordmark.
   Treat it as the existing exploration, not a separately approved final logo. The llama
@@ -135,9 +145,70 @@ These ideas came from the discussion but have not been selected as a final desig
   Content rises and settles, never bounces; amber flecks only for real milestones; nothing
   animates after a rejection.
 
-## Naming notes
+## Naming
 
-Shortlists considered before settling on Caddie, kept for reference if the name changes:
+**The name is Gili.** Confirmed 2026-09-09. `gili.careers` and `heygili.com` are held.
+**Chosen, not cleared — see Unresolved below before commissioning any design work.**
+
+### Spelling — settled, do not reopen
+
+Three spellings were considered and the evidence separated them cleanly. **Gilly** is taken by
+a Techstars-backed startup building generative AI video for direct-to-consumer businesses —
+an AI product carrying the name, which is the same dilution that killed several candidates
+below. **Gilli** is available and should be treated as a defensive registration only; once the
+founder's cousin's spelling was confirmed as Gili, Gilli lost its only argument. **Gili** is
+the Hebrew transliteration, the personal spelling, and the one with nothing sitting on it.
+
+### The honest cost
+
+The Gili Islands — Gili Trawangan, Gili Air, Gili Meno — are a well-known Indonesian diving
+destination, and a bare search for "Gili" returns islands. This was accepted knowingly. It
+hurts less than it looks: brand search is almost never the bare word, but "gili careers",
+"hey gili" or a direct URL, all of which disambiguate, and paid acquisition targets
+job-search intent rather than the brand name. The distinction that decided it is that **Gili's
+crowding is out of category (tourism), where the alternatives' crowding was in category**.
+Out-of-category noise costs marketing effort; in-category crowding costs the brand.
+
+Separately, and not a problem: in Israeli technology circles "Gili" reads first as Gili
+Ra'anan of Cyberstarts. Irrelevant to UK and European users, but the association will precede
+the product in an Israeli investor conversation.
+
+### Unresolved — read this before commissioning any design work
+
+**No UKIPO or EUIPO trademark search has been run, and no app-store search has been run.**
+Both registers refused automated access. Nothing recorded here is clearance. **A paid UK and
+EU attorney opinion is required before identity or design work starts.** The open web screens
+described below find identical names and obvious near-marks with websites; they do not search
+the registers, do not judge likelihood of confusion, and do not catch a similar mark in a
+related class.
+
+### The graveyard, and why it is the real lesson
+
+Eight names were eliminated on 2026-09-09. **Every one died on a category or AI-assistant
+collision rather than on taste**, and all eight looked clean on a domain lookup:
+
+| Name | Killed by |
+| --- | --- |
+| **Caddie** | `caddie.careers` — a live, direct competitor doing substantially the same thing under the same name. Found only after the identity work was well advanced. |
+| **Mettle** | Mercer \| Mettl (`mettl.com`), a large online assessment platform for hiring and talent management. Also NatWest's Mettle business bank. |
+| **Iris** | Qureos runs an AI recruiting agent called Iris that produces ranked candidate shortlists. |
+| **Rosie** | We Are Rosie, a private-equity-backed marketing talent marketplace; plus `heyrosie.com`, an AI assistant sold as a monthly subscription. |
+| **Quinn** | An $11M-seed AI wealth-advisory platform, a separate Quinn AI, and Quinn Recruitment. |
+| **Reeve** | `meetreeve.ai`, "Your AI Growth Manager" — an AI agent with a person's name. |
+| **Cooper** | `cooperhire.io`, recruitment software. |
+| **Fletcher** | Fletcher Wimbush / The Hire Talent — hiring software and fractional talent acquisition. |
+
+The pattern behind the list: giving an AI product a warm human first name is the dominant
+naming convention in this market right now, so the common warm names are the most contested
+real estate in the category. Any future candidate must be screened against **AI-assistant and
+AI-agent products** and against **recruitment, hiring, HR, assessment and talent
+marketplaces** before availability is even checked. Caddie's own entry in this document once
+read "Not trademark-, domain-, or app-store-checked yet"; skipping that check is how a
+competitor came to own the name after the logo work was done.
+
+### Earlier shortlists
+
+Shortlists considered before Caddie, kept for reference:
 
 - Calm and steadiness words (Steady, Stead, Poise, Aplomb) and their equivalents in other
   languages. Dropped because the product is not a mood; it does work.
@@ -162,7 +233,7 @@ From `direction-2-illustration-v2.pen`:
 | --- | --- |
 | First campaign audience | Which targeting segment should we test first within the cross-profession audience? |
 | Market | Geography, language, and initial age segment. Affects whether the name and slang choices travel. |
-| Name | Caddie is the working name. Needs trademark, domain, and app-store checks before anything public. |
+| Name | **Settled: Gili.** Domains held. Still needs a paid UK and EU trademark opinion and an app-store check before anything public or any design work. |
 | Logo | Review and refine the direction 2 flag mark and wordmark; final logo remains open. |
 | Motion | How progress and personality appear through animation, beyond the concept notes. |
 | Landing page | Main message, product proof, and primary call to action. |
@@ -208,6 +279,23 @@ From `direction-2-illustration-v2.pen`:
   seven refinements. Fable applied C-monogram option G across a new v4 board; review is pending.
 - Exported the full direction 2 v3 board as SVG from pen.dev's native vector PDF output.
 - Saved pen.dev's native one-page vector PDF export of the full direction 2 v3 board.
+
+### 2026-09-09 — the rename
+
+- Discovered `caddie.careers`, a live direct competitor operating under the same name in the
+  same category. The rename became a launch precondition rather than housekeeping: the product
+  cannot take money under a competitor's name.
+- Four naming passes followed. Concept words (Bearing, Mettle, Pluck, Grit) were rejected: the
+  founder's reason was that they name a virtue the *user* is meant to possess, which is
+  narrower and colder than the promise and puts the work back on the user. Caddie had worked
+  because a caddie is a **person**.
+- Direction changed to companion names — naming the someone who does the work for you. Eight
+  candidates died on category collisions, recorded in the naming section above.
+- **Gili confirmed.** `gili.careers` and `heygili.com` purchased. Chosen on the open-web
+  screens only; the trademark registers refused automated access and remain unsearched.
+- The repository-wide rename is deliberately **not** done. It touches nearly every file and
+  will conflict with every open branch; it needs a frozen merge train and there were four
+  tickets in flight when the name was chosen. Only this document was updated.
 
 ## Continuing this work
 
