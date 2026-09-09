@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -1171,7 +1172,15 @@ def test_needs_evaluation_false_after_rediscovering_unchanged_job(store):
 
 
 def test_needs_evaluation_true_after_description_changes_post_evaluation(store):
-    job = Job(source="x", source_job_id="1", title="Senior Product Engineer", description="React")
+    # A unique fingerprint per run: the posting this resolves to is global
+    # and cannot be deleted, so a fixed one would answer from the text an
+    # earlier run left on it (#177, 20260909100000).
+    job = Job(
+        source="x",
+        source_job_id=f"desc-changes-{uuid.uuid4()}",
+        title="Senior Product Engineer",
+        description="React",
+    )
     job_id, _, _ = store.upsert_job(job)
     store.save_evaluation(job_id, _evaluation(job_id))
     assert store.needs_evaluation(job_id) is False
@@ -1183,7 +1192,8 @@ def test_needs_evaluation_true_after_description_changes_post_evaluation(store):
 
 def test_needs_evaluation_true_after_content_confidence_changes_post_evaluation(store):
     job = Job(
-        source="x", source_job_id="1", title="Senior Product Engineer",
+        source="x", source_job_id=f"conf-changes-{uuid.uuid4()}",
+        title="Senior Product Engineer",
         description="React", content_confidence=AGGREGATOR_TEXT,
     )
     job_id, _, _ = store.upsert_job(job)
@@ -1292,7 +1302,12 @@ def test_pending_delivery_job_ids_excludes_a_ready_match_with_message_but_no_doc
 
 
 def test_get_evaluation_and_material_roundtrip(store):
-    job = Job(source="x", source_job_id="1", title="Senior Product Engineer", company="Acme", description="React")
+    # `company` is read off the posting now, so this needs a fingerprint no
+    # other test shares -- see the note in apps/job-hunter/AGENTS.md.
+    job = Job(
+        source="x", source_job_id=f"roundtrip-{uuid.uuid4()}",
+        title="Senior Product Engineer", company="Acme", description="React",
+    )
     job_id, _, _ = store.upsert_job(job)
 
     assert store.get_evaluation(job_id) is None
@@ -2472,11 +2487,14 @@ def test_merge_job_sources_preserves_seen_bounds_on_identity_conflict(store, sup
 
 
 def test_logical_upsert_reports_description_change_caused_by_merge(store):
-    canonical_url = "https://jobs.lever.co/acme/abc"
+    # Both fingerprints are unique per run: the merged row's description is
+    # read off the posting it ends up pointing at (AGENTS.md).
+    run = uuid.uuid4()
+    canonical_url = f"https://jobs.lever.co/acme/{run}"
     survivor_id, _, _ = store.upsert_job(
         Job(
             source="lever",
-            source_job_id="abc",
+            source_job_id=f"abc-{run}",
             title="Senior Frontend Engineer",
             company="Acme",
             url=canonical_url,
@@ -2488,7 +2506,7 @@ def test_logical_upsert_reports_description_change_caused_by_merge(store):
     duplicate_id, _, _ = store.upsert_job(
         Job(
             source="yc",
-            source_job_id="yc-1",
+            source_job_id=f"yc-{run}",
             title="Senior Frontend Engineer",
             company="Acme",
             url="https://yc.test/jobs/1",
@@ -2499,7 +2517,7 @@ def test_logical_upsert_reports_description_change_caused_by_merge(store):
     job_id, is_new, description_changed = store.upsert_logical_job(
         Job(
             source="yc",
-            source_job_id="yc-1",
+            source_job_id=f"yc-{run}",
             title="Senior Frontend Engineer",
             company="Acme",
             url="https://yc.test/jobs/1",
@@ -2519,7 +2537,12 @@ def test_logical_upsert_reports_description_change_caused_by_merge(store):
 
 
 def test_upsert_logical_job_persists_content_confidence(store):
-    job = Job(source="ashby", title="Eng", description="full JD", content_confidence=OFFICIAL_ATS)
+    # No `url` and no `source_job_id`, so the fingerprint falls back to
+    # company|title|location -- unique here for the reason in AGENTS.md.
+    job = Job(
+        source="ashby", title="Eng", company=f"Acme {uuid.uuid4()}",
+        description="full JD", content_confidence=OFFICIAL_ATS,
+    )
 
     job_id, _, _ = store.upsert_logical_job(job)
 
@@ -2528,15 +2551,20 @@ def test_upsert_logical_job_persists_content_confidence(store):
 
 
 def test_upsert_logical_job_upgrades_description_by_confidence_not_length(store):
+    # Neither payload carries a `url`, so `job_fingerprint` falls back to
+    # company|title|location -- which is what the posting is keyed by. A
+    # unique company keeps this test off the posting the next one uses, and
+    # off whichever one either of them left behind on an earlier run (#177).
+    company = f"Acme {uuid.uuid4()}"
     weak = Job(
-        source="hackernews", title="Eng", company="Acme", location="Remote",
+        source="hackernews", title="Eng", company=company, location="Remote",
         canonical_url="https://jobs.example.com/acme/1",
         description="a" * 300, content_confidence=AGGREGATOR_TEXT,
     )
     job_id, _, _ = store.upsert_logical_job(weak)
 
     strong = Job(
-        source="ashby", title="Eng", company="Acme", location="Remote",
+        source="ashby", title="Eng", company=company, location="Remote",
         canonical_url="https://jobs.example.com/acme/1",
         description="short authoritative JD", content_confidence=OFFICIAL_ATS,
     )
@@ -2550,15 +2578,17 @@ def test_upsert_logical_job_upgrades_description_by_confidence_not_length(store)
 
 
 def test_upsert_logical_job_keeps_stronger_description_against_weaker_update(store):
+    # Unique per run, for the reason on the test above.
+    company = f"Acme {uuid.uuid4()}"
     strong = Job(
-        source="ashby", title="Eng", company="Acme", location="Remote",
+        source="ashby", title="Eng", company=company, location="Remote",
         canonical_url="https://jobs.example.com/acme/2",
         description="authoritative JD text", content_confidence=OFFICIAL_ATS,
     )
     job_id, _, _ = store.upsert_logical_job(strong)
 
     weak = Job(
-        source="hackernews", title="Eng", company="Acme", location="Remote",
+        source="hackernews", title="Eng", company=company, location="Remote",
         canonical_url="https://jobs.example.com/acme/2",
         description="a" * 5000, content_confidence=AGGREGATOR_TEXT,
     )

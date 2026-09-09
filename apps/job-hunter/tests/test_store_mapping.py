@@ -199,3 +199,96 @@ def test_store_fixture_constructs_a_postgres_job_store(store) -> None:
     """The `store` fixture (conftest.py) is what this task is unblocking."""
     with store as opened:
         assert opened is store
+
+
+# `job_from_row` and the posting (issue #177) ---------------------------------
+#
+# A row read with the posting embedded carries every posting-level fact
+# twice: once in the job row's own duplicated columns and once under
+# `posting`. The posting is the record of the advertisement, so it decides
+# all of them -- as a set, not field by field, or a posting that genuinely
+# says `remote is false` or `company is ''` would silently fall back to the
+# job row's copy of a fact the posting already answered.
+
+
+def _job_row_with(**overrides) -> dict:
+    row = {
+        "source": "aggregator",
+        "title": "Stale Title",
+        "company": "Stale Co",
+        "location": "Stale City",
+        "url": "https://stale.example/1",
+        "description": "stale description",
+        "source_job_id": "stale-1",
+        "remote": True,
+        "content_confidence": "aggregator_text",
+        "market_id": "eu",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_job_from_row_reads_posting_level_facts_from_the_posting() -> None:
+    job = job_from_row(
+        _job_row_with(
+            posting={
+                "source": "greenhouse",
+                "title": "Senior Backend Engineer",
+                "company": "Acme GmbH",
+                "location": "Berlin",
+                "description": "the shared description",
+                "source_job_id": "gh-9",
+                "remote": False,
+                "content_confidence": "official_ats",
+            }
+        )
+    )
+
+    assert job.source == "greenhouse"
+    assert job.title == "Senior Backend Engineer"
+    assert job.company == "Acme GmbH"
+    assert job.location == "Berlin"
+    assert job.description == "the shared description"
+    assert job.source_job_id == "gh-9"
+    assert job.remote is False
+    assert job.content_confidence == "official_ats"
+
+
+def test_job_from_row_takes_the_market_from_the_membership_row() -> None:
+    """`market_id` is which markets *this user* matched the posting to."""
+    job = job_from_row(_job_row_with(posting={"title": "Shared Title", "remote": None}))
+
+    assert job.market_id == "eu"
+
+
+def test_job_from_row_lets_the_posting_answer_a_fact_with_an_empty_value() -> None:
+    job = job_from_row(_job_row_with(posting={"company": "", "remote": None}))
+
+    assert job.company == ""
+    assert job.remote is None
+
+
+def test_job_from_row_falls_back_to_the_job_row_when_there_is_no_posting() -> None:
+    """`posting_id` is nullable, so a row can still arrive without one."""
+    job = job_from_row(_job_row_with(posting=None))
+
+    assert job.title == "Stale Title"
+    assert job.company == "Stale Co"
+    assert job.remote is True
+
+
+def test_job_from_row_keeps_the_merged_rows_url() -> None:
+    """A job row can stand for several postings; its URL is the resolved one.
+
+    `posting_id` names only one of the postings a merged row collapses, and
+    that one's URL is whatever source it was seen under -- the aggregator
+    link rather than the employer's. See `job_from_row`.
+    """
+    job = job_from_row(
+        _job_row_with(
+            url="https://acme.example/careers/9",
+            posting={"url": "https://aggregator.example/j/9", "remote": None},
+        )
+    )
+
+    assert job.url == "https://acme.example/careers/9"

@@ -1,3 +1,5 @@
+import uuid
+
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.job_identity import job_fallback_identity
 from job_hunter.models import Job
@@ -133,7 +135,7 @@ def test_same_canonical_url_on_unevaluated_public_job_is_still_emitted(store):
     store.upsert_job(
         Job(
             source="public",
-            source_job_id="public-123",
+            source_job_id=f"public-{uuid.uuid4()}",
             url="https://jobs.example.com/role",
             company="Public Company",
             title="Public Title",
@@ -161,7 +163,7 @@ def test_same_canonical_url_on_closed_public_job_is_not_emitted(store):
     job_id, _, _ = store.upsert_job(
         Job(
             source="public",
-            source_job_id="public-123",
+            source_job_id=f"public-{uuid.uuid4()}",
             url="https://jobs.example.com/role",
             company="Public Company",
             title="Public Title",
@@ -187,7 +189,7 @@ def test_same_identity_on_unevaluated_public_job_is_still_emitted(store):
     store.upsert_job(
         Job(
             source="public",
-            source_job_id="public-123",
+            source_job_id=f"public-{uuid.uuid4()}",
             url="https://jobs.example.com/role",
             company="Acme",
             title="senior frontend engineer",
@@ -220,7 +222,7 @@ def test_same_identity_on_closed_public_job_is_not_emitted(store):
     job_id, _, _ = store.upsert_job(
         Job(
             source="public",
-            source_job_id="public-123",
+            source_job_id=f"public-{uuid.uuid4()}",
             url="https://jobs.example.com/role",
             company="Acme",
             title="senior frontend engineer",
