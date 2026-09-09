@@ -1,14 +1,23 @@
-"""Persistence for objective facets (issue #125).
+"""Persistence for objective facets (issues #125, #175).
 
-The two properties that matter here are that extraction happens once per
-posting, and that a changed description invalidates the answer through the
-*same* description-hash mechanism that already gates re-evaluation -- not a
-second notion of a changed posting.
+The properties that matter here are that extraction happens once per
+posting -- across users, not merely across runs (#175) -- and that a changed
+description invalidates the answer through the *same* description-hash
+mechanism that already gates re-evaluation, not a second notion of a changed
+posting.
+
+The store still speaks in job ids, because that is what the pipeline holds.
+Everything it stores is keyed on the posting the job is a copy of, which is
+why a second user reads what the first user's run paid for.
 """
+
+import uuid
+from datetime import datetime, timezone
 
 import pytest
 
 from job_hunter.models import Compensation, Job, JobFacets
+from job_hunter.store_mapping import to_iso
 
 
 def make_job(*, fingerprint: str = "facets", **overrides) -> Job:
@@ -78,7 +87,7 @@ def test_saving_facets_twice_replaces_rather_than_appends(store):
     assert store.get_job_facets(job_id).seniority == "staff"
 
 
-def test_facets_are_stamped_with_the_jobs_current_description_hash(store):
+def test_facets_are_stamped_with_the_postings_current_description_hash(store):
     job = make_job(description="First description.")
     job_id, _, _ = store.upsert_job(job)
 
@@ -86,9 +95,11 @@ def test_facets_are_stamped_with_the_jobs_current_description_hash(store):
 
     stored = store.get_job_facets(job_id)
     assert stored.description_hash_at_extraction
-    # The caller never supplies the hash: the store reads it off the job, the
-    # same way save_evaluation does, so there is only one notion of "the
-    # description this was computed at".
+    # The caller never supplies the hash: the store reads it off the posting,
+    # the same way save_evaluation reads it off the job, so there is only one
+    # notion of "the description this was computed at" -- and since #175 it
+    # is the shared one, which is what makes a re-read cost one call rather
+    # than one per user.
     assert _facets().description_hash_at_extraction == ""
 
 
@@ -147,9 +158,11 @@ def test_jobs_needing_facets_ignores_a_job_that_cannot_be_read(store):
 def test_facets_of_a_job_merged_away_are_discarded_not_moved(store):
     # Unlike an evaluation, facets must not follow a merge. They describe the
     # posting they were read from; writing them against the survivor would
-    # stamp them with the *survivor's* description hash, pinning one posting's
-    # facts to another's text as permanently current with no path back to
-    # re-extraction. The survivor is extracted from its own text later.
+    # stamp them with the *survivor* posting's description hash, pinning one
+    # posting's facts to another's text as permanently current with no path
+    # back to re-extraction. The survivor is extracted from its own text
+    # later. A merged-away job row is gone, so it resolves to no posting at
+    # all -- which is how the store recognises this case.
     survivor, _, _ = store.upsert_job(make_job(fingerprint="survivor"))
     duplicate, _, _ = store.upsert_job(make_job(fingerprint="duplicate"))
     store.merge_jobs(survivor, duplicate)
@@ -170,3 +183,97 @@ def test_undisclosed_compensation_round_trips_as_undisclosed(store):
     assert stored.maximum is None
     assert stored.currency == ""
     assert stored.period == ""
+
+
+# --- One extraction for everyone (issue #175) --------------------------------
+#
+# The prompt cannot see who is asking (#126), so the answer is a property of
+# the advertisement. These are the acceptance criteria of #175: what one
+# user's run reads, every user's run has.
+
+
+def test_a_second_users_run_reads_the_first_users_facets(store, other_store):
+    job = make_job(fingerprint="shared-advertisement")
+    mine, _, _ = store.upsert_job(job)
+    theirs, _, _ = other_store.upsert_job(job)
+    # Two job rows -- each user keeps their own copy of the relationship --
+    # over one posting.
+    assert mine != theirs
+
+    store.save_job_facets(mine, _facets(seniority="staff"))
+
+    # Nothing for the second user to extract, and the answer is already there.
+    assert other_store.jobs_needing_facets([theirs]) == set()
+    assert other_store.get_job_facets(theirs).seniority == "staff"
+
+
+def test_a_changed_description_is_re_extracted_once_for_everyone(store, other_store):
+    job = make_job(fingerprint="edited-advertisement", description="First description.")
+    mine, _, _ = store.upsert_job(job)
+    theirs, _, _ = other_store.upsert_job(job)
+    store.save_job_facets(mine, _facets())
+    assert store.jobs_needing_facets([mine]) == set()
+    assert other_store.jobs_needing_facets([theirs]) == set()
+
+    # The advertisement is edited, and one user sees it first.
+    edited = make_job(
+        fingerprint="edited-advertisement",
+        description="A materially different description of the same job.",
+    )
+    store.upsert_job(edited)
+
+    # Both users' runs now agree it needs re-reading, because both are asking
+    # about the same posting...
+    assert store.jobs_needing_facets([mine]) == {mine}
+    assert other_store.jobs_needing_facets([theirs]) == {theirs}
+
+    # ...and one read settles it for both. Two users can no longer invalidate
+    # each other's extraction in turn.
+    other_store.save_job_facets(theirs, _facets(seniority="lead"))
+
+    assert store.jobs_needing_facets([mine]) == set()
+    assert other_store.jobs_needing_facets([theirs]) == set()
+    assert store.get_job_facets(mine).seniority == "lead"
+
+
+def test_one_users_re_extraction_replaces_the_other_users_answer(store, other_store):
+    # One posting, one set of facets: a second write must replace the first
+    # rather than leave the two users looking at different answers.
+    job = make_job(fingerprint="one-answer")
+    mine, _, _ = store.upsert_job(job)
+    theirs, _, _ = other_store.upsert_job(job)
+
+    store.save_job_facets(mine, _facets(seniority="senior"))
+    other_store.save_job_facets(theirs, _facets(seniority="principal"))
+
+    assert store.get_job_facets(mine).seniority == "principal"
+    assert other_store.get_job_facets(theirs).seniority == "principal"
+
+
+def test_a_job_with_no_posting_has_no_facets_and_no_work_to_do(store, supabase_client):
+    # A job row written without going through job_hunter_upsert_job -- the
+    # SQLite migration script does exactly this -- carries no posting_id.
+    # There is nowhere to read facets from and nowhere to store them, and
+    # saying otherwise would put the pipeline into a provider call whose
+    # result is discarded, every run, forever.
+    now = to_iso(datetime.now(timezone.utc))
+    row = supabase_client.insert(
+        "job_hunter_jobs",
+        [
+            {
+                "user_id": supabase_client.user_id,
+                "fingerprint": f"no-posting-{uuid.uuid4()}",
+                "description": "React and TypeScript.",
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+        ],
+    )[0]
+
+    assert row["posting_id"] is None
+    assert store.jobs_needing_facets([row["id"]]) == set()
+    assert store.get_job_facets(row["id"]) is None
+
+    # Storing is a no-op rather than an error: the run keeps going.
+    store.save_job_facets(row["id"], _facets())
+    assert store.get_job_facets(row["id"]) is None

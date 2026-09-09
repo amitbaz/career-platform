@@ -33,16 +33,22 @@ Migration rules:
    `job_hunter_upsert_job` rather than adding a new function; so does
    `20260908120000_job_hunter_job_merge_redirects.sql` with `job_hunter_merge_jobs`, which now
    records where a deleted duplicate went in `job_hunter_job_merges`;
-   `20260908170000_job_hunter_job_facets.sql` adds `job_hunter_job_facets`, one row per job
-   holding the objective facets `facets.py` extracts, with dedicated columns and indexes
+   `20260908170000_job_hunter_job_facets.sql` adds `job_hunter_job_facets`, holding the
+   objective facets `facets.py` extracts, with dedicated columns and indexes
    because hiring-eligible regions, remote policy, seniority and compensation have to be
-   filterable in a query rather than parsed out of every row.
+   filterable in a query rather than parsed out of every row;
+   `20260909110000_job_hunter_facets_on_postings.sql` then re-keys that table on the
+   posting — it drops `user_id` and `job_id`, opens reads to every authenticated user, and
+   migrates the rows that existed onto their job's posting, so two users who discover the
+   same advertisement cause one extraction between them (#175).
    `20260909100000_job_hunter_postings.sql` adds `job_hunter_postings` — one row per job
    advertisement, keyed by fingerprint and shared by every user who discovers it, which
-   `job_hunter_jobs.posting_id` points at. It is the only Job Hunter table that is shared
-   between users: it has no `user_id`, and any authenticated user may read — and, for now,
-   write — any posting. (The two `job_hunter_platform_*` tables also have no `user_id`, but
-   they are the platform key's own ledger and no user reaches them at all.) It adds
+   `job_hunter_jobs.posting_id` points at. It and `job_hunter_job_facets` are the two Job
+   Hunter tables shared between users: neither has a `user_id`, and any authenticated user
+   may read — and, for now, write — any row of either. Neither has a delete policy: a
+   shared row must not be removable out from under the other users. (The two
+   `job_hunter_platform_*` tables also have no `user_id`, but they are the platform key's
+   own ledger and no user reaches them at all.) It adds
    `job_hunter_upsert_posting`, and re-creates both `job_hunter_upsert_job`, to write the
    posting and the job row in one call, and `job_hunter_merge_jobs`, so a merged job keeps
    the posting whose description it kept. Nothing reads a posting yet (#174).) Job Hunter's runtime reads and writes these tables through
@@ -164,8 +170,11 @@ Key modules:
 - `src/job_hunter/facets.py` — objective extraction (#125): reads a posting's **facets** — the
   requirements it states and the depth each demands, its disclosed compensation, its
   hiring-eligible regions, its remote and relocation policy, its seniority, its stack — once per
-  posting, and `PostgresJobStore.save_job_facets` stores them on the job. Facets are properties
-  of the posting, identical for every user, so one extraction serves every later run. That
+  posting, and `PostgresJobStore.save_job_facets` stores them on the **posting** (#175): the
+  store still takes a job id, because that is what the pipeline holds, and resolves it to
+  `job_hunter_jobs.posting_id` itself. Facets are properties of the posting, identical for
+  every user, so one extraction serves every later run *of every user* — a second user's run
+  reads what the first user's run paid for, and counts it in `RunSummary.facets_reused`. That
   sharing is load-bearing and enforced by the interface, not by convention: `extract_facets`
   takes a frozen `PostingFacts` built from the `Job` alone, the module imports nothing per-user,
   and `tests/test_facets.py` fails if it ever does. Keep the candidate-aware prompt in
@@ -180,8 +189,11 @@ Key modules:
   location label, so "Hybrid Remote" would be pinned as fully remote forever), and
   `hiring_scope.determine_hiring_scope` supplies `hiring_regions` when the posting states an
   explicit scope. `source_supplied` records which came free. Invalidation is
-  `job_hunter_jobs.description_hash`, the same mechanism that gates re-evaluation — there is no
-  second notion of a changed posting. Extraction is run from
+  `job_hunter_postings.description_hash` — since #175 the posting's, not each user's job row's,
+  so an edited advertisement costs one re-read rather than one per user — compared against
+  `description_hash_at_extraction`, the same mechanism that gates re-evaluation. There is no
+  second notion of a changed posting. The extraction itself still reads the text on the job
+  row it was dispatched for; #177 moves that read onto the posting too. Extraction is run from
   `pipeline.py::_extract_facets_for_run`, over this run's shortlist and retry queue first and
   then rediscovered jobs, every one of which survived the non-AI filters; it is bounded per run
   by `max_jobs_per_run` minus whatever the run's own inline reads already spent, which is

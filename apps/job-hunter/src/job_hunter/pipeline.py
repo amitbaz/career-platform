@@ -650,10 +650,13 @@ def _facets_for_scoring(
     Scoring no longer receives the job description (#126), so a job cannot be
     scored until its posting has been read once. `needs_facets` is the run's
     single `jobs_needing_facets` answer, so the ordinary case -- a posting
-    already read on an earlier run -- costs one store read and no provider
-    call, and the same posting is never read twice in a run.
+    already read on an earlier run, by this user or by any other (#175) --
+    costs one store read and no provider call, and the same posting is never
+    read twice in a run. Those reuses are counted, so the run log can say how
+    much of its scoring rode on work it did not pay for.
 
-    Returns None when the posting could not be read this run. The caller must
+    Returns None when the posting could not be read this run, or when the job
+    has no posting to read facets from or store them against. The caller must
     leave the job unscored rather than score it against nothing.
 
     `needs_facets` is narrowed as the run reads, so it ends the scoring loops
@@ -669,9 +672,28 @@ def _facets_for_scoring(
             logger.exception("could not read stored facets for job_id=%s", job_id)
             return None
         if facets is not None:
+            summary.facets_reused += 1
             return facets
-        # The bulk check said this job had current facets and the row is not
-        # there now. Read the posting again rather than score it blind.
+        # The bulk check said this job had current facets and there are none.
+        # Ask again for this one job before spending a call, because the two
+        # ways that happens want opposite answers: a row replaced or removed
+        # mid-run has to be read again, while a job with no posting has
+        # nowhere to store an extraction at all -- reading it would cost a
+        # call, discard the result, and cost the same call on every later run
+        # forever. A failed re-ask is treated as the first case, which costs
+        # one call rather than silently dropping a job from the run.
+        try:
+            still_needed = store.jobs_needing_facets([job_id])
+        except Exception:
+            logger.exception("could not re-check whether job_id=%s needs reading", job_id)
+            still_needed = {job_id}
+        if job_id not in still_needed:
+            logger.info(
+                "job_id=%s has no facets and no posting to store any against; "
+                "not scored this run",
+                job_id,
+            )
+            return None
         logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
 
     try:
