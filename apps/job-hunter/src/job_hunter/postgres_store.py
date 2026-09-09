@@ -1741,17 +1741,27 @@ class PostgresJobStore:
     ) -> bool:
         """Insert or refresh one learned ATS board's discovery metadata.
 
-        Translates store.py:1407-1455. On an existing board, updates display
-        metadata and `last_seen_at` and reactivates it, but leaves
-        `paused_until` and `consecutive_failures` untouched -- ordinary
-        rediscovery must not bypass an unexpired pause; the board becomes
-        due naturally once `paused_until` elapses. A board with a
-        `rejected_reason` is never reactivated by rediscovery, so a board
-        rejected once stays rejected (see `reject_ats_board`).
+        Since #203, board identity and health (`company_name`,
+        `market_hint`, `first_seen_at`, `last_seen_at`, `active`,
+        `rejected_reason`, ...) live on the shared `job_hunter_ats_boards`
+        table, upserted here exactly as `job_hunter_ats_registry` used to
+        be: on an existing board, updates display metadata and
+        `last_seen_at` and reactivates it, but leaves `paused_until` and
+        `consecutive_failures` untouched -- ordinary rediscovery must not
+        bypass an unexpired pause; the board becomes due naturally once
+        `paused_until` elapses. A board with a `rejected_reason` is never
+        reactivated by rediscovery, so a board rejected once stays rejected
+        (see `reject_ats_board`).
 
-        Returns True only when the board was newly registered.
-        `job_hunter_ats_registry` has no `updated_at` column, so no `touch`
-        here.
+        `job_hunter_ats_registry` now only tracks that *this* user has seen
+        the board, for `record_ats_eligible_jobs` to join against -- a bare
+        `(user_id, provider, board_identifier)` row, written once and never
+        updated again here.
+
+        Returns True only when this user's own registry row was newly
+        created -- i.e. the board is new to this user's crawl, whether or
+        not another user already discovered it. `job_hunter_ats_boards` has
+        no `updated_at` column, so no `touch` here.
         """
         provider = provider.strip().lower()
         if provider not in _SUPPORTED_ATS_PROVIDERS:
@@ -1759,8 +1769,8 @@ class PostgresJobStore:
         board_identifier = board_identifier.strip()
         now = to_iso(datetime.now(timezone.utc))
 
-        existing = self._client.select(
-            "job_hunter_ats_registry",
+        existing_board = self._client.select(
+            "job_hunter_ats_boards",
             params={
                 "provider": f"eq.{provider}",
                 "board_identifier": f"eq.{board_identifier}",
@@ -1768,12 +1778,11 @@ class PostgresJobStore:
                 "limit": "1",
             },
         )
-        if not existing:
+        if not existing_board:
             self._client.upsert(
-                "job_hunter_ats_registry",
+                "job_hunter_ats_boards",
                 [
                     {
-                        "user_id": self._client.user_id,
                         "provider": provider,
                         "board_identifier": board_identifier,
                         "company_name": company_name,
@@ -1782,24 +1791,46 @@ class PostgresJobStore:
                         "last_seen_at": now,
                     }
                 ],
-                on_conflict="user_id,provider,board_identifier",
+                on_conflict="provider,board_identifier",
             )
-            return True
+        else:
+            row = existing_board[0]
+            self._client.update(
+                "job_hunter_ats_boards",
+                {
+                    # COALESCE(NULLIF(?, ''), col): a blank argument means
+                    # "no new information", not "clear what is stored".
+                    "company_name": company_name or row["company_name"],
+                    "market_hint": market_hint or row["market_hint"],
+                    "last_seen_at": now,
+                    "active": True if row["rejected_reason"] is None else row["active"],
+                },
+                params={"id": f"eq.{row['id']}"},
+            )
 
-        row = existing[0]
-        self._client.update(
+        existing_registry = self._client.select(
             "job_hunter_ats_registry",
-            {
-                # COALESCE(NULLIF(?, ''), col): a blank argument means "no
-                # new information", not "clear what is stored".
-                "company_name": company_name or row["company_name"],
-                "market_hint": market_hint or row["market_hint"],
-                "last_seen_at": now,
-                "active": True if row["rejected_reason"] is None else row["active"],
+            params={
+                "provider": f"eq.{provider}",
+                "board_identifier": f"eq.{board_identifier}",
+                "select": "id",
+                "limit": "1",
             },
-            params={"id": f"eq.{row['id']}"},
         )
-        return False
+        if existing_registry:
+            return False
+        self._client.upsert(
+            "job_hunter_ats_registry",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "provider": provider,
+                    "board_identifier": board_identifier,
+                }
+            ],
+            on_conflict="user_id,provider,board_identifier",
+        )
+        return True
 
     def upsert_ats_boards(self, references: list[tuple[str, str, str, str]]) -> int:
         """Register a run's distinct ATS boards, returning how many were new.
@@ -1854,15 +1885,18 @@ class PostgresJobStore:
     def reject_ats_board(
         self, provider: str, board_identifier: str, reason: str, now: datetime
     ) -> None:
-        """Deactivate a board and persist why, so rediscovery can't resurrect it.
+        """Deactivate a shared board and persist why, so rediscovery can't
+        resurrect it.
 
-        Translates store.py:1457-1476. Used for both aggregator-detection
-        rejections and the config denylist's "instant kill" of an
-        already-registered board.
+        Since #203 this writes to the shared `job_hunter_ats_boards` table,
+        and must only ever be called with a reason that generalizes across
+        users -- an aggregator-detection verdict. The config denylist's
+        "instant kill" is one user's policy and must never reach this
+        method (see `sources/learned_ats.py`'s per-run exclusion).
         """
         timestamp = to_iso(_require_aware(now))
         self._client.update(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             {"active": False, "rejected_reason": reason, "last_checked_at": timestamp},
             params={
                 "provider": f"eq.{provider}",
@@ -1871,12 +1905,13 @@ class PostgresJobStore:
         )
 
     def clear_ats_board_rejection(self, provider: str, board_identifier: str) -> None:
-        """Reverse a rejection, putting the board back in the due rotation.
+        """Reverse a shared rejection, putting the board back in the due rotation.
 
-        Translates store.py:1478-1501. The inverse of `reject_ats_board`,
-        and the only code path that clears `rejected_reason`. Used when an
-        operator names a board in `learned_ats_allowlist`, having judged its
-        rejection wrong.
+        The inverse of `reject_ats_board`, and the only code path that
+        clears `rejected_reason`. Used when an operator names a board in
+        `learned_ats_allowlist`, having judged its aggregator rejection
+        wrong -- clearing it here recovers the board for every user, not
+        just the one running this recovery.
 
         Scoped to rejected rows on purpose: a board deactivated by repeated
         404s carries no `rejected_reason`, and reviving it here would
@@ -1891,7 +1926,7 @@ class PostgresJobStore:
         """
         wanted = (provider.strip().lower(), board_identifier.strip().lower())
         for row in self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "rejected_reason": "not.is.null",
                 "select": "id,provider,board_identifier",
@@ -1903,37 +1938,59 @@ class PostgresJobStore:
             ) != wanted:
                 continue
             self._client.update(
-                "job_hunter_ats_registry",
+                "job_hunter_ats_boards",
                 {"active": True, "rejected_reason": None},
                 params={"id": f"eq.{row['id']}"},
             )
 
     def list_due_ats_boards(self, now: datetime) -> list[AtsRegistryEntry]:
-        """Return active ATS boards whose health pause has expired.
+        """Return active shared ATS boards whose health pause has expired.
 
-        Translates store.py:1503-1518. Same `timestamptz` comparison as
-        `list_due_company_watches`.
+        Same `timestamptz` comparison as `list_due_company_watches`. Board
+        health is shared since #203, so the board list itself is every
+        user's answer, not just the caller's -- but `select_ats_boards`
+        ranks that list by each board's *recent eligible yield*, which is
+        per-user, so this merges in the caller's own
+        `job_hunter_ats_registry` row for every board returned.
         """
         timestamp = to_iso(_require_aware(now))
         rows = self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "active": "eq.true",
                 "or": f"(paused_until.is.null,paused_until.lte.{timestamp})",
                 "order": "provider.asc,board_identifier.asc",
             },
         )
-        return [ats_entry_from_row(row) for row in rows]
+        yield_by_board = {
+            (yield_row["provider"], yield_row["board_identifier"]): yield_row
+            for yield_row in self._client.select(
+                "job_hunter_ats_registry",
+                params={"select": "provider,board_identifier,eligible_jobs_seen,last_eligible_at"},
+            )
+        }
+        entries = []
+        for row in rows:
+            yield_row = yield_by_board.get((row["provider"], row["board_identifier"]), {})
+            entries.append(
+                ats_entry_from_row(
+                    row,
+                    eligible_jobs_seen=yield_row.get("eligible_jobs_seen", 0),
+                    last_eligible_at=yield_row.get("last_eligible_at"),
+                )
+            )
+        return entries
 
     def list_rejected_ats_boards(self) -> list[AtsRegistryEntry]:
-        """Return boards rejected as aggregators or by the config denylist.
+        """Return shared boards rejected as aggregators.
 
-        Translates store.py:1520-1534. `list_due_ats_boards` only returns
-        active boards, so this is the only way to read a rejection (and its
-        reason) back after the run that made it.
+        `list_due_ats_boards` only returns active boards, so this is the
+        only way to read a rejection (and its reason) back after the run
+        that made it. Since #203 a config-denylist exclusion is never
+        written here at all -- only an aggregator-detection verdict is.
         """
         rows = self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "rejected_reason": "not.is.null",
                 "order": "provider.asc,board_identifier.asc",
@@ -1944,13 +2001,10 @@ class PostgresJobStore:
     def record_ats_scan_success(
         self, provider: str, board_identifier: str, now: datetime, job_count: int
     ) -> None:
-        """Record a successful scan and clear the board's failure backoff.
-
-        Translates store.py:1536-1553.
-        """
+        """Record a successful scan and clear the shared board's failure backoff."""
         timestamp = to_iso(_require_aware(now))
         self._client.update(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             {
                 "last_checked_at": timestamp,
                 "last_success_at": timestamp,
@@ -1999,7 +2053,7 @@ class PostgresJobStore:
         """
         normalized_now = _require_aware(now)
         rows = self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "provider": f"eq.{provider}",
                 "board_identifier": f"eq.{board_identifier}",
@@ -2018,7 +2072,7 @@ class PostgresJobStore:
         if permanent and failures >= _STALE_BOARD_DEACTIVATION_THRESHOLD:
             values["active"] = False
         self._client.update(
-            "job_hunter_ats_registry", values, params={"id": f"eq.{rows[0]['id']}"}
+            "job_hunter_ats_boards", values, params={"id": f"eq.{rows[0]['id']}"}
         )
 
     def record_ats_eligible_jobs(
@@ -2069,9 +2123,10 @@ class PostgresJobStore:
         return int(rows[0]) if rows else 0
 
     def count_ats_boards(self) -> int:
-        """Translates store.py:1638-1640."""
+        """Count every board the shared registry has ever learned, not just
+        this user's."""
         return len(
-            self._client.select("job_hunter_ats_registry", params={"select": "id"})
+            self._client.select("job_hunter_ats_boards", params={"select": "id"})
         )
 
     # ------------------------------------------------------------------

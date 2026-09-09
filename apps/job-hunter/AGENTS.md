@@ -45,11 +45,11 @@ Migration rules:
    `20260909100000_job_hunter_postings.sql` adds `job_hunter_postings` — one row per job
    advertisement, keyed by fingerprint and shared by every user who discovers it, which
    `job_hunter_jobs.posting_id` points at. It, `job_hunter_job_facets`,
-   `job_hunter_companies` (#198) and `job_hunter_posting_merges` (#176) are the four Job
-   Hunter tables shared between users: none has a `user_id`, and any authenticated user may
-   read any row of any of them. The first three may also be written by any authenticated
-   user for now; the fourth may be written by nobody, because every write to it happens
-   inside `job_hunter_merge_postings`. None has a
+   `job_hunter_companies` (#198), `job_hunter_posting_merges` (#176) and `job_hunter_ats_boards`
+   (#203) are the five Job Hunter tables shared between users: none has a `user_id`, and any
+   authenticated user may read any row of any of them. The first three and the fifth may also
+   be written by any authenticated user for now; the fourth may be written by nobody, because
+   every write to it happens inside `job_hunter_merge_postings`. None has a
    delete policy: a shared row must not be removable out from under the other users. (The two
    `job_hunter_platform_*` tables also have no `user_id`, but they are the platform key's
    own ledger and no user reaches them at all.) It adds
@@ -98,7 +98,22 @@ Migration rules:
    the posting level). `job_hunter_upsert_posting` and `job_hunter_merge_posting_batch` are
    re-created to resolve through the redirect, and `job_hunter_merge_jobs` to delegate to
    it: it is now the per-user consequence of one global decision, not a second authority,
-   and #178 removes it with the rest of the duplicated job-row machinery.) Job Hunter's runtime reads and writes these tables through
+   and #178 removes it with the rest of the duplicated job-row machinery.)
+   `29999999000000_job_hunter_ats_boards.sql` (placeholder timestamp -- allocated for real at
+   PR-open by career-platform-c6) shares learned ATS boards between users (#203):
+   `job_hunter_ats_registry` held facts about a board — that it exists, is reachable, is an
+   aggregator not worth crawling — once per user, and the most expensive of those facts to
+   relearn is a rejection, since a missing one silently re-crawls a board already known
+   worthless instead of failing loudly. It adds `job_hunter_ats_boards` — a fifth shared
+   table, board identity and health, keyed on `(provider, board_identifier)` — and narrows
+   `job_hunter_ats_registry` to what stays per-user: `eligible_jobs_seen` and
+   `last_eligible_at`, which are yield against a user's own search profile, not board health.
+   The backfill classifies every existing rejection before promoting it: a config-denylist
+   rejection is that one user's policy and promotes as active, never as rejected; an
+   aggregator-detection rejection is evidence about the board and promotes with its reason
+   intact; anything unclassifiable (a health-backoff deactivation, which carries no reason at
+   all) also promotes as active, because a board wrongly promoted as active self-corrects on
+   the next crawl while one wrongly promoted as rejected is unreachable by design. Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
 

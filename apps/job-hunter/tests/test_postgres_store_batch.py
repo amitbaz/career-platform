@@ -553,6 +553,9 @@ def test_upsert_ats_boards_backfills_blank_fields_from_a_later_sighting(
     `market_hint` costs the board its place in `select_ats_boards`' market
     ranking, so this is not cosmetic.
     """
+    # job_hunter_ats_boards is shared and never cleaned between tests (#203),
+    # so the board identifier must be unique to this test run.
+    board = f"backfill-{uuid.uuid4().hex[:8]}"
     calls: list[tuple[str, str, str, str]] = []
     original = store.upsert_ats_board
 
@@ -564,17 +567,17 @@ def test_upsert_ats_boards_backfills_blank_fields_from_a_later_sighting(
 
     store.upsert_ats_boards(
         [
-            ("greenhouse", "backfill", "", ""),  # first sighting knows nothing
-            ("greenhouse", "backfill", "Backfill Inc.", ""),  # learns the company
-            ("greenhouse", "backfill", "Other Name", "israel"),  # learns the market
+            ("greenhouse", board, "", ""),  # first sighting knows nothing
+            ("greenhouse", board, "Backfill Inc.", ""),  # learns the company
+            ("greenhouse", board, "Other Name", "israel"),  # learns the market
         ]
     )
 
     # Still one request for the board -- merging must not cost the collapse.
-    assert calls == [("greenhouse", "backfill", "Backfill Inc.", "israel")]
+    assert calls == [("greenhouse", board, "Backfill Inc.", "israel")]
 
     boards = store.list_due_ats_boards(datetime.now(timezone.utc))
-    matching = [b for b in boards if b.board_identifier == "backfill"]
+    matching = [b for b in boards if b.board_identifier == board]
     assert len(matching) == 1
     assert matching[0].company_name == "Backfill Inc."
     assert matching[0].market_hint == "israel"

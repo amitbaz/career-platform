@@ -251,12 +251,25 @@ def material_from_row(row: dict[str, Any]) -> Material:
     )
 
 
-def ats_entry_from_row(row: dict[str, Any]) -> AtsRegistryEntry:
-    """Map a ``job_hunter_ats_registry`` PostgREST row to an `AtsRegistryEntry`.
+def ats_entry_from_row(
+    row: dict[str, Any],
+    *,
+    eligible_jobs_seen: int = 0,
+    last_eligible_at: str | None = None,
+) -> AtsRegistryEntry:
+    """Map a ``job_hunter_ats_boards`` PostgREST row to an `AtsRegistryEntry`.
 
     `AtsRegistryEntry`'s timestamp fields are typed ``str`` (matching the
     SQLite original's TEXT columns), so PostgREST's ISO-8601 strings pass
     through unchanged -- no `from_iso` conversion needed here.
+
+    Since #203, `job_hunter_ats_boards` (board identity and health) and
+    `job_hunter_ats_registry` (per-user eligible-job yield) are two tables.
+    `eligible_jobs_seen`/`last_eligible_at` are that caller's own yield
+    against this board, looked up separately and passed in here --
+    `select_ats_boards`' ranking reads `last_eligible_at` off the entries
+    `list_due_ats_boards` returns, so it must carry the calling user's own
+    value, not be silently dropped.
     """
     return AtsRegistryEntry(
         provider=row["provider"],
@@ -267,9 +280,9 @@ def ats_entry_from_row(row: dict[str, Any]) -> AtsRegistryEntry:
         last_seen_at=row["last_seen_at"],
         last_checked_at=row.get("last_checked_at"),
         last_success_at=row.get("last_success_at"),
-        last_eligible_at=row.get("last_eligible_at"),
+        last_eligible_at=last_eligible_at,
         last_job_count=row.get("last_job_count", 0),
-        eligible_jobs_seen=row.get("eligible_jobs_seen", 0),
+        eligible_jobs_seen=eligible_jobs_seen,
         consecutive_failures=row.get("consecutive_failures", 0),
         active=bool(row.get("active", True)),
         paused_until=row.get("paused_until"),

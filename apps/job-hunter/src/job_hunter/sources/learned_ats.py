@@ -100,12 +100,21 @@ class LearnedAtsSource:
         # Reject denylisted boards before the limit is applied, so a board
         # that is never going to be scanned cannot consume one of the
         # `limit` slots and displace a real board.
+        #
+        # This is one operator's policy, not evidence about the board, so
+        # (since #203) it is never persisted to the shared registry -- only
+        # this run's local exclusion, re-applied fresh from config every
+        # run. `_reject_board` below writes a rejection to the shared board
+        # table and must never be called from this path.
         remaining = []
         for entry in due:
             board_key = ats_board_key(entry.provider, entry.board_identifier)
             if board_key in self._denylist and board_key not in self._allowlist:
-                self._reject_board(
-                    entry, checked_at, f"configured in learned_ats_denylist ({board_key})"
+                self.stats.boards_rejected += 1
+                logger.info(
+                    "learned ATS board excluded by learned_ats_denylist: %s "
+                    "(not written to the shared registry)",
+                    board_key,
                 )
             else:
                 remaining.append(entry)
@@ -274,6 +283,13 @@ class LearnedAtsSource:
             )
 
     def _reject_board(self, entry, checked_at: datetime, reason: str) -> None:
+        """Persist an aggregator-detection rejection to the shared registry.
+
+        Aggregator-detection evidence generalizes across users, so (unlike
+        the config denylist, which never reaches the store since #203) it
+        is written to the shared `job_hunter_ats_boards` table and read
+        back by every user's next discovery run.
+        """
         self.stats.boards_rejected += 1
         try:
             self._store.reject_ats_board(
