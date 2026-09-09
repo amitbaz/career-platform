@@ -20,9 +20,13 @@
 --   * Identity resolution moves with the columns. The job upsert resolved a
 --     listing against the caller's own rows by canonical URL, ATS triple and
 --     normalized company/title/location; those columns are now the posting's,
---     so the resolution runs against postings and its outcome is a posting
---     merge (#176's job) rather than a private job merge. This is what makes
---     the decision cost once for the platform rather than once per user.
+--     so the comparison reads them there and its outcome is a posting merge
+--     (#176's job) rather than a private job merge. The rows searched are
+--     still the caller's own -- the question is whether *this user* already
+--     holds a row covering the advertisement, which is what chose the pairs
+--     before too. What changed is the answer's reach: the merge it triggers
+--     is recorded once for everyone, so the decision costs the platform once
+--     rather than once per user.
 --   * Merging inverts. `job_hunter_merge_jobs` used to decide two
 --     advertisements were the same and drag the postings along; now merging
 --     two postings is the decision, and collapsing the affected users' rows is
@@ -95,11 +99,32 @@ create index job_hunter_postings_source_job_idx
 
 -- job_hunter_find_posting_by_identity ------------------------------------------
 --
--- 202609070002's job-level function with the user taken out. The ambiguity
--- rule is unchanged and is the part worth keeping: when two matched rows are
--- in locations that are not compatible with each other, the identity is not
--- confident enough to act on and nothing is returned. Answering with one of
--- them would merge two different jobs at the same employer.
+-- 202609070002's job-level function with the columns moved and the question
+-- unchanged. It still asks "does *this caller* already hold a row covering
+-- this advertisement" -- the coverage question #177 named -- so it is scoped
+-- to the postings the caller holds a membership row for, and only the side
+-- being compared moved to the posting.
+--
+-- Scoping matters and is not timidity. Normalized company plus title plus a
+-- compatible location is the weakest rung of the ladder: it is deliberately
+-- willing to call two renderings of "Acme / Senior Product Engineer /
+-- Remote" the same advertisement. Asked of one user's corpus that is a
+-- reasonable bet about rows they discovered in one run; asked of the whole
+-- shared corpus it would collapse every employer's long-running role into a
+-- single posting across users and across months, discard the facets of
+-- everything it swallowed, and there is no way back -- a posting merge is
+-- recorded once for everyone and nothing un-merges it. The URL and ATS rungs
+-- are scoped the same way for consistency, though they identify an
+-- advertisement precisely enough that widening them would be defensible.
+--
+-- The merge that follows is still global: one user's decision re-points every
+-- other user's rows at the survivor (#176). What is per-user is which pair
+-- of postings gets compared, not who the answer is recorded for.
+--
+-- The ambiguity rule is unchanged and is the part worth keeping: when two
+-- matched rows are in locations that are not compatible with each other, the
+-- identity is not confident enough to act on and nothing is returned.
+-- Answering with one of them would merge two different jobs at one employer.
 
 create or replace function public.job_hunter_find_posting_by_identity(
   p_company text, p_title text, p_location text
@@ -110,6 +135,7 @@ security invoker
 set search_path = ''
 as $$
 declare
+  v_uid uuid := (select auth.uid());
   v_company text := public.job_hunter_normalize_company(p_company);
   v_title text := public.job_hunter_normalize_tokens(p_title);
 begin
@@ -121,8 +147,11 @@ begin
   with matches as (
     select p.id as posting_id,
            p.location as posting_location,
-           p.created_at as posting_created_at
+           j.created_at as job_created_at,
+           j.id as job_id
       from public.job_hunter_postings p
+      join public.job_hunter_jobs j
+        on j.posting_id = p.id and j.user_id = v_uid
      where p.normalized_company = v_company
        and p.normalized_title = v_title
        and public.job_hunter_locations_compatible(p_location, p.location)
@@ -132,18 +161,21 @@ begin
    where not exists (
            select 1
              from matches l
-             join matches r on l.posting_id < r.posting_id
+             join matches r on l.job_id < r.job_id
             where not public.job_hunter_locations_compatible(
                         l.posting_location, r.posting_location)
          )
-   order by m.posting_created_at, m.posting_id;
+   order by m.job_created_at, m.job_id;
 end $$;
 
 comment on function public.job_hunter_find_posting_by_identity(text, text, text) is
-  'Postings whose normalized company, title and compatible location identify '
-  'one advertisement, or nothing when the matches disagree about location. '
-  'The job-level form of this (202609070002) asked the same question of one '
-  'user''s rows; asked of postings it is answered once for everyone.';
+  'The postings the caller already holds a membership row for whose '
+  'normalized company, title and compatible location identify one '
+  'advertisement -- nothing when the matches disagree about location. The '
+  'identity itself lives on the posting since #178; the question it answers '
+  'is still the per-user coverage question 202609070002 asked of job rows, '
+  'because this rung is weak enough that asking it of the whole shared '
+  'corpus would collapse unrelated advertisements irreversibly.';
 
 -- job_hunter_collapse_job_rows --------------------------------------------------
 --
@@ -776,14 +808,19 @@ begin
   -- duplicate-merging it did not ask for.
   if v_match_mode = 'logical' then
     -- Identity resolution, strongest evidence first, preserving order and
-    -- dropping repeats exactly as _append_unique_id did -- over postings now,
-    -- because that is where these columns live and because the answer is the
-    -- same for every user who asks.
+    -- dropping repeats exactly as _append_unique_id did. The columns compared
+    -- are the posting's now, and the rows searched are still this user's --
+    -- the question is "do I already hold a row covering this advertisement",
+    -- which is what decided the pairs before #178 too. What changed is the
+    -- answer's reach: the merge those pairs trigger is recorded once for
+    -- everyone. See job_hunter_find_posting_by_identity for why the weakest
+    -- rung in particular must not be asked of the whole shared corpus.
     if v_lookup_canonical <> '' then
       for v_candidate in
         select p.id from public.job_hunter_postings p
+          join public.job_hunter_jobs j on j.posting_id = p.id and j.user_id = v_uid
          where p.canonical_url = v_lookup_canonical
-         order by p.created_at, p.id
+         order by j.created_at, j.id
       loop
         v_resolved := public.job_hunter_resolve_posting(v_candidate);
         if not (v_resolved = any(v_candidates)) then
@@ -797,10 +834,11 @@ begin
        and coalesce(p_job->>'ats_job_id', '') <> '' then
       for v_candidate in
         select p.id from public.job_hunter_postings p
+          join public.job_hunter_jobs j on j.posting_id = p.id and j.user_id = v_uid
          where p.ats_provider = v_ats_provider
            and p.ats_board = p_job->>'ats_board'
            and p.ats_job_id = p_job->>'ats_job_id'
-         order by p.created_at, p.id
+         order by j.created_at, j.id
       loop
         v_resolved := public.job_hunter_resolve_posting(v_candidate);
         if not (v_resolved = any(v_candidates)) then
@@ -1039,7 +1077,9 @@ $$;
 comment on function public.job_hunter_find_job_by_identity(text, text, text) is
   'The caller''s membership rows for the postings a normalized company, title '
   'and compatible location identify. The identity itself is a fact about the '
-  'advertisement and is matched on job_hunter_postings (#178).';
+  'advertisement and is matched on job_hunter_postings (#178); which rows are '
+  'searched is still the caller''s own, because the question is whether they '
+  'already hold this advertisement.';
 
 analyze public.job_hunter_jobs;
 analyze public.job_hunter_postings;

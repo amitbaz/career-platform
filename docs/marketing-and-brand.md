@@ -170,7 +170,7 @@ crowding is out of category (tourism), where the alternatives' crowding was in c
 Out-of-category noise costs marketing effort; in-category crowding costs the brand.
 
 Separately, and not a problem: in Israeli technology circles "Gili" reads first as Gili
-Ra'anan of Cyberstarts. Irrelevant to UK and European users, but the association will precede
+Ra'anan of Cyberstarts. Irrelevant outside Israel, but the association will precede
 the product in an Israeli investor conversation.
 
 ### Unresolved — read this before commissioning any design work

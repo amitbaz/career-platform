@@ -529,14 +529,6 @@ def _requeue_pending_delivery(
         digest_items.append(item)
 
 
-#: What one facet-extraction attempt did. `skipped` covers an attempt that
-#: never reached the provider, so it costs no budget and consumes no slot;
-#: `quota_blocked` ends facet work for the run.
-_FACET_EXTRACTED = "extracted"
-_FACET_SKIPPED = "skipped"
-_FACET_QUOTA_BLOCKED = "quota_blocked"
-
-
 #: How many rolling windows the inline read of a posting will wait out before
 #: giving up its turn. Scoring waits without a bound because it paces against
 #: the user's own key, where the only other claimant is this run. Reading a
@@ -726,150 +718,108 @@ def _facets_for_scoring(
     return facets
 
 
-def _backfill_one_job_facets(
-    job_id: str,
-    job: Job,
-    store: PostgresJobStore,
-    ai: AIProvider,
-    summary: RunSummary,
-) -> str:
-    """One step of the run's backfill pass over jobs nothing is waiting on.
-
-    Nothing here may end the run, and nothing here may change what the run
-    delivers: this pass runs after every scoring call the run makes, over the
-    jobs those calls did not need.
-    """
-    try:
-        _extract_and_store_facets(job_id, job, store, ai, summary)
-    except AITemporaryCapacity:
-        # The adapter's preflight pacing already slept out one rolling
-        # window and re-checked, so reaching this means capacity is still
-        # full. Scoring keeps waiting because a user is waiting on the
-        # answer; this job keeps its turn for the next run. It never reached
-        # the provider, so it is not an attempt and must not consume a slot in
-        # the run's bounded budget -- otherwise a run under sustained rolling
-        # pressure would burn its whole allowance extracting nothing.
-        logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
-        return _FACET_SKIPPED
-    except PlatformAllowanceExhausted as exc:
-        # Not an extraction failure, and logged so that it cannot be read as
-        # one: the platform key is spent (or absent), the posting is untouched
-        # in the corpus, and the next run reads it. Nothing about this run is
-        # wrong, so nothing here raises or counts.
-        logger.info(
-            "facet extraction deferred for job_id=%s: %s", job_id, exc
-        )
-        return _FACET_QUOTA_BLOCKED
-    return _FACET_EXTRACTED
-
-
 def _extract_facets_for_run(
     run_candidates: list[tuple[str, Job | None]],
-    backfill_ids: list[str],
     store: PostgresJobStore,
     ai: AIProvider,
     summary: RunSummary,
     *,
     limit: int,
 ) -> None:
-    """Read the postings this run's scoring did not need, and backfill the rest.
+    """Read the postings this run's scoring did not need, then drain the queue.
 
     `run_candidates` are the jobs this run selected but did not read -- the
     shortlist tail the offer cap never reached, and the retry queue it never
     got to. A job it *did* score was read inline first, so it is not here.
-    `backfill_ids` are jobs it rediscovered, which were scored on an earlier
-    run and so never re-enter the shortlist. Both survived the non-AI filters.
-    Ids may repeat within or across the two; the first occurrence wins.
 
     Only jobs with no current facets are extracted, so the ordinary steady
-    state -- everything already read, nothing rewritten -- costs one pair of
-    store reads and no provider call at all.
+    state -- everything already read, nothing rewritten -- costs one store
+    read and no provider call at all.
 
     `limit` is what is left of `max_jobs_per_run` -- the shortlist size the
     user's search profile already sets as "how much AI work one run may do" --
     once the run's inline reads have been subtracted. It bounds this pass, not
     the run: an inline read is the unavoidable cost of scoring a job and is
     never refused for want of budget, so a run that scores a full shortlist of
-    unread postings simply leaves this pass nothing. Reusing that figure rather
-    than adding a knob keeps the backfill bounded without asking an operator to
-    size it. Half of what remains is **reserved for the backfill**: spending
-    the budget in priority order alone would mean a day that discovers a full
-    shortlist leaves nothing for the corpus, and the backfill would only ever
-    progress on quiet days --
-    which is not a backfill. The reserve is what makes the existing corpus
-    drain over consecutive runs whether or not discovery is productive.
+    unread postings simply leaves this pass nothing. Reusing that figure
+    rather than adding a knob keeps this bounded without asking an operator
+    to size it. What the shortlist tail leaves unspent drains the
+    `extract_facets` queue (#185) -- the durable backfill over postings the
+    run's own crawl re-saw and found lacking current facets, enqueued as a
+    side effect of every job persist (`PostgresJobStore` write methods call
+    `_enqueue_needing_facets_for_job_ids`). There is no separate backfill
+    step: the queue is it, and a failure draining it retries or dead-letters
+    visibly instead of vanishing with a cancelled run, unlike the inline pass
+    this replaced.
 
     Nothing in here may end the run or change what it delivers.
     """
     ordered_candidates = list(dict.fromkeys(job_id for job_id, _job in run_candidates))
-    seen = set(ordered_candidates)
-    ordered_backfill = [
-        job_id for job_id in dict.fromkeys(backfill_ids) if job_id not in seen
-    ]
     known_jobs = {job_id: job for job_id, job in run_candidates if job is not None}
 
     try:
-        needed = store.jobs_needing_facets(ordered_candidates + ordered_backfill)
+        needed = store.jobs_needing_facets(ordered_candidates)
     except Exception:
         # Facet work is optional; failing to work out what needs it must
         # never be a reason a run stops delivering.
+        needed = set()
         logger.exception("could not determine which jobs need facet extraction")
-        return
 
-    backfill_reserve = limit // 2
     remaining = limit
-    skipped = 0
     quota_blocked = False
 
-    def extract_up_to(ids: list[str], allowance: int) -> None:
-        nonlocal remaining, skipped, quota_blocked
-        spent = 0
-        for job_id in ids:
-            if quota_blocked or spent >= allowance or remaining <= 0:
-                return
-            if job_id not in needed:
+    for job_id in ordered_candidates:
+        if quota_blocked or remaining <= 0:
+            break
+        if job_id not in needed:
+            continue
+        job = known_jobs.get(job_id)
+        if job is None:
+            # `pending_evaluation_ids` arrives as `(job_id, None)`: its jobs
+            # are not already in hand the way a freshly scored shortlist
+            # entry is, so this is the one path that pays a read for them.
+            try:
+                job = store.get_job(job_id)
+            except Exception:
+                logger.exception("could not load job_id=%s for facet extraction", job_id)
                 continue
-            job = known_jobs.get(job_id)
-            if job is None:
-                # Only the backfill pays this read: the shortlist arrives with
-                # its jobs already in hand.
-                try:
-                    job = store.get_job(job_id)
-                except Exception:
-                    logger.exception(
-                        "could not load job_id=%s for facet extraction", job_id
-                    )
-                    continue
-            if job is None:
-                continue
-            outcome = _backfill_one_job_facets(job_id, job, store, ai, summary)
-            if outcome == _FACET_QUOTA_BLOCKED:
-                quota_blocked = True
-            elif outcome == _FACET_SKIPPED:
-                skipped += 1
-            else:
-                spent += 1
-                remaining -= 1
+        if job is None:
+            continue
+        try:
+            _extract_and_store_facets(job_id, job, store, ai, summary)
+        except AITemporaryCapacity:
+            logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
+        except PlatformAllowanceExhausted as exc:
+            logger.info("facet extraction deferred for job_id=%s: %s", job_id, exc)
+            quota_blocked = True
+        else:
+            remaining -= 1
 
-    extract_up_to(ordered_candidates, limit - backfill_reserve)
-    # Whatever the shortlist left unspent flows to the backfill, so a quiet
-    # day drains the corpus faster rather than wasting the allowance.
-    extract_up_to(ordered_backfill, remaining)
+    drained: list = []
+    if not quota_blocked and remaining > 0:
+        try:
+            drained = store.drain_extract_facets_queue(ai, limit=remaining)
+        except Exception:
+            logger.exception("draining the extract_facets queue failed")
+        else:
+            for outcome in drained:
+                summary.facet_extraction_attempted += 1
+                if outcome.failed:
+                    summary.facet_extraction_failed += 1
+                if outcome.parse_failure:
+                    summary.extraction_parse_failures += 1
 
     logger.info(
-        "facet_extraction candidates=%s backfill=%s needed=%s attempted=%s "
-        "failed=%s skipped_by_capacity=%s limit=%s backfill_reserve=%s "
-        "quota_blocked=%s parse_failures=%s",
+        "facet_extraction candidates=%s needed=%s attempted=%s failed=%s "
+        "limit=%s quota_blocked=%s parse_failures=%s drained=%s",
         len(ordered_candidates),
-        len(ordered_backfill),
         len(needed),
         summary.facet_extraction_attempted,
         summary.facet_extraction_failed,
-        skipped,
         limit,
-        backfill_reserve,
         quota_blocked,
         summary.extraction_parse_failures,
+        len(drained),
     )
 
 
@@ -1749,11 +1699,10 @@ def run_pipeline(
     # done.
     #
     # The run's whole facet budget is `max_jobs_per_run`, and the inline reads
-    # have already spent part of it, so the backfill gets what is left.
+    # have already spent part of it, so the queue drain gets what is left.
     _extract_facets_for_run(
         [(job_id, None) for job_id in pending_evaluation_ids if job_id in needs_facets]
         + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
-        discovery.rediscovered_job_ids,
         store,
         ai,
         summary,

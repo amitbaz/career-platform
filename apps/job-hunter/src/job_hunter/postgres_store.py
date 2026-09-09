@@ -20,10 +20,13 @@ import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, TypeVar
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.canonical import parse_supported_ats_url
+from job_hunter.extract_facets_stage import ExtractFacetsStage, FacetExtractionOutcome
+from job_hunter.facets import FacetExtractionError
 from job_hunter.gmail_models import AUTO_CONFIDENCE_THRESHOLD, ExtractedJob
 from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import (
@@ -42,7 +45,12 @@ from job_hunter.pg import IngestionDatabase
 from job_hunter.postgres_stage_queue import PostgresStageQueue
 from job_hunter.resolve_persist import PostingBatch, ResolvePersistStage
 from job_hunter.search_profile import SearchProfile
-from job_hunter.stage_queue import Stage, StageRunner
+from job_hunter.stage_queue import (
+    PermanentStageFailure,
+    QuotaExhausted,
+    Stage,
+    StageRunner,
+)
 from job_hunter.store_mapping import (
     ats_entry_from_row,
     company_facets_from_row,
@@ -56,6 +64,9 @@ from job_hunter.store_mapping import (
     touch,
 )
 from job_hunter.supabase_client import SupabaseClient, SupabaseRequestError
+
+if TYPE_CHECKING:
+    from job_hunter.ai import AIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +377,7 @@ class PostgresJobStore:
         payload = self._job_payload(job)
         payload["match_mode"] = "fingerprint"
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
+        self._enqueue_needing_facets_for_job_ids([row["id"]])
         return row["id"], row["is_new"], row["description_changed"]
 
     def upsert_logical_job(
@@ -386,6 +398,7 @@ class PostgresJobStore:
         """
         payload = self._batch_job_payload(job, posting_batch)
         row = self._client.rpc("job_hunter_upsert_job", {"p_job": payload})[0]
+        self._enqueue_needing_facets_for_job_ids([row["id"]])
         return row["id"], row["is_new"], row["description_changed"]
 
     def merge_posting_batch(self, jobs: list[Job]) -> PostingBatch:
@@ -454,6 +467,132 @@ class PostgresJobStore:
             batch_id,
         )
         return PostingBatch()
+
+    def _enqueue_needing_facets_for_job_ids(self, job_ids: Iterable[str]) -> int:
+        """Resolve `job_ids` to their postings and enqueue extraction (#185).
+
+        Called from every job-persist path -- `upsert_job`,
+        `upsert_logical_job`, and `upsert_logical_jobs` -- rather than only
+        from the `merge_posting_batch` fast path. `job_hunter_upsert_job`
+        resolves a posting internally whenever the caller has not already
+        merged one, including both fallbacks `merge_posting_batch` itself
+        takes (no direct connection, or the staged batch left queued), and
+        does not return which posting it chose. Asking again here, once per
+        persist call, is what keeps those fallbacks from being a second
+        "postings that never get extracted" path -- there is no separate
+        backfill step, so a posting nothing ever enqueues extraction for
+        stays unread forever.
+        """
+        ids = sorted({job_id for job_id in job_ids if job_id})
+        if not ids or self._ingestion is None:
+            return 0
+        posting_ids: set[str] = set()
+        for chunk in _chunked(ids, _URL_FILTER_CHUNK_SIZE):
+            try:
+                rows = self._client.select(
+                    "job_hunter_jobs",
+                    params={"id": f"in.({','.join(chunk)})", "select": "posting_id"},
+                )
+            except Exception:
+                logger.exception("could not resolve posting ids for facet enqueue")
+                continue
+            posting_ids.update(
+                row["posting_id"] for row in rows if row.get("posting_id")
+            )
+        return self._enqueue_needing_facets(posting_ids)
+
+    def _enqueue_needing_facets(self, posting_ids: Iterable[str]) -> int:
+        """Enqueue every posting in `posting_ids` with no current facets (#185).
+
+        A posting already current costs one join and no queue send.
+
+        Failing to enqueue is logged but never raised: the caller's own
+        outcome must not be held hostage to a queue send for work nobody is
+        waiting on this run.
+        """
+        ids = sorted({posting_id for posting_id in posting_ids if posting_id})
+        if not ids or self._ingestion is None:
+            return 0
+        queue = PostgresStageQueue(self._ingestion)
+        enqueued = 0
+        try:
+            with self._ingestion.connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "select p.id from public.job_hunter_postings p "
+                        "left join public.job_hunter_job_facets f "
+                        "on f.posting_id = p.id "
+                        "where p.id = any(%s) and ("
+                        "f.posting_id is null or "
+                        "f.description_hash_at_extraction is distinct from p.description_hash"
+                        ")",
+                        (ids,),
+                    )
+                    needing = [str(row[0]) for row in cursor.fetchall()]
+                for posting_id in needing:
+                    queue.enqueue(
+                        Stage.EXTRACT_FACETS,
+                        {"posting_id": posting_id},
+                        connection=connection,
+                    )
+                    enqueued += 1
+        except Exception:
+            logger.exception(
+                "could not enqueue facet extraction for %s posting(s)", len(ids)
+            )
+            return enqueued
+        return enqueued
+
+    def drain_extract_facets_queue(
+        self, ai: "AIProvider", *, limit: int
+    ) -> list[FacetExtractionOutcome]:
+        """Drain up to `limit` messages from the durable extract_facets queue.
+
+        This is the backfill half of objective extraction (#185): postings
+        the run's crawl enqueued because nothing in the corpus had current
+        facets for them. Unlike the inline pass it replaces, a failure here
+        retries or dead-letters durably through `stage_queue.py` instead of
+        vanishing with a cancelled run.
+
+        Extraction spends only the platform key (`CallClass.SHARED_EXTRACTION`
+        inside `extract_facets`), so this must never be handed a user's
+        credential; the caller passing `ai` is trusted to have already
+        resolved the platform one.
+        """
+        if self._ingestion is None or limit <= 0:
+            return []
+        queue = PostgresStageQueue(self._ingestion)
+        runner = StageRunner(queue, visibility_timeout_seconds=5 * 60)
+        stage = ExtractFacetsStage(self._ingestion, ai)
+        outcomes: list[FacetExtractionOutcome] = []
+
+        def handler(message):
+            try:
+                result = stage(message)
+            except PermanentStageFailure as error:
+                outcomes.append(
+                    FacetExtractionOutcome(
+                        failed=True,
+                        parse_failure=isinstance(error.__cause__, FacetExtractionError),
+                    )
+                )
+                raise
+            except QuotaExhausted:
+                # Never spent, never a failure -- exactly like
+                # PlatformAllowanceExhausted in the inline pass.
+                raise
+            except Exception:
+                outcomes.append(FacetExtractionOutcome(failed=True))
+                raise
+            else:
+                outcomes.append(FacetExtractionOutcome(failed=False))
+                return result
+
+        try:
+            runner.run_once(Stage.EXTRACT_FACETS, handler, batch_size=limit)
+        except Exception:
+            logger.exception("draining the extract_facets queue failed")
+        return outcomes
 
     @staticmethod
     def _staging_row(batch_id: str, ordinal: int, job: Job) -> tuple[Any, ...]:
@@ -536,6 +675,9 @@ class PostgresJobStore:
                 results.extend(self._upsert_jobs_individually(chunk, posting_batch))
             else:
                 consecutive_failures = 0
+        self._enqueue_needing_facets_for_job_ids(
+            result[0] for result in results if result is not None
+        )
         return results
 
     def _batch_job_payload(
@@ -1777,17 +1919,27 @@ class PostgresJobStore:
     ) -> bool:
         """Insert or refresh one learned ATS board's discovery metadata.
 
-        Translates store.py:1407-1455. On an existing board, updates display
-        metadata and `last_seen_at` and reactivates it, but leaves
-        `paused_until` and `consecutive_failures` untouched -- ordinary
-        rediscovery must not bypass an unexpired pause; the board becomes
-        due naturally once `paused_until` elapses. A board with a
-        `rejected_reason` is never reactivated by rediscovery, so a board
-        rejected once stays rejected (see `reject_ats_board`).
+        Since #203, board identity and health (`company_name`,
+        `market_hint`, `first_seen_at`, `last_seen_at`, `active`,
+        `rejected_reason`, ...) live on the shared `job_hunter_ats_boards`
+        table, upserted here exactly as `job_hunter_ats_registry` used to
+        be: on an existing board, updates display metadata and
+        `last_seen_at` and reactivates it, but leaves `paused_until` and
+        `consecutive_failures` untouched -- ordinary rediscovery must not
+        bypass an unexpired pause; the board becomes due naturally once
+        `paused_until` elapses. A board with a `rejected_reason` is never
+        reactivated by rediscovery, so a board rejected once stays rejected
+        (see `reject_ats_board`).
 
-        Returns True only when the board was newly registered.
-        `job_hunter_ats_registry` has no `updated_at` column, so no `touch`
-        here.
+        `job_hunter_ats_registry` now only tracks that *this* user has seen
+        the board, for `record_ats_eligible_jobs` to join against -- a bare
+        `(user_id, provider, board_identifier)` row, written once and never
+        updated again here.
+
+        Returns True only when this user's own registry row was newly
+        created -- i.e. the board is new to this user's crawl, whether or
+        not another user already discovered it. `job_hunter_ats_boards` has
+        no `updated_at` column, so no `touch` here.
         """
         provider = provider.strip().lower()
         if provider not in _SUPPORTED_ATS_PROVIDERS:
@@ -1795,8 +1947,8 @@ class PostgresJobStore:
         board_identifier = board_identifier.strip()
         now = to_iso(datetime.now(timezone.utc))
 
-        existing = self._client.select(
-            "job_hunter_ats_registry",
+        existing_board = self._client.select(
+            "job_hunter_ats_boards",
             params={
                 "provider": f"eq.{provider}",
                 "board_identifier": f"eq.{board_identifier}",
@@ -1804,12 +1956,11 @@ class PostgresJobStore:
                 "limit": "1",
             },
         )
-        if not existing:
+        if not existing_board:
             self._client.upsert(
-                "job_hunter_ats_registry",
+                "job_hunter_ats_boards",
                 [
                     {
-                        "user_id": self._client.user_id,
                         "provider": provider,
                         "board_identifier": board_identifier,
                         "company_name": company_name,
@@ -1818,24 +1969,46 @@ class PostgresJobStore:
                         "last_seen_at": now,
                     }
                 ],
-                on_conflict="user_id,provider,board_identifier",
+                on_conflict="provider,board_identifier",
             )
-            return True
+        else:
+            row = existing_board[0]
+            self._client.update(
+                "job_hunter_ats_boards",
+                {
+                    # COALESCE(NULLIF(?, ''), col): a blank argument means
+                    # "no new information", not "clear what is stored".
+                    "company_name": company_name or row["company_name"],
+                    "market_hint": market_hint or row["market_hint"],
+                    "last_seen_at": now,
+                    "active": True if row["rejected_reason"] is None else row["active"],
+                },
+                params={"id": f"eq.{row['id']}"},
+            )
 
-        row = existing[0]
-        self._client.update(
+        existing_registry = self._client.select(
             "job_hunter_ats_registry",
-            {
-                # COALESCE(NULLIF(?, ''), col): a blank argument means "no
-                # new information", not "clear what is stored".
-                "company_name": company_name or row["company_name"],
-                "market_hint": market_hint or row["market_hint"],
-                "last_seen_at": now,
-                "active": True if row["rejected_reason"] is None else row["active"],
+            params={
+                "provider": f"eq.{provider}",
+                "board_identifier": f"eq.{board_identifier}",
+                "select": "id",
+                "limit": "1",
             },
-            params={"id": f"eq.{row['id']}"},
         )
-        return False
+        if existing_registry:
+            return False
+        self._client.upsert(
+            "job_hunter_ats_registry",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "provider": provider,
+                    "board_identifier": board_identifier,
+                }
+            ],
+            on_conflict="user_id,provider,board_identifier",
+        )
+        return True
 
     def upsert_ats_boards(self, references: list[tuple[str, str, str, str]]) -> int:
         """Register a run's distinct ATS boards, returning how many were new.
@@ -1890,15 +2063,18 @@ class PostgresJobStore:
     def reject_ats_board(
         self, provider: str, board_identifier: str, reason: str, now: datetime
     ) -> None:
-        """Deactivate a board and persist why, so rediscovery can't resurrect it.
+        """Deactivate a shared board and persist why, so rediscovery can't
+        resurrect it.
 
-        Translates store.py:1457-1476. Used for both aggregator-detection
-        rejections and the config denylist's "instant kill" of an
-        already-registered board.
+        Since #203 this writes to the shared `job_hunter_ats_boards` table,
+        and must only ever be called with a reason that generalizes across
+        users -- an aggregator-detection verdict. The config denylist's
+        "instant kill" is one user's policy and must never reach this
+        method (see `sources/learned_ats.py`'s per-run exclusion).
         """
         timestamp = to_iso(_require_aware(now))
         self._client.update(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             {"active": False, "rejected_reason": reason, "last_checked_at": timestamp},
             params={
                 "provider": f"eq.{provider}",
@@ -1907,12 +2083,13 @@ class PostgresJobStore:
         )
 
     def clear_ats_board_rejection(self, provider: str, board_identifier: str) -> None:
-        """Reverse a rejection, putting the board back in the due rotation.
+        """Reverse a shared rejection, putting the board back in the due rotation.
 
-        Translates store.py:1478-1501. The inverse of `reject_ats_board`,
-        and the only code path that clears `rejected_reason`. Used when an
-        operator names a board in `learned_ats_allowlist`, having judged its
-        rejection wrong.
+        The inverse of `reject_ats_board`, and the only code path that
+        clears `rejected_reason`. Used when an operator names a board in
+        `learned_ats_allowlist`, having judged its aggregator rejection
+        wrong -- clearing it here recovers the board for every user, not
+        just the one running this recovery.
 
         Scoped to rejected rows on purpose: a board deactivated by repeated
         404s carries no `rejected_reason`, and reviving it here would
@@ -1927,7 +2104,7 @@ class PostgresJobStore:
         """
         wanted = (provider.strip().lower(), board_identifier.strip().lower())
         for row in self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "rejected_reason": "not.is.null",
                 "select": "id,provider,board_identifier",
@@ -1939,37 +2116,59 @@ class PostgresJobStore:
             ) != wanted:
                 continue
             self._client.update(
-                "job_hunter_ats_registry",
+                "job_hunter_ats_boards",
                 {"active": True, "rejected_reason": None},
                 params={"id": f"eq.{row['id']}"},
             )
 
     def list_due_ats_boards(self, now: datetime) -> list[AtsRegistryEntry]:
-        """Return active ATS boards whose health pause has expired.
+        """Return active shared ATS boards whose health pause has expired.
 
-        Translates store.py:1503-1518. Same `timestamptz` comparison as
-        `list_due_company_watches`.
+        Same `timestamptz` comparison as `list_due_company_watches`. Board
+        health is shared since #203, so the board list itself is every
+        user's answer, not just the caller's -- but `select_ats_boards`
+        ranks that list by each board's *recent eligible yield*, which is
+        per-user, so this merges in the caller's own
+        `job_hunter_ats_registry` row for every board returned.
         """
         timestamp = to_iso(_require_aware(now))
         rows = self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "active": "eq.true",
                 "or": f"(paused_until.is.null,paused_until.lte.{timestamp})",
                 "order": "provider.asc,board_identifier.asc",
             },
         )
-        return [ats_entry_from_row(row) for row in rows]
+        yield_by_board = {
+            (yield_row["provider"], yield_row["board_identifier"]): yield_row
+            for yield_row in self._client.select(
+                "job_hunter_ats_registry",
+                params={"select": "provider,board_identifier,eligible_jobs_seen,last_eligible_at"},
+            )
+        }
+        entries = []
+        for row in rows:
+            yield_row = yield_by_board.get((row["provider"], row["board_identifier"]), {})
+            entries.append(
+                ats_entry_from_row(
+                    row,
+                    eligible_jobs_seen=yield_row.get("eligible_jobs_seen", 0),
+                    last_eligible_at=yield_row.get("last_eligible_at"),
+                )
+            )
+        return entries
 
     def list_rejected_ats_boards(self) -> list[AtsRegistryEntry]:
-        """Return boards rejected as aggregators or by the config denylist.
+        """Return shared boards rejected as aggregators.
 
-        Translates store.py:1520-1534. `list_due_ats_boards` only returns
-        active boards, so this is the only way to read a rejection (and its
-        reason) back after the run that made it.
+        `list_due_ats_boards` only returns active boards, so this is the
+        only way to read a rejection (and its reason) back after the run
+        that made it. Since #203 a config-denylist exclusion is never
+        written here at all -- only an aggregator-detection verdict is.
         """
         rows = self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "rejected_reason": "not.is.null",
                 "order": "provider.asc,board_identifier.asc",
@@ -1980,13 +2179,10 @@ class PostgresJobStore:
     def record_ats_scan_success(
         self, provider: str, board_identifier: str, now: datetime, job_count: int
     ) -> None:
-        """Record a successful scan and clear the board's failure backoff.
-
-        Translates store.py:1536-1553.
-        """
+        """Record a successful scan and clear the shared board's failure backoff."""
         timestamp = to_iso(_require_aware(now))
         self._client.update(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             {
                 "last_checked_at": timestamp,
                 "last_success_at": timestamp,
@@ -2035,7 +2231,7 @@ class PostgresJobStore:
         """
         normalized_now = _require_aware(now)
         rows = self._client.select(
-            "job_hunter_ats_registry",
+            "job_hunter_ats_boards",
             params={
                 "provider": f"eq.{provider}",
                 "board_identifier": f"eq.{board_identifier}",
@@ -2054,7 +2250,7 @@ class PostgresJobStore:
         if permanent and failures >= _STALE_BOARD_DEACTIVATION_THRESHOLD:
             values["active"] = False
         self._client.update(
-            "job_hunter_ats_registry", values, params={"id": f"eq.{rows[0]['id']}"}
+            "job_hunter_ats_boards", values, params={"id": f"eq.{rows[0]['id']}"}
         )
 
     def record_ats_eligible_jobs(
@@ -2105,9 +2301,10 @@ class PostgresJobStore:
         return int(rows[0]) if rows else 0
 
     def count_ats_boards(self) -> int:
-        """Translates store.py:1638-1640."""
+        """Count every board the shared registry has ever learned, not just
+        this user's."""
         return len(
-            self._client.select("job_hunter_ats_registry", params={"select": "id"})
+            self._client.select("job_hunter_ats_boards", params={"select": "id"})
         )
 
     # ------------------------------------------------------------------
@@ -3271,6 +3468,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "upsert_logical_job": ("id", "bool", "bool"),
     "upsert_logical_jobs": "job_upsert_results",
     "merge_posting_batch": "posting_batch",
+    "drain_extract_facets_queue": "empty_list",
     "merge_jobs": "id",
     "record_job_source": None,
     "set_job_market": None,
@@ -3404,6 +3602,14 @@ def _make_dry_run_write(name: str, shape: str | tuple[str, ...] | None):
             # job upserts write nothing either, so nothing downstream reads a
             # posting id that would have to be fabricated here.
             return PostingBatch()
+    elif shape == "empty_list":
+        def _write(self, *args: Any, **kwargs: Any) -> list[Any]:
+            # `drain_extract_facets_queue` must never spend the platform key
+            # or write a facet row in a dry run; an empty queue is exactly
+            # what a store with no direct Postgres connection drains, and
+            # every caller already treats "nothing drained" as "nothing to
+            # report" rather than an error.
+            return []
 
     elif shape == "job_upsert_results":
         def _write(

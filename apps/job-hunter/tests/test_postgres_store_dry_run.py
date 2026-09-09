@@ -146,6 +146,11 @@ def _assert_synthetic(value, shape: str) -> None:
         assert value == 0
     elif shape == "job_upsert_results":
         assert value == []
+    elif shape == "empty_list":
+        # `drain_extract_facets_queue` must never spend the platform key or
+        # write a facet row in a dry run; an empty drain is what a store
+        # with no direct Postgres connection returns for real.
+        assert value == []
     elif shape == "posting_batch":
         # An empty batch, which is exactly what a store with no direct
         # Postgres connection returns -- and what every caller already

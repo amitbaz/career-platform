@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -8,6 +9,14 @@ from job_hunter.ats_registry import (
     select_ats_boards,
 )
 from job_hunter.models import AtsRegistryEntry, Job
+
+
+def _own_due(store, now, board_identifier):
+    return [
+        e
+        for e in store.list_due_ats_boards(now)
+        if e.board_identifier == board_identifier
+    ]
 
 
 @pytest.mark.parametrize(
@@ -79,79 +88,83 @@ def test_extract_ats_reference_falls_back_to_original_url_last():
 
 
 def test_ats_board_reference_registers_a_supported_reference(store):
+    board = f"omnea-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="x",
         company="Omnea",
         market_hint="london",
-        url="https://jobs.ashbyhq.com/omnea/123",
+        url=f"https://jobs.ashbyhq.com/{board}/123",
     )
 
     reference = ats_board_reference(job)
 
-    assert reference == ("ashby", "omnea", "Omnea", "london")
+    assert reference == ("ashby", board, "Omnea", "london")
     assert store.upsert_ats_boards([reference]) == 1
-    assert store.count_ats_boards() == 1
+    assert len(_own_due(store, datetime.now(timezone.utc), board)) == 1
 
 
 def test_ats_board_reference_is_none_for_unsupported_url(store):
     job = Job(source="feed", title="x", url="https://example.com/jobs/1")
 
     assert ats_board_reference(job) is None
-    assert store.count_ats_boards() == 0
 
 
 def test_ats_board_reference_refuses_denylisted_board(store):
+    board = f"jobgether-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="x",
         company="Jobgether",
-        url="https://jobs.lever.co/jobgether/123",
+        url=f"https://jobs.lever.co/{board}/123",
     )
 
-    assert ats_board_reference(job, denylist=frozenset({"lever:jobgether"})) is None
-    assert store.count_ats_boards() == 0
+    assert ats_board_reference(job, denylist=frozenset({f"lever:{board}"})) is None
+    assert _own_due(store, datetime.now(timezone.utc), board) == []
 
 
 def test_ats_board_reference_denylist_match_is_case_insensitive(store):
     # A manual_company_watch seed can carry an unnormalized provider, and
     # upsert_ats_board would store it lowercased -- creating the very row
     # the denylist exists to prevent.
+    board = f"JobGether-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="x",
         company="Jobgether",
         ats_provider="Lever",
-        ats_board="JobGether",
+        ats_board=board,
         ats_job_id="1",
     )
 
-    assert ats_board_reference(job, denylist=frozenset({"lever:jobgether"})) is None
-    assert store.count_ats_boards() == 0
+    assert ats_board_reference(job, denylist=frozenset({f"lever:{board.lower()}"})) is None
+    assert _own_due(store, datetime.now(timezone.utc), board.lower()) == []
 
 
 def test_ats_board_reference_admits_board_not_on_denylist(store):
+    board = f"omnea-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="x",
         company="Omnea",
-        url="https://jobs.ashbyhq.com/omnea/123",
+        url=f"https://jobs.ashbyhq.com/{board}/123",
     )
 
     reference = ats_board_reference(job, denylist=frozenset({"lever:jobgether"}))
 
     assert reference is not None
     assert store.upsert_ats_boards([reference]) == 1
-    assert store.count_ats_boards() == 1
+    assert len(_own_due(store, datetime.now(timezone.utc), board)) == 1
 
 
 def test_ats_board_reference_uses_market_hint_precedence(store):
+    board = f"omnea-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="x",
         company="Omnea",
         market_id="berlin",
-        url="https://jobs.ashbyhq.com/omnea/123",
+        url=f"https://jobs.ashbyhq.com/{board}/123",
     )
 
     reference = ats_board_reference(job, market_hint="london")
@@ -159,7 +172,7 @@ def test_ats_board_reference_uses_market_hint_precedence(store):
     assert reference is not None
     store.upsert_ats_boards([reference])
 
-    due = store.list_due_ats_boards(datetime.now(timezone.utc))
+    due = _own_due(store, datetime.now(timezone.utc), board)
     assert due[0].market_hint == "london"
 
 

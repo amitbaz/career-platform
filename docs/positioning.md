@@ -17,7 +17,7 @@ claim we cannot support, and claims are expensive to walk back once someone has 
 
 | What we can prove today | What we believe and intend to prove |
 | --- | --- |
-| Objective facts about a posting are extracted once and shared, at a measured $0.00159 per posting. Cost scales with postings, not users. | Continuous ingestion delivers a match sooner than the competitor's nightly evening batch. Architecturally true; **no end-to-end number exists.** |
+| Objective facts about a posting are extracted once and shared, at a measured €0.00137 per posting. Cost scales with postings, not users. | Continuous ingestion delivers a match sooner than the competitor's nightly evening batch. Architecturally true; **no end-to-end number exists.** |
 | Roughly 14,000 postings seen per run, 209 newly discovered. | Match quality is better than title-matching or than the competitor's five-dimension model. **Currently an assertion.** |
 | Gross margin of about 91% at a hundred subscribers; break-even between one and two. | Interview preparation grounded in the user's own evidence is a differentiator. **Not built; concept only.** |
 | A learned ATS registry, per-key quota ledgers, row-level security, and a corpus that persists between runs. | Unlimited watching — that the market can be crawled once for everybody. **Extraction is shared today; discovery is not.** #203 and #204 are what make it true. |
@@ -71,14 +71,55 @@ surface is on the launch-precondition list and will otherwise establish a voice 
 
 ## Pricing
 
+### The customer does not stay, and that changes everything
+
+**This product succeeds by making itself unnecessary.** Someone subscribes while they are
+looking, finds a job, and leaves. That is structural, not a retention failure to be solved, and
+every economic figure written before this section assumed a subscriber base that persists.
+It does not.
+
+**So the metric is lifetime value across one search, not monthly revenue.** How long a search
+runs, from published 2026 figures: the median duration of unemployment is about 11 weeks and
+the average about 24; most white-collar professionals take three to six months. **Tech job
+seekers average 9.7 months — the longest of any industry by a wide margin**, which matters
+because that is the audience the current corpus actually serves. Take four months as the
+planning figure and treat tech as materially longer.
+
+**This reverses the billing-rhythm recommendation below.** That recommendation argued for
+monthly because "the promise is a standing relationship". The promise is not a standing
+relationship, and the earlier reasoning was built on a premise that does not hold.
+
+| | LTV over a 4-month search | Maximum sustainable acquisition cost |
+| --- | --- | --- |
+| Monthly at €14.99 | **€60** | €20 |
+| Weekly at €7.99 | **€139** | €46 |
+
+At a six-month search — nearer the tech average — weekly reaches €208 of lifetime value and
+about €69 of permitted acquisition cost.
+
+**The decisive argument is not that weekly feels urgent — it is that a monthly price cannot
+fund customer acquisition at all.** With no long tail of loyal subscribers, the business is
+acquisition, forever, against a lifetime value capped by the nature of the product. A €20
+ceiling rules out paid channels before anyone has designed a campaign; €46 makes them marginal
+but possible. That bound should be known before any distribution idea is proposed.
+
+**Weekly is also the more honest offer.** When someone lands a job they cancel, and they lose
+at most a week rather than a month. A rhythm that stops when the need stops is a better deal
+for the customer *and* worth more to us, which is rare enough to say out loud rather than treat
+as a trick.
+
 ### What theirs signals
 
-£6.99 a week, metered on *scans* and *packs*, billed weekly. Free tier is 3 scans and 3 packs
-a week; Member is 12 scans and 15 packs; Ultra is £25 a week.
+£6.99 a week (about €8.15), metered on *scans* and *packs*, billed weekly. Free tier is 3 scans
+and 3 packs a week; Member is 12 scans and 15 packs; Ultra is £25 a week (about €29.15).
+
+**Their weekly price annualises to roughly £363, about €423 — a figure they never show
+anywhere.** That is a positioning observation rather than a pricing one: weekly billing hides
+the annual number, which is most of why it works.
 
 Weekly billing is a deliberate signal: this is a sprint, not a subscription, cancel when you
-land a job. That is well judged for a temporary need and lowers the commitment to start. It
-also annualises to about £363, which is a large number nobody is shown.
+land a job. That is well judged for a temporary need and lowers the commitment to start, and
+hiding the annual figure noted above is most of what makes it work.
 
 ### The weakness in their model, and the half of it we have actually fixed
 
@@ -91,7 +132,7 @@ distinction matters enough to state precisely, because an earlier version of thi
 it wrong:
 
 - **Extraction is shared, and that is built.** A posting's objective facts are read once and
-  reused by every user, at a measured $0.00159 per posting. AI cost is bounded by postings
+  reused by every user, at a measured €0.00137 per posting. AI cost is bounded by postings
   rather than by users. This was #175's achievement and it holds.
 - **Discovery is still per-user, and that is not built.** All four discovery tables —
   `job_hunter_ats_registry`, `job_hunter_company_watch`, `job_hunter_search_api_usage` and
@@ -116,23 +157,152 @@ land it belongs in the believe column, and it should not appear on a landing pag
 
 ### Recommendation
 
-**One monthly price. Unlimited watching and scoring. Application packs metered.**
+**Weekly billing at €7.99. Unlimited watching and scoring. Application packs metered.**
 
-- Monthly rather than weekly, because the promise is "I am watching so you don't have to",
-  which is a standing relationship, not a sprint. It also reads as a normal subscription
-  rather than a countdown.
-- Unlimited watching as the headline, because it is true, it is differentiated, and it is the
-  direct product of the architecture.
+- Weekly rather than monthly, for the reasons in "The customer does not stay" above: the
+  rhythm follows from the customer leaving when the product works, and it roughly doubles
+  lifetime value over the same search.
+- Unlimited watching as the headline, because it is true once discovery is shared, it is
+  differentiated, and it is the direct product of the architecture.
 - Packs metered, because they are the genuinely per-user expensive action and a cap there is
   honest rather than artificial.
 
-**Starting price: £12–15 a month, founder's call on the exact number.** The reasoning: fixed
-cost is about $50 a month and break-even is one to two subscribers, so the floor is
-fixed-cost-over-subscribers rather than marginal cost, and there is room almost immediately.
-It sits at roughly half their annualised rate while reading as an ordinary subscription rather
-than as a discount — **we should not compete on being cheaper**, because with 91% gross margin
-price is not where the contest is, and undercutting a funded competitor signals inferiority.
-The number needs validating against willingness to pay; the structure does not.
+€7.99 is a natural consumer price point and lands within pennies of theirs — £6.99 a week is
+about €8.15 — so it **matches rather than undercuts**. Fixed cost is about €43 a month and
+break-even is one to two subscribers, so there is room almost immediately, but with 91% gross
+margin price is not where the contest is: undercutting a funded competitor competes on the one
+axis where we have no advantage to defend, and signals inferiority. **Founder's call:** the
+exact number, and whether to sit slightly under, at, or above theirs.
+
+### The free tier
+
+**A permanent free tier is required** — someone must be able to stay on it indefinitely. That
+is a harder design than a trial, because it has to be worth using forever without cannibalising
+the paid tier, and because a free tier built to frustrate is worse than none: it teaches people
+the product does not work.
+
+**The constraint is requests per day, not money.** A free user's AI costs about €2.70 a month
+at the top of the range and usually far less. Irrelevant. What a free user consumes is
+**quota** — the same 500-requests-per-day Gemini allowance — and free users are always the
+majority, so a badly-shaped free tier does not cost money, it eats the ceiling and paying
+customers hit a wall.
+
+#### The shape
+
+**Free gives the watching. Paid does the work.** That is not a marketing line; it is the cost
+structure stated as a product. Watching is shared across all users and near-free once discovery
+is shared; scoring depth and application packs are genuinely per-user and genuinely expensive.
+
+| | Our free | Our paid | Their free |
+| --- | --- | --- | --- |
+| Watching the market | unlimited, shared sources | unlimited, plus custom watched companies | 3 scans a week |
+| Scored matches | **5 a day**, with reasons | **50 a day** | only what a scan returns |
+| Application packs | **1 a month** | **20 a month** | 3 a week |
+| Delivery | once daily | on arrival | on scan |
+
+**Their free tier is three scans and three packs a week.** Set beside five scored matches a
+day, the contrast makes the argument without needing to be claimed: theirs is a taste that runs
+out, ours is a product someone can live on.
+
+Five scored matches a day with reasons is a genuinely useful product. It is a curated
+shortlist, it arrives every morning, and a patient job seeker could run their whole search on
+it. That is the test the tier has to pass.
+
+#### What the free tier is actually for
+
+**It is where people live between job searches, not primarily a conversion funnel.** Because
+the customer leaves when they find a job, the free tier is the only thing that keeps the
+relationship alive afterwards: someone who found work through us stays on free, dormant, with a
+warm profile, and returns in two or three years when they are looking again. That same person
+is also the one who tells a friend who is searching *now* — which matters more than usual for a
+product whose entire business is acquisition.
+
+**So the free tier is the memory of a customer and the referral surface.** Two consequences:
+there must be an explicit "I found a job" action that pauses scoring and keeps the profile, and
+that moment is the most valuable event in the product — the referral moment, the testimonial
+moment, and the outcome data that would settle the match-quality question.
+
+#### What makes someone pay
+
+Not "more of the same". **The upgrade buys the moment after you find something.**
+
+You are on the free tier, five matches arrive, one of them is a role you actually want. Now you
+have to write a tailored CV and covering letter for it tonight. Free found it; paid does that
+work with you, and does it nineteen more times this month. The second reason is depth: fifty
+scored matches surfaces the roles that do not obviously match your title, which is the whole
+argument against title matching and the thing a five-item shortlist cannot show you.
+
+#### The arithmetic
+
+Per scored posting: **€0.00167**. Extraction, paid once per posting for everybody: €0.00137.
+
+**On free Gemini, with one scoring key at 500 requests a day, the tier is impossible:**
+
+| Paying users | Free users | Requests/day |
+| --- | --- | --- |
+| 0 | 100 | 500 |
+| 2 | 80 | 500 |
+| 5 | 50 | 500 |
+| 10 | 0 | 500 |
+
+Ten paying customers and no free users exhausts the key. **So the free tier makes a paid Gemini
+tier a hard prerequisite, not merely a consequence of retiring bring-your-own-key.**
+
+**On paid Gemini the request ceiling stops binding and money takes over, and money is
+comfortable:** 100 free users cost **€25 a month**, 1,000 cost **€251**. A paying user's own AI
+is **€2.51 a month** against about €34.72 of monthly-equivalent revenue.
+
+**The real limit is the ratio of *active* free users to paying ones**, and "active" is
+load-bearing. A dormant alumnus is not being scored, so they consume no requests and cost
+essentially nothing. Only free users actively searching count against this ratio, which is a
+far smaller number than the total free base.
+
+At weekly billing — €7.99, about €34.72 a month equivalent:
+
+| Active free per paying user | AI cost per paying user | Gross margin |
+| --- | --- | --- |
+| 10 | €5.02 | 86% |
+| 20 | €7.53 | 78% |
+| 50 | €15.06 | 57% |
+| 100 | €27.60 | 21% |
+
+**The weekly rhythm fixes the free tier's economics as well as acquisition.** At the monthly
+price these went negative at fifty free users per payer; at weekly, fifty *active* free users
+still returns 56%. The daily score count remains the dial if conversion disappoints, but there
+is far more room than the earlier arithmetic suggested — and that arithmetic was wrong in its
+denominator, counting dormant users as though they were being scored.
+
+#### Launch shape differs from intended shape, and the difference is #203 and #204
+
+Unlimited watching is only cheap once the crawl is shared. Until #203 and #204 land, each user
+triggers their own crawl, and a licensed feed's quota is a **platform** quota: Adzuna's 2,500
+calls a month is **83 calls a day across all users combined**. A free tier offering per-user
+crawling would exhaust that at a handful of users.
+
+**So at launch the free tier watches the shared default source set — one crawl serving
+everybody — and custom watched companies are paid.** That is not a growth tactic; it is an
+honest statement of what is actually shared today. When #203 and #204 land, custom watches
+become cheap and can move down to free.
+
+#### Bring-your-own-key survives, but not as the free tier
+
+A user who brings their own Gemini key brings their own 500 requests a day and costs nothing
+but hosting — genuinely free, forever, and invisible to our ceiling. That makes it tempting as
+*the* free tier, and it should not be, for the reason already decided: asking a non-technical
+user to obtain an API key is a barrier most of the intended audience will not clear, and it
+splits the product into two experiences.
+
+**Recommendation: keep it as an option on the free tier, not as the tier.** "Bring your own key
+and get paid-tier scoring depth at no charge." It self-selects for exactly the users who can do
+it, removes them from the quota entirely, gives technical early adopters a real reason to stay,
+and the code already exists. It is a relief valve, not a product.
+
+> **Currency note.** Our own prices, costs and margins are stated in euros. The competitor's
+> prices are quoted in sterling as they publish them, with a euro equivalent in brackets.
+> Converted at £1 = €1.1662 and $1 = €0.8594, the mid-market rates on 9 September 2026. These
+> figures move with the rate; re-derive rather than re-quote them after any material change.
+
+#### The tier we should not build
 
 **Do not launch a free tier that meters scans — but argue it from where we are going, not
 from where we are.** The reasoning is that scan-metering is a permanent tax in their

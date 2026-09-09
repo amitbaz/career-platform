@@ -223,6 +223,40 @@ stage functions had arrived with it. The inference is sound and the answer was w
 your own row is therefore a requirement rather than a courtesy: it is what stops the next agent's
 cheap check producing a confident wrong attribution.
 
+**When the ledger agrees with disk and the schema still looks wrong, diff the schema itself.** The
+two checks above both read `supabase_migrations.schema_migrations`, and `pg_proc` only sees
+function bodies. None of them detects a schema changed **by hand, with no migration file and no
+row** — a dropped column, an added constraint. In that state the ledger is byte-identical to
+`ls supabase/migrations`, nothing is unexplained, and both prescribed checks report **clean**
+while `job_hunter_jobs` is missing columns your tree says it has. That has happened here.
+
+```bash
+supabase db diff --local
+```
+
+It builds a shadow database from `supabase/migrations` and compares the live local database to it.
+**Empty output means the schema is what the migrations say it is.** Anything else is the
+difference, and a difference nobody's branch explains means the schema was edited directly. Run it
+before concluding that a missing column or a failed constraint is "pre-existing" — that claim has
+been made and withdrawn twice in one day, both times from a contaminated stack.
+
+**"Not mine" and "pre-existing" are different claims, and only one of them is cheap to defend.**
+*Not mine* is provable from your own diff: the file is byte-identical to `main`, your branch
+touches nothing in that area, therefore the failure is not yours. *Pre-existing* asserts something
+about `main` itself, and on a shared stack you cannot see `main` — you see a database several
+worktrees have written to. Claiming the second when you have only established the first is how a
+false report reaches the board, and it has happened twice.
+
+So say what you actually know: **"unconfirmed as a live `main` run, but provably not mine"** is
+both honest and enough to keep going. If the claim about `main` matters, CI on a clean stack is
+what settles it, not a local run.
+
+**A hand-applied change with no migration file is not a shortcut, it is an unrecorded schema.**
+Recording a ledger row only helps when a file exists to record. If you change the schema directly
+while developing, there is nothing for the next agent's checks to find, and the state is only
+recoverable with `pnpm db:reset` — which drops every peer's unmerged migration. Write the
+migration first, then apply it.
+
 **And know what a reset costs other people.** `pnpm db:reset` serialises against other runs
 through the stack lock, so it will not corrupt anyone mid-statement — but it still drops every
 migration that exists only on somebody's branch, on a machine that may have several. The lock
@@ -368,6 +402,14 @@ the push.
   ticket's assigned number would have sorted before an already-applied migration. Write a
   placeholder while you work, and ask whoever owns the board for the real number when the branch
   is ready. Issued in merge order, it is correct by construction.
+- **Make the placeholder visibly not a timestamp** — `29999999000000`, or your branch name in the
+  filename. Do **not** reach for the next number after the highest on `main`: that is what every
+  other agent reaches for too, so it is the one value guaranteed to collide. On 2026-09-09 two
+  branches independently chose `20260909200000` because it follows `190000`, and the shared stack
+  has one ledger, so `supabase migration list` showed that version applied to both agents while
+  the objects belonged to only one. Each read it as evidence about its own migration and neither
+  was right. **A colliding placeholder does not merely fail to help — it manufactures evidence
+  that lies.**
 - **If a ticket already carries an assigned timestamp, use it** — older issues pre-assign, and the
   number on the issue always wins over one you pick yourself.
 - **If you reach mergeable state while a lower unmerged timestamp is still open, ask to be

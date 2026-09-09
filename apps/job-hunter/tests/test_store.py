@@ -617,44 +617,73 @@ def test_discovery_state_time_methods_reject_naive_datetimes(store, method_name)
 
 # ------------------------------------------------------------------
 # ATS registry
+#
+# job_hunter_ats_boards is shared (issue #203): unlike a per-user table, it
+# carries no user_id and no delete policy, so nothing here cleans it up
+# between tests -- exactly the constraint job_hunter_postings and
+# job_hunter_companies already live with (see conftest.py's
+# `_postings_unique_to_this_test`). Every board identifier below is
+# suffixed unique per test with `_board_id`, and every assertion reads only
+# the boards this test itself created, never the whole shared table.
 # ------------------------------------------------------------------
 
 
+def _board_id(label: str) -> str:
+    return f"{label}-{uuid.uuid4().hex[:8]}"
+
+
+def _due(store, now, *board_identifiers):
+    wanted = set(board_identifiers)
+    return [
+        e for e in store.list_due_ats_boards(now) if e.board_identifier in wanted
+    ]
+
+
+def _rejected(store, *board_identifiers):
+    wanted = set(board_identifiers)
+    return [
+        e
+        for e in store.list_rejected_ats_boards()
+        if e.board_identifier in wanted
+    ]
+
+
 def test_ats_registry_upsert_is_provider_board_unique(store):
+    board = _board_id("omnea")
     created = store.upsert_ats_board(
         provider="ashby",
-        board_identifier="omnea",
+        board_identifier=board,
         company_name="Omnea",
         market_hint="london",
     )
     repeated = store.upsert_ats_board(
         provider="ashby",
-        board_identifier="omnea",
+        board_identifier=board,
         company_name="Omnea Ltd",
         market_hint="london",
     )
 
     assert created is True
     assert repeated is False
-    assert store.count_ats_boards() == 1
+    assert len(_due(store, datetime.now(timezone.utc), board)) == 1
 
 
 def test_ats_registry_upsert_does_not_wipe_metadata_with_blank_values(store):
+    board = _board_id("omnea")
     store.upsert_ats_board(
         provider="ashby",
-        board_identifier="omnea",
+        board_identifier=board,
         company_name="Omnea",
         market_hint="london",
     )
     store.upsert_ats_board(
         provider="ashby",
-        board_identifier="omnea",
+        board_identifier=board,
         company_name="",
         market_hint="",
     )
 
-    due = store.list_due_ats_boards(datetime.now(timezone.utc))
-    entry = next(e for e in due if e.board_identifier == "omnea")
+    entry = _due(store, datetime.now(timezone.utc), board)[0]
     assert entry.company_name == "Omnea"
     assert entry.market_hint == "london"
 
@@ -666,27 +695,29 @@ def test_ats_registry_rejects_unsupported_provider(store):
 
 def test_ats_failure_pauses_board_without_rediscovery_bypassing_pause(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="acme")
+    board = _board_id("acme")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    store.record_ats_scan_failure("lever", "acme", now)
-    store.upsert_ats_board(provider="lever", board_identifier="acme")
+    store.record_ats_scan_failure("lever", board, now)
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    assert store.list_due_ats_boards(now + timedelta(hours=1)) == []
-    due = store.list_due_ats_boards(now + timedelta(hours=25))
+    assert _due(store, now + timedelta(hours=1), board) == []
+    due = _due(store, now + timedelta(hours=25), board)
     assert [(entry.provider, entry.board_identifier) for entry in due] == [
-        ("lever", "acme")
+        ("lever", board)
     ]
 
 
 def test_ats_scan_success_records_job_count_and_resets_failures(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="greenhouse", board_identifier="acme")
+    board = _board_id("acme")
+    store.upsert_ats_board(provider="greenhouse", board_identifier=board)
 
-    store.record_ats_scan_failure("greenhouse", "acme", now)
+    store.record_ats_scan_failure("greenhouse", board, now)
     later = now + timedelta(hours=1)
-    store.record_ats_scan_success("greenhouse", "acme", later, job_count=7)
+    store.record_ats_scan_success("greenhouse", board, later, job_count=7)
 
-    due = store.list_due_ats_boards(later)
+    due = _due(store, later, board)
     assert len(due) == 1
     entry = due[0]
     assert entry.last_job_count == 7
@@ -697,44 +728,47 @@ def test_ats_scan_success_records_job_count_and_resets_failures(store):
 
 def test_ats_permanent_failure_deactivates_board_after_three_in_a_row(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="dead-co")
+    board = _board_id("dead-co")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
     for i in range(3):
         store.record_ats_scan_failure(
-            "lever", "dead-co", now + timedelta(hours=25 * i), permanent=True
+            "lever", board, now + timedelta(hours=25 * i), permanent=True
         )
 
     # Deactivated boards are never returned by list_due_ats_boards, even
     # once any pause would have expired.
     much_later = now + timedelta(days=30)
-    assert store.list_due_ats_boards(much_later) == []
+    assert _due(store, much_later, board) == []
 
 
 def test_ats_permanent_failure_stays_active_below_threshold(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="maybe-dead")
+    board = _board_id("maybe-dead")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    store.record_ats_scan_failure("lever", "maybe-dead", now, permanent=True)
+    store.record_ats_scan_failure("lever", board, now, permanent=True)
     store.record_ats_scan_failure(
-        "lever", "maybe-dead", now + timedelta(hours=25), permanent=True
+        "lever", board, now + timedelta(hours=25), permanent=True
     )
 
-    due = store.list_due_ats_boards(now + timedelta(hours=50))
-    assert [e.board_identifier for e in due] == ["maybe-dead"]
+    due = _due(store, now + timedelta(hours=50), board)
+    assert [e.board_identifier for e in due] == [board]
     assert due[0].consecutive_failures == 2
 
 
 def test_ats_transient_failure_never_deactivates_board(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="greenhouse", board_identifier="flaky")
+    board = _board_id("flaky")
+    store.upsert_ats_board(provider="greenhouse", board_identifier=board)
 
     for i in range(10):
         store.record_ats_scan_failure(
-            "greenhouse", "flaky", now + timedelta(hours=25 * i)
+            "greenhouse", board, now + timedelta(hours=25 * i)
         )
 
-    due = store.list_due_ats_boards(now + timedelta(days=30))
-    assert due[0].board_identifier == "flaky"
+    due = _due(store, now + timedelta(days=30), board)
+    assert due[0].board_identifier == board
     assert due[0].consecutive_failures == 10
     assert due[0].active is True
 
@@ -746,49 +780,52 @@ def test_ats_mixed_transient_then_permanent_failure_deactivates_board(store):
     # not after three permanent failures in a row. This pins the documented
     # (if slightly surprising) real behavior of record_ats_scan_failure.
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="mixed-co")
+    board = _board_id("mixed-co")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    store.record_ats_scan_failure("lever", "mixed-co", now, permanent=False)
+    store.record_ats_scan_failure("lever", board, now, permanent=False)
     store.record_ats_scan_failure(
-        "lever", "mixed-co", now + timedelta(hours=25), permanent=False
+        "lever", board, now + timedelta(hours=25), permanent=False
     )
     store.record_ats_scan_failure(
-        "lever", "mixed-co", now + timedelta(hours=25 * 2), permanent=True
+        "lever", board, now + timedelta(hours=25 * 2), permanent=True
     )
 
-    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+    assert _due(store, now + timedelta(days=30), board) == []
 
 
 def test_ats_deactivated_board_reactivates_on_rediscovery(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="reborn-co")
+    board = _board_id("reborn-co")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
     for i in range(3):
         store.record_ats_scan_failure(
-            "lever", "reborn-co", now + timedelta(hours=25 * i), permanent=True
+            "lever", board, now + timedelta(hours=25 * i), permanent=True
         )
-    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+    assert _due(store, now + timedelta(days=30), board) == []
 
     # The board resurfaces in a freshly discovered job pointing at the same
     # provider/board — ordinary rediscovery reactivates it (existing
     # upsert_ats_board behavior), but the still-unexpired pause still holds.
-    store.upsert_ats_board(provider="lever", board_identifier="reborn-co")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
     last_pause_start = now + timedelta(hours=25 * 2)
     still_paused_check = last_pause_start + timedelta(hours=1)
-    assert store.list_due_ats_boards(still_paused_check) == []
+    assert _due(store, still_paused_check, board) == []
     after_pause = last_pause_start + timedelta(hours=25)
-    due = store.list_due_ats_boards(after_pause)
-    assert [e.board_identifier for e in due] == ["reborn-co"]
+    due = _due(store, after_pause, board)
+    assert [e.board_identifier for e in due] == [board]
 
 
 def test_reject_ats_board_deactivates_and_records_reason(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+    board = _board_id("jobgether")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
+    store.reject_ats_board("lever", board, "aggregator: 98% third-party", now)
 
-    assert store.list_due_ats_boards(now) == []
-    rejected = store.list_rejected_ats_boards()
-    assert [e.board_identifier for e in rejected] == ["jobgether"]
+    assert _due(store, now, board) == []
+    rejected = _rejected(store, board)
+    assert [e.board_identifier for e in rejected] == [board]
     assert rejected[0].rejected_reason == "aggregator: 98% third-party"
     assert rejected[0].active is False
 
@@ -797,14 +834,16 @@ def test_list_rejected_ats_boards_excludes_healthy_and_health_paused_boards(stor
     # Only a board rejected for cause carries a reason -- a board merely
     # deactivated by repeated 404s must not show up as rejected.
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
-    store.upsert_ats_board(provider="lever", board_identifier="dead-co")
+    healthy = _board_id("healthy-co")
+    dead = _board_id("dead-co")
+    store.upsert_ats_board(provider="lever", board_identifier=healthy)
+    store.upsert_ats_board(provider="lever", board_identifier=dead)
     for i in range(3):
         store.record_ats_scan_failure(
-            "lever", "dead-co", now + timedelta(hours=25 * i), permanent=True
+            "lever", dead, now + timedelta(hours=25 * i), permanent=True
         )
 
-    assert store.list_rejected_ats_boards() == []
+    assert _rejected(store, healthy, dead) == []
 
 
 def test_ats_rejected_board_is_not_resurrected_by_rediscovery(store):
@@ -814,24 +853,26 @@ def test_ats_rejected_board_is_not_resurrected_by_rediscovery(store):
     # job points at it again -- upsert_ats_board must not flip active back
     # to true once rejected_reason is set.
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
-    store.reject_ats_board("lever", "jobgether", "aggregator: 98% third-party", now)
+    board = _board_id("jobgether")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
+    store.reject_ats_board("lever", board, "aggregator: 98% third-party", now)
 
-    store.upsert_ats_board(provider="lever", board_identifier="jobgether")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+    assert _due(store, now + timedelta(days=30), board) == []
 
 
 def test_clear_ats_board_rejection_makes_a_rejected_board_due_again(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="clientco")
-    store.reject_ats_board("lever", "clientco", "aggregator: 98% third-party", now)
+    board = _board_id("clientco")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
+    store.reject_ats_board("lever", board, "aggregator: 98% third-party", now)
 
-    store.clear_ats_board_rejection("lever", "clientco")
+    store.clear_ats_board_rejection("lever", board)
 
-    assert store.list_rejected_ats_boards() == []
-    due = store.list_due_ats_boards(now)
-    assert [e.board_identifier for e in due] == ["clientco"]
+    assert _rejected(store, board) == []
+    due = _due(store, now, board)
+    assert [e.board_identifier for e in due] == [board]
     assert due[0].rejected_reason is None
     assert due[0].active is True
 
@@ -840,13 +881,14 @@ def test_clear_ats_board_rejection_matches_the_stored_provider_case_insensitivel
     # Callers hold normalized ats_board_key values ("lever:jobgether"), while
     # the row was written from whatever case discovery saw.
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="ClientCo")
-    store.reject_ats_board("lever", "ClientCo", "aggregator: 98% third-party", now)
+    board = _board_id("ClientCo")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
+    store.reject_ats_board("lever", board, "aggregator: 98% third-party", now)
 
-    store.clear_ats_board_rejection("Lever", "clientco")
+    store.clear_ats_board_rejection("Lever", board.lower())
 
-    assert store.list_rejected_ats_boards() == []
-    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["ClientCo"]
+    assert _rejected(store, board) == []
+    assert [e.board_identifier for e in _due(store, now, board)] == [board]
 
 
 def test_clear_ats_board_rejection_treats_underscores_as_literal_text(store):
@@ -857,53 +899,61 @@ def test_clear_ats_board_rejection_treats_underscores_as_literal_text(store):
     rejection must leave the other rejected.
     """
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="client_co")
-    store.upsert_ats_board(provider="lever", board_identifier="clientxco")
-    store.reject_ats_board("lever", "client_co", "aggregator", now)
-    store.reject_ats_board("lever", "clientxco", "aggregator", now)
+    suffix = uuid.uuid4().hex[:8]
+    with_underscore = f"client_co-{suffix}"
+    with_x = f"clientxco-{suffix}"
+    store.upsert_ats_board(provider="lever", board_identifier=with_underscore)
+    store.upsert_ats_board(provider="lever", board_identifier=with_x)
+    store.reject_ats_board("lever", with_underscore, "aggregator", now)
+    store.reject_ats_board("lever", with_x, "aggregator", now)
 
-    store.clear_ats_board_rejection("lever", "client_co")
+    store.clear_ats_board_rejection("lever", with_underscore)
 
-    assert [e.board_identifier for e in store.list_rejected_ats_boards()] == [
-        "clientxco"
+    assert [
+        e.board_identifier for e in _rejected(store, with_underscore, with_x)
+    ] == [with_x]
+    assert [e.board_identifier for e in _due(store, now, with_underscore, with_x)] == [
+        with_underscore
     ]
-    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["client_co"]
 
 
 def test_clear_ats_board_rejection_is_a_no_op_for_a_board_that_was_never_rejected(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="healthy-co")
+    board = _board_id("healthy-co")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    store.clear_ats_board_rejection("lever", "healthy-co")
+    store.clear_ats_board_rejection("lever", board)
     store.clear_ats_board_rejection("lever", "never-registered")
 
-    assert [e.board_identifier for e in store.list_due_ats_boards(now)] == ["healthy-co"]
+    assert [e.board_identifier for e in _due(store, now, board)] == [board]
 
 
 def test_clear_ats_board_rejection_does_not_revive_a_health_deactivated_board(store):
     # A board deactivated by repeated 404s is broken, not misjudged. Clearing
     # a rejection it never had must not put it back in the rotation.
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="dead-co")
+    board = _board_id("dead-co")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
     for i in range(3):
         store.record_ats_scan_failure(
-            "lever", "dead-co", now + timedelta(hours=25 * i), permanent=True
+            "lever", board, now + timedelta(hours=25 * i), permanent=True
         )
 
-    store.clear_ats_board_rejection("lever", "dead-co")
+    store.clear_ats_board_rejection("lever", board)
 
-    assert store.list_due_ats_boards(now + timedelta(days=30)) == []
+    assert _due(store, now + timedelta(days=30), board) == []
 
 
 def test_record_ats_eligible_jobs_counts_every_sighting(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="acme")
+    board = _board_id("acme")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
-    store.record_ats_eligible_jobs([("lever", "acme")], now)
+    store.record_ats_eligible_jobs([("lever", board)], now)
     later = now + timedelta(hours=2)
-    store.record_ats_eligible_jobs([("lever", "acme")], later)
+    store.record_ats_eligible_jobs([("lever", board)], later)
 
-    entry = store.list_due_ats_boards(later)[0]
+    entry = _due(store, later, board)[0]
     assert entry.eligible_jobs_seen == 2
     assert from_iso(entry.last_eligible_at) == later
 
@@ -916,33 +966,36 @@ def test_record_ats_eligible_jobs_counts_a_board_once_per_job(store):
     per job -- would quietly undercount every busy board.
     """
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="acme")
-    store.upsert_ats_board(provider="ashby", board_identifier="globex")
+    acme = _board_id("acme")
+    globex = _board_id("globex")
+    store.upsert_ats_board(provider="lever", board_identifier=acme)
+    store.upsert_ats_board(provider="ashby", board_identifier=globex)
 
     updated = store.record_ats_eligible_jobs(
-        [("lever", "acme"), ("lever", "acme"), ("lever", "acme"), ("ashby", "globex")],
+        [("lever", acme), ("lever", acme), ("lever", acme), ("ashby", globex)],
         now,
     )
 
     assert updated == 2
     seen = {
         (entry.provider, entry.board_identifier): entry.eligible_jobs_seen
-        for entry in store.list_due_ats_boards(now)
+        for entry in _due(store, now, acme, globex)
     }
-    assert seen == {("lever", "acme"): 3, ("ashby", "globex"): 1}
+    assert seen == {("lever", acme): 3, ("ashby", globex): 1}
 
 
 def test_record_ats_eligible_jobs_ignores_a_board_it_does_not_know(store):
     """An unregistered board is left alone, exactly as the per-job version did."""
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="acme")
+    board = _board_id("acme")
+    store.upsert_ats_board(provider="lever", board_identifier=board)
 
     updated = store.record_ats_eligible_jobs(
-        [("lever", "acme"), ("lever", "never-registered")], now
+        [("lever", board), ("lever", "never-registered")], now
     )
 
     assert updated == 1
-    assert store.list_due_ats_boards(now)[0].eligible_jobs_seen == 1
+    assert _due(store, now, board)[0].eligible_jobs_seen == 1
 
 
 def test_record_ats_eligible_jobs_with_nothing_to_record_writes_nothing(store):
@@ -954,34 +1007,38 @@ def test_record_ats_eligible_jobs_with_nothing_to_record_writes_nothing(store):
 
 def test_list_due_ats_boards_orders_by_provider_then_board(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="zeta")
-    store.upsert_ats_board(provider="ashby", board_identifier="beta")
-    store.upsert_ats_board(provider="ashby", board_identifier="alpha")
+    suffix = uuid.uuid4().hex[:8]
+    zeta, beta, alpha = (f"zeta-{suffix}", f"beta-{suffix}", f"alpha-{suffix}")
+    store.upsert_ats_board(provider="lever", board_identifier=zeta)
+    store.upsert_ats_board(provider="ashby", board_identifier=beta)
+    store.upsert_ats_board(provider="ashby", board_identifier=alpha)
 
-    due = store.list_due_ats_boards(now)
+    due = _due(store, now, zeta, beta, alpha)
 
     assert [(e.provider, e.board_identifier) for e in due] == [
-        ("ashby", "alpha"),
-        ("ashby", "beta"),
-        ("lever", "zeta"),
+        ("ashby", alpha),
+        ("ashby", beta),
+        ("lever", zeta),
     ]
 
 
 def test_list_rejected_ats_boards_orders_by_provider_then_board(store):
     now = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
-    store.upsert_ats_board(provider="lever", board_identifier="zeta")
-    store.upsert_ats_board(provider="ashby", board_identifier="beta")
-    store.upsert_ats_board(provider="ashby", board_identifier="alpha")
-    store.reject_ats_board("lever", "zeta", "aggregator", now)
-    store.reject_ats_board("ashby", "beta", "aggregator", now)
-    store.reject_ats_board("ashby", "alpha", "aggregator", now)
+    suffix = uuid.uuid4().hex[:8]
+    zeta, beta, alpha = (f"zeta-{suffix}", f"beta-{suffix}", f"alpha-{suffix}")
+    store.upsert_ats_board(provider="lever", board_identifier=zeta)
+    store.upsert_ats_board(provider="ashby", board_identifier=beta)
+    store.upsert_ats_board(provider="ashby", board_identifier=alpha)
+    store.reject_ats_board("lever", zeta, "aggregator", now)
+    store.reject_ats_board("ashby", beta, "aggregator", now)
+    store.reject_ats_board("ashby", alpha, "aggregator", now)
 
-    rejected = store.list_rejected_ats_boards()
+    rejected = _rejected(store, zeta, beta, alpha)
 
     assert [(e.provider, e.board_identifier) for e in rejected] == [
-        ("ashby", "alpha"),
-        ("ashby", "beta"),
-        ("lever", "zeta"),
+        ("ashby", alpha),
+        ("ashby", beta),
+        ("lever", zeta),
     ]
 
 
