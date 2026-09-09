@@ -37,6 +37,7 @@ being scored.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -204,22 +205,53 @@ class CompanyFacetExtractionError(ValueError):
     """The provider returned something that is not a usable set of facets."""
 
 
-def _employer_hosts(urls: Sequence[str]) -> tuple[str, ...]:
-    """The hosts among `urls` the employer itself plausibly owns.
+def _host_labels(host: str) -> set[str]:
+    """The host's dot-separated labels, reduced to letters and digits.
 
-    An ATS vendor's host is excluded, and that exclusion is what makes the
-    ccTLD rule below safe: `boards.greenhouse.io` and `jobs.lever.co` say
-    nothing about their customer, and a German-domiciled ATS would otherwise
-    place every one of its customers in Europe.
+    "acme-payments.de" gives {"acmepayments", "de"}; "careers.acme.co.uk"
+    gives {"careers", "acme", "co", "uk"}. Punctuation goes because a company
+    writes its name in a domain with a hyphen, without one, or not at all.
     """
+    return {re.sub(r"[^a-z0-9]", "", label) for label in host.split(".")} - {""}
+
+
+def _employer_hosts(urls: Sequence[str], identity: str) -> tuple[str, ...]:
+    """The hosts among `urls` that are demonstrably the employer's own.
+
+    A host qualifies only when one of its labels *is* the company's name --
+    "acme-payments.de" or "careers.acmepayments.com" for `acme payments`.
+    Nothing else does, and that test is what makes the ccTLD rule below safe.
+
+    Excluding ATS vendors is not enough on its own, and an earlier version of
+    this function that did only that was wrong. `SUPPORTED_ATS_HOSTS` holds
+    six hosts; the corpus is mostly *neither* the employer nor an ATS. A US
+    company whose only posting the engine holds came from an Israeli job
+    board would have had `devjobs.co.il` read as its own domain and been
+    recorded as headquartered in the Middle East -- and because a supplied
+    facet is never asked of the model, nothing would ever correct it, for
+    every user, until the refresh interval expired and re-derived the same
+    wrong answer. Requiring the domain to carry the company's name inverts
+    the default: an unrecognised host supplies nothing rather than supplying
+    a guess.
+
+    It fails open in every direction. A company whose domain does not spell
+    its name ("acmepay.de" for `acme payments`), a shortened brand, or a
+    posting held only under an aggregator all yield no employer host at all,
+    and the region is asked of the model like any other unestablished fact.
+    """
+    if not identity:
+        return ()
+    name = re.sub(r"[^a-z0-9]", "", identity)
+    if not name:
+        return ()
     hosts: list[str] = []
     for url in urls:
         host = (urlparse(url).hostname or "").lower()
-        if not host:
+        if not host or host in hosts:
             continue
         if any(ats in host for ats in SUPPORTED_ATS_HOSTS):
             continue
-        if host not in hosts:
+        if name in _host_labels(host):
             hosts.append(host)
     return tuple(sorted(hosts))
 
@@ -281,7 +313,8 @@ class CompanyEvidence:
             identity=normalize_company_name(company),
             display_name=display,
             employer_hosts=_employer_hosts(
-                [job.canonical_url or job.url or "" for job in jobs]
+                [job.canonical_url or job.url or "" for job in jobs],
+                normalize_company_name(company),
             ),
             ats_providers=tuple(providers),
             posting_titles=tuple(titles[:_MAX_TITLES]),

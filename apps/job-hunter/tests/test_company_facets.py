@@ -200,17 +200,43 @@ def test_the_display_name_keeps_what_a_person_would_recognise():
 # --------------------------------------------------------------------------
 
 
-def test_a_country_domain_supplies_the_headquarters_region():
+def test_a_country_domain_the_employer_owns_supplies_the_headquarters_region():
     evidence = _evidence(_job(url="https://acme-payments.de/careers/1"))
 
     assert source_supplied_company_facets(evidence) == {"headquarters_region": EUROPE}
+
+
+def test_the_company_name_may_be_written_without_its_hyphen():
+    evidence = _evidence(_job(url="https://careers.acmepayments.de/1"))
+
+    assert source_supplied_company_facets(evidence) == {"headquarters_region": EUROPE}
+
+
+def test_a_job_boards_country_domain_supplies_nothing():
+    # The failure this rule exists to prevent: a US company whose only
+    # posting the engine holds came from an Israeli board would otherwise be
+    # recorded as headquartered in the Middle East -- and because a supplied
+    # fact is never asked of the model, nothing would correct it, for every
+    # user, until the refresh interval re-derived the same wrong answer.
+    evidence = _evidence(_job(url="https://devjobs.co.il/jobs/123"))
+
+    assert evidence.employer_hosts == ()
+    assert source_supplied_company_facets(evidence) == {}
+
+
+def test_a_domain_that_does_not_spell_the_company_name_supplies_nothing():
+    # Fails open rather than guessing: "acmepay.de" may well be Acme
+    # Payments, and may equally be somebody else.
+    evidence = _evidence(_job(url="https://acmepay.de/careers/1"))
+
+    assert source_supplied_company_facets(evidence) == {}
 
 
 def test_a_supplied_fact_is_never_asked_of_the_model():
     gemini = _gemini_for()
 
     facets = extract_company_facets(
-        _evidence(_job(url="https://acme.us/careers/1")), gemini
+        _evidence(_job(company="Acme", url="https://acme.us/careers/1")), gemini
     )
 
     assert "headquarters_region" not in gemini.prompts[0]
@@ -233,16 +259,17 @@ def test_an_ats_vendors_domain_supplies_nothing():
 
 def test_two_employer_domains_that_disagree_supply_nothing():
     evidence = _evidence(
-        _job(url="https://acme.de/careers/1"),
-        _job(url="https://acme.jp/careers/2", source_job_id="2"),
+        _job(company="Acme", url="https://acme.de/careers/1"),
+        _job(company="Acme", url="https://acme.jp/careers/2", source_job_id="2"),
     )
 
     assert source_supplied_company_facets(evidence) == {}
 
 
 def test_a_generic_domain_supplies_nothing():
-    evidence = _evidence(_job(url="https://acme.com/careers/1"))
+    evidence = _evidence(_job(company="Acme", url="https://acme.com/careers/1"))
 
+    assert evidence.employer_hosts == ("acme.com",)
     assert source_supplied_company_facets(evidence) == {}
 
 
