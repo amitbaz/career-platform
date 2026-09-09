@@ -50,6 +50,8 @@ HIGH_PRIORITY_THRESHOLD = 85
 # One retry for transient provider 5xx/timeout failures during evaluation; see
 # the adapter's generate_text max_attempts docstring for what qualifies.
 _EVALUATION_MAX_ATTEMPTS = 2
+# One fresh sample when a completed response still fails the evaluation parser.
+_EVALUATION_PARSE_MAX_ATTEMPTS = 2
 
 _VALID_SUPPORT = {"supported", "partial", "unsupported", "unknown"}
 
@@ -228,6 +230,53 @@ def _stated_requirements(facets: JobFacets, kind: str) -> list[dict[str, str]]:
     return [item for item in facets.requirements if item.get("kind") == kind]
 
 
+def _support_list_schema(item_count: int) -> dict:
+    return {
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": {
+                "requirement": {"type": "STRING"},
+                "candidate_support": {"type": "STRING", "enum": sorted(_VALID_SUPPORT)},
+            },
+            "required": ["requirement", "candidate_support"],
+        },
+        "minItems": item_count,
+        "maxItems": item_count,
+    }
+
+
+def _evaluation_response_schema(facets: JobFacets) -> dict:
+    """Describe the complete response consumed by the scoring parser."""
+    properties = {
+        "scores": {
+            "type": "OBJECT",
+            "properties": {
+                name: {"type": "INTEGER", "minimum": 0, "maximum": maximum}
+                for name, maximum in SCORE_MAXIMA.items()
+            },
+            "required": list(SCORE_MAXIMA),
+        },
+        "total_score": {"type": "INTEGER", "minimum": 0, "maximum": sum(SCORE_MAXIMA.values())},
+        "hard_blockers": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "strengths": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "gaps": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "salary_note": {"type": "STRING"},
+        "location_note": {"type": "STRING"},
+        "decision": {"type": "STRING"},
+        "rationale": {"type": "STRING"},
+        "requirements": {
+            "type": "OBJECT",
+            "properties": {
+                kind: _support_list_schema(len(_stated_requirements(facets, kind)))
+                for kind in ("must_have", "preferred")
+            },
+            "required": ["must_have", "preferred"],
+        },
+    }
+    return {"type": "OBJECT", "properties": properties, "required": list(properties)}
+
+
 def _render_requirements(label: str, items: list[dict[str, str]]) -> str:
     if not items:
         return f"Stated {label} requirements: none stated"
@@ -375,40 +424,13 @@ def _capped_score(total: int, possible_threshold: int) -> int:
     return min(total, max(0, possible_threshold - 1))
 
 
-def evaluate_job(
+def _parse_evaluation_response(
+    raw: str,
     job: Job,
-    facets: JobFacets | None,
-    context: CandidateContext,
+    facets: JobFacets,
     policy: SearchPolicy,
-    ai: "AIProvider",
+    model: str,
 ) -> Evaluation:
-    """Score `job` for this candidate from the facets already read from it.
-
-    `facets` is required. A job whose facets are missing -- extraction has not
-    reached it yet, or failed -- must not be scored: an absent requirements
-    list is indistinguishable, inside the prompt, from a posting that demands
-    nothing, and scoring it that way inflates exactly the jobs nothing is known
-    about. The caller leaves such a job for a later run.
-
-    Raises `EvaluationError` on missing facets and on any response that cannot
-    be read as a complete result.
-    """
-    if facets is None:
-        raise EvaluationError(
-            f"cannot score job {job.url or job.title!r} without its extracted facets"
-        )
-
-    market = market_by_id(policy, job.market_id) if job.market_id and policy.markets else None
-
-    raw = ai.generate_text(
-        _build_evaluation_prompt(job, facets, context, policy, market),
-        call_class=CallClass.USER_SUBJECTIVE,
-        purpose="job_evaluation",
-        thinking_level="medium",
-        max_output_tokens=5000,
-        json_mode=True,
-        max_attempts=_EVALUATION_MAX_ATTEMPTS,
-    )
     cleaned = _strip_code_fences(raw)
 
     try:
@@ -488,9 +510,60 @@ def evaluate_job(
         salary_note=data.get("salary_note", "") or "",
         location_note=data.get("location_note", "") or "",
         rationale=data.get("rationale", "") or "",
-        model=ai.model,
+        model=model,
         market_id=job.market_id or "",
         content_confidence=job.content_confidence or content_confidence.PARTIAL_UNKNOWN,
         requirements={"must_have": must_have, "preferred": preferred},
         raw_model_score=raw_total,
     )
+
+
+def evaluate_job(
+    job: Job,
+    facets: JobFacets | None,
+    context: CandidateContext,
+    policy: SearchPolicy,
+    ai: "AIProvider",
+) -> Evaluation:
+    """Score `job` for this candidate from the facets already read from it.
+
+    `facets` is required. A job whose facets are missing -- extraction has not
+    reached it yet, or failed -- must not be scored: an absent requirements
+    list is indistinguishable, inside the prompt, from a posting that demands
+    nothing, and scoring it that way inflates exactly the jobs nothing is known
+    about. The caller leaves such a job for a later run.
+
+    A completed response that the parser rejects gets one fresh provider call.
+    Provider and quota errors are not caught here, so a refusal can never be
+    mistaken for a parse failure or consume the parse-retry allowance.
+
+    Raises `EvaluationError` on missing facets and when both response samples
+    fail the complete-result parser.
+    """
+    if facets is None:
+        raise EvaluationError(
+            f"cannot score job {job.url or job.title!r} without its extracted facets"
+        )
+
+    market = market_by_id(policy, job.market_id) if job.market_id and policy.markets else None
+    prompt = _build_evaluation_prompt(job, facets, context, policy, market)
+    schema = _evaluation_response_schema(facets)
+
+    for parse_attempt in range(1, _EVALUATION_PARSE_MAX_ATTEMPTS + 1):
+        raw = ai.generate_text(
+            prompt,
+            call_class=CallClass.USER_SUBJECTIVE,
+            purpose="job_evaluation",
+            thinking_level="medium",
+            max_output_tokens=5000,
+            json_mode=True,
+            json_schema=schema,
+            max_attempts=_EVALUATION_MAX_ATTEMPTS,
+        )
+        try:
+            return _parse_evaluation_response(raw, job, facets, policy, ai.model)
+        except EvaluationError:
+            if parse_attempt == _EVALUATION_PARSE_MAX_ATTEMPTS:
+                raise
+
+    raise AssertionError("unreachable")

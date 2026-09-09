@@ -3217,20 +3217,26 @@ def test_facet_extraction_cannot_see_the_person_being_matched(store, settings):
         assert sentinel not in prompt
 
 
-def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(store, settings):
+def test_an_unparseable_facet_response_leaves_the_job_unenriched_and_retryable(
+    store, settings, caplog
+):
     job = _job()
     failing = FakeGemini(facet_payload={"seniority": "extremely senior"})
 
-    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
-                           ai=failing, telegram=FakeTelegram())
+    with caplog.at_level(logging.INFO):
+        summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                               ai=failing, telegram=FakeTelegram())
 
     job_id, _, _ = store.upsert_job(job)
     assert store.get_job_facets(job_id) is None
     assert summary.facet_extraction_attempted == 1
     assert summary.facet_extraction_failed == 1
-    # Read once, not twice: the backfill pass must not spend a second call
-    # re-reading a posting whose read already failed this run.
-    assert failing.facet_calls == 1
+    assert summary.extraction_parse_failures == 1
+    assert "facet_extraction" in caplog.text
+    assert "parse_failures=1" in caplog.text
+    # The parser retries once, while the backfill pass must not spend a third
+    # call re-reading a posting whose read already failed this run.
+    assert failing.facet_calls == 2
     # Scoring is fed the facets (#126), so a posting that could not be read is
     # left unscored rather than scored against an empty requirements list.
     assert failing.eval_calls == 0
@@ -3479,7 +3485,9 @@ def test_a_job_scored_from_facets_still_produces_a_whole_evaluation(store, setti
     assert telegram.messages
 
 
-def test_a_scoring_response_missing_a_support_verdict_is_not_partially_read(store, settings):
+def test_a_scoring_response_missing_a_support_verdict_is_not_partially_read(
+    store, settings, caplog
+):
     # Malformed output raises inside the scoring call and is contained by the
     # per-job guard: the job is counted as an error, and the run goes on.
     payload = _evaluation_payload(
@@ -3492,12 +3500,17 @@ def test_a_scoring_response_missing_a_support_verdict_is_not_partially_read(stor
     payload["requirements"]["must_have"] = []
     gemini = FakeGemini(evaluation_payload=payload)
 
-    summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
-                           ai=gemini, telegram=FakeTelegram())
+    with caplog.at_level(logging.INFO):
+        summary = run_pipeline(settings, sources=[FakeSource([_job()])], store=store,
+                               ai=gemini, telegram=FakeTelegram())
 
     job_id, _, _ = store.upsert_job(_job())
     assert store.get_evaluation(job_id) is None
     assert summary.errors == 1
+    assert summary.scoring_parse_failures == 1
+    assert gemini.eval_calls == 2
+    assert "evaluation_capacity" in caplog.text
+    assert "parse_failures=1" in caplog.text
     assert summary.ready_to_apply == 0
 
 
@@ -3842,6 +3855,7 @@ class _GeminiTransport:
     def __init__(self):
         self.calls = []  # (api_key, prompt)
         self._answers = FakeGemini()
+        self.responses_by_purpose = {}
 
     def post(self, url, *, json, headers, **kwargs):
         prompt = json["contents"][0]["parts"][0]["text"]
@@ -3852,12 +3866,16 @@ class _GeminiTransport:
             purpose = "candidate_context"
         else:
             purpose = "job_evaluation"
-        text = self._answers.generate_text(
-            prompt,
-            call_class=CallClass.USER_SUBJECTIVE,
-            purpose=purpose,
-            json_mode=True,
-        )
+        responses = self.responses_by_purpose.get(purpose)
+        if responses:
+            text = responses.pop(0)
+        else:
+            text = self._answers.generate_text(
+                prompt,
+                call_class=CallClass.USER_SUBJECTIVE,
+                purpose=purpose,
+                json_mode=True,
+            )
         return _GeminiTransportResponse(text)
 
     def timeout_for_read(self, seconds):
@@ -3962,6 +3980,42 @@ def test_extraction_spends_the_platform_key_and_scoring_the_users(store, setting
     assert "job_facets" not in _purposes_in(user_rows)
     assert "job_evaluation" in _purposes_in(user_rows)
     assert set(_purposes_in(platform_rows)) == {"job_facets"}
+
+
+def test_parse_retries_are_each_recorded_in_the_correct_usage_ledger(store, settings):
+    model = f"gemini-parse-retry-{uuid.uuid4()}"
+    ai, transport, _user_tracker, _platform_tracker = _real_provider(
+        store, platform_rpd=500, model=model
+    )
+    scores = {
+        "role_seniority": 28,
+        "technical": 22,
+        "product_architecture": 18,
+        "career_direction": 8,
+        "location_language": 9,
+        "company_environment": 5,
+    }
+    transport.responses_by_purpose = {
+        "job_facets": ["not json", json.dumps(FACET_PAYLOAD)],
+        "job_evaluation": ["not json", json.dumps(_evaluation_payload(scores, "high_priority"))],
+    }
+
+    summary = run_pipeline(
+        settings,
+        sources=[FakeSource([_job()])],
+        store=store,
+        ai=ai,
+        telegram=FakeTelegram(),
+    )
+
+    day = ("2000-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00")
+    user_rows = store.ai_usage_rows(*day, provider="gemini", model=model)
+    platform_rows = store.platform_ai_usage_rows(*day, provider="gemini", model=model)
+    assert _purposes_in(user_rows).count("job_evaluation") == 2
+    assert _purposes_in(platform_rows).count("job_facets") == 2
+    assert summary.ready_to_apply == 1
+    assert summary.extraction_parse_failures == 0
+    assert summary.scoring_parse_failures == 0
 
 
 def test_an_exhausted_platform_allowance_defers_extraction_and_a_later_run_drains_it(
