@@ -1055,26 +1055,17 @@ select is_empty(
   'nor may anon');
 ```
 
-In `supabase/tests/pgtap/job_hunter_store_functions.sql`, add three entries to the expected-function array, in alphabetical position, and change the count in the message:
+In `supabase/tests/pgtap/job_hunter_store_functions.sql`, add **one** entry to the expected-function array — `job_hunter_source_schedule_slug`, in alphabetical position between `job_hunter_set_job_markets` and `job_hunter_stage_queue_metrics`:
 
 ```sql
-    'job_hunter_pending_review_events',
-    'job_hunter_posting_display_credit',
-    'job_hunter_preferred_description',
-    'job_hunter_record_ats_eligible_jobs',
-    'job_hunter_reschedule_sources',
-    'job_hunter_resolve_posting',
-    'job_hunter_schedule_stage_enqueue',
     'job_hunter_set_job_markets',
     'job_hunter_source_schedule_slug',
     'job_hunter_stage_queue_metrics',
 ```
 
-and
+and step the count word by one. Task 4 already took it from "twenty-seven" to **"twenty-eight"** by adding `job_hunter_posting_display_credit`, so this task takes it to **"twenty-nine"**. Task 10 adds `job_hunter_reschedule_sources` and takes it to "thirty". **Read the current word in the file rather than trusting this paragraph** — three tasks step the same counter and whichever runs last is right.
 
-```sql
-  'exactly the thirty expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
-```
+Neither function this task adds is `security definer`, so the definer inventories in `job_hunter_store_functions.sql` and `job_hunter_shared_writes.sql` do not change.
 
 - [ ] **Step 2: Run test to verify it fails**
 
