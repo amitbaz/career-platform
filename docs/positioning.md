@@ -131,6 +131,107 @@ than as a discount — **we should not compete on being cheaper**, because with 
 price is not where the contest is, and undercutting a funded competitor signals inferiority.
 The number needs validating against willingness to pay; the structure does not.
 
+### The free tier
+
+**A permanent free tier is required** — someone must be able to stay on it indefinitely. That
+is a harder design than a trial, because it has to be worth using forever without cannibalising
+the paid tier, and because a free tier built to frustrate is worse than none: it teaches people
+the product does not work.
+
+**The constraint is requests per day, not money.** A free user's AI costs about €2.70 a month
+at the top of the range and usually far less. Irrelevant. What a free user consumes is
+**quota** — the same 500-requests-per-day Gemini allowance — and free users are always the
+majority, so a badly-shaped free tier does not cost money, it eats the ceiling and paying
+customers hit a wall.
+
+#### The shape
+
+**Free gives the watching. Paid does the work.** That is not a marketing line; it is the cost
+structure stated as a product. Watching is shared across all users and near-free once discovery
+is shared; scoring depth and application packs are genuinely per-user and genuinely expensive.
+
+| | Free | Paid |
+| --- | --- | --- |
+| Watching the market | unlimited, shared sources | unlimited, plus custom watched companies |
+| Scored matches per day | **5**, with reasons | **50** |
+| Application packs | **1 a month** | **20 a month** |
+| Delivery | once daily | on arrival |
+
+Five scored matches a day with reasons is a genuinely useful product. It is a curated
+shortlist, it arrives every morning, and a patient job seeker could run their whole search on
+it. That is the test the tier has to pass.
+
+#### What makes someone pay
+
+Not "more of the same". **The upgrade buys the moment after you find something.**
+
+You are on the free tier, five matches arrive, one of them is a role you actually want. Now you
+have to write a tailored CV and covering letter for it tonight. Free found it; paid does that
+work with you, and does it nineteen more times this month. The second reason is depth: fifty
+scored matches surfaces the roles that do not obviously match your title, which is the whole
+argument against title matching and the thing a five-item shortlist cannot show you.
+
+#### The arithmetic
+
+Per scored posting: **$0.00195**. Extraction, paid once per posting for everybody: $0.00159.
+
+**On free Gemini, with one scoring key at 500 requests a day, the tier is impossible:**
+
+| Paying users | Free users | Requests/day |
+| --- | --- | --- |
+| 0 | 100 | 500 |
+| 2 | 80 | 500 |
+| 5 | 50 | 500 |
+| 10 | 0 | 500 |
+
+Ten paying customers and no free users exhausts the key. **So the free tier makes a paid Gemini
+tier a hard prerequisite, not merely a consequence of retiring bring-your-own-key.**
+
+**On paid Gemini the request ceiling stops binding and money takes over, and money is
+comfortable:** 100 free users cost **$29.20 a month**, 1,000 cost **$292**. A paying user's own
+AI is $2.92 a month against roughly $16 of revenue.
+
+**The real limit is the ratio of free to paying users**, at £12.50 a month:
+
+| Free per paying user | AI cost per paying user | Gross margin |
+| --- | --- | --- |
+| 5 | $4.38 | 73% |
+| 10 | $5.84 | 64% |
+| 20 | $8.76 | 46% |
+| 50 | $17.52 | **−8%** |
+
+Ordinary freemium conversion is 2–5%, which is 20 to 50 free users per paying one. **At five
+scored matches a day the tier stays profitable down to about a 3% conversion rate and goes
+negative below it.** That makes the daily score count the dial: if conversion comes in worse
+than 3%, drop free from five matches to three rather than adding friction elsewhere.
+
+#### Launch shape differs from intended shape, and the difference is #203 and #204
+
+Unlimited watching is only cheap once the crawl is shared. Until #203 and #204 land, each user
+triggers their own crawl, and a licensed feed's quota is a **platform** quota: Adzuna's 2,500
+calls a month is **83 calls a day across all users combined**. A free tier offering per-user
+crawling would exhaust that at a handful of users.
+
+**So at launch the free tier watches the shared default source set — one crawl serving
+everybody — and custom watched companies are paid.** That is not a growth tactic; it is an
+honest statement of what is actually shared today. When #203 and #204 land, custom watches
+become cheap and can move down to free.
+
+#### Bring-your-own-key survives, but not as the free tier
+
+A user who brings their own Gemini key brings their own 500 requests a day and costs nothing
+but hosting — genuinely free, forever, and invisible to our ceiling. That makes it tempting as
+*the* free tier, and it should not be, for the reason already decided: asking a non-technical
+user to obtain an API key is a barrier most of the intended audience will not clear, and it
+splits the product into two experiences.
+
+**Recommendation: keep it as an option on the free tier, not as the tier.** "Bring your own key
+and get paid-tier scoring depth at no charge." It self-selects for exactly the users who can do
+it, removes them from the quota entirely, gives technical early adopters a real reason to stay,
+and the code already exists. It is a relief valve, not a product.
+
+#### The tier we should not build
+
 **Do not launch a free tier that meters scans — but argue it from where we are going, not
 from where we are.** The reasoning is that scan-metering is a permanent tax in their
 architecture and a temporary one in ours: once #203 and #204 land, crawling is shared and a
