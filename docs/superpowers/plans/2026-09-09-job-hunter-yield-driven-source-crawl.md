@@ -1335,6 +1335,10 @@ on conflict (provider, occurred_at) do nothing;
 drop table public.job_hunter_search_api_usage;
 ```
 
+Then, in the same task, remove the dropped table from the test fixture's cleanup walk — `apps/job-hunter/tests/conftest.py`: delete the line `    "job_hunter_search_api_usage",` from `_TABLES_CHILD_FIRST`, and remove `search_api_usage,` from the comment block above it at line 134.
+
+This belongs here rather than in Task 8: the drop and the fixture that walks the table are one change. Split across two commits, the branch spends a commit with every integration test erroring on a table that no longer exists — and this task's verification runs only `supabase test db`, so it would not notice.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `supabase db reset --local && supabase test db --linked=false`
@@ -1353,8 +1357,9 @@ git commit -m "feat(job-hunter): make the search allowance a platform ledger (#1
 
 **Files:**
 - Modify: `apps/job-hunter/src/job_hunter/search_budget.py:34,36–75,231–240`
-- Modify: `apps/job-hunter/tests/conftest.py:160`
 - Modify: `apps/job-hunter/tests/test_brave_budget.py:21,108`
+
+> `conftest.py`'s cleanup list is edited in Task 7, alongside the drop it follows from — not here.
 
 **Interfaces:**
 - Consumes: `public.job_hunter_platform_search_usage`.
@@ -1400,6 +1405,8 @@ Expected: FAIL — `assert 'job_hunter_search_api_usage' == 'job_hunter_platform
 
 - [ ] **Step 3: Write minimal implementation**
 
+(The `conftest.py` cleanup-list edit was made in Task 7. Verify it is already gone rather than editing it again.)
+
 In `apps/job-hunter/src/job_hunter/search_budget.py`, change `_TABLE` and `record`:
 
 ```python
@@ -1437,8 +1444,6 @@ class SearchUsageLedger:
 
 Update the `reserve` docstring reference from `(user_id, provider, occurred_at)` to `(provider, occurred_at)` and from `job_hunter_search_api_usage` to `job_hunter_platform_search_usage`.
 
-In `apps/job-hunter/tests/conftest.py`, delete `    "job_hunter_search_api_usage",` from `_TABLES_CHILD_FIRST` and remove `search_api_usage,` from the comment block above it at line 134.
-
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm job-hunter:test -- tests/test_brave_budget.py -v`
@@ -1450,7 +1455,7 @@ Expected: PASS with **no** skips attributable to a missing stack — confirm the
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/job-hunter/src/job_hunter/search_budget.py apps/job-hunter/tests/conftest.py apps/job-hunter/tests/test_brave_budget.py
+git add apps/job-hunter/src/job_hunter/search_budget.py apps/job-hunter/tests/test_brave_budget.py
 git commit -m "refactor(job-hunter): charge search calls to the key, not a user (#184)"
 ```
 
@@ -1698,6 +1703,32 @@ def test_an_unexpected_payload_key_is_a_permanent_failure():
         stage(message)
 
 
+def test_the_crawl_row_carries_what_the_crawl_cost():
+    """`requests` is the cost half of the yield figure; always-zero is a lie."""
+
+    class _CountingHttp:
+        request_count = 0
+
+    http = _CountingHttp()
+
+    class _RequestingSource:
+        source_label = "remotive"
+        source_key = "remotive"
+
+        def discover(self):
+            http.request_count += 3
+            yield from ()
+
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _RequestingSource(),
+        persist=lambda jobs: None,
+        http=http,
+    )
+    assert stage(_message()).requests == 3
+
+
 def test_description_hash_matches_the_sql_definition():
     """job_hunter_upsert_posting computes sha256 over the UTF-8 description."""
     assert description_hash("hello") == (
@@ -1788,15 +1819,30 @@ class CrawlSourceStage:
         build_source: Callable[[str], Any],
         persist: Callable[[list], Any],
         probe: Callable[[Any, Validators], Any] | None = None,
+        http: Any | None = None,
     ) -> None:
         self._database = database
         self._build_source = build_source
         self._persist = persist
         self._probe = probe
+        # The cost half of the yield figure. `HttpClient` counts every attempt
+        # it makes, retries included, so bracketing the drain attributes the
+        # requests to this source the way `discovery.collect_candidates`
+        # already does for the per-run statistics. Optional only because the
+        # unit tests construct the stage without one; a real crawl always has
+        # a client, and a `requests` column that is always zero would read as
+        # measured while telling nobody anything.
+        self._http = http
+
+    def _requests_since(self, before: int) -> int:
+        if self._http is None:
+            return 0
+        return max(0, getattr(self._http, "request_count", 0) - before)
 
     def __call__(self, message: QueueMessage) -> CrawlOutcome:
         source_key = self._source_key(message)
         started = time.monotonic()
+        requests_before = getattr(self._http, "request_count", 0) if self._http else 0
 
         cursor = self._read_cursor(source_key)
         source = self._build_source(source_key)
@@ -1805,6 +1851,7 @@ class CrawlSourceStage:
             outcome = CrawlOutcome(
                 source_key=source_key,
                 outcome="not_modified",
+                requests=self._requests_since(requests_before),
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
             self._record(outcome)
@@ -1816,6 +1863,7 @@ class CrawlSourceStage:
             outcome = CrawlOutcome(
                 source_key=source_key,
                 outcome="rate_limited" if _is_rate_limited(error) else "failed",
+                requests=self._requests_since(requests_before),
                 elapsed_ms=int((time.monotonic() - started) * 1000),
                 error=str(error)[:500],
             )
@@ -1842,6 +1890,7 @@ class CrawlSourceStage:
             new_to_corpus=getattr(batch, "newly_discovered", 0) or 0,
             changed=len(fresh),
             unchanged_by_hash=unchanged,
+            requests=self._requests_since(requests_before),
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
         self._record(outcome)
@@ -1971,7 +2020,7 @@ def build_source(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm job-hunter:test -- tests/test_crawl_source.py -v`
-Expected: PASS (10 tests)
+Expected: PASS (11 tests)
 
 - [ ] **Step 5: Write the integration test against a real connection**
 
@@ -2048,7 +2097,7 @@ def test_a_crawl_that_produced_nothing_still_leaves_a_row(store):
 - [ ] **Step 6: Run the integration tests**
 
 Run: `pnpm job-hunter:test -- tests/test_crawl_source.py -v`
-Expected: PASS (12 tests). Confirm from the output that the two `integration` tests **ran** rather than skipped — a skip here reproduces exactly the gap this step exists to close. If they skip, the `SUPABASE_TEST_*` variables are not exported and the run proves nothing.
+Expected: PASS (13 tests). Confirm from the output that the two `integration` tests **ran** rather than skipped — a skip here reproduces exactly the gap this step exists to close. If they skip, the `SUPABASE_TEST_*` variables are not exported and the run proves nothing.
 
 - [ ] **Step 7: Commit**
 
@@ -2279,10 +2328,59 @@ Expected: PASS — 25/25 in `job_hunter_source_registry.sql`, every other pgTAP 
 Run the full Python suite: `pnpm job-hunter:test`
 Expected: PASS, with integration tests running rather than skipping.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Make the Python ladder earn its place**
+
+`source_schedule.py` (Task 3) has no production consumer — the scheduler is PL/pgSQL because it must run under `pg_cron` with no worker process, so the ladder is necessarily encoded twice. Two copies of a policy with nothing holding them together drift silently, and the Python copy would otherwise be dead code.
+
+This test is what makes the Python module the executable specification of the SQL rather than an unused duplicate.
+
+Append to `apps/job-hunter/tests/test_source_schedule.py`:
+
+```python
+import re
+from pathlib import Path
+
+
+def _migration_text() -> str:
+    root = Path(__file__).resolve().parents[3]
+    matches = sorted(root.glob("supabase/migrations/*_job_hunter_source_registry.sql"))
+    assert matches, "the source registry migration is missing"
+    return matches[-1].read_text(encoding="utf-8")
+
+
+def test_the_sql_ladder_matches_the_python_one():
+    """Two copies of one policy drift unless something holds them together."""
+    sql = _migration_text()
+    declared = re.search(r"v_bands\s+int\[\]\s*:=\s*array\[([^\]]+)\]", sql)
+    assert declared, "job_hunter_reschedule_sources declares no band array"
+    sql_bands = tuple(int(value.strip()) for value in declared.group(1).split(","))
+    assert sql_bands == BANDS
+
+
+def test_every_python_cron_rendering_appears_in_the_sql():
+    """The format strings differ in syntax; the shapes they produce must not."""
+    sql = _migration_text()
+    for index, minutes in enumerate(BANDS):
+        rendered = cron_expression(index, source_key="remotive")
+        fields = rendered.split()
+        # Compare the shape of the day/month/weekday fields, which is where a
+        # cadence actually lives -- the minute and hour are per-source offsets.
+        shape = " ".join(fields[2:])
+        assert shape in sql, (
+            f"band {minutes} renders day/month/weekday {shape!r}, "
+            "which job_hunter_reschedule_sources does not produce"
+        )
+```
+
+- [ ] **Step 6: Run the agreement test**
+
+Run: `pnpm job-hunter:test -- tests/test_source_schedule.py -v`
+Expected: PASS. If it fails, the SQL and Python ladders disagree — fix the SQL, not the test: `source_schedule.py` is the side with the exhaustive coverage.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add supabase/migrations/ supabase/tests/pgtap/job_hunter_source_registry.sql apps/job-hunter/AGENTS.md
+git add supabase/migrations/ supabase/tests/pgtap/job_hunter_source_registry.sql apps/job-hunter/AGENTS.md apps/job-hunter/tests/test_source_schedule.py
 git commit -m "feat(job-hunter): schedule each source on its measured yield (#184)"
 ```
 
