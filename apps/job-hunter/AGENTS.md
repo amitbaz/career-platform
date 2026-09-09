@@ -99,8 +99,7 @@ Migration rules:
    re-created to resolve through the redirect, and `job_hunter_merge_jobs` to delegate to
    it: it is now the per-user consequence of one global decision, not a second authority,
    and #178 removes it with the rest of the duplicated job-row machinery.)
-   `29999999000000_job_hunter_ats_boards.sql` (placeholder timestamp -- allocated for real at
-   PR-open by career-platform-c6) shares learned ATS boards between users (#203):
+   `20260909200000_job_hunter_ats_boards.sql` shares learned ATS boards between users (#203):
    `job_hunter_ats_registry` held facts about a board — that it exists, is reachable, is an
    aggregator not worth crawling — once per user, and the most expensive of those facts to
    relearn is a rejection, since a missing one silently re-crawls a board already known
