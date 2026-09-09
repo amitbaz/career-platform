@@ -20,6 +20,7 @@
 - **No `user_id` in the display-credit path.** `job_hunter_posting_display_credit` resolves from the posting to the source and nowhere else.
 - **No operator-tuned frequencies.** The cadence bands are derived from data with zero operator knowledge. A `Settings` override may pin one source; it is never the mechanism.
 - **An empty result carries its reason.** Every crawl writes a `job_hunter_source_crawls` row, including the ones that produced nothing, and `outcome` distinguishes `not_modified` from `rate_limited` from `failed`.
+- **Never verify a database path with a fake alone.** #179 exposed that `conftest.py`'s `store` fixture had no `IngestionDatabase`, so every path behind `if self._ingestion is None` was dead in the whole suite while production always sets `SUPABASE_DB_URL` — two live cost defects shipped through that gap. Any task whose code issues SQL gets an `integration`-marked test against the real fixture, and the run is only believed if that test **ran** rather than skipped.
 - **Naming:** the display obligation is `display_credit`. Never `attribution` — that word means market attribution in ~20 places in `discovery.py`.
 - **Commit trailers:** every commit ends with
   ```
@@ -1972,7 +1973,84 @@ def build_source(
 Run: `pnpm job-hunter:test -- tests/test_crawl_source.py -v`
 Expected: PASS (10 tests)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Write the integration test against a real connection**
+
+The fakes above verify the classification logic and nothing else. `_known_hashes`, `_read_cursor` and `_record` are three real queries against three real tables, and a fake answers all of them however the fake was written.
+
+This is the failure #179 exposed and this plan must not repeat: until then, `conftest.py`'s `store` fixture was built with no `IngestionDatabase`, so every path behind `if self._ingestion is None` was dead in the whole suite while production always had `SUPABASE_DB_URL` set. The tested path and the shipped path were different paths, and two live cost defects shipped behind that gap. An optional dependency that production always supplies is not optional.
+
+Append to `apps/job-hunter/tests/test_crawl_source.py`:
+
+```python
+@pytest.mark.integration
+def test_the_stage_reads_and_writes_the_real_tables(store):
+    """The three queries the fakes above cannot check.
+
+    Guards the gap #179 exposed: a fixture that withholds the ingestion
+    connection tests a configuration nobody deploys.
+    """
+    from job_hunter.normalize import job_fingerprint
+
+    assert store._ingestion is not None, (
+        "the store fixture must supply an ingestion connection; a fake here "
+        "would test a configuration nobody runs"
+    )
+
+    existing = _job("remotive", "int-1", "unchanged body")
+    store.upsert_job(existing)
+
+    stage = CrawlSourceStage(
+        store._ingestion,
+        build_source=lambda key: _StubSource([existing, _job("remotive", "int-2", "new body")]),
+        persist=lambda jobs: store.merge_posting_batch(jobs),
+    )
+    outcome = stage(_message())
+
+    # The hash short-circuit resolved against a row that is really there.
+    assert outcome.unchanged_by_hash == 1
+    assert outcome.fetched == 2
+
+    with store._ingestion.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select outcome, fetched, unchanged_by_hash "
+                "from public.job_hunter_source_crawls where source_key = %s",
+                ("remotive",),
+            )
+            rows = cursor.fetchall()
+
+    assert rows == [("fetched", 2, 1)], "the crawl row is written, not just logged"
+
+
+@pytest.mark.integration
+def test_a_crawl_that_produced_nothing_still_leaves_a_row(store):
+    """An empty result must carry its reason, in the table and not only in a log."""
+    stage = CrawlSourceStage(
+        store._ingestion,
+        build_source=lambda key: _StubSource([], raises=RuntimeError("upstream down")),
+        persist=lambda jobs: None,
+    )
+    stage(_message("arbeitnow"))
+
+    with store._ingestion.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select outcome, error from public.job_hunter_source_crawls "
+                "where source_key = %s",
+                ("arbeitnow",),
+            )
+            row = cursor.fetchone()
+
+    assert row[0] == "failed"
+    assert "upstream down" in row[1]
+```
+
+- [ ] **Step 6: Run the integration tests**
+
+Run: `pnpm job-hunter:test -- tests/test_crawl_source.py -v`
+Expected: PASS (12 tests). Confirm from the output that the two `integration` tests **ran** rather than skipped — a skip here reproduces exactly the gap this step exists to close. If they skip, the `SUPABASE_TEST_*` variables are not exported and the run proves nothing.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add apps/job-hunter/src/job_hunter/crawl_source.py apps/job-hunter/src/job_hunter/sources/__init__.py apps/job-hunter/tests/test_crawl_source.py
