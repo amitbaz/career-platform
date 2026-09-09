@@ -122,6 +122,41 @@ signing key there.
 Job Hunter's Python environment is independent of pnpm. Install it with
 `pip install -e '.[test,webhook]'` from `apps/job-hunter`.
 
+### A green Job Hunter run is only evidence if the store tests ran
+
+Every test that touches the database asks for the `_stack_env` fixture, and that fixture calls
+`pytest.skip` when any of the `SUPABASE_TEST_*` variables is unset (`apps/job-hunter/tests/
+conftest.py:253`). So a run with the stack environment missing **skips every store-backed test,
+reports success, and exits 0**. Nothing about the output says the coverage was switched off; it
+just says `passed`.
+
+**Read the skip count, not the pass count.** With the environment exported the suite skips
+nothing, so `0 skipped` is the invariant that says the run meant something. A run reporting
+several hundred skips — currently around 663 — is a run in which roughly two thirds of the suite
+did not execute, whatever the exit code was.
+
+This is the same failure class as a workspace without its own `.venv`, one layer down: there, the
+right suite runs against the wrong source tree; here, the right tree runs with most of its
+coverage silently disabled. Both produce a green run that is not evidence. Neither is announced.
+
+**Reverting your source proves much less here than it would elsewhere.** Most of this store is
+SQL — `job_hunter_merge_jobs`, `job_hunter_upsert_job` and their siblings are database functions,
+not Python. `git checkout HEAD~1 -- apps/job-hunter/src apps/job-hunter/tests` reverts one half of
+the system under test and leaves the other half exactly as the local stack has it. "I reverted my
+changes and it still fails" is therefore not the claim it sounds like, and it has already been
+mistaken once for a defect on `main`.
+
+**To see what a foreign migration actually did**, read the ledger rather than guessing: the
+applied statements are stored, so an unmerged peer's migration is legible even though its file is
+on no branch you have.
+
+```sql
+select unnest(statements) from supabase_migrations.schema_migrations where version = '<version>';
+```
+
+Diffing `schema_migrations` against `ls supabase/migrations` tells you a foreign migration is
+*present*; this tells you what it *changed*, which is what answers "is this failure mine".
+
 ## Working alongside other sessions
 
 More than one agent may be working this repository at the same time, in separate git worktrees.
