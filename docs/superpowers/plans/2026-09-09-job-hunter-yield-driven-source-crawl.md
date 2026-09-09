@@ -15,7 +15,9 @@
 - **Branch:** `feat/job-hunter-yield-driven-source-crawl`, based on `ab35e3f`. Never commit to `main`.
 - **Blocked behind #179.** Tasks 1–3 are pure Python and may proceed now. Tasks 4–10 touch the schema or `supabase/tests/pgtap/job_hunter_isolation.sql` and must not start until `feat/job-hunter-shared-table-writers` merges to `main` and this branch is rebased onto it.
 - **One migration file** for the whole ticket: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`. `PLACEHOLDER` is deliberately not a timestamp. The real timestamp is allocated at pull-request open, in merge order, per PR #202 — ask for it then.
-- **Tests:** `pnpm job-hunter:test` with `SUPABASE_TEST_URL`, `SUPABASE_TEST_PUBLISHABLE_KEY` and the rest of the `SUPABASE_TEST_*` variables exported. Without them the suite is green with hundreds of skips and a migration is verified by nothing. This worktree needs its own `.venv` first.
+- **Tests:** `pnpm job-hunter:test` with `SUPABASE_TEST_URL`, `SUPABASE_TEST_PUBLISHABLE_KEY`, `SUPABASE_TEST_SIGNING_KEY_B64` **and `SUPABASE_TEST_DB_URL`** exported. The last one became required at `conftest.py:55` in the #179 merge (`a975945`): without it no posting, facet, company or board can be persisted at all, so every write path under test is unreachable. Get it from `supabase status -o env` as `export SUPABASE_TEST_DB_URL="$DB_URL"`. Partial configuration always fails loudly since #208; a run that names one of these variables is that, not your diff. This worktree needs its own `.venv` first (present and verified).
+- **Tasks 1–3 only** may use `JOB_HUNTER_ALLOW_MISSING_STACK=1` — they touch no database. Tasks 4–10 must never use it: the escape hatch on a schema task is exactly how a migration gets verified by nothing.
+- **Any new stage's test fixture gets the ingestion connection.** #185 shipped two live platform-key cost defects — a posting enqueued once per persist phase (three per crawl) and a failed read re-draining the same message in the same run — and both were invisible because the store fixture held no `IngestionDatabase` while production always sets `SUPABASE_DB_URL`. Both are fixed on `main` as of `a975945`, along with a per-run enqueue dedup that Task 9's stage must not defeat.
 - **Two table shapes, and they are not interchangeable.** Shared *knowledge* (`job_hunter_sources`) takes #179's shape: `select` to `authenticated`, writes revoked from `anon`, `authenticated` and `service_role`, pgTAP proving the refusal. Shared *machinery* (`job_hunter_source_crawls`, `job_hunter_source_cursors`) takes #183's shape: row-level security enabled with **no policy**, and grants revoked as well.
 - **No `user_id` in the display-credit path.** `job_hunter_posting_display_credit` resolves from the posting to the source and nowhere else.
 - **No operator-tuned frequencies.** The cadence bands are derived from data with zero operator knowledge. A `Settings` override may pin one source; it is never the mechanism.
@@ -1208,8 +1210,11 @@ The owner's decision on #184: the quota is a property of the API key, not of a p
 
 **Files:**
 - Modify: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql` (append)
-- Modify: `supabase/tests/pgtap/job_hunter_isolation.sql` (remove `job_hunter_search_api_usage` at line 67 and its seed case at line 157)
-- Modify: `supabase/tests/pgtap/job_hunter_write_idempotency.sql:29–52`
+- Modify: `supabase/tests/pgtap/job_hunter_isolation.sql` (remove `job_hunter_search_api_usage` from the table list at **line 74** and its seed `when` arm at **lines 172–173**)
+- Modify: `supabase/tests/pgtap/job_hunter_write_idempotency.sql` — **two** places, not one: **lines 22–23** and **lines 51–52**
+- Modify: `apps/job-hunter/tests/conftest.py` — the cleanup list entry is at **line 165**
+
+> Line numbers re-derived from `origin/main` at `a975945` (the #179 merge), which moved several of them. Verify with `grep -n job_hunter_search_api_usage` before editing rather than trusting these — #179's own hunks shifted this file and another merge may shift it again.
 - Modify: `supabase/tests/pgtap/job_hunter_source_registry.sql` (append; raise `plan(17)` to `plan(22)`)
 
 **Interfaces:**
@@ -1247,7 +1252,7 @@ select is(
 
 In `supabase/tests/pgtap/job_hunter_isolation.sql`, delete the line `  'job_hunter_search_api_usage',` from the `pg_temp.job_hunter_tables` view and delete its `when 'job_hunter_search_api_usage' then ... ` branch from `pg_temp.job_hunter_seed_row`. Adjust that file's `plan(N)` down by however many assertions per table it makes (check the multiplier at the top of the file).
 
-In `supabase/tests/pgtap/job_hunter_write_idempotency.sql`, replace the `job_hunter_search_api_usage` assertion at lines 51–52 with:
+In `supabase/tests/pgtap/job_hunter_write_idempotency.sql` there are **two** references, and both change. Lines 51–52:
 
 ```sql
 select col_is_unique(
@@ -1255,6 +1260,18 @@ select col_is_unique(
   'platform_search_usage enforces unique (provider, occurred_at)'
 );
 ```
+
+And lines 22–23, whose assertion message is the claim this ticket falsifies — it currently reads `'search_api_usage has a user-scoped natural key'`, and after this change the key is deliberately not user-scoped:
+
+```sql
+select has_index(
+  'public', 'job_hunter_platform_search_usage',
+  'job_hunter_platform_search_usage_provider_at_key',
+  'platform_search_usage has a provider-scoped natural key, not a user-scoped one'
+);
+```
+
+Name the constraint to match when you create it in the migration — add `constraint job_hunter_platform_search_usage_provider_at_key unique (provider, occurred_at)` rather than the bare `unique (provider, occurred_at)` shown earlier, so this assertion has a name to find.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1290,7 +1307,8 @@ create table public.job_hunter_platform_search_usage (
   provider text not null,
   occurred_at timestamptz not null,
   created_at timestamptz not null default now(),
-  unique (provider, occurred_at)
+  constraint job_hunter_platform_search_usage_provider_at_key
+    unique (provider, occurred_at)
 );
 
 create index job_hunter_platform_search_usage_window_idx
