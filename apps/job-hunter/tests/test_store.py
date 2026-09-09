@@ -2326,17 +2326,11 @@ def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
     assert survivor_id == application_id
     assert is_new is False
     assert store.count_jobs() == 1
-    # The link is the surviving posting's since #178, and which posting
-    # survives is decided by job_hunter_merge_postings' ladder rather than by
-    # which of this user's rows was created first. Every listing here has an
-    # empty description, so the ladder falls through to "a complete ATS
-    # identity wins" -- and in this fixture the ATS-identified listings are the
-    # ones carrying an aggregator URL, while the employer's lever link sits on
-    # a listing with no ATS triple at all. Before #178 the answer came from
-    # whichever job row was created first, which happened to be the lever one.
-    # Neither answer is arrived at by recognising an employer link; the
-    # difference is that this one is decided once for everyone.
-    assert store.get_job(survivor_id).url == "https://aggregator.test/jobs/ats-1"
+    # The link is the surviving posting's since #178, and it is the same link
+    # the merged job row used to carry: the posting merge applies
+    # job_hunter_merge_jobs' URL rule, so a canonical URL wins outright when
+    # either side carries an ATS identity.
+    assert store.get_job(survivor_id).url == canonical_url
     assert store.get_evaluation(survivor_id) is not None
     assert store.get_material(survivor_id) is not None
     assert store.has_delivery(survivor_id, "telegram_message")

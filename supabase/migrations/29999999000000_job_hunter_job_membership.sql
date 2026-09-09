@@ -55,6 +55,30 @@
 -- goes through `job_hunter_upsert_posting`'s keep-the-richer rule like every
 -- other write. A thin re-fetch can no longer blank a description for everyone,
 -- which is the only defensible behaviour once the row is not private.
+--
+-- The hazard this whole restructure carries, met once while writing it and
+-- recorded so the next person does not have to meet it too.
+--
+-- Moving a predicate from a per-user table to a shared one silently widens
+-- what it matches, and the columns move without the question moving. The
+-- first cut of the identity resolution below searched *every* posting in the
+-- corpus rather than the postings the caller already holds a row for. It is
+-- the same comparison against the same columns; only the row set changed, and
+-- nothing about it looks wrong in a diff. On a clean database it merged
+-- unrelated advertisements that happened to share a normalized company, a
+-- title and a compatible location, discarded the facets of everything it
+-- swallowed, and left redirects that nothing un-merges.
+--
+-- It presented as *fewer* AI calls -- the runs reused facets extracted for a
+-- posting that was not this advertisement -- which reads as an optimisation
+-- working rather than as a bug. Two things made it findable: a database with
+-- nothing else in it, and a test that asserts extraction happens exactly once
+-- rather than merely expecting it to. On a stack full of other rows it would
+-- have looked like ordinary contamination.
+--
+-- So: when a predicate moves onto a shared table, decide separately whether
+-- its *scope* moves. Here the columns moved and the scope did not, because
+-- the question is a coverage question about one user (#177) and always was.
 
 -- Identity moves to the posting ------------------------------------------------
 --
@@ -734,14 +758,21 @@ grant execute on function public.job_hunter_merge_jobs(uuid, uuid) to authentica
 -- behaviour-preserving. Any statement added here later must carry that
 -- predicate or be provably safe without it.
 --
--- `description_changed` now answers a question about the advertisement rather
--- than about one user's copy: did this call change the posting's description?
--- A payload that arrives with its posting already resolved -- the staged batch
--- path (#182), where job_hunter_merge_posting_batch has already folded this
--- listing's text in -- reports false, because the change, if any, happened
--- there and not here. Nothing in the pipeline reads this value: re-evaluation
--- is decided by job_hunter_needs_evaluation, which compares the evaluation's
--- recorded hash against the posting's current one and is unaffected.
+-- `description_changed` keeps its meaning -- did the description this caller
+-- reads change in this call -- with the text read from the posting. It is
+-- sampled twice before anything is written: from the posting the payload's
+-- fingerprint resolves to, and, when that posting did not exist a moment ago,
+-- from the posting behind the caller's earliest matching row. The second is
+-- what keeps a merge-caused change visible: a listing arriving under a new
+-- fingerprint creates a posting, resolves onto one the user already held, and
+-- the text they read moves without the row they came in on having existed.
+--
+-- A payload that arrives with its posting already resolved -- the staged
+-- batch path (#182), where job_hunter_merge_posting_batch has already folded
+-- this listing's text in -- reports false, because the change, if any,
+-- happened there. Nothing in the pipeline reads this value either way:
+-- re-evaluation is decided by job_hunter_needs_evaluation, which compares the
+-- evaluation's recorded hash against the posting's current one.
 
 create or replace function public.job_hunter_upsert_job(p_job jsonb)
 returns table (id uuid, is_new boolean, description_changed boolean)
@@ -762,6 +793,8 @@ declare
   v_candidate uuid;
   v_resolved uuid;
   v_previous_hash text;
+  v_own_previous_hash text;
+  v_previous_posting uuid;
   v_current_hash text;
   v_job_id uuid;
   v_is_new boolean;
@@ -791,11 +824,13 @@ begin
   -- advertisement it is a membership of.
   v_supplied_posting := nullif(coalesce(p_job->>'posting_id', ''), '')::uuid;
   if v_supplied_posting is null then
-    select p.description_hash into v_previous_hash
+    -- Sampled before the write, because the write is what may change it.
+    select p.description_hash into v_own_previous_hash
       from public.job_hunter_postings p
      where p.id = public.job_hunter_resolve_posting(
              (select q.id from public.job_hunter_postings q
                where q.fingerprint = v_fingerprint));
+    v_previous_hash := v_own_previous_hash;
     v_posting_id := public.job_hunter_upsert_posting(p_job);
   else
     v_posting_id := public.job_hunter_resolve_posting(v_supplied_posting);
@@ -858,6 +893,30 @@ begin
         v_candidates := v_candidates || v_resolved;
       end if;
     end loop;
+
+    -- What this user was reading before the merges, for description_changed.
+    -- The row that answers is their earliest one among everything this
+    -- payload resolved to -- the same row the job-level merge used to pick as
+    -- survivor, and therefore the same "before" the old comparison used.
+    --
+    -- Two samples rather than one because the write above has already
+    -- happened: if that earliest row sits on the posting this payload just
+    -- wrote, its stored hash is the new value, and the pre-write sample is
+    -- the honest "before". If it sits on a different posting -- a listing
+    -- arriving under a new fingerprint that resolves onto one the user has
+    -- held all along -- that posting is untouched so far and its hash is.
+    select j.posting_id, p.description_hash
+      into v_previous_posting, v_previous_hash
+      from public.job_hunter_jobs j
+      join public.job_hunter_postings p on p.id = j.posting_id
+     where j.user_id = v_uid
+       and j.posting_id = any(v_candidates || v_posting_id)
+     order by j.created_at, j.id
+     limit 1;
+
+    if v_previous_posting is null or v_previous_posting = v_posting_id then
+      v_previous_hash := v_own_previous_hash;
+    end if;
 
     -- Every candidate collapses into the posting this payload resolved to.
     -- job_hunter_merge_postings chooses the survivor from the two rows rather
