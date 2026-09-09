@@ -595,10 +595,19 @@ def _parse_company_preferences(data: dict) -> CompanyPreferences:
     """
 
     def _strings(key: str) -> list[str]:
+        # "unknown" is dropped here as well as refused on `SearchProfile`.
+        # The column deliberately carries no CHECK -- a preference naming a
+        # vocabulary member that no longer exists should match nothing rather
+        # than refuse the whole profile write -- so this is the only guard on
+        # a row that did not come through `SearchProfile`: a hand edit, a
+        # restored dump, a future writer. An "unknown" that reached
+        # `excluded_industries` would suppress every company the engine read
+        # and could not characterise, turning a gap in the corpus into a lost
+        # opportunity, which is the one outcome this feature must not have.
         return [
             value.strip().lower()
             for value in (data.get(key) or [])
-            if isinstance(value, str) and value.strip()
+            if isinstance(value, str) and value.strip().lower() not in ("", "unknown")
         ]
 
     return CompanyPreferences(
