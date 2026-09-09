@@ -223,6 +223,29 @@ stage functions had arrived with it. The inference is sound and the answer was w
 your own row is therefore a requirement rather than a courtesy: it is what stops the next agent's
 cheap check producing a confident wrong attribution.
 
+**When the ledger agrees with disk and the schema still looks wrong, diff the schema itself.** The
+two checks above both read `supabase_migrations.schema_migrations`, and `pg_proc` only sees
+function bodies. None of them detects a schema changed **by hand, with no migration file and no
+row** — a dropped column, an added constraint. In that state the ledger is byte-identical to
+`ls supabase/migrations`, nothing is unexplained, and both prescribed checks report **clean**
+while `job_hunter_jobs` is missing columns your tree says it has. That has happened here.
+
+```bash
+supabase db diff --local
+```
+
+It builds a shadow database from `supabase/migrations` and compares the live local database to it.
+**Empty output means the schema is what the migrations say it is.** Anything else is the
+difference, and a difference nobody's branch explains means the schema was edited directly. Run it
+before concluding that a missing column or a failed constraint is "pre-existing" — that claim has
+been made and withdrawn twice in one day, both times from a contaminated stack.
+
+**A hand-applied change with no migration file is not a shortcut, it is an unrecorded schema.**
+Recording a ledger row only helps when a file exists to record. If you change the schema directly
+while developing, there is nothing for the next agent's checks to find, and the state is only
+recoverable with `pnpm db:reset` — which drops every peer's unmerged migration. Write the
+migration first, then apply it.
+
 **And know what a reset costs other people.** `pnpm db:reset` serialises against other runs
 through the stack lock, so it will not corrupt anyone mid-statement — but it still drops every
 migration that exists only on somebody's branch, on a machine that may have several. The lock
