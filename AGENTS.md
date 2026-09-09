@@ -391,6 +391,14 @@ the push.
   ticket's assigned number would have sorted before an already-applied migration. Write a
   placeholder while you work, and ask whoever owns the board for the real number when the branch
   is ready. Issued in merge order, it is correct by construction.
+- **Make the placeholder visibly not a timestamp** — `29999999000000`, or your branch name in the
+  filename. Do **not** reach for the next number after the highest on `main`: that is what every
+  other agent reaches for too, so it is the one value guaranteed to collide. On 2026-09-09 two
+  branches independently chose `20260909200000` because it follows `190000`, and the shared stack
+  has one ledger, so `supabase migration list` showed that version applied to both agents while
+  the objects belonged to only one. Each read it as evidence about its own migration and neither
+  was right. **A colliding placeholder does not merely fail to help — it manufactures evidence
+  that lies.**
 - **If a ticket already carries an assigned timestamp, use it** — older issues pre-assign, and the
   number on the issue always wins over one you pick yourself.
 - **If you reach mergeable state while a lower unmerged timestamp is still open, ask to be
