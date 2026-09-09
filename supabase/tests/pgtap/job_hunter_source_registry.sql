@@ -1,5 +1,5 @@
 begin;
-select plan(11);
+select plan(17);
 
 -- Shared knowledge: readable by any authenticated user, written by none ----
 
@@ -72,6 +72,37 @@ select ok(
 select ok(
   public.job_hunter_posting_display_credit(gen_random_uuid()) is null,
   'an unknown posting resolves to nothing rather than raising');
+
+-- Shared machinery: nobody reads the engine's own telemetry ----------------
+
+select has_table('public', 'job_hunter_source_crawls', 'the crawl ledger exists');
+select has_table('public', 'job_hunter_source_cursors', 'the cursor store exists');
+
+select is_empty(
+  $$ select 1 where has_table_privilege(
+       'authenticated', 'public.job_hunter_source_crawls',
+       'select, insert, update, delete') $$,
+  'a user cannot reach the crawl ledger at all');
+select is_empty(
+  $$ select 1 where has_table_privilege(
+       'authenticated', 'public.job_hunter_source_cursors',
+       'select, insert, update, delete') $$,
+  'nor the cursor store');
+
+-- An empty result has to carry its reason ----------------------------------
+
+select throws_ok(
+  $$ insert into public.job_hunter_source_crawls (source_key, started_at, outcome)
+     values ('remotive', now(), 'nothing_today') $$,
+  '23514',
+  null,
+  'a crawl outcome must be one of the four that distinguish why it was empty');
+
+select lives_ok(
+  $$ insert into public.job_hunter_source_crawls
+       (source_key, started_at, finished_at, outcome, fetched, new_to_corpus)
+     values ('remotive', now(), now(), 'not_modified', 0, 0) $$,
+  'an unchanged board records not_modified rather than an empty fetch');
 
 select * from finish();
 rollback;

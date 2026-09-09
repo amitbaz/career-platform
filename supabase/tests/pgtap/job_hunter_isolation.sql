@@ -368,11 +368,19 @@ select is(
 -- Ingestion's own scratch and operational state (issues #182 and #183), which
 -- is neither per-user nor user-readable. No role a user can hold reaches it;
 -- the batch and queue suites assert the useful properties each table has.
+--
+-- job_hunter_source_crawls and job_hunter_source_cursors (issue #184) belong
+-- here rather than on the shared-tables list above: they are the scheduler's
+-- own operational state, RLS is on with no policy at all, and every grant is
+-- revoked -- nobody holding a user's session reaches them, same as the rest
+-- of this list.
 create view pg_temp.job_hunter_ingestion_tables as
 select unnest(array[
   'job_hunter_posting_staging',
   'job_hunter_stage_attempts',
-  'job_hunter_stage_dead_letters'
+  'job_hunter_stage_dead_letters',
+  'job_hunter_source_crawls',
+  'job_hunter_source_cursors'
 ]) as table_name;
 
 -- Guard: every job_hunter_ table in the schema is in the list under test,
