@@ -4,13 +4,19 @@ import argparse
 import logging
 from datetime import datetime, timezone
 
-from job_hunter.config import load_gmail_settings, load_settings, load_supabase_settings
+from job_hunter.config import (
+    load_gmail_settings,
+    load_ingestion_dsn,
+    load_settings,
+    load_supabase_settings,
+)
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
 from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
 from job_hunter.gmail_client import GmailClient
 from job_hunter.gmail_sync import GmailSyncService
 from job_hunter.http import HttpClient
+from job_hunter.pg import IngestionDatabase
 from job_hunter.pipeline import (
     cover_letter_output_dir,
     generate_cover_letter_on_demand,
@@ -79,9 +85,48 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _build_ingestion_database() -> IngestionDatabase | None:
+    """Ingestion's direct Postgres connection, where one is configured.
+
+    Only the daily pipeline builds one. The webhook and the on-demand cover
+    letter do no ingestion, and a privileged connection they would never use
+    is a privileged connection nobody is watching.
+    """
+    dsn = load_ingestion_dsn()
+    if dsn is None:
+        logger.info(
+            "no SUPABASE_DB_URL is configured: a crawl batch will be persisted "
+            "one posting at a time over PostgREST rather than with one merge"
+        )
+        return None
+    try:
+        return IngestionDatabase(dsn)
+    except Exception:
+        # The fast path is a saving, never a dependency. Constructing the pool
+        # is where a missing or unloadable psycopg lands, and letting that
+        # reach main() would turn a run that delivers slowly into a run that
+        # delivers nothing.
+        logger.exception(
+            "SUPABASE_DB_URL is set but ingestion could not open a direct "
+            "Postgres connection; persisting one posting at a time instead"
+        )
+        return None
+
+
 def _run(args: argparse.Namespace) -> int:
     http = HttpClient()
-    store = PostgresJobStore(_build_client(http))
+    store = PostgresJobStore(_build_client(http), _build_ingestion_database())
+    try:
+        return _run_with(args, http, store)
+    finally:
+        # The pool holds real server connections. Closing it is the store's
+        # job, and doing it here means a run that raises releases them too.
+        store.close()
+
+
+def _run_with(
+    args: argparse.Namespace, http: HttpClient, store: PostgresJobStore
+) -> int:
     settings = load_settings(store)
 
     if args.scheduled:

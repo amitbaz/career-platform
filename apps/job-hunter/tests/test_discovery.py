@@ -24,7 +24,7 @@ from job_hunter.models import (
     Job,
     SearchPolicy,
 )
-from job_hunter.postgres_store import DryRunStore
+from job_hunter.postgres_store import DryRunStore, PostingBatch
 from tests.market_fixtures import make_market_policy
 
 
@@ -459,14 +459,77 @@ def test_collect_candidates_does_not_count_a_job_that_could_not_be_persisted(
     ]
     real_upsert = store.upsert_logical_jobs
 
-    def dropping_first(batch):
-        results = real_upsert(batch)
+    def dropping_first(batch, **kwargs):
+        results = real_upsert(batch, **kwargs)
         return [None, *results[1:]] if results else results
 
     monkeypatch.setattr(store, "upsert_logical_jobs", dropping_first)
 
     result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
 
+    assert result.stats.newly_discovered == 1
+
+
+def test_collect_candidates_reports_the_postings_each_batch_discovered(
+    store, policy, monkeypatch
+):
+    """The count of newly discovered postings is reported per batch (#182).
+
+    Both persistence phases stage a batch, so the figure accumulates across
+    them rather than being read off one of them -- the same rule
+    `newly_discovered` already follows, and for the same reason: a phase
+    nobody accumulated is a phase nobody would notice going quiet.
+    """
+    jobs = [
+        Job(
+            source="devjobs",
+            source_job_id=str(index),
+            title="Senior Product Engineer",
+            company=f"Acme {index}",
+            description="React TypeScript remote role",
+            remote=True,
+        )
+        for index in (1, 2)
+    ]
+    staged: list[int] = []
+
+    def merge(batch_jobs):
+        staged.append(len(batch_jobs))
+        # Deliberately no posting ids: a fabricated one would be written into
+        # job_hunter_jobs.posting_id as a foreign key naming no posting. What
+        # is under test here is the count, and an empty mapping is exactly
+        # what a store with no direct connection returns.
+        return PostingBatch(newly_discovered=len(batch_jobs))
+
+    monkeypatch.setattr(store, "merge_posting_batch", merge)
+
+    result = collect_candidates([FakeSource(jobs)], store, NoOpHttp(), policy)
+
+    # Two raw listings, then the two unique jobs they dedupe to.
+    assert staged == [2, 2]
+    assert result.stats.postings_discovered == 4
+
+
+def test_collect_candidates_reports_no_postings_without_a_direct_connection(
+    store, policy
+):
+    """The `store` fixture holds no ingestion connection, which is the point.
+
+    Every posting is then resolved inside its own job upsert, exactly as
+    before #182, and the run still reports what it discovered for this user.
+    """
+    job = Job(
+        source="devjobs",
+        source_job_id="1",
+        title="Senior Product Engineer",
+        company="Acme",
+        description="React TypeScript remote role",
+        remote=True,
+    )
+
+    result = collect_candidates([FakeSource([job])], store, NoOpHttp(), policy)
+
+    assert result.stats.postings_discovered == 0
     assert result.stats.newly_discovered == 1
 
 
@@ -2912,9 +2975,12 @@ def test_a_failure_recording_eligibility_does_not_cost_the_run(store, policy, ca
 class RecordingStore:
     """Wraps a store and records every method call a run makes through it.
 
-    Discovery's batch methods and the canonical-resolution tail's single-job
-    methods are disjoint sets, so counting calls by name is enough to tell
-    which path did the writing.
+    Since #182 the canonical-resolution tail defers its writes into the same
+    batch methods the persistence phases use, so a name no longer names a
+    path: what distinguishes them is how many times a method was called and
+    with how many jobs. A tail that has gone back to writing per job shows up
+    as a `upsert_logical_job` (singular) call, which is what the assertions
+    below watch for.
     """
 
     def __init__(self, inner):
@@ -3063,12 +3129,69 @@ def test_canonical_resolution_persists_a_job_that_resolved_to_a_new_url(store, p
 
     assert result.stats.canonical_resolved == 1
     assert result.stats.canonical_unchanged == 0
-    assert recording.count("upsert_logical_job") == 1
-    assert recording.count("needs_evaluation") == 1
+    # Still persisted -- but in the batch the loop defers to, not one call per
+    # job (#182). Nothing in the tail reaches a single-job write any more.
+    assert recording.count("upsert_logical_job") == 0
+    assert recording.count("needs_evaluation") == 0
+    assert recording.count("set_job_market") == 0
     assert result.eligible[0][1].url == "https://jobs.lever.co/acme/abc"
     # The batched phase saw only the Hacker News URL, so this board is new.
     assert recording.registered_boards() == [("lever", "acme")]
     assert result.stats.ats_boards_discovered == 1
+
+
+def test_canonical_resolution_writes_once_for_the_whole_run(store, policy):
+    """The measurement #182 exists to move.
+
+    In run 34289288702 the canonical phase cost 1170.8s for 1,221 resolutions
+    against 81 network attempts: three PostgREST round trips per resolved job,
+    made one job at a time. Every one of those writes is now deferred into one
+    staged posting merge and three bulk calls for the whole run, so the phase's
+    cost stops scaling with the number of jobs it resolved.
+    """
+    jobs = [
+        Job(
+            source="hackernews",
+            source_job_id=f"hn-{index}",
+            title="Senior Product Engineer",
+            company=f"Acme {index}",
+            url=f"https://news.ycombinator.com/item?id={index}",
+            description="React TypeScript remote role.",
+            remote=True,
+        )
+        for index in (1, 2, 3)
+    ]
+
+    def resolve(job):
+        suffix = job.source_job_id.removeprefix("hn-")
+        return CanonicalResolution(
+            url=f"https://jobs.lever.co/acme{suffix}/abc",
+            ats=AtsReference(provider="lever", board=f"acme{suffix}", job_id="abc"),
+            confidence=1.0,
+            method="redirect",
+        )
+
+    class PerJobResolver:
+        def resolve(self, job):
+            return resolve(job)
+
+    recording = RecordingStore(store)
+
+    result = collect_candidates(
+        [FakeSource(jobs)], recording, NoOpHttp(), policy, resolver=PerJobResolver()
+    )
+
+    assert result.stats.canonical_resolved == 3
+    assert len(result.eligible) == 3
+    # Three resolutions, one batch: the two persistence phases plus the tail.
+    assert recording.count("upsert_logical_jobs") == 3
+    assert recording.count("merge_posting_batch") == 3
+    assert recording.count("needs_evaluation_bulk") == 2
+    assert recording.count("set_job_markets") == 2
+    # And nothing per job.
+    assert recording.count("upsert_logical_job") == 0
+    assert recording.count("needs_evaluation") == 0
+    assert recording.count("set_job_market") == 0
 
 
 def test_canonical_resolution_registers_a_newly_resolved_board_once_for_two_jobs(

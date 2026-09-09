@@ -23,8 +23,9 @@ Target direction:
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
-   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and nineteen `security invoker`
-   SQL functions, sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and twenty-one
+   SQL functions — all `security invoker` except `job_hunter_get_provider_credentials`,
+   which is `security definer` — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
    `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`, and
    `supabase/migrations/20260907104935_job_hunter_gmail_candidate_eligibility.sql`, which drops
    `job_hunter_unmaterialized_inbound_jobs` and adds `job_hunter_gmail_candidate_complete` and
@@ -51,9 +52,25 @@ Migration rules:
    own ledger and no user reaches them at all.) It adds
    `job_hunter_upsert_posting`, and re-creates both `job_hunter_upsert_job`, to write the
    posting and the job row in one call, and `job_hunter_merge_jobs`, so a merged job keeps
-   the posting whose description it kept. Nothing reads a posting yet (#174).) Job Hunter's runtime reads and writes these tables through
+   the posting whose description it kept. Nothing reads a posting yet (#174).
+   `20260909130000_job_hunter_posting_batches.sql` adds `job_hunter_posting_staging` and
+   `job_hunter_merge_posting_batch`, which persists a whole crawl batch of postings with one
+   set-based statement instead of one upsert per listing, plus
+   `job_hunter_preferred_description`, which states the "better description wins" ladder once;
+   it re-creates `job_hunter_upsert_job` again so a payload that already names its posting
+   keeps it (#182).) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
+
+   **The one exception is ingestion (#182).** A crawl also holds a direct, pooled Postgres
+   connection as a privileged role (`src/job_hunter/pg.py`, configured by `SUPABASE_DB_URL`),
+   because `COPY` and set-based statements are the two things PostgREST cannot express and a
+   crawl needs both. It is used only for the shared postings tables, which have no user
+   dimension. Matching, delivery and every per-user read stay on PostgREST under row-level
+   security, and `job_hunter_posting_staging` and `job_hunter_merge_posting_batch` are
+   deliberately unreachable by `anon` and `authenticated` — neither a grant nor a policy lets
+   a user near them. The connection is optional: without it a run resolves each posting inside
+   its own job upsert and delivers the same digest, more slowly.
    `tests/integration/test_supabase_isolation.py` proves those policies hold by writing and
    deleting a throwaway row in a local stack.
 2. **Do not bypass `PostgresJobStore` opportunistically while implementing unrelated features.**
@@ -291,7 +308,7 @@ Key modules:
   removing. One caveat: a source that overruns on its *last* unit is recorded as cut off
   rather than completed, because from outside there is no way to tell "nothing left" from
   "one more unit" without paying for that unit.
-- `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids(match_score_floor)` retries undelivered Telegram work without re-calling Gemini, applying the profile's inclusive floor. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, `upsert_ats_boards`, and `record_ats_eligible_jobs` — `collect_candidates` calls these instead of looping the single-job methods. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time — and for `collect_candidates`'s own canonical-resolution tail, which is still per-job but now pays only for a job whose resolution actually changed something — roughly two requests each (`upsert_logical_job`, `needs_evaluation`, plus `set_job_market` when the market moved). A job already on a supported ATS URL resolves to what it already was and writes nothing at all (#160): its row, market, board and `needs_evaluation` answer all come from the batched phases, and `discovery.py::_resolution_fingerprint` is what tells the two cases apart — a future resolution step that mutates another stored field must be added there or its change will not be written. Board registration left the tail with #160 (batched through `upsert_ats_boards`, so no board is registered twice in a run) and eligibility recording left it with #151. Those jobs still bypass the `max_canonical_resolutions_per_run` shortlist, which bounds network resolutions only. New bulk work should use the batch methods rather than looping the single-job ones.
+- `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids(match_score_floor)` retries undelivered Telegram work without re-calling Gemini, applying the profile's inclusive floor. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, `upsert_ats_boards`, and `record_ats_eligible_jobs` — `collect_candidates` calls these instead of looping the single-job methods. Since #182 the crawl also stages its postings first, through `merge_posting_batch`, and hands each job upsert the posting the merge resolved, so `job_hunter_upsert_job` no longer resolves one per listing. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time. `collect_candidates`'s canonical-resolution tail no longer uses them: it pays only for a job whose resolution actually changed something, and those jobs' writes are collected during the loop and flushed after it as one staged posting merge plus `upsert_logical_jobs`, `set_job_markets` and `needs_evaluation_bulk` — three PostgREST round trips per resolved job (1170.8s for 1,221 of them in run 34289288702) became four calls for the whole run. The loop records its outcomes in order and a single walk afterwards decides eligibility, so deferring the writes cannot reorder what the run delivers. A job already on a supported ATS URL resolves to what it already was and writes nothing at all (#160): its row, market, board and `needs_evaluation` answer all come from the batched phases, and `discovery.py::_resolution_fingerprint` is what tells the two cases apart — a future resolution step that mutates another stored field must be added there or its change will not be written. Board registration left the tail with #160 (batched through `upsert_ats_boards`, so no board is registered twice in a run) and eligibility recording left it with #151. Those jobs still bypass the `max_canonical_resolutions_per_run` shortlist, which bounds network resolutions only. New bulk work should use the batch methods rather than looping the single-job ones.
 - `src/job_hunter/ai/` — the AI provider port (#73). `port.py` holds the vocabulary core
   modules are allowed to know: `AIProvider`, `CallClass` (who funds a call and whether its
   answer is shared), the purposes, and the provider-neutral errors (`AIIncompleteResponse`,

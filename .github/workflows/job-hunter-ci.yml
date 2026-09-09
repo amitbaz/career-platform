@@ -40,6 +40,10 @@ jobs:
           eval "$(supabase status -o env | sed 's/^/export /')"
           export SUPABASE_TEST_URL="$API_URL"
           export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+          # Ingestion's direct, privileged connection (#182). Optional in
+          # production; supplied here so the staged-batch merge is exercised
+          # rather than skipped.
+          export SUPABASE_TEST_DB_URL="$DB_URL"
           # The keys file is an array; the minter wants the single JWK object.
           export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
           cd apps/job-hunter
@@ -72,6 +76,10 @@ jobs:
           eval "$(supabase status -o env | sed 's/^/export /')"
           export SUPABASE_TEST_URL="$API_URL"
           export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+          # Ingestion's direct, privileged connection (#182). Optional in
+          # production; supplied here so the staged-batch merge is exercised
+          # rather than skipped.
+          export SUPABASE_TEST_DB_URL="$DB_URL"
           # The keys file is an array; the minter wants the single JWK object.
           export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
           cd apps/job-hunter

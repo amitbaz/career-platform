@@ -114,6 +114,18 @@ class DiscoveryStats:
     # is the figure capacity planning wants -- shared facet extraction is
     # paid per row.
     newly_discovered: int = 0
+    # Postings this run's staged batches inserted -- advertisements nobody
+    # held a row for at all, as opposed to `newly_discovered`, which counts
+    # this user's own job rows. The two differ as soon as a second user is
+    # discovering the same corpus, and the postings figure is the one capacity
+    # planning wants: shared facet extraction is paid per posting.
+    #
+    # Zero on a deployment with no direct Postgres connection, where nothing
+    # is staged and every posting is resolved inside its own job upsert. That
+    # is indistinguishable here from a run that genuinely discovered nothing
+    # new, which is why the `discovery source contribution` line reports it
+    # rather than any code branching on it.
+    postings_discovered: int = 0
     canonical_resolved: int = 0
     # Of the resolved jobs, how many resolved to exactly what they already
     # were and so cost no store write. The gap between this and
@@ -789,10 +801,20 @@ def collect_candidates(
     # Persist every source copy before collapsing the run so provenance is
     # retained even when only one representative continues to evaluation.
     with ledger.phase(PHASE_RAW_PERSIST):
+        # Two steps, one round trip each. The batch of postings is staged and
+        # merged in one set-based statement first (#182), and the job upserts
+        # then carry the posting each listing resolved to instead of resolving
+        # one per listing. A store with no direct Postgres connection returns
+        # an empty batch and the second step resolves its own postings, as
+        # before.
+        raw_batch = store.merge_posting_batch(raw_jobs)
+        stats.postings_discovered += raw_batch.newly_discovered
         # The upsert already decides per row whether it inserted; keeping the
         # answer here is what turns the newly-discovered rate from an estimate
         # into a measurement.
-        stats.newly_discovered += _count_inserts(store.upsert_logical_jobs(raw_jobs))
+        stats.newly_discovered += _count_inserts(
+            store.upsert_logical_jobs(raw_jobs, posting_batch=raw_batch)
+        )
 
     with ledger.phase(PHASE_DEDUPE):
         unique_jobs, stats.cross_source_duplicates = _dedupe(raw_jobs)
@@ -823,7 +845,13 @@ def collect_candidates(
     # for the whole run.
     with ledger.phase(PHASE_UNIQUE_PERSIST):
         stats.ats_boards_discovered += store.upsert_ats_boards(board_sightings)
-        upserted = store.upsert_logical_jobs(unique_jobs)
+        # Every unique job was in the raw batch, so this merge almost always
+        # reports nothing new -- it runs to hand the upserts below their
+        # posting ids, and the count is accumulated rather than assumed zero
+        # so a job that reached here without a raw pass is still counted.
+        unique_batch = store.merge_posting_batch(unique_jobs)
+        stats.postings_discovered += unique_batch.newly_discovered
+        upserted = store.upsert_logical_jobs(unique_jobs, posting_batch=unique_batch)
         stats.newly_discovered += _count_inserts(upserted)
 
         persisted: list[tuple[str, Job, str | None]] = []
@@ -972,6 +1000,22 @@ def collect_candidates(
     # One entry per eligible job on a supported ATS board; the store collapses
     # them to one entry per board before it writes.
     eligible_sightings: list[tuple[str, str]] = []
+    # One entry per job that came through the resolution loop, in loop order,
+    # as `(job_id, job, was_deferred)`. It exists so that deferring the loop's
+    # writes cannot reorder anything: the loop records what happened, and a
+    # single walk afterwards decides eligibility in exactly the order the loop
+    # visited. `job_id` is None while a job is still waiting for the deferred
+    # upsert to say which row it landed on, and stays None for a job that
+    # could not be persisted at all.
+    outcomes: list[tuple[str | None, Job, bool]] = []
+    # The jobs whose resolution changed something, and the position each holds
+    # in `outcomes`. Their writes are the 1170.8s canonical phase of run
+    # 34289288702: three PostgREST round trips each -- an identity-resolving
+    # upsert, a market attribution and a needs-evaluation read -- for 1,221
+    # jobs against 81 network attempts. Batched below into one staged posting
+    # merge and three bulk calls, which is what #182 exists to do.
+    deferred: list[Job] = []
+    deferred_positions: list[int] = []
 
     with ledger.phase(PHASE_ELIGIBLE):
         for job_id, job in prefiltered:
@@ -1060,19 +1104,74 @@ def collect_candidates(
                                 # correct because nothing about the job changed.
                                 stats.canonical_unchanged += 1
                             else:
-                                # Late canonicalization may consolidate stored rows; use
-                                # the store's history-preserving survivor ID downstream.
-                                job_id, is_new, _description_changed = store.upsert_logical_job(job)
-                                # Resolution rewrites the job's canonical URL, so this
-                                # upsert resolves identity again and can land on a row
-                                # the earlier two never matched.
-                                stats.newly_discovered += int(is_new)
-                                if job.market_id:
-                                    store.set_job_market(job_id, job.market_id)
-                                if not store.needs_evaluation(job_id):
-                                    rediscovered_job_ids.append(job_id)
-                                    continue
+                                # Resolution rewrites the job's canonical URL,
+                                # so this job has to be persisted again: the
+                                # upsert resolves identity from scratch and can
+                                # land on a row the earlier two never matched,
+                                # which is why the id it returns -- the store's
+                                # history-preserving survivor -- is what
+                                # everything downstream uses.
+                                #
+                                # The write is deferred rather than made here.
+                                # Nothing in the rest of the loop reads the
+                                # store, so a batch after it lands on the same
+                                # rows in the same order that these calls would
+                                # have, one round trip for the whole set
+                                # instead of three per job.
+                                deferred_positions.append(len(outcomes))
+                                deferred.append(job)
+                                outcomes.append((None, job, True))
+                                continue
 
+            outcomes.append((job_id, job, False))
+
+        # The deferred writes, as one staged posting merge and three bulk
+        # calls. A job that could not be persisted keeps its None id and is
+        # dropped in the walk below -- everything downstream is keyed by an id
+        # it no longer has, and `upsert_logical_jobs` has already logged why.
+        evaluation_needed: dict[str, bool] = {}
+        if deferred:
+            with ledger.phase(PHASE_CANONICAL):
+                resolved_batch = store.merge_posting_batch(deferred)
+                stats.postings_discovered += resolved_batch.newly_discovered
+                resolved_upserts = store.upsert_logical_jobs(
+                    deferred, posting_batch=resolved_batch
+                )
+                # Keyed by job id, and last write wins, because two jobs can
+                # resolve onto one row: the per-job calls this replaces made
+                # the later attribution the surviving one, and a list of pairs
+                # would leave which of them lands to the database.
+                resolved_markets: dict[str, str | None] = {}
+                for position, job, result in zip(
+                    deferred_positions, deferred, resolved_upserts, strict=True
+                ):
+                    if result is None:
+                        continue
+                    resolved_id, is_new, _description_changed = result
+                    stats.newly_discovered += int(is_new)
+                    outcomes[position] = (resolved_id, job, True)
+                    if job.market_id:
+                        resolved_markets[resolved_id] = job.market_id
+                store.set_job_markets(list(resolved_markets.items()))
+                evaluation_needed = store.needs_evaluation_bulk(
+                    [
+                        job_id
+                        for job_id, _job, was_deferred in outcomes
+                        if was_deferred and job_id is not None
+                    ]
+                )
+
+        for job_id, job, was_deferred in outcomes:
+            if job_id is None:
+                continue
+            # Only a job resolution changed was re-persisted, so only it can
+            # have become a rediscovery. An unchanged job keeps the answer the
+            # persistence phase already got for it. A missing id counts as
+            # needing evaluation, which is what the per-job read did with a
+            # job whose evaluations it could not see.
+            if was_deferred and not evaluation_needed.get(job_id, True):
+                rediscovered_job_ids.append(job_id)
+                continue
             if job_id in eligible_job_ids:
                 continue
             eligible_job_ids.add(job_id)
@@ -1124,11 +1223,12 @@ def collect_candidates(
         _format_phase_cost(stats),
     )
     logger.info(
-        "discovery source contribution: %s canonical_resolved=%s "
+        "discovery source contribution: %s postings_discovered=%s canonical_resolved=%s "
         "canonical_unchanged=%s canonical_unresolved=%s canonical_budget_exhausted=%s "
         "canonical_network_attempts=%s canonical_shortlist_limit=%s "
         "cross_source_duplicates=%s availability_rejected=%s",
         _format_source_contribution(stats.per_source),
+        stats.postings_discovered,
         stats.canonical_resolved,
         stats.canonical_unchanged,
         stats.canonical_unresolved,

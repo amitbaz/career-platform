@@ -110,8 +110,11 @@ def test_run_loads_settings_from_the_constructed_store(monkeypatch, tmp_path):
     captured = {}
 
     class Store:
-        def __init__(self, client):
+        def __init__(self, client, ingestion=None):
             captured["store"] = self
+
+        def close(self):
+            pass
 
     def load_from_store(store):
         captured["settings_store"] = store
@@ -276,9 +279,12 @@ def test_sync_gmail_builds_the_store_before_loading_gmail_settings(monkeypatch):
             events.append("http")
 
     class Store:
-        def __init__(self, client):
+        def __init__(self, client, ingestion=None):
             events.append("store")
             captured["store"] = self
+
+        def close(self):
+            pass
 
     def build_client(http):
         events.append("client")
@@ -312,7 +318,10 @@ def test_sync_gmail_uses_provider_credentials_without_loading_candidate_document
     monkeypatch.setenv("GEMINI_FREE_RPD", "500")
 
     class Store:
-        def __init__(self, client):
+        def __init__(self, client, ingestion=None):
+            pass
+
+        def close(self):
             pass
 
         def get_provider_credentials(self):
@@ -570,8 +579,11 @@ def test_generate_cover_letter_loads_settings_from_the_constructed_store(
     captured = {}
 
     class Store:
-        def __init__(self, client):
+        def __init__(self, client, ingestion=None):
             captured["store"] = self
+
+        def close(self):
+            pass
 
     def load_from_store(store):
         captured["settings_store"] = store

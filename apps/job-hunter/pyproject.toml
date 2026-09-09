@@ -15,6 +15,10 @@ dependencies = [
     "google-auth-oauthlib>=1.2",
     "PyJWT[crypto]>=2.8",
     "pydantic>=2.7",
+    # Ingestion's direct, pooled Postgres connection (#182). Everything
+    # user-facing still goes through PostgREST; this is the transport that
+    # makes COPY and set-based merges available to the crawl.
+    "psycopg[binary,pool]>=3.2",
 ]
 
 [project.optional-dependencies]

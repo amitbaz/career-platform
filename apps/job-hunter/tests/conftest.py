@@ -44,6 +44,13 @@ _REQUIRED = (
     "SUPABASE_TEST_SIGNING_KEY_B64",
 )
 
+# SUPABASE_TEST_DB_URL is deliberately NOT in _REQUIRED. It is ingestion's
+# direct, privileged connection (#182), which is optional in production too:
+# without it a run persists each posting inside its own job upsert and still
+# delivers. Tests that need it ask for it themselves and skip when it is
+# absent, so a developer who has only the PostgREST settings still gets a
+# green run of everything else.
+
 # The seed users belong to whichever pool slot this run claimed; ask the
 # `seed_users` fixture rather than naming a UUID. RLS only lets users
 # supabase/seed.sql created see anything at all, so an invented UUID reads

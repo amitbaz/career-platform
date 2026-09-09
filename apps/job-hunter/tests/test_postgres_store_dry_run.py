@@ -18,6 +18,7 @@ from job_hunter.models import Job
 from job_hunter.postgres_store import (
     DryRunStore,
     PostgresJobStore,
+    PostingBatch,
     _POSTGRES_JOB_STORE_READ_METHODS,
     _POSTGRES_JOB_STORE_WRITE_METHODS,
 )
@@ -145,6 +146,11 @@ def _assert_synthetic(value, shape: str) -> None:
         assert value == 0
     elif shape == "job_upsert_results":
         assert value == []
+    elif shape == "posting_batch":
+        # An empty batch, which is exactly what a store with no direct
+        # Postgres connection returns -- and what every caller already
+        # handles by resolving each posting inside its own job upsert.
+        assert value == PostingBatch()
     elif shape == "echo_job_id":
         # The wrapper hands back its first argument; the caller above passes
         # none, so None is the honest expectation here. The value it echoes

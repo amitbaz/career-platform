@@ -132,7 +132,7 @@ def test_upsert_logical_jobs_skips_a_job_that_fails_on_replay(store, monkeypatch
             raise RuntimeError("chunk exploded")
         return original_rpc(function, payload, **kwargs)
 
-    def failing_for_bad(job):
+    def failing_for_bad(job, **kwargs):
         if job.source_job_id == "skip-bad":
             raise RuntimeError("this one job is malformed")
         return original_single(job)
@@ -168,7 +168,7 @@ def test_upsert_logical_jobs_raises_when_every_chunk_fails(store, monkeypatch):
             raise RuntimeError("statement timeout")
         return original_rpc(function, payload, **kwargs)
 
-    def recording_single(job):
+    def recording_single(job, **kwargs):
         replayed.append(job.source_job_id)
         return ("00000000-0000-0000-0000-000000000001", False, False)
 
