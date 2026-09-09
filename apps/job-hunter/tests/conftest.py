@@ -43,6 +43,55 @@ _REQUIRED = (
     "SUPABASE_TEST_PUBLISHABLE_KEY",
     "SUPABASE_TEST_SIGNING_KEY_B64",
 )
+_ALLOW_MISSING_STACK_ENV = "JOB_HUNTER_ALLOW_MISSING_STACK"
+_ALLOW_MISSING_STACK_OPTION = "--allow-missing-stack"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        _ALLOW_MISSING_STACK_OPTION,
+        action="store_true",
+        default=False,
+        help=(
+            "run without the local Supabase stack and explicitly skip store-backed tests; "
+            "valid only when none of the required SUPABASE_TEST_* variables is set"
+        ),
+    )
+
+
+def _missing_stack_environment() -> tuple[str, ...]:
+    return tuple(name for name in _REQUIRED if not os.environ.get(name))
+
+
+def _missing_stack_is_allowed(config: pytest.Config) -> bool:
+    return config.getoption(_ALLOW_MISSING_STACK_OPTION) or (
+        os.environ.get(_ALLOW_MISSING_STACK_ENV) == "1"
+    )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Reject accidental loss of all store-backed coverage before collection.
+
+    This is a hard failure rather than a warning because a green run is evidence only when
+    missing stack configuration cannot silently remove most of the suite. The opt-out remains
+    available for deliberate non-database runs, but only a fully absent environment can use it:
+    a partial environment is a configuration error, not an intention.
+    """
+    missing = _missing_stack_environment()
+    if not missing:
+        return
+
+    stack_is_absent = len(missing) == len(_REQUIRED)
+    if stack_is_absent and _missing_stack_is_allowed(session.config):
+        return
+
+    state = "not configured" if stack_is_absent else "partially configured"
+    raise pytest.UsageError(
+        f"local Supabase stack is {state}; missing {', '.join(missing)}. "
+        "Configure all three required variables for the full suite. For a deliberate "
+        "non-database run, unset all three and set JOB_HUNTER_ALLOW_MISSING_STACK=1 or pass "
+        "--allow-missing-stack; partial configuration always fails."
+    )
 
 # SUPABASE_TEST_DB_URL is deliberately NOT in _REQUIRED. It is ingestion's
 # direct, privileged connection (#182), which is optional in production too:
@@ -251,11 +300,17 @@ def _postings_unique_to_this_test():
 
 
 @pytest.fixture(scope="session")
-def _stack_env() -> None:
-    missing = [name for name in _REQUIRED if not os.environ.get(name)]
+def _stack_env(pytestconfig: pytest.Config) -> None:
+    missing = _missing_stack_environment()
     if missing:
+        opt_out = (
+            _ALLOW_MISSING_STACK_OPTION
+            if pytestconfig.getoption(_ALLOW_MISSING_STACK_OPTION)
+            else f"{_ALLOW_MISSING_STACK_ENV}=1"
+        )
         pytest.skip(
-            "local Supabase stack not configured; missing " + ", ".join(missing)
+            f"store-backed test skipped by explicit {opt_out} opt-out; "
+            "the local Supabase stack is not configured"
         )
 
 
