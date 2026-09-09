@@ -1979,7 +1979,15 @@ def test_collect_candidates_resolver_tail_is_free_for_already_canonical_jobs(
                 source_job_id=f"canonical-{job_count}-{i}",
                 title="Senior Product Engineer",
                 company=f"Acme {job_count} {i}",
-                url=f"https://jobs.lever.co/acme/canonical-{job_count}-{i}",
+                # A distinct board per invocation, not shared with the other
+                # call to run_with(): job_hunter_ats_boards is shared and
+                # has no delete policy (#203), and a per-user
+                # job_hunter_ats_registry row is now only written on a
+                # user's *first* sighting of a board -- reusing "acme"
+                # across both invocations would make the second call's
+                # count reflect an already-registered board rather than
+                # the board-count invariant this test means to pin.
+                url=f"https://jobs.lever.co/acme-{job_count}/canonical-{job_count}-{i}",
                 description="React TypeScript remote role.",
                 remote=True,
             )
@@ -2034,7 +2042,10 @@ def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
             Job(
                 source="test",
                 source_job_id=f"board-{job_count}-{i}",
-                url=f"https://jobs.lever.co/acme/board-{job_count}-{i}",
+                # See the note in the resolver-tail test above: a distinct
+                # board per invocation, since #203 made a per-user
+                # registry row a one-time write on first sighting.
+                url=f"https://jobs.lever.co/acme-{job_count}/board-{job_count}-{i}",
                 company="Acme",
                 title=f"Frontend Engineer {i}",
                 location="Office",
@@ -2919,7 +2930,10 @@ def test_recording_eligibility_does_not_scale_with_the_eligible_jobs(
                 source_job_id=f"eligible-{job_count}-{index}",
                 title="Senior Product Engineer",
                 company=f"Acme {job_count} {index}",
-                url=f"https://jobs.lever.co/acme/eligible-{job_count}-{index}",
+                # See the note in the resolver-tail test above: a distinct
+                # board per invocation, since #203 made a per-user
+                # registry row a one-time write on first sighting.
+                url=f"https://jobs.lever.co/acme-{job_count}/eligible-{job_count}-{index}",
                 description="React TypeScript remote role.",
                 remote=True,
             )
