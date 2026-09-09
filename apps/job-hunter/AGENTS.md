@@ -115,7 +115,7 @@ Migration rules:
    intact; anything unclassifiable (a health-backoff deactivation, which carries no reason at
    all) also promotes as active, because a board wrongly promoted as active self-corrects on
    the next crawl while one wrongly promoted as rejected is unreachable by design.
-   `29999999000000_job_hunter_job_membership.sql` finishes the sequence (#178): every
+   `20260909210000_job_hunter_job_membership.sql` finishes the sequence (#178): every
    posting-level column comes off `job_hunter_jobs`, which becomes one user's membership of
    a posting — user, posting, market, status, first and last seen — unique on
    `(user_id, posting_id)`, with `posting_id` not null and the fingerprint's uniqueness now
