@@ -33,7 +33,12 @@ from enum import Enum
 from typing import Literal, Protocol, runtime_checkable
 
 AIPurpose = Literal[
-    "gmail_semantic", "candidate_context", "job_evaluation", "job_facets", "cover_letter"
+    "gmail_semantic",
+    "candidate_context",
+    "job_evaluation",
+    "job_facets",
+    "company_facets",
+    "cover_letter",
 ]
 AI_PURPOSES: tuple[AIPurpose, ...] = (
     "gmail_semantic",
@@ -47,6 +52,13 @@ AI_PURPOSES: tuple[AIPurpose, ...] = (
     # exhausting this budget defers exactly the jobs whose postings are still
     # unread, and leaves every other job scoreable out of the core reserve.
     "job_facets",
+    # Objective company extraction (issue #198). Its own purpose, not folded
+    # into `job_facets`, because the two amortise over completely different
+    # denominators: a posting's facts are read once per posting, a company's
+    # once per employer across every role it publishes for months. A ledger
+    # that could not tell them apart could not show that ratio, and the ratio
+    # is the entire argument for reading companies at all.
+    "company_facets",
     "cover_letter",
 )
 

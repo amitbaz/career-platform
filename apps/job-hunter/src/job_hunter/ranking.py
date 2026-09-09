@@ -4,7 +4,8 @@ import math
 from collections import defaultdict
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
-from job_hunter.models import CandidatePreferences, Job, SearchPolicy
+from job_hunter.job_identity import normalize_company_name
+from job_hunter.models import CandidatePreferences, CompanyFacets, Job, SearchPolicy
 from job_hunter.normalize import normalize_text
 
 # Matched as a substring of the URL rather than against the parsed hostname, so
@@ -227,26 +228,96 @@ def _avoid_signal_penalty(job: Job, preferences: CandidatePreferences) -> int:
     return round(10 * len(matches) / len(avoid_signals))
 
 
-def profile_priority_score(job: Job, preferences: CandidatePreferences, policy: SearchPolicy) -> int:
+#: What a company's dimensions can add to a posting's rank, and what they can
+#: take away. Sized against the preferences the ranking already holds -- role
+#: and seniority fit is worth 35, signal coverage 30, location 15 -- so a
+#: company match matters, and matters less than whether the role is the right
+#: role. The industry and the business model carry most of it because they are
+#: the two a candidate states most confidently; stage and size refine.
+_COMPANY_INDUSTRY_BONUS = 6
+_COMPANY_BUSINESS_MODEL_BONUS = 5
+_COMPANY_STAGE_BONUS = 2
+_COMPANY_SIZE_BONUS = 2
+#: One penalty however many exclusions a company trips. Two exclusions are not
+#: twice as disqualifying as one -- the user has already said no -- and letting
+#: them stack would let a company preference outweigh every other dimension
+#: combined.
+_COMPANY_EXCLUSION_PENALTY = 20
+
+
+def company_fit(
+    job: Job,
+    policy: SearchPolicy,
+    company_facets: dict[str, CompanyFacets] | None,
+) -> int:
+    """What this employer's known dimensions are worth to this user (#198).
+
+    Returns 0 -- neither promoted nor suppressed -- in every case where the
+    answer is not established: no preferences stated, no facets stored for
+    this employer, or facets that are stored but say "unknown" on every
+    dimension the user has an opinion about. That is the issue's hardest
+    requirement and the reason this returns a number rather than a filter: a
+    company nobody has read yet must never cost its postings a place, because
+    a gap in the engine's data is not evidence about the employer.
+    """
+    preferences = policy.company_preferences
+    if not company_facets or preferences is None or preferences.is_empty():
+        return 0
+    facets = company_facets.get(normalize_company_name(job.company or ""))
+    if facets is None:
+        return 0
+
+    if facets.industry in preferences.excluded_industries or (
+        facets.business_model in preferences.excluded_business_models
+    ):
+        # Reached only on a value that is actually established: "unknown" is
+        # refused as a preference where the profile is written, so an unread
+        # company can never match an exclusion here.
+        return -_COMPANY_EXCLUSION_PENALTY
+
+    total = 0
+    if facets.industry in preferences.preferred_industries:
+        total += _COMPANY_INDUSTRY_BONUS
+    if facets.business_model in preferences.preferred_business_models:
+        total += _COMPANY_BUSINESS_MODEL_BONUS
+    if facets.stage in preferences.preferred_stages:
+        total += _COMPANY_STAGE_BONUS
+    if facets.size_band in preferences.preferred_size_bands:
+        total += _COMPANY_SIZE_BONUS
+    return total
+
+
+def profile_priority_score(
+    job: Job,
+    preferences: CandidatePreferences,
+    policy: SearchPolicy,
+    company_facets: dict[str, CompanyFacets] | None = None,
+) -> int:
     total = (
         _role_seniority_fit(job, preferences)
         + _signal_coverage(job, preferences)
         + _market_location_fit(job, preferences, policy)
         + source_quality(job, policy)
         + market_priority_bonus(job, policy)
+        + company_fit(job, policy, company_facets)
         - _avoid_signal_penalty(job, preferences)
         - _backend_transition_penalty(job, policy)
     )
     return max(0, min(100, total))
 
 
-def priority_score(job: Job, policy: SearchPolicy) -> int:
+def priority_score(
+    job: Job,
+    policy: SearchPolicy,
+    company_facets: dict[str, CompanyFacets] | None = None,
+) -> int:
     total = (
         _title_fit(job.title, policy)
         + _strength_evidence(job.description, policy)
         + _career_direction_evidence(job.description)
         + _location_evidence(job)
         + source_quality(job, policy)
+        + company_fit(job, policy, company_facets)
     )
     return max(0, min(100, total))
 
@@ -255,8 +326,23 @@ def rank_jobs(
     jobs: list[tuple[str, Job]],
     policy: SearchPolicy,
     preferences: CandidatePreferences | None = None,
+    company_facets: dict[str, CompanyFacets] | None = None,
 ) -> list[tuple[str, Job, int]]:
-    scorer = priority_score if preferences is None else lambda job, current_policy: profile_priority_score(job, preferences, current_policy)
+    """Order candidates by fit, company dimensions included (#198).
+
+    `company_facets` is keyed by `normalize_company_name`, holds whatever the
+    corpus already knows, and is optional throughout: a caller that has not
+    read it, and an employer missing from it, both leave the ordering exactly
+    as it was. There is one ranking here and it consumes both the posting's
+    evidence and the company's -- deliberately not a second, company-only
+    pass whose result would have to be reconciled with this one.
+    """
+    if preferences is None:
+        def scorer(job: Job, current_policy: SearchPolicy) -> int:
+            return priority_score(job, current_policy, company_facets)
+    else:
+        def scorer(job: Job, current_policy: SearchPolicy) -> int:
+            return profile_priority_score(job, preferences, current_policy, company_facets)
     scored = [(job_id, job, scorer(job, policy)) for job_id, job in jobs]
     return sorted(
         scored,

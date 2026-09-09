@@ -25,6 +25,8 @@ from job_hunter.market_eligibility import evaluate_market_eligibility
 from job_hunter.market_policy import market_by_id, salary_floor_for_job
 from job_hunter.models import (
     CandidateContext,
+    CompanyFacets,
+    CompanyPreferences,
     Compensation,
     Evaluation,
     Job,
@@ -320,12 +322,75 @@ def _posting_block(job: Job, facets: JobFacets) -> str:
     )
 
 
+#: How each company dimension is labelled in the prompt. Rendered in a fixed
+#: order so the same company always produces the same block.
+_COMPANY_DIMENSIONS = (
+    ("industry", "Industry"),
+    ("business_model", "Business model"),
+    ("stage", "Stage"),
+    ("size_band", "Approximate size"),
+    ("headquarters_region", "Headquarters region"),
+)
+
+
+def _company_block(company: CompanyFacets | None, preferences: CompanyPreferences) -> str:
+    """What the scoring call learns about the employer, and what to do with it.
+
+    Both halves are needed for the call to mean anything. The facts alone
+    would not tell the model which of them this candidate cares about, and the
+    stated preferences alone would have nothing to compare against.
+
+    A company nobody has read yet is described as exactly that, with an
+    instruction to score the dimension neutrally. Saying nothing instead would
+    leave the model to fill the silence, and it fills it by inferring an
+    employer from the posting -- which is a guess presented as a fact, and the
+    one failure mode this whole feature must not have (#198, user story 6).
+    """
+    lines = ["Company facts, read once from the employer rather than from this posting:"]
+    if company is None or not company.is_known():
+        lines.append(
+            "- Nothing has been established about this employer yet. Score "
+            "company fit neutrally: this is a gap in what has been read, not "
+            "evidence that the company is a poor fit, and it must neither "
+            "raise nor lower the score."
+        )
+    else:
+        lines += [
+            f"- {label}: {getattr(company, name)}"
+            for name, label in _COMPANY_DIMENSIONS
+        ]
+        lines.append(
+            'A dimension recorded as "unknown" was not established. Treat it '
+            "as absent, never as a mismatch."
+        )
+
+    stated = [
+        (label, values)
+        for label, values in (
+            ("prefers companies in", preferences.preferred_industries),
+            ("will not work in", preferences.excluded_industries),
+            ("prefers the business model", preferences.preferred_business_models),
+            ("will not work for", preferences.excluded_business_models),
+            ("prefers companies at stage", preferences.preferred_stages),
+            ("prefers company size", preferences.preferred_size_bands),
+        )
+        if values
+    ]
+    if stated:
+        lines.append("")
+        lines.append("What this candidate has stated about the kind of employer they want:")
+        lines += [f"- {label}: {', '.join(values)}" for label, values in stated]
+
+    return "\n".join(lines)
+
+
 def _build_evaluation_prompt(
     job: Job,
     facets: JobFacets,
     context: CandidateContext,
     policy: SearchPolicy,
     market: MarketPolicy | None = None,
+    company: CompanyFacets | None = None,
 ) -> str:
     maxima_lines = "\n".join(f"- {key}: max {value}" for key, value in SCORE_MAXIMA.items())
 
@@ -350,6 +415,8 @@ Candidate context:
 {_serialize_context(context)}
 
 {_posting_block(job, facets)}
+
+{_company_block(company, policy.company_preferences)}
 """
 
     return f"""You are evaluating a job posting against a candidate profile for a market-driven job search. Remote, hybrid, onsite, and relocation compatibility is governed by the specific market policy below, not by a single global remote-only rule.
@@ -370,6 +437,8 @@ Candidate context:
 {_serialize_context(context)}
 
 {_posting_block(job, facets)}
+
+{_company_block(company, policy.company_preferences)}
 """
 
 
@@ -524,6 +593,7 @@ def evaluate_job(
     context: CandidateContext,
     policy: SearchPolicy,
     ai: "AIProvider",
+    company: CompanyFacets | None = None,
 ) -> Evaluation:
     """Score `job` for this candidate from the facets already read from it.
 
@@ -532,6 +602,12 @@ def evaluate_job(
     list is indistinguishable, inside the prompt, from a posting that demands
     nothing, and scoring it that way inflates exactly the jobs nothing is known
     about. The caller leaves such a job for a later run.
+
+    `company` is optional and stays optional (#198). The employer's facts are
+    extra evidence, not a precondition: a company nobody has read yet is
+    described to the model as unread and scored neutrally, so a gap in the
+    company corpus can never cost a posting its evaluation the way missing
+    facets do.
 
     A completed response that the parser rejects gets one fresh provider call.
     Provider and quota errors are not caught here, so a refusal can never be
@@ -546,7 +622,7 @@ def evaluate_job(
         )
 
     market = market_by_id(policy, job.market_id) if job.market_id and policy.markets else None
-    prompt = _build_evaluation_prompt(job, facets, context, policy, market)
+    prompt = _build_evaluation_prompt(job, facets, context, policy, market, company)
     schema = _evaluation_response_schema(facets)
 
     for parse_attempt in range(1, _EVALUATION_PARSE_MAX_ATTEMPTS + 1):

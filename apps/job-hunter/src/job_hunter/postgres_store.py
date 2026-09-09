@@ -29,6 +29,7 @@ from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import (
     AtsRegistryEntry,
     CandidateContextCacheEntry,
+    CompanyFacets,
     Evaluation,
     Job,
     JobFacets,
@@ -41,6 +42,7 @@ from job_hunter.pg import IngestionDatabase
 from job_hunter.search_profile import SearchProfile
 from job_hunter.store_mapping import (
     ats_entry_from_row,
+    company_facets_from_row,
     evaluation_from_row,
     job_facets_from_row,
     job_from_row,
@@ -59,6 +61,15 @@ logger = logging.getLogger(__name__)
 # deleted fails with exactly this, and is the one case the store retries
 # somewhere else rather than giving up -- see `_write_following_merges`.
 _FOREIGN_KEY_VIOLATION = "23503"
+
+# How long a company's facts are treated as current (issue #198). Company
+# attributes change slowly -- an employer's industry and business model do not
+# move at the cadence its job adverts do -- so this is a long interval and the
+# only thing that invalidates a row. Six months is short enough that a company
+# that raises a round or is acquired is re-read within a hiring cycle, and long
+# enough that the extraction cost stays amortised over every posting the
+# employer publishes in between, which is the whole argument for the table.
+COMPANY_FACET_REFRESH = timedelta(days=180)
 
 # The tie-break `pending_delivery_job_ids`'s SQL function and the two
 # "latest row" reads below share: newest `evaluated_at`/`generated_at` wins,
@@ -206,6 +217,19 @@ _T = TypeVar("_T")
 def _chunked(items: list[_T], size: int) -> list[list[_T]]:
     """Split ``items`` into consecutive chunks of at most ``size`` elements."""
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _quoted_in_list(values: list[str]) -> str:
+    """Render text values for a PostgREST ``in.(...)`` filter.
+
+    The uuid lists elsewhere in this file interpolate bare, because a uuid
+    cannot contain a comma or a space. A company identity can contain a space
+    ("acme labs"), which an unquoted list would leave to PostgREST's own
+    tokenizer, so each value is double-quoted. Embedded double quotes are
+    doubled per PostgREST's escaping; `normalize_company_name` cannot produce
+    one, and this does not rely on that staying true.
+    """
+    return ",".join('"' + value.replace('"', '""') + '"' for value in values)
 
 
 def _is_legacy_poisoned_linkedin_job(company: str, title: str) -> bool:
@@ -1244,6 +1268,149 @@ class PostgresJobStore:
                 elif extracted_at_hash[posting_id] != current_hash.get(posting_id, ""):
                     needing.add(row["id"])
         return needing
+
+    # ------------------------------------------------------------------
+    # Company facets
+    # ------------------------------------------------------------------
+
+    def get_company_facets(self, company: str) -> CompanyFacets | None:
+        """Return the employer's stored facets, or None when never read.
+
+        Whoever read them: the row is keyed on the company's normalized
+        identity and readable by every authenticated user, so a run reads
+        what another user's run paid for rather than paying again.
+
+        None means "not established yet", never "this company is nothing":
+        a company read as entirely unknown is still stored, because "we
+        looked and could not tell" is worth keeping and worth not paying for
+        twice.
+        """
+        identity = normalize_company_name(company)
+        if not identity:
+            return None
+        found = self.get_company_facets_bulk([company])
+        return found.get(identity)
+
+    def get_company_facets_bulk(
+        self, companies: list[str]
+    ) -> dict[str, CompanyFacets]:
+        """The stored facets for each of `companies`, keyed by identity.
+
+        One request per chunk rather than one per company: a run asks about
+        every employer in its eligible set at once, and that set is the whole
+        point -- reading 300 employers one row at a time would cost more in
+        round trips than the extraction it is saving.
+
+        A company with no row is simply absent from the result. Callers must
+        read that as "nothing established", never as a negative fact.
+        """
+        identities = [
+            identity
+            for identity in dict.fromkeys(
+                normalize_company_name(company) for company in companies
+            )
+            if identity
+        ]
+        if not identities:
+            return {}
+
+        found: dict[str, CompanyFacets] = {}
+        for chunk in _chunked(identities, _URL_FILTER_CHUNK_SIZE):
+            rows = self._client.select(
+                "job_hunter_companies",
+                params={
+                    "identity": f"in.({_quoted_in_list(chunk)})",
+                    "select": (
+                        "identity,display_name,industry,business_model,stage,"
+                        "size_band,headquarters_region,source_supplied,model"
+                    ),
+                },
+            )
+            for row in rows:
+                facets = company_facets_from_row(row)
+                if facets.identity:
+                    found[facets.identity] = facets
+        return found
+
+    def companies_needing_facets(self, companies: list[str]) -> set[str]:
+        """Which of `companies` have no current facts, by normalized identity.
+
+        A company needs reading when it has no row at all, or when the row it
+        has was extracted longer ago than `COMPANY_FACET_REFRESH`.
+
+        Refresh is **time-based, and deliberately not tied to any posting's
+        description hash** (#198). A posting's facets invalidate when the
+        advertisement's text moves, because the text is the thing being
+        described. A company's attributes are not tied to any one advert: an
+        employer does not stop being a B2B marketplace because it edited a
+        job description, and attaching this to the posting mechanism would
+        re-derive stable facts at posting cadence, which is exactly the cost
+        this table exists to avoid.
+        """
+        identities = [
+            identity
+            for identity in dict.fromkeys(
+                normalize_company_name(company) for company in companies
+            )
+            if identity
+        ]
+        if not identities:
+            return set()
+
+        stale_before = to_iso(datetime.now(timezone.utc) - COMPANY_FACET_REFRESH)
+        needing = set(identities)
+        for chunk in _chunked(identities, _URL_FILTER_CHUNK_SIZE):
+            rows = self._client.select(
+                "job_hunter_companies",
+                params={
+                    "identity": f"in.({_quoted_in_list(chunk)})",
+                    "extracted_at": f"gte.{stale_before}",
+                    "select": "identity",
+                },
+            )
+            needing -= {row["identity"] for row in rows if row.get("identity")}
+        return needing
+
+    def save_company_facets(self, facets: CompanyFacets) -> None:
+        """Persist what was read about one employer, replacing what was there.
+
+        Keyed on the identity rather than on a user, so a second user's run
+        never writes a second row for the same employer -- that duplication
+        is precisely the per-user cost this is here to remove. A row written
+        by another user's run is overwritten rather than merged: the prompt
+        could not see who asked, so the two answers describe the same company
+        and the newer one was read against more recent advertisements.
+
+        A company with no identity is dropped. `normalize_company_name`
+        returns "" for a name that is entirely punctuation or a bare legal
+        suffix, and there is nothing to key such a row on.
+        """
+        if not facets.identity:
+            logger.info(
+                "company %r normalizes to no identity; discarding its facets",
+                facets.display_name,
+            )
+            return
+        now = to_iso(datetime.now(timezone.utc))
+        self._client.upsert(
+            "job_hunter_companies",
+            [
+                {
+                    "identity": facets.identity,
+                    "display_name": facets.display_name,
+                    "industry": facets.industry,
+                    "business_model": facets.business_model,
+                    "stage": facets.stage,
+                    "size_band": facets.size_band,
+                    "headquarters_region": facets.headquarters_region,
+                    "source_supplied": facets.source_supplied,
+                    "model": facets.model,
+                    "extracted_at": now,
+                    "updated_at": now,
+                }
+            ],
+            on_conflict="identity",
+        )
 
     # ------------------------------------------------------------------
     # Materials
@@ -3094,6 +3261,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "backfill_ats_identity": "count",
     "save_evaluation": "echo_job_id",
     "save_job_facets": None,
+    "save_company_facets": None,
     "save_material": None,
     "mark_delivered": "echo_job_id",
     "upsert_company_watch": "id",
@@ -3136,6 +3304,9 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "close",
         "get_job_facets",
         "jobs_needing_facets",
+        "get_company_facets",
+        "get_company_facets_bulk",
+        "companies_needing_facets",
         "list_job_sources",
         "find_job_by_canonical_url",
         "find_job_by_ats",

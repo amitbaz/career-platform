@@ -21,6 +21,8 @@ from job_hunter.gmail_models import ExtractedJob
 from job_hunter.models import (
     CandidateContext,
     CandidatePreferences,
+    CompanyFacets,
+    CompanyPreferences,
     CompanyWatchSeed,
     Compensation,
     DigestItem,
@@ -33,7 +35,9 @@ from job_hunter.models import (
     SearchPolicy,
     Settings,
 )
+from job_hunter.job_identity import normalize_company_name
 from job_hunter.pipeline import run_pipeline, should_run_scheduled
+from job_hunter.ranking import rank_jobs
 from job_hunter.sources import GmailStagedSource, LearnedAtsSource
 from job_hunter.sources.company_watch import CompanyWatchSource
 from job_hunter.telegram import build_digest, build_ai_pause_warning, select_deliverable_items
@@ -64,6 +68,18 @@ FACET_PAYLOAD = {
 }
 
 
+#: A well-formed company-facet response, in the vocabulary
+#: `company_facets.py` validates against. Company extraction is its own
+#: provider purpose, so the fake answers it distinctly.
+COMPANY_PAYLOAD = {
+    "industry": "fintech",
+    "business_model": "b2b_saas",
+    "stage": "seed",
+    "size_band": "11_50",
+    "headquarters_region": "europe",
+}
+
+
 def _stored_facets(**overrides):
     """The facets a posting already read on an earlier run carries.
 
@@ -76,18 +92,28 @@ def _stored_facets(**overrides):
 
 
 class FakeGemini:
-    def __init__(self, *, preference_payload=None, evaluation_payload=None, facet_payload=None):
+    def __init__(
+        self,
+        *,
+        preference_payload=None,
+        evaluation_payload=None,
+        facet_payload=None,
+        company_payload=None,
+    ):
         self.model = "gemini-test"
         self.preference_calls = 0
         self.eval_calls = 0
         self.eval_prompts = []
         self.facet_calls = 0
         self.facet_prompts = []
+        self.company_calls = 0
+        self.company_prompts = []
         self.cover_letter_calls = 0
         self.call_classes = []
         self.preference_payload = preference_payload
         self.evaluation_payload = evaluation_payload
         self.facet_payload = facet_payload
+        self.company_payload = company_payload
 
     def generate_text(
         self,
@@ -131,6 +157,15 @@ class FakeGemini:
             self.facet_calls += 1
             self.facet_prompts.append(prompt)
             payload = self.facet_payload if self.facet_payload is not None else FACET_PAYLOAD
+            return json.dumps(payload)
+        if purpose == "company_facets":
+            self.company_calls += 1
+            self.company_prompts.append(prompt)
+            payload = (
+                self.company_payload
+                if self.company_payload is not None
+                else COMPANY_PAYLOAD
+            )
             return json.dumps(payload)
         if json_mode:
             self.eval_calls += 1
@@ -4239,3 +4274,305 @@ def test_the_inline_read_gives_up_rather_than_waiting_out_a_shared_window(
     assert summary.scoring_deferred_by_read_budget == 1
     # Bounded: it waited, it did not wait forever.
     assert len(slept) == job_hunter.pipeline._READ_CAPACITY_WAITS
+
+
+# ---------------------------------------------------------------------------
+# Company facets (issue #198)
+#
+# The pipeline run is the primary seam: because the suite runs against a real
+# local Supabase, company persistence is observable here and needs no separate
+# store seam. What is asserted is what the engine produces -- what a company
+# row carries after a run, how many provider calls of which class it made,
+# what a user's ranking looks like given a profile, and what happens when the
+# company is unknown.
+# ---------------------------------------------------------------------------
+
+
+def _company_name(label: str = "Acme") -> str:
+    """A company name no other test or concurrent run shares.
+
+    `job_hunter_companies` has no user_id and no delete policy, exactly like
+    `job_hunter_postings` and the facets on it: rows are shared, are not
+    cleaned between tests, and outlive the run that wrote them. The autouse
+    `_postings_unique_to_this_test` fixture salts the posting fingerprint for
+    that reason; a company is keyed on its *name*, so its uniqueness has to
+    come from the name itself.
+    """
+    return f"{label} {uuid.uuid4().hex[:12]}"
+
+
+def test_a_company_is_read_once_and_never_read_again(store, settings):
+    company = _company_name()
+    job = _job(company=company)
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
+                 telegram=FakeTelegram())
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.company_calls == 1
+    facets = store.get_company_facets(company)
+    assert facets is not None
+    assert facets.industry == "fintech"
+    assert facets.business_model == "b2b_saas"
+    assert facets.stage == "seed"
+    assert facets.size_band == "11_50"
+    assert facets.headquarters_region == "europe"
+
+
+def test_ten_postings_from_one_employer_cost_one_company_extraction(store, settings):
+    # The cost argument in one assertion: a posting facet amortises over one
+    # posting, a company facet over every role that employer publishes.
+    company = _company_name()
+    jobs = [
+        _job(
+            source_job_id=f"acme-{index}",
+            company=company,
+            title=f"Senior Product Engineer {index}",
+        )
+        for index in range(10)
+    ]
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store,
+                           ai=gemini, telegram=FakeTelegram())
+
+    assert gemini.company_calls == 1
+    assert summary.companies_seen == 1
+    assert summary.company_extraction_attempted == 1
+    assert gemini.facet_calls == 10
+
+
+def test_one_employer_under_two_legal_names_is_one_company(store, settings):
+    # normalize_company_name, not normalize_text: "Acme Ltd" and "Acme" are
+    # the same employer, and reading them twice is exactly the duplicated
+    # cost this table exists to remove.
+    company = _company_name()
+    jobs = [
+        _job(source_job_id="acme-1", company=company),
+        _job(source_job_id="acme-2", company=f"{company} Ltd"),
+    ]
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store,
+                           ai=gemini, telegram=FakeTelegram())
+
+    assert summary.companies_seen == 1
+    assert gemini.company_calls == 1
+
+
+def test_a_second_users_run_reuses_the_first_users_company_extraction(
+    store, other_store, settings
+):
+    job = _job(company=_company_name())
+    gemini = FakeGemini()
+
+    first = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                         ai=gemini, telegram=FakeTelegram())
+    second = run_pipeline(settings, sources=[FakeSource([job])], store=other_store,
+                          ai=gemini, telegram=FakeTelegram())
+
+    assert gemini.company_calls == 1
+    assert first.company_extraction_attempted == 1
+    assert first.company_facets_reused == 0
+    assert second.company_extraction_attempted == 0
+    assert second.company_facets_reused == 1
+
+
+def test_a_company_whose_region_a_source_supplied_is_not_asked_for_it(store, settings):
+    # The employer's own careers domain carries a country code, so the region
+    # is recorded directly and no call is spent deriving it.
+    company = _company_name()
+    job = _job(
+        source="greenhouse",
+        source_job_id="acme-de-1",
+        company=company,
+        url="https://acme-hiring.de/careers/1",
+        canonical_url="https://acme-hiring.de/careers/1",
+    )
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
+                 telegram=FakeTelegram())
+
+    assert gemini.company_calls == 1
+    assert "headquarters_region" not in gemini.company_prompts[0]
+    facets = store.get_company_facets(company)
+    assert facets is not None
+    assert facets.headquarters_region == "europe"
+    assert facets.source_supplied == ["headquarters_region"]
+
+
+def test_company_extraction_cannot_see_the_person_being_matched(store, settings):
+    # The evaluation prompt carries the extracted candidate context; the
+    # company prompt is built from a CompanyEvidence, which has nowhere to put
+    # any. Proving the same sentinel reaches one and not the other pins the
+    # split at the seam, and it is what makes a company facet reusable across
+    # users at all.
+    sentinel = "SENTINEL_CANDIDATE_SIGNAL_A7"
+    gemini = FakeGemini(
+        preference_payload={
+            "preferences": {
+                "preferred_roles": ["Senior Product Engineer"],
+                "preferred_seniority": ["senior"],
+                "must_have_signals": [sentinel],
+                "nice_to_have_signals": [],
+                "preferred_locations": [],
+                "avoid_signals": [],
+                "summary": sentinel,
+            },
+            "technical_skills": [sentinel],
+            "architecture_evidence": [],
+            "leadership_ownership": [],
+            "agentic_ai_evidence": [],
+            "product_domain_evidence": [],
+            "location_language_facts": [],
+            "career_direction": [],
+            "company_environment": [],
+            "career_evidence": [],
+            "evaluation_summary": sentinel,
+        }
+    )
+
+    run_pipeline(settings, sources=[FakeSource([_job(company=_company_name())])],
+                 store=store, ai=gemini, telegram=FakeTelegram())
+
+    assert gemini.company_prompts, "the company was never read"
+    assert all(sentinel not in prompt for prompt in gemini.company_prompts)
+    assert any(sentinel in prompt for prompt in gemini.eval_prompts)
+
+
+def test_company_extraction_is_funded_by_the_platform_key(store, settings):
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([_job(company=_company_name())])],
+                 store=store, ai=gemini, telegram=FakeTelegram())
+
+    assert ("company_facets", CallClass.SHARED_EXTRACTION) in gemini.call_classes
+
+
+def test_an_unreadable_company_response_leaves_the_company_retryable(store, settings):
+    company = _company_name()
+    gemini = FakeGemini(company_payload={"industry": "interpretive dance"})
+
+    summary = run_pipeline(settings, sources=[FakeSource([_job(company=company)])],
+                           store=store, ai=gemini, telegram=FakeTelegram())
+
+    # Nothing is written, so nothing claims to know what the company is, and
+    # the next run is free to try again.
+    assert store.get_company_facets(company) is None
+    assert store.companies_needing_facets([company]) == {
+        normalize_company_name(company)
+    }
+    assert summary.company_extraction_failed == 1
+    # And the run still delivered: company facts are extra evidence, never a
+    # precondition for scoring.
+    assert summary.ready_to_apply == 1
+
+
+def test_a_posting_is_scored_even_when_its_company_is_unknown(store, settings):
+    # A gap in the company corpus must never cost a user an opportunity. The
+    # company extraction here fails outright; the posting still scores.
+    class NoCompanyGemini(FakeGemini):
+        def generate_text(self, prompt, **kwargs):
+            if kwargs.get("purpose") == "company_facets":
+                self.company_calls += 1
+                raise RuntimeError("company extraction is unavailable")
+            return super().generate_text(prompt, **kwargs)
+
+    company = _company_name()
+    gemini = NoCompanyGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource([_job(company=company)])],
+                           store=store, ai=gemini, telegram=FakeTelegram())
+
+    assert store.get_company_facets(company) is None
+    assert summary.ready_to_apply == 1
+    assert summary.evaluated == 1
+    # The scoring prompt says so rather than staying silent: silence is what
+    # lets a model infer an employer and present the guess as a fact.
+    assert "Nothing has been established about this employer yet" in gemini.eval_prompts[0]
+
+
+def test_the_scoring_prompt_carries_the_companys_facts_once_they_are_known(
+    store, settings
+):
+    gemini = FakeGemini()
+
+    run_pipeline(settings, sources=[FakeSource([_job(company=_company_name())])],
+                 store=store, ai=gemini, telegram=FakeTelegram())
+
+    assert "- Industry: fintech" in gemini.eval_prompts[0]
+    assert "- Business model: b2b_saas" in gemini.eval_prompts[0]
+    assert "- Stage: seed" in gemini.eval_prompts[0]
+
+
+def test_a_stated_company_preference_reorders_the_ranking(store, settings):
+    # Two postings identical but for their employer. With no opinion stated
+    # the alphabetical tie-break puts the consultancy first; stating a
+    # preference over the company dimensions moves the product company above
+    # it. One ranking consumes both, which is why this is the same call.
+    settings.policy.company_preferences.excluded_business_models = ["consultancy"]
+    settings.policy.company_preferences.preferred_business_models = ["b2b_saas"]
+
+    product_name = _company_name("Zeta Product")
+    agency_name = _company_name("Alpha Consulting")
+    product = _job(source_job_id="product-1", company=product_name)
+    agency = _job(source_job_id="agency-1", company=agency_name)
+
+    store.save_company_facets(
+        CompanyFacets(
+            identity=normalize_company_name(product_name),
+            display_name=product_name,
+            business_model="b2b_saas",
+        )
+    )
+    store.save_company_facets(
+        CompanyFacets(
+            identity=normalize_company_name(agency_name),
+            display_name=agency_name,
+            business_model="consultancy",
+        )
+    )
+    known = store.get_company_facets_bulk([product_name, agency_name])
+    assert len(known) == 2
+
+    preferences = _candidate_context().preferences
+    ranked = rank_jobs(
+        [("zeta", product), ("alpha", agency)], settings.policy, preferences, known
+    )
+    neutral = rank_jobs(
+        [("zeta", product), ("alpha", agency)],
+        dataclasses.replace(settings.policy, company_preferences=CompanyPreferences()),
+        preferences,
+        known,
+    )
+
+    assert [job.company for _job_id, job, _score in ranked] == [
+        product_name,
+        agency_name,
+    ]
+    assert [job.company for _job_id, job, _score in neutral] == [
+        agency_name,
+        product_name,
+    ]
+
+
+def test_an_unknown_company_is_neither_promoted_nor_suppressed(store, settings):
+    # The issue's hardest requirement: a missing fact is never a negative one.
+    # A company nothing is known about ranks exactly where it would have
+    # ranked before any of this existed.
+    settings.policy.company_preferences.excluded_business_models = ["consultancy"]
+    job = _job(company=_company_name("Nobody Has Read"))
+    preferences = _candidate_context().preferences
+
+    with_preferences = rank_jobs([("j1", job)], settings.policy, preferences, {})
+    without = rank_jobs(
+        [("j1", job)],
+        dataclasses.replace(settings.policy, company_preferences=CompanyPreferences()),
+        preferences,
+        {},
+    )
+
+    assert with_preferences[0][2] == without[0][2]
