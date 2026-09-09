@@ -1207,6 +1207,10 @@ The owner's decision on #184: the quota is a property of the API key, not of a p
 - Modify: `supabase/tests/pgtap/job_hunter_isolation.sql` (remove `job_hunter_search_api_usage` from the table list at **line 74** and its seed `when` arm at **lines 172–173**)
 - Modify: `supabase/tests/pgtap/job_hunter_write_idempotency.sql` — **two** places, not one: **lines 22–23** and **lines 51–52**
 - Modify: `apps/job-hunter/tests/conftest.py` — the cleanup list entry is at **line 165**
+- Modify: `apps/job-hunter/scripts/migrate_sqlite_to_postgres.py` — `_migrate_search_api_usage` (around line 657) and its call site (around line 213) write to the table this task drops
+- Modify: `docs/positioning.md:138` — names the table in a list of per-user tables
+
+> **Do a fresh sweep before you start:** `grep -rln job_hunter_search_api_usage --include='*.py' --include='*.sql' --include='*.md' . | grep -v node_modules`. Dropping a table is only complete when nothing references it. The two entries above were found that way and were missing from the first draft of this plan — there may be more by the time this task runs.
 
 > Line numbers re-derived from `origin/main` at `a975945` (the #179 merge), which moved several of them. Verify with `grep -n job_hunter_search_api_usage` before editing rather than trusting these — #179's own hunks shifted this file and another merge may shift it again.
 - Modify: `supabase/tests/pgtap/job_hunter_source_registry.sql` (append; raise `plan(17)` to `plan(22)`)
@@ -1346,6 +1350,10 @@ on conflict (provider, occurred_at) do nothing;
 
 drop table public.job_hunter_search_api_usage;
 ```
+
+Then repoint the one-time SQLite import at the new table. `apps/job-hunter/scripts/migrate_sqlite_to_postgres.py` has `_migrate_search_api_usage`, which upserts rows carrying a `user_id` into `job_hunter_search_api_usage`. Change it to write `job_hunter_platform_search_usage` with `{"provider": …, "occurred_at": …}` and `on_conflict="provider,occurred_at"`, dropping the `user_id` it currently sends — the legacy SQLite database was single-user, so its rows collapse onto the provider key without loss. Update the module docstring's list of unconditionally-migrated tables (around line 52) and the counts key to match, and run `tests/test_migrate_sqlite_to_postgres.py` — it asserts on that script's behaviour and will go red otherwise.
+
+Then correct `docs/positioning.md:138`, which lists the table among per-user tables. After this task it is not one.
 
 Then, in the same task, remove the dropped table from the test fixture's cleanup walk — `apps/job-hunter/tests/conftest.py`: delete the line `    "job_hunter_search_api_usage",` from `_TABLES_CHILD_FIRST`, and remove `search_api_usage,` from the comment block above it at line 134.
 
