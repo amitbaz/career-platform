@@ -137,13 +137,14 @@ def job_from_row(row: dict[str, Any]) -> Job:
       posting whose description it kept, so the pointer already names the
       row the surviving text came from.
 
-      This is the one posting-level fact #177 leaves on the job row, and it
-      holds only because merging across fingerprints is still per-user:
-      `job_hunter_merge_jobs` collapses two of *one user's* job rows, and
-      nothing yet merges the postings behind them, so the job row is the
-      only row that has seen all of them. #176 moves identity resolution
-      and merging to the posting level; when a posting is one advertisement
-      across sources, this is worth revisiting and `url` can move with it.
+      This is the one posting-level fact #177 leaves on the job row. #176
+      has since made merging a posting-level decision -- merging two job
+      rows across postings merges the postings behind them, and the
+      redirect is recorded once for everyone -- so the evidence a job row
+      accumulates now has somewhere else it could live. Whether `url`
+      should move there is #178's question, not an oversight here: a job
+      row still absorbs several postings, and until it stops doing so its
+      `url` is the only one resolved across all of them.
 
     ``original_url``, ``market_hint``, ``source_page_html``, and
     ``availability`` are not persisted columns -- they stay at the `Job`

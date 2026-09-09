@@ -268,11 +268,31 @@ select unnest(array[
 -- posting, one row per employer, readable by anyone authenticated and
 -- deletable by no one -- is asserted in job_hunter_postings.sql,
 -- job_hunter_job_facets.sql and job_hunter_companies.sql.
+--
+-- Where a merged-away posting went (issue #176) is shared for the same
+-- reason: a merge decided once for everyone is useless if only its author
+-- can see it. It is the strictest of the four -- reads open, no write
+-- policy at all, because every write happens inside the security-definer
+-- job_hunter_merge_postings -- and is asserted in
+-- job_hunter_posting_merges.sql.
+-- This view is the enforced list. `apps/job-hunter/AGENTS.md` describes the
+-- same set in prose, and prose does not fail -- which is not a hypothetical:
+-- when #198 added job_hunter_companies it updated this file and did not
+-- update that paragraph, so the inventory an agent reads before touching a
+-- migration went on naming two shared tables while there were three, and
+-- nothing anywhere went red. Two branches editing that paragraph do not
+-- conflict either, because they disagree in wording rather than in text.
+--
+-- So: adding a shared table means adding it here, and the guard below then
+-- fails until it is. Update the AGENTS.md paragraph in the same commit, by
+-- hand, and do not trust a clean merge to have kept it true. #215 is filed
+-- to derive that inventory rather than write it twice.
 create view pg_temp.job_hunter_shared_tables as
 select unnest(array[
   'job_hunter_postings',
   'job_hunter_job_facets',
-  'job_hunter_companies'
+  'job_hunter_companies',
+  'job_hunter_posting_merges'
 ]) as table_name;
 
 -- Ingestion's own scratch space (issue #182), which is neither per-user nor
