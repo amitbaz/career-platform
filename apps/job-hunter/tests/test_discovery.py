@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -1588,22 +1589,29 @@ def test_collect_candidates_survives_unattributed_uncertainty_for_remote_job(
 
 
 def test_collect_candidates_teaches_ats_board_even_for_backend_only_role(store, policy):
+    # job_hunter_ats_boards is shared and has no delete policy (#203), so
+    # the board identifier is salted unique to this test run rather than
+    # asserting store.count_ats_boards() -- a global count over every
+    # board any test or concurrent worktree has ever registered.
+    board = f"example-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="Backend Engineer",
         company="Example",
-        url="https://jobs.ashbyhq.com/example/backend-1",
+        url=f"https://jobs.ashbyhq.com/{board}/backend-1",
         description="Python backend services",
     )
 
     result = collect_candidates([FakeSource([job])], store, NoOpHttp(), policy)
 
     assert result.eligible == []
-    assert store.count_ats_boards() == 1
+    due = store.list_due_ats_boards(datetime.now(timezone.utc))
+    assert [e.board_identifier for e in due if e.board_identifier == board] == [board]
     assert result.stats.ats_boards_discovered == 1
 
 
 def test_collect_candidates_teaches_ats_board_from_canonical_resolution(store, policy):
+    board = f"acme-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="aggregator",
         source_job_id="1",
@@ -1615,8 +1623,8 @@ def test_collect_candidates_teaches_ats_board_from_canonical_resolution(store, p
     )
     resolver = FakeResolver(
         CanonicalResolution(
-            url="https://boards.greenhouse.io/acme/jobs/123",
-            ats=AtsReference(provider="greenhouse", board="acme", job_id="123"),
+            url=f"https://boards.greenhouse.io/{board}/jobs/123",
+            ats=AtsReference(provider="greenhouse", board=board, job_id="123"),
             confidence=0.9,
             method="targeted_search",
         )
@@ -1627,12 +1635,13 @@ def test_collect_candidates_teaches_ats_board_from_canonical_resolution(store, p
     )
 
     assert len(result.eligible) == 1
-    assert store.count_ats_boards() == 1
     assert result.stats.ats_boards_discovered == 1
     due = store.list_due_ats_boards(datetime.now(timezone.utc))
-    assert [(entry.provider, entry.board_identifier) for entry in due] == [
-        ("greenhouse", "acme")
-    ]
+    assert [
+        (entry.provider, entry.board_identifier)
+        for entry in due
+        if entry.board_identifier == board
+    ] == [("greenhouse", board)]
 
 
 def test_collect_candidates_counts_one_eligible_per_canonical_duplicate_group_by_market(
@@ -1970,7 +1979,15 @@ def test_collect_candidates_resolver_tail_is_free_for_already_canonical_jobs(
                 source_job_id=f"canonical-{job_count}-{i}",
                 title="Senior Product Engineer",
                 company=f"Acme {job_count} {i}",
-                url=f"https://jobs.lever.co/acme/canonical-{job_count}-{i}",
+                # A distinct board per invocation, not shared with the other
+                # call to run_with(): job_hunter_ats_boards is shared and
+                # has no delete policy (#203), and a per-user
+                # job_hunter_ats_registry row is now only written on a
+                # user's *first* sighting of a board -- reusing "acme"
+                # across both invocations would make the second call's
+                # count reflect an already-registered board rather than
+                # the board-count invariant this test means to pin.
+                url=f"https://jobs.lever.co/acme-{job_count}/canonical-{job_count}-{i}",
                 description="React TypeScript remote role.",
                 remote=True,
             )
@@ -2025,7 +2042,10 @@ def test_collect_candidates_ats_board_registration_does_not_grow_with_job_count(
             Job(
                 source="test",
                 source_job_id=f"board-{job_count}-{i}",
-                url=f"https://jobs.lever.co/acme/board-{job_count}-{i}",
+                # See the note in the resolver-tail test above: a distinct
+                # board per invocation, since #203 made a per-user
+                # registry row a one-time write on first sighting.
+                url=f"https://jobs.lever.co/acme-{job_count}/board-{job_count}-{i}",
                 company="Acme",
                 title=f"Frontend Engineer {i}",
                 location="Office",
@@ -2910,7 +2930,10 @@ def test_recording_eligibility_does_not_scale_with_the_eligible_jobs(
                 source_job_id=f"eligible-{job_count}-{index}",
                 title="Senior Product Engineer",
                 company=f"Acme {job_count} {index}",
-                url=f"https://jobs.lever.co/acme/eligible-{job_count}-{index}",
+                # See the note in the resolver-tail test above: a distinct
+                # board per invocation, since #203 made a per-user
+                # registry row a one-time write on first sighting.
+                url=f"https://jobs.lever.co/acme-{job_count}/eligible-{job_count}-{index}",
                 description="React TypeScript remote role.",
                 remote=True,
             )

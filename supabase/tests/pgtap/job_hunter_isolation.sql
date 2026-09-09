@@ -10,12 +10,14 @@
 -- returns zero rows, it does not raise. Only writes that fail a policy's
 -- WITH CHECK raise 42501. The assertions below match that behaviour.
 --
--- Three tables are deliberately absent: job_hunter_postings (#174),
--- job_hunter_job_facets (#175) and job_hunter_companies (#198). Each holds
--- one row per thing in the world -- an advertisement, what it says, the
--- employer behind it -- rather than one per user, and shared readability is
--- the property they have, asserted in their own files. Anything with a
--- user_id belongs here.
+-- Four tables are deliberately absent: job_hunter_postings (#174),
+-- job_hunter_job_facets (#175), job_hunter_companies (#198) and
+-- job_hunter_ats_boards (#203). Each holds one row per thing in the world --
+-- an advertisement, what it says, the employer behind it, an ATS job board --
+-- rather than one per user, and shared readability is the property they
+-- have, asserted in their own files. Anything with a user_id belongs here.
+-- job_hunter_ats_registry stays: since #203 it holds only a user's own
+-- eligible-job yield against a shared board.
 begin;
 create extension if not exists pgtap with schema extensions;
 select no_plan();
@@ -104,8 +106,16 @@ begin
       insert into public.job_hunter_company_watch (user_id, company_name, normalized_company_name, promotion_source, first_seen_at)
       values (p_owner, 'Acme', gen_random_uuid()::text, 'manual', now()) returning id into v_id;
     when 'job_hunter_ats_registry' then
-      insert into public.job_hunter_ats_registry (user_id, provider, board_identifier, first_seen_at, last_seen_at)
-      values (p_owner, 'greenhouse', gen_random_uuid()::text, now(), now()) returning id into v_id;
+      declare
+        v_board_identifier text := gen_random_uuid()::text;
+      begin
+        insert into public.job_hunter_ats_boards
+          (provider, board_identifier, first_seen_at, last_seen_at)
+        values ('greenhouse', v_board_identifier, now(), now())
+        on conflict (provider, board_identifier) do nothing;
+        insert into public.job_hunter_ats_registry (user_id, provider, board_identifier)
+        values (p_owner, 'greenhouse', v_board_identifier) returning id into v_id;
+      end;
     when 'job_hunter_evaluations' then
       v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
       insert into public.job_hunter_evaluations (user_id, job_id, evaluated_at)
@@ -292,7 +302,8 @@ select unnest(array[
   'job_hunter_postings',
   'job_hunter_job_facets',
   'job_hunter_companies',
-  'job_hunter_posting_merges'
+  'job_hunter_posting_merges',
+  'job_hunter_ats_boards'
 ]) as table_name;
 
 -- Ingestion's own scratch and operational state (issues #182 and #183), which
