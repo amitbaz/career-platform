@@ -40,6 +40,20 @@ scheduled daily run, a future application. A surface never contains matching log
 
 ## Jobs and their lifecycle
 
+**Posting** — one job advertisement in the world, held once in `job_hunter_postings` and
+shared by everyone who discovers it. Identified by its fingerprint, which is computed
+from the advertisement and never from the user who found it. It carries what the
+advertisement says and how it was fetched; where two users hold different text for it,
+the higher content confidence wins.
+
+**Job** — one user's copy of a posting, in `job_hunter_jobs`, pointing at it through
+`posting_id`. What a job says that the posting does not is everything about that user's
+relationship to it: which markets it matched, where it sits in their funnel, and every
+per-user artefact hanging off it. Objective facts belong on the posting and subjective
+ones on the job; today every facet still hangs off the job, and moving them is what the
+rest of #118 does. Both words were used interchangeably before #118 — they are two rows
+now, and only the posting row is shared.
+
 **Source** — one origin of postings. A feed, a public ATS board, a targeted search
 backend, a watched company, or staged email.
 

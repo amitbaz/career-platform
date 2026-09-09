@@ -1,0 +1,424 @@
+-- One row per posting, shared by every user who discovers it (issue #174).
+--
+-- A posting is one job advertisement in the world. Until now the only
+-- record of one was a private copy in job_hunter_jobs per user who found
+-- it, which is why objective extraction is paid once per user instead of
+-- once per posting. This file pins the properties that make the shared row
+-- usable as that single record:
+--
+--   * identity is the fingerprint, which is computed from the
+--     advertisement (source + source job id, else canonical URL, else
+--     company/title/location) and never from the discovering user, so two
+--     users resolve to the same row;
+--   * every job row written through job_hunter_upsert_job points at its
+--     posting, in the same call;
+--   * the better description wins, decided by content confidence exactly
+--     as the job-level merge decides it -- a lower-confidence fetch by a
+--     second user must never overwrite a better one;
+--   * any authenticated user can read any posting, because a posting is
+--     not private to whoever discovered it.
+--
+-- Cross-user isolation is deliberately NOT asserted here, and this table
+-- is excluded from job_hunter_isolation.sql for the same reason: shared
+-- readability is the property it has.
+begin;
+create extension if not exists pgtap with schema extensions;
+select no_plan();
+
+-- The migration backfilled every job row that existed before it, matching
+-- them by fingerprint. A job row can still be written without a posting --
+-- direct inserts bypass the RPC, which is why posting_id is nullable -- so
+-- what is asserted is the backfill's own rule: no job row is left
+-- unpointed while a posting for its fingerprint exists. On a freshly reset
+-- local stack there are no rows to check, which is why every behavioural
+-- assertion below builds its own.
+select is_empty(
+  $$ select 1 from public.job_hunter_jobs j
+      join public.job_hunter_postings p on p.fingerprint = j.fingerprint
+     where j.posting_id is null $$,
+  'the backfill left no job row unpointed at a posting it matches');
+
+-- Seed users ----------------------------------------------------------------
+
+insert into auth.users (id, email, instance_id, aud, role, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
+values
+  ('dddddddd-0000-0000-0000-00000000000a', 'posting-a@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', '{}', '{}', now(), now()),
+  ('dddddddd-0000-0000-0000-00000000000b', 'posting-b@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', '{}', '{}', now(), now())
+on conflict (id) do nothing;
+
+create function pg_temp.authenticate_as(p_user uuid) returns void
+language plpgsql as $$
+begin
+  execute 'reset role';
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', p_user, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+end $$;
+
+create function pg_temp.become_anon() returns void
+language plpgsql as $$
+begin
+  execute 'reset role';
+  perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+  execute 'set local role anon';
+end $$;
+
+create function pg_temp.become_postgres() returns void
+language plpgsql as $$
+begin
+  execute 'reset role';
+  perform set_config('request.jwt.claims', '', true);
+end $$;
+
+-- Shape ---------------------------------------------------------------------
+
+select has_table('public', 'job_hunter_postings',
+                 'a posting has a row of its own');
+
+select columns_are('public', 'job_hunter_postings', array[
+  'id',
+  'fingerprint',
+  'source',
+  'source_job_id',
+  'url',
+  'canonical_url',
+  'company',
+  'title',
+  'location',
+  'remote',
+  'description',
+  'description_hash',
+  'content_confidence',
+  'ats_provider',
+  'ats_board',
+  'ats_job_id',
+  'first_seen_at',
+  'last_seen_at',
+  'created_at'
+], 'the posting carries what the advertisement says and how it was fetched');
+
+-- No user_id. Naming its absence separately from columns_are keeps the
+-- reason readable when someone later wonders where the owner went.
+select hasnt_column('public', 'job_hunter_postings', 'user_id',
+                    'a posting has no owner: it is the same advertisement for everyone');
+
+select col_is_unique('public', 'job_hunter_postings', array['fingerprint'],
+                     'the fingerprint identifies the posting, so it can only be there once');
+
+select has_column('public', 'job_hunter_jobs', 'posting_id',
+                  'a job points at the posting it is a private copy of');
+select col_is_fk('public', 'job_hunter_jobs', array['posting_id'],
+                 'that pointer is a real foreign key');
+
+select has_index('public', 'job_hunter_jobs', 'job_hunter_jobs_posting_idx',
+                 'jobs are reachable from their posting without a sequential scan');
+
+-- Access --------------------------------------------------------------------
+
+select is(
+  (select relrowsecurity from pg_class where oid = 'public.job_hunter_postings'::regclass),
+  true,
+  'row level security is on');
+
+select is(
+  (select array_agg(polname::text order by polname)
+     from pg_policy where polrelid = 'public.job_hunter_postings'::regclass),
+  array['insert_authenticated', 'select_authenticated', 'update_authenticated'],
+  'read and write are open to authenticated users; nobody may delete a posting');
+
+-- Behaviour -----------------------------------------------------------------
+
+-- User A discovers the posting on an aggregator: a short description from a
+-- source that is not authoritative.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
+
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'fingerprint', 'fp-shared-posting',
+       'source', 'remoteok',
+       'source_job_id', 'ro-1',
+       'url', 'https://remoteok.example/jobs/1',
+       'canonical_url', 'https://acme.example/careers/1',
+       'company', 'Acme GmbH',
+       'title', 'Staff Engineer',
+       'location', 'Vienna',
+       'remote', true,
+       'description', 'short aggregator blurb',
+       'content_confidence', 'aggregator_text')) $$,
+  'A discovers the posting');
+
+select is(
+  (select count(*)::int from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  1,
+  'discovering a posting creates exactly one posting row');
+
+select isnt(
+  (select j.posting_id from public.job_hunter_jobs j
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a'
+      and j.fingerprint = 'fp-shared-posting'),
+  null,
+  'the upsert wrote the job row and the posting it points at in one call');
+
+select is(
+  (select p.description from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  'short aggregator blurb',
+  'the posting carries the only description anyone has fetched so far');
+
+-- User B discovers the same advertisement on the employer's own ATS: the
+-- same fingerprint, a better description.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000b');
+
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'fingerprint', 'fp-shared-posting',
+       'source', 'greenhouse',
+       'source_job_id', 'ro-1',
+       'url', 'https://boards.greenhouse.io/acme/jobs/1',
+       'canonical_url', 'https://acme.example/careers/1',
+       'company', 'Acme GmbH',
+       'title', 'Staff Engineer',
+       'location', 'Vienna',
+       'remote', true,
+       'description', 'the full posting text straight from the employer ATS',
+       'content_confidence', 'official_ats',
+       'ats_provider', 'greenhouse',
+       'ats_board', 'acme',
+       'ats_job_id', '1')) $$,
+  'B discovers the same advertisement');
+
+-- Counted as postgres: RLS would otherwise hide the other user's job row
+-- and every count below would come back 1 whether the two users share a
+-- posting or not.
+select pg_temp.become_postgres();
+
+select is(
+  (select count(*)::int from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  1,
+  'a posting discovered by two users is still one posting row');
+
+select is(
+  (select count(*)::int from public.job_hunter_jobs j
+    where j.fingerprint = 'fp-shared-posting'),
+  2,
+  'the per-user job rows themselves are untouched: one each, as before');
+
+select is(
+  (select count(distinct j.posting_id)::int from public.job_hunter_jobs j
+    where j.fingerprint = 'fp-shared-posting'),
+  1,
+  'both users'' job rows point at that one row');
+
+select is(
+  (select count(*)::int from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.fingerprint = 'fp-shared-posting'
+      and p.fingerprint = 'fp-shared-posting'),
+  2,
+  'and it is the posting with their fingerprint');
+
+select is(
+  (select p.description from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  'the full posting text straight from the employer ATS',
+  'a higher-confidence description replaces a lower-confidence one');
+
+select is(
+  (select p.content_confidence from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  'official_ats',
+  'the tier follows the text it belongs to');
+
+select is(
+  (select p.description_hash from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  encode(sha256(convert_to('the full posting text straight from the employer ATS', 'UTF8')), 'hex'),
+  'so does the description hash');
+
+-- A re-fetch of the aggregator copy must not undo that.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
+
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'fingerprint', 'fp-shared-posting',
+       'source', 'remoteok',
+       'source_job_id', 'ro-1',
+       'url', 'https://remoteok.example/jobs/1',
+       'canonical_url', 'https://acme.example/careers/1',
+       'company', 'Acme GmbH',
+       'title', 'Staff Engineer',
+       'location', 'Vienna',
+       'remote', true,
+       'description', 'a much longer aggregator blurb, padded out so that length alone would win it the argument if confidence were not consulted first',
+       'content_confidence', 'aggregator_text')) $$,
+  'A re-fetches its lower-confidence copy');
+
+select is(
+  (select p.description from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  'the full posting text straight from the employer ATS',
+  'a lower-confidence fetch does not overwrite a better one, however much longer it is');
+
+-- An equally-confident but fuller fetch does win, matching the job-level
+-- merge rule: tier first, length only as the tiebreak.
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'fingerprint', 'fp-shared-posting',
+       'source', 'greenhouse',
+       'source_job_id', 'ro-1',
+       'url', 'https://boards.greenhouse.io/acme/jobs/1',
+       'canonical_url', 'https://acme.example/careers/1',
+       'company', 'Acme GmbH',
+       'title', 'Staff Engineer',
+       'location', 'Vienna',
+       'remote', true,
+       'description', 'the full posting text straight from the employer ATS, now including the benefits section',
+       'content_confidence', 'official_ats')) $$,
+  'A fetches a fuller copy at the same confidence');
+
+select is(
+  (select p.description from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  'the full posting text straight from the employer ATS, now including the benefits section',
+  'at equal confidence the fuller text wins');
+
+-- Seeing a posting again does not move its first_seen_at, and does move
+-- its last_seen_at: they bracket when *anyone* saw the advertisement.
+select cmp_ok(
+  (select p.last_seen_at from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  '>',
+  (select p.first_seen_at from public.job_hunter_postings p
+    where p.fingerprint = 'fp-shared-posting'),
+  'first and last seen bracket every discovery of the posting, by anyone');
+
+-- The narrow upsert writes the posting too. It is a different branch of
+-- job_hunter_upsert_job -- identity is the fingerprint alone, nothing is
+-- merged and no discovery source is recorded -- so it needs its own check
+-- rather than inheriting the logical mode's.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000b');
+
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'match_mode', 'fingerprint',
+       'fingerprint', 'fp-narrow',
+       'source', 'ashby',
+       'source_job_id', 'as-3',
+       'url', 'https://jobs.ashbyhq.com/narrow/3',
+       'company', 'Narrow Co',
+       'title', 'Platform Engineer',
+       'location', 'Remote',
+       'description', 'narrow upsert description',
+       'content_confidence', 'official_ats')) $$,
+  'the narrow, fingerprint-matched upsert runs');
+
+select is(
+  (select p.title from public.job_hunter_postings p where p.fingerprint = 'fp-narrow'),
+  'Platform Engineer',
+  'it writes the posting as well');
+
+select is(
+  (select p.id from public.job_hunter_postings p where p.fingerprint = 'fp-narrow'),
+  (select j.posting_id from public.job_hunter_jobs j
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000b'
+      and j.fingerprint = 'fp-narrow'),
+  'and points the job row it wrote at it');
+
+-- A merge keeps the pointer with the text. The fingerprint is
+-- source-scoped, so one user can hold two job rows that are copies of two
+-- different postings -- the same advertisement seen on an aggregator and on
+-- the employer's ATS. Merging them deletes one row and its pointer, and the
+-- survivor must be left pointing at the posting whose description it kept.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
+
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'match_mode', 'fingerprint',
+       'fingerprint', 'fp-merge-weak',
+       'source', 'remoteok',
+       'source_job_id', 'ro-77',
+       'url', 'https://remoteok.example/jobs/77',
+       'company', 'Merge Co',
+       'title', 'Merge Engineer',
+       'location', 'Vienna',
+       'description', 'thin aggregator copy',
+       'content_confidence', 'aggregator_text')) $$,
+  'A holds the aggregator copy');
+
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'match_mode', 'fingerprint',
+       'fingerprint', 'fp-merge-strong',
+       'source', 'greenhouse',
+       'source_job_id', 'gh-77',
+       'url', 'https://boards.greenhouse.io/mergeco/jobs/77',
+       'company', 'Merge Co',
+       'title', 'Merge Engineer',
+       'location', 'Vienna',
+       'description', 'the employer''s own copy',
+       'content_confidence', 'official_ats')) $$,
+  'and the ATS copy, as a separate job row with its own posting');
+
+select isnt(
+  (select j.posting_id from public.job_hunter_jobs j
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-weak'),
+  (select j.posting_id from public.job_hunter_jobs j
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-strong'),
+  'two source-scoped fingerprints are two postings, before the merge');
+
+select lives_ok(
+  $$ select public.job_hunter_merge_jobs(
+       (select j.id from public.job_hunter_jobs j
+         where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-weak'),
+       (select j.id from public.job_hunter_jobs j
+         where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and j.fingerprint = 'fp-merge-strong')) $$,
+  'merging the two job rows');
+
+select is(
+  (select p.fingerprint from public.job_hunter_postings p
+     join public.job_hunter_jobs j on j.posting_id = p.id
+    where j.user_id = 'dddddddd-0000-0000-0000-00000000000a'
+      and j.description = 'the employer''s own copy'),
+  'fp-merge-strong',
+  'the survivor points at the posting whose description it kept');
+
+-- Readability. B never discovered this one.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
+select lives_ok(
+  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+       'fingerprint', 'fp-a-only',
+       'source', 'lever',
+       'source_job_id', 'lv-9',
+       'url', 'https://jobs.lever.co/other/9',
+       'company', 'Other Co',
+       'title', 'Backend Engineer',
+       'location', 'Berlin',
+       'description', 'only A ever saw this one',
+       'content_confidence', 'official_ats')) $$,
+  'A discovers a posting B has never seen');
+
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000b');
+select is(
+  (select p.title from public.job_hunter_postings p where p.fingerprint = 'fp-a-only'),
+  'Backend Engineer',
+  'any authenticated user can read any posting');
+
+select is_empty(
+  $$ select 1 from public.job_hunter_jobs j where j.fingerprint = 'fp-a-only' $$,
+  'the job row behind it stays private to A');
+
+select is_empty(
+  $$ delete from public.job_hunter_postings where fingerprint = 'fp-a-only' returning 1 $$,
+  'no user can delete a posting out from under everyone else');
+
+select pg_temp.become_anon();
+select is_empty(
+  $$ select 1 from public.job_hunter_postings $$,
+  'anon reads nothing: shared means shared between authenticated users');
+
+select pg_temp.become_postgres();
+
+select * from finish();
+rollback;

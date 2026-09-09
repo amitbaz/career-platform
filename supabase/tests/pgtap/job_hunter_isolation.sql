@@ -243,7 +243,7 @@ end $$;
 
 -- Run ------------------------------------------------------------------------
 
--- The two tables this file deliberately does not cover. The platform key's
+-- The tables this file deliberately does not cover. The platform key's
 -- ledger and pause (issue #128) hold no user_id at all: they meter one
 -- globally shared key, so per-user isolation is not the property they have.
 -- They are checked in job_hunter_platform_ai_usage.sql, which asserts the
@@ -256,6 +256,17 @@ select unnest(array[
   'job_hunter_platform_ai_quota_state'
 ]) as table_name;
 
+-- The shared table, for the same reason in reverse. A posting (issue #174)
+-- is one advertisement in the world, not one user's copy of it: it has no
+-- user_id and every authenticated user may read every row, so per-user
+-- isolation is the property it deliberately does not have. What it does
+-- have -- one row per fingerprint, readable by anyone authenticated and
+-- deletable by no one -- is asserted in job_hunter_postings.sql.
+create view pg_temp.job_hunter_shared_tables as
+select unnest(array[
+  'job_hunter_postings'
+]) as table_name;
+
 -- Guard: every job_hunter_ table in the schema is in the list under test,
 -- so a table added to the migration without a test fails here.
 select is(
@@ -264,7 +275,9 @@ select is(
   (select array_agg(table_name order by table_name) from (
      select table_name from pg_temp.job_hunter_tables
      union all
-     select table_name from pg_temp.job_hunter_platform_tables) as covered),
+     select table_name from pg_temp.job_hunter_platform_tables
+     union all
+     select table_name from pg_temp.job_hunter_shared_tables) as covered),
   'every public.job_hunter_* table is covered by an isolation check');
 
 select is(
