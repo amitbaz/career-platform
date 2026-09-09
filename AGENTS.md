@@ -9,7 +9,7 @@ scheduled daily run, and any future application consume the engine; none of them
 matching lives. See [ADR-0001](docs/adr/0001-the-engine-is-the-product.md), and epic #114 for
 the decisions in full.
 
-Four rules follow, and they decide most judgement calls in this repository:
+Six rules follow, and they decide most judgement calls in this repository:
 
 1. **Match quality is the product; everything else is packaging.** When a change could improve
    match quality or improve a surface, match quality wins.
@@ -27,6 +27,28 @@ Four rules follow, and they decide most judgement calls in this repository:
    stop worthless boards being re-crawled all present identically as "delivered a digest, found
    nothing new" — which is also what a genuinely quiet week looks like. A startup warning is not
    enough, because by day three it has scrolled out of the log.
+6. **A claim about this system needs a mechanism that fails when it stops being true.** Checks,
+   guards and prose all make claims — that a suite ran, that a table is covered, that a ledger
+   matches the database, that a set of tables is shared. Without something that fails when the
+   claim goes false, it does not decay loudly. It stays trusted and quietly wrong, and it is
+   trusted *because* it looks like it was checked.
+
+   **So when you add a claim, add the mechanism.** If the mechanism is expensive or does not
+   exist yet, there are two honest options and neither is silence: make the claim fail loudly in
+   the cheapest way available — an assertion, a test that reads the real thing, a check that
+   names what it did not examine — or do not make the claim at all. A paragraph saying "the two
+   shared tables" earns its place only if something breaks when there are three. **Prefer no
+   claim to an unenforced one: an agent can work around a gap it can see, and cannot work around
+   a sentence that is confidently wrong.**
+
+   This is not a rule about documentation. It was derived from five failures in one day, and
+   three of them were checks rather than prose: a workspace without its own `.venv` running the
+   right suite against the wrong source tree and passing; a run without `SUPABASE_TEST_*`
+   skipping two thirds of the suite and passing; the isolation guard measuring the shared
+   database against one tree's list (#207); the migration ledger describing a stack it no longer
+   matched (#206, #211); and the documented shared-table set drifting from the schema with
+   nothing to notice (#215). #208 makes the second fail loudly. If you are filing this under
+   "keep the docs updated", you have the wrong half of it.
 
 Use the vocabulary in [CONTEXT.md](CONTEXT.md) — in code, tests, issues and specs. The terms
 there exist because their synonyms have already caused confusion here.
