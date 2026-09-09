@@ -157,6 +157,39 @@ select unnest(statements) from supabase_migrations.schema_migrations where versi
 Diffing `schema_migrations` against `ls supabase/migrations` tells you a foreign migration is
 *present*; this tells you what it *changed*, which is what answers "is this failure mine".
 
+**The ledger is necessary, not sufficient — interrogate the object when it looks clean.** Both
+checks above read `supabase_migrations.schema_migrations`, so both are blind to a migration that
+was applied without recording its version. That state is worse than an unrecorded table, because
+the cheap check now answers "clean" and the failure looks like your own code again. When the
+ledger matches `main` and a store-backed test still fails, ask the database what the function
+actually is:
+
+```sql
+select prosrc like '%<symbol from the peer''s work>%'
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.proname = '<function>';
+```
+
+A symbol defined in no migration in your tree, present in a live function body, is proof that
+body is not the one your tree describes. Ledger first because it is cheap; `pg_proc` when the
+ledger looks clean and the behaviour still does not.
+
+**If you apply a migration by hand, record its version.** Hand-applying is often the right call —
+`pnpm db:reset` drops every peer's unmerged migration, so resetting to install your own is
+destructive to everyone else mid-run. But applying without the ledger row leaves a stack whose
+recorded migration set looks exactly like `main` while its functions do not, and the next agent's
+cheap check silently fails them:
+
+```sql
+insert into supabase_migrations.schema_migrations (version, name) values ('<version>', '<name>');
+```
+
+**And know what a reset costs other people.** `pnpm db:reset` serialises against other runs
+through the stack lock, so it will not corrupt anyone mid-statement — but it still drops every
+migration that exists only on somebody's branch, on a machine that may have several. The lock
+makes a reset safe to *perform*; it does not make it free for everyone else. Prefer applying your
+own migration by hand, with its ledger row, over resetting to pick it up.
+
 ## Working alongside other sessions
 
 More than one agent may be working this repository at the same time, in separate git worktrees.
