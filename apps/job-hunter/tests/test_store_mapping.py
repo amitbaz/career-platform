@@ -85,6 +85,50 @@ def test_touch_updated_at_advances_on_a_second_call() -> None:
     assert from_iso(second) > from_iso(first)
 
 
+def _insert_membership(client: SupabaseClient, **posting_fields) -> dict:
+    """Write an advertisement and the caller's membership of it, and read it back.
+
+    Two rows since #178: everything the advertisement says goes on the
+    posting, and the job row carries only the caller's own facts. The read
+    asks for the posting as an embed, which is the shape `job_from_row`
+    composes a `Job` from.
+    """
+    posting = client.insert(
+        "job_hunter_postings",
+        [
+            {
+                "fingerprint": f"fp-{uuid.uuid4()}",
+                "first_seen_at": "2026-09-06T10:00:00+00:00",
+                "last_seen_at": "2026-09-06T10:00:00+00:00",
+                **posting_fields,
+            }
+        ],
+    )[0]
+    inserted = client.insert(
+        "job_hunter_jobs",
+        [
+            {
+                "user_id": client.user_id,
+                "posting_id": posting["id"],
+                "market_id": "eu",
+                "first_seen_at": "2026-09-06T10:00:00+00:00",
+                "last_seen_at": "2026-09-06T10:00:00+00:00",
+            }
+        ],
+    )[0]
+    return client.select(
+        "job_hunter_jobs",
+        params={
+            "id": f"eq.{inserted['id']}",
+            "select": (
+                "market_id,posting:job_hunter_postings"
+                "(source,title,company,location,description,source_job_id,remote,"
+                "content_confidence,url,canonical_url,ats_provider,ats_board,ats_job_id)"
+            ),
+        },
+    )[0]
+
+
 @pytest.mark.integration
 def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient) -> None:
     """Insert a job, read it back through PostgREST, and map it.
@@ -93,37 +137,22 @@ def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient)
     give True/False/None, unlike SQLite's 1/0/None) against an actual
     response rather than a hand-written dict.
     """
-    user_id = supabase_client.user_id
-    fingerprint = f"fp-{uuid.uuid4()}"
-    inserted = supabase_client.insert(
-        "job_hunter_jobs",
-        [
-            {
-                "user_id": user_id,
-                "fingerprint": fingerprint,
-                "source": "greenhouse",
-                "title": "Senior Backend Engineer",
-                "company": "Acme Corp",
-                "location": "Remote - EU",
-                "url": "https://example.com/jobs/1",
-                "canonical_url": "https://example.com/jobs/1",
-                "description": "Build things.",
-                "source_job_id": "gh-123",
-                "remote": True,
-                "ats_provider": "greenhouse",
-                "ats_board": "acme",
-                "ats_job_id": "123",
-                "market_id": "eu",
-                "content_confidence": "high",
-                "first_seen_at": "2026-09-06T10:00:00+00:00",
-                "last_seen_at": "2026-09-06T10:00:00+00:00",
-            }
-        ],
-    )[0]
-
-    row = supabase_client.select(
-        "job_hunter_jobs", params={"id": f"eq.{inserted['id']}"}
-    )[0]
+    row = _insert_membership(
+        supabase_client,
+        source="greenhouse",
+        title="Senior Backend Engineer",
+        company="Acme Corp",
+        location="Remote - EU",
+        url="https://example.com/jobs/1",
+        canonical_url="https://example.com/jobs/1",
+        description="Build things.",
+        source_job_id="gh-123",
+        remote=True,
+        ats_provider="greenhouse",
+        ats_board="acme",
+        ats_job_id="123",
+        content_confidence="high",
+    )
     job = job_from_row(row)
 
     assert job.source == "greenhouse"
@@ -144,25 +173,9 @@ def test_job_from_row_maps_a_real_postgrest_row(supabase_client: SupabaseClient)
 
 @pytest.mark.integration
 def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient) -> None:
-    user_id = supabase_client.user_id
-    inserted = supabase_client.insert(
-        "job_hunter_jobs",
-        [
-            {
-                "user_id": user_id,
-                "fingerprint": f"fp-{uuid.uuid4()}",
-                "source": "test",
-                "url": "https://example.com/jobs/2",
-                "first_seen_at": "2026-09-06T10:00:00+00:00",
-                "last_seen_at": "2026-09-06T10:00:00+00:00",
-                "remote": None,
-            }
-        ],
-    )[0]
-
-    row = supabase_client.select(
-        "job_hunter_jobs", params={"id": f"eq.{inserted['id']}"}
-    )[0]
+    row = _insert_membership(
+        supabase_client, source="test", url="https://example.com/jobs/2", remote=None
+    )
     job = job_from_row(row)
 
     assert job.remote is None
@@ -170,25 +183,9 @@ def test_job_from_row_maps_null_remote_to_none(supabase_client: SupabaseClient) 
 
 @pytest.mark.integration
 def test_job_from_row_maps_false_remote(supabase_client: SupabaseClient) -> None:
-    user_id = supabase_client.user_id
-    inserted = supabase_client.insert(
-        "job_hunter_jobs",
-        [
-            {
-                "user_id": user_id,
-                "fingerprint": f"fp-{uuid.uuid4()}",
-                "source": "test",
-                "url": "https://example.com/jobs/3",
-                "first_seen_at": "2026-09-06T10:00:00+00:00",
-                "last_seen_at": "2026-09-06T10:00:00+00:00",
-                "remote": False,
-            }
-        ],
-    )[0]
-
-    row = supabase_client.select(
-        "job_hunter_jobs", params={"id": f"eq.{inserted['id']}"}
-    )[0]
+    row = _insert_membership(
+        supabase_client, source="test", url="https://example.com/jobs/3", remote=False
+    )
     job = job_from_row(row)
 
     assert job.remote is False
@@ -201,14 +198,14 @@ def test_store_fixture_constructs_a_postgres_job_store(store) -> None:
         assert opened is store
 
 
-# `job_from_row` and the posting (issue #177) ---------------------------------
+# `job_from_row` and the posting (issues #177, #178) --------------------------
 #
-# A row read with the posting embedded carries every posting-level fact
-# twice: once in the job row's own duplicated columns and once under
-# `posting`. The posting is the record of the advertisement, so it decides
-# all of them -- as a set, not field by field, or a posting that genuinely
-# says `remote is false` or `company is ''` would silently fall back to the
-# job row's copy of a fact the posting already answered.
+# The posting is the record of the advertisement, and it decides every
+# posting-level fact as a set rather than field by field -- otherwise a
+# posting that genuinely says `remote is false` or `company is ''` would fall
+# back to whatever the mapping was handed alongside it. The job row has no
+# copy of its own to fall back to since #178; what these dicts stand in for is
+# a select that did not ask for the embed.
 
 
 def _job_row_with(**overrides) -> dict:

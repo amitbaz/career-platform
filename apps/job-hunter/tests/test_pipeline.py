@@ -1111,7 +1111,7 @@ def test_pipeline_injects_resolver_for_direct_ats_canonical_metadata(store, sett
     )
 
     persisted = store.client.select(
-        "job_hunter_jobs",
+        "job_hunter_postings",
         params={"select": "canonical_url,ats_provider,ats_board,ats_job_id"},
     )[0]
     assert persisted is not None
@@ -1173,7 +1173,7 @@ def test_pipeline_uses_one_targeted_duckduckgo_query_for_canonical_resolution(
     )
 
     rows = store.client.select(
-        "job_hunter_jobs", params={"select": "canonical_url"}
+        "job_hunter_postings", params={"select": "canonical_url"}
     )
     assert len(rows) == 1
     persisted = rows[0]
@@ -1233,7 +1233,7 @@ def test_pipeline_rejects_targeted_ats_result_for_wrong_company(store, settings)
     )
 
     persisted = store.client.select(
-        "job_hunter_jobs",
+        "job_hunter_postings",
         params={"select": "url,canonical_url,ats_provider,ats_board,ats_job_id"},
     )[0]
     assert persisted is not None

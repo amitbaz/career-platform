@@ -2009,15 +2009,19 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
 
     assert store.merge_jobs(plain_id, history_id) == history_id
 
-    # `get_job` selects a narrow column set that omits the ATS identity, so
-    # read the row itself here -- the merge must carry ats_provider across.
+    # The advertisement's own columns live on the posting since #178, so read
+    # the posting the surviving membership row points at -- the merge must
+    # carry ats_provider across.
     merged = store.client.select(
         "job_hunter_jobs",
         params={
             "id": f"eq.{history_id}",
-            "select": "company,description,url,ats_provider",
+            "select": (
+                "posting:job_hunter_postings"
+                "(company,description,url,ats_provider)"
+            ),
         },
-    )[0]
+    )[0]["posting"]
     assert merged["company"] == "Acme"
     assert merged["description"] == "A detailed React role description"
     assert merged["url"] == "https://jobs.lever.co/acme/abc"

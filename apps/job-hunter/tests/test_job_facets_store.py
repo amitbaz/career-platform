@@ -18,6 +18,7 @@ import pytest
 
 from job_hunter.models import Compensation, Job, JobFacets
 from job_hunter.store_mapping import to_iso
+from job_hunter.supabase_client import SupabaseRequestError
 
 
 def make_job(*, fingerprint: str = "facets", **overrides) -> Job:
@@ -250,30 +251,32 @@ def test_one_users_re_extraction_replaces_the_other_users_answer(store, other_st
     assert other_store.get_job_facets(theirs).seniority == "principal"
 
 
-def test_a_job_with_no_posting_has_no_facets_and_no_work_to_do(store, supabase_client):
-    # A job row written without going through job_hunter_upsert_job -- the
-    # SQLite migration script does exactly this -- carries no posting_id.
-    # There is nowhere to read facets from and nowhere to store them, and
-    # saying otherwise would put the pipeline into a provider call whose
-    # result is discarded, every run, forever.
+def test_a_job_with_no_posting_cannot_be_written(store, supabase_client):
+    # A job row written without going through job_hunter_upsert_job used to
+    # carry no posting_id -- the SQLite migration script did exactly this --
+    # and the store answered "no facets, no work to do" for it, so a run could
+    # not spend a provider call whose result had nowhere to go.
+    #
+    # #178 removed the case: posting_id is `not null`. The store's guards are
+    # unchanged and still cover a job id it cannot read; what is asserted here
+    # is that a row without an advertisement is refused at the door.
     now = to_iso(datetime.now(timezone.utc))
-    row = supabase_client.insert(
-        "job_hunter_jobs",
-        [
-            {
-                "user_id": supabase_client.user_id,
-                "fingerprint": f"no-posting-{uuid.uuid4()}",
-                "description": "React and TypeScript.",
-                "first_seen_at": now,
-                "last_seen_at": now,
-            }
-        ],
-    )[0]
+    with pytest.raises(SupabaseRequestError):
+        supabase_client.insert(
+            "job_hunter_jobs",
+            [
+                {
+                    "user_id": supabase_client.user_id,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                }
+            ],
+        )
 
-    assert row["posting_id"] is None
-    assert store.jobs_needing_facets([row["id"]]) == set()
-    assert store.get_job_facets(row["id"]) is None
-
-    # Storing is a no-op rather than an error: the run keeps going.
-    store.save_job_facets(row["id"], _facets())
-    assert store.get_job_facets(row["id"]) is None
+    # A job id the caller cannot read is still answered, not raised: the run
+    # keeps going.
+    unknown = str(uuid.uuid4())
+    assert store.jobs_needing_facets([unknown]) == set()
+    assert store.get_job_facets(unknown) is None
+    store.save_job_facets(unknown, _facets())
+    assert store.get_job_facets(unknown) is None
