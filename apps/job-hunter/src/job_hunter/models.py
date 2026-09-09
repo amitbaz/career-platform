@@ -541,6 +541,10 @@ class RunSummary:
     # a deployment where it stays near zero is paying per user for something
     # it believes it pays for once.
     facets_reused: int = 0
+    # Final parser failures after the one fresh-sample retry. These are job
+    # outcomes, not raw malformed samples: a first bad response that recovers
+    # on retry did not leave extraction failed.
+    extraction_parse_failures: int = 0
     # Jobs the stored facets disqualified for this user before any scoring
     # call was dispatched (issue #127). Deliberately not part of
     # `evaluation_attempted`/`evaluated`: no provider call was made, and a
@@ -562,3 +566,5 @@ class RunSummary:
     # run keeps scoring every job whose posting was already read, and nobody
     # was charged for the postings it did not read.
     scoring_deferred_by_read_budget: int = 0
+    # Subjective scoring responses still unparseable after their one retry.
+    scoring_parse_failures: int = 0

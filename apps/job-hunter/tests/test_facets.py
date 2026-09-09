@@ -39,6 +39,7 @@ class FakeGemini:
         self.text = text
         self.model = "gemini-2.5-flash-lite"
         self.prompts = []
+        self.schemas = []
 
     def generate_text(
         self,
@@ -53,6 +54,7 @@ class FakeGemini:
         max_attempts=1,
     ):
         self.prompts.append((prompt, purpose, json_mode, max_attempts))
+        self.schemas.append(json_schema)
         return self.text
 
 
@@ -165,6 +167,39 @@ def test_extraction_uses_its_own_provider_purpose():
     assert json_mode is True
 
 
+def test_extraction_declares_a_schema_for_exactly_the_requested_facets():
+    posting = PostingFacts.from_job(_job(source="ashby", remote=True))
+    gemini = _gemini_for()
+
+    extract_facets(posting, gemini)
+
+    schema = gemini.schemas[0]
+    assert schema["type"] == "OBJECT"
+    assert schema["required"] == list(schema["properties"])
+    assert "remote_policy" not in schema["properties"]
+    assert schema["properties"]["seniority"]["enum"] == sorted(
+        facets_module.VALID_SENIORITY
+    )
+    compensation = schema["properties"]["compensation"]
+    assert compensation["required"] == [
+        "disclosed",
+        "currency",
+        "minimum",
+        "maximum",
+        "period",
+    ]
+    assert compensation["properties"]["minimum"] == {
+        "type": "INTEGER",
+        "minimum": 0,
+        "nullable": True,
+    }
+    requirement = schema["properties"]["requirements"]["items"]
+    assert requirement["required"] == ["requirement", "depth", "kind"]
+    assert requirement["properties"]["depth"]["enum"] == sorted(
+        facets_module.VALID_DEPTHS
+    )
+
+
 # --- Parsing ---------------------------------------------------------------------
 
 
@@ -226,6 +261,47 @@ def test_rejects_unparseable_output():
     gemini = FakeGemini("not json at all")
     with pytest.raises(FacetExtractionError):
         extract_facets(PostingFacts.from_job(_job()), gemini)
+
+
+def test_retries_one_unparseable_response_and_uses_the_second_sample():
+    class SequencedGemini(FakeGemini):
+        def __init__(self):
+            super().__init__()
+            self.responses = ["not json at all", json.dumps(_payload())]
+
+        def generate_text(self, prompt, **kwargs):
+            self.text = self.responses.pop(0)
+            return super().generate_text(prompt, **kwargs)
+
+    gemini = SequencedGemini()
+
+    result = extract_facets(PostingFacts.from_job(_job()), gemini)
+
+    assert result.seniority == "senior"
+    assert len(gemini.prompts) == 2
+    assert gemini.schemas[0] == gemini.schemas[1]
+
+
+def test_quota_refusal_is_not_retried_as_a_parse_failure():
+    class QuotaRefusingGemini(FakeGemini):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def generate_text(self, prompt, **kwargs):
+            self.calls += 1
+            raise AIQuotaPaused(
+                "paused",
+                paused_until="2026-09-10T00:00:00+00:00",
+                reason="daily_quota",
+            )
+
+    gemini = QuotaRefusingGemini()
+
+    with pytest.raises(PlatformAllowanceExhausted):
+        extract_facets(PostingFacts.from_job(_job()), gemini)
+
+    assert gemini.calls == 1
 
 
 def test_rejects_a_response_missing_a_requested_facet():
