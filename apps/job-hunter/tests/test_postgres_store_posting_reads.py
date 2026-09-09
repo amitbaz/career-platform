@@ -1,10 +1,13 @@
-"""Posting-level facts are read from the posting, not from the job row (#177).
+"""Posting-level facts are read from the posting, not from the job row (#177, #178).
 
 Every one of these runs against the local Supabase stack through the
 `store` fixture, and every one works the same way: write a job through the
-real RPC (so a posting exists and the job row points at it), then drive the
-two copies of a posting-level fact apart by writing directly to one table.
-A test that only ever saw the two agree could not tell which one was read.
+real RPC (so a posting exists and the job row points at it), then move the
+posting's copy of a fact and check that the reader followed it.
+
+#177 could drive two copies of a fact apart, because the job row still had
+one. #178 removed the job row's copy, so what these prove now is that the
+reader consults the posting at all and that nothing else is left to consult.
 
 Fingerprints are unique per test. Postings are global and have no delete
 policy, so a fixed fingerprint would leave a row behind that the next run
@@ -16,7 +19,10 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from job_hunter.models import Evaluation, Job
+from job_hunter.supabase_client import SupabaseRequestError
 
 
 def _make_job(fingerprint: str, *, description: str, content_confidence: str = "") -> Job:
@@ -58,15 +64,6 @@ def _posting_id(store, job_id: str) -> str:
     return row["posting_id"]
 
 
-def _overwrite_job_row(store, job_id: str, values: dict) -> None:
-    """Make the job row's duplicated copy disagree with the posting.
-
-    Nothing in the application writes a job row this way -- the point is to
-    prove which of the two copies the reader under test actually consults.
-    """
-    store._client.update("job_hunter_jobs", values, params={"id": f"eq.{job_id}"})
-
-
 def _overwrite_posting(store, posting_id: str, values: dict) -> None:
     store._client.update("job_hunter_postings", values, params={"id": f"eq.{posting_id}"})
 
@@ -77,34 +74,38 @@ def _overwrite_posting(store, posting_id: str, values: dict) -> None:
 def test_get_job_reads_the_advertisement_from_the_posting(store):
     fingerprint = f"posting-read-{uuid.uuid4()}"
     job_id, _, _ = store.upsert_job(_make_job(fingerprint, description="the shared description"))
-    _overwrite_job_row(
+    _overwrite_posting(
         store,
-        job_id,
+        _posting_id(store, job_id),
         {
-            "company": "Stale Co",
-            "title": "Stale Title",
-            "location": "Stale City",
-            "description": "stale description",
+            "company": "Moved Co",
+            "title": "Moved Title",
+            "location": "Moved City",
+            "description": "the moved description",
         },
     )
 
     job = store.get_job(job_id)
 
-    assert job.company == "Acme"
-    assert job.title == "Engineer"
-    assert job.location == "Remote"
-    assert job.description == "the shared description"
+    assert job.company == "Moved Co"
+    assert job.title == "Moved Title"
+    assert job.location == "Moved City"
+    assert job.description == "the moved description"
 
 
-def test_get_job_keeps_the_merged_rows_url(store):
-    """The URL is resolved across every posting the row merges, so it stays.
+def test_get_job_reads_the_url_from_the_posting(store):
+    """The link is the advertisement's since #178.
 
-    `posting_id` names one of them, and reading its URL would put an
-    aggregator link in the digest where the employer's own is known.
+    #177 kept `url` on the job row because a merged row was the only row that
+    had seen every posting behind it. #176 made merging a posting-level
+    decision, so the surviving posting carries the resolved link and every
+    user reads the same one.
     """
     fingerprint = f"posting-url-{uuid.uuid4()}"
     job_id, _, _ = store.upsert_job(_make_job(fingerprint, description="desc"))
-    _overwrite_job_row(store, job_id, {"url": "https://resolved.example/careers/1"})
+    _overwrite_posting(
+        store, _posting_id(store, job_id), {"url": "https://resolved.example/careers/1"}
+    )
 
     assert store.get_job(job_id).url == "https://resolved.example/careers/1"
 
@@ -135,41 +136,39 @@ def test_get_job_makes_one_request(store, monkeypatch):
     assert calls == ["job_hunter_jobs"]
 
 
-def test_get_job_falls_back_to_a_job_row_that_has_no_posting(store):
-    """A direct insert bypasses the RPC, so `posting_id` can be null."""
-    inserted = store._client.insert(
-        "job_hunter_jobs",
-        [
-            {
-                "user_id": store._client.user_id,
-                "fingerprint": f"posting-none-{uuid.uuid4()}",
-                "source": "test",
-                "title": "Unpointed Engineer",
-                "company": "Unpointed Co",
-                "url": "https://unpointed.example/1",
-                "description": "unpointed description",
-                "first_seen_at": "2026-09-09T10:00:00+00:00",
-                "last_seen_at": "2026-09-09T10:00:00+00:00",
-            }
-        ],
-    )[0]
+def test_a_job_row_without_a_posting_cannot_be_written(store):
+    """The fallback #177 needed is gone, because the case it covered is gone.
 
-    job = store.get_job(inserted["id"])
-
-    assert job.title == "Unpointed Engineer"
-    assert job.company == "Unpointed Co"
-    assert job.description == "unpointed description"
+    A direct insert used to be able to make a job row with no posting, which
+    is why `get_job` fell back to the row's own copy of the advertisement.
+    #178 made `posting_id` `not null`: there is no copy to fall back to and no
+    row to fall back for.
+    """
+    with pytest.raises(SupabaseRequestError):
+        store._client.insert(
+            "job_hunter_jobs",
+            [
+                {
+                    "user_id": store._client.user_id,
+                    "first_seen_at": "2026-09-09T10:00:00+00:00",
+                    "last_seen_at": "2026-09-09T10:00:00+00:00",
+                }
+            ],
+        )
 
 
 # Re-evaluation ---------------------------------------------------------------
 
 
-def test_needs_evaluation_ignores_a_stale_hash_on_the_job_row(store):
+def test_needs_evaluation_is_current_against_the_posting(store):
+    """An evaluation stamped from the posting stays current while it does.
+
+    There is no second copy of the description state left to disagree with it
+    (#178): both readers consult the posting and nothing else.
+    """
     fingerprint = f"posting-eval-stale-{uuid.uuid4()}"
     job_id, _, _ = store.upsert_job(_make_job(fingerprint, description="the shared description"))
     store.save_evaluation(job_id, _evaluation(job_id))
-
-    _overwrite_job_row(store, job_id, {"description_hash": "stale", "content_confidence": "stale"})
 
     assert store.needs_evaluation(job_id) is False
     assert store.needs_evaluation_bulk([job_id])[job_id] is False
@@ -203,7 +202,6 @@ def test_save_evaluation_stamps_the_postings_hash(store):
     """What was evaluated is the posting's text, so that is what is recorded."""
     fingerprint = f"posting-eval-stamp-{uuid.uuid4()}"
     job_id, _, _ = store.upsert_job(_make_job(fingerprint, description="the shared description"))
-    _overwrite_job_row(store, job_id, {"description_hash": "stale", "content_confidence": "stale"})
 
     store.save_evaluation(job_id, _evaluation(job_id))
 

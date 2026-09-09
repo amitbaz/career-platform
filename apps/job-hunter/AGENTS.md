@@ -70,11 +70,13 @@ Migration rules:
    keeps a better description from a second fingerprint leaves the row pointing at the weaker
    posting everything now reads it from. `job_hunter_jobs` keeps its duplicated columns and
    keeps the same values in them, so each ticket in the sequence is reversible on its own.
-   What did **not** move is matching — `url` on the hydrated `Job`, and the URL and
-   identity predicates of `job_hunter_eligible_inbound_jobs`. Those ask which of a user's
-   rows covers an advertisement, and a job row accumulates evidence from every posting
-   merged into it while `posting_id` names one of them, so the job row is the better
-   answer. Match on the job row; decide currency from the posting.
+   What did not move *then* was matching — `url` on the hydrated `Job`, and the URL and
+   identity predicates of `job_hunter_eligible_inbound_jobs` — because those ask which of a
+   user's rows covers an advertisement, and a job row accumulated evidence from every
+   posting merged into it while `posting_id` named one of them. That migration states the
+   condition under which its own decision expires: *"The reason this holds today is that
+   merging across fingerprints is still a per-user operation."* #176 met it, and #178 moved
+   the columns. Match on the posting; decide currency from the posting.
    `20260909180000_job_hunter_posting_merges.sql` moves cross-identity merging onto the
    posting (#176). The fingerprint is source-scoped, so the same advertisement on an
    aggregator and on the employer's ATS is two postings; collapsing them was
@@ -97,8 +99,21 @@ Migration rules:
    posting; its facets are discarded rather than stamped onto the survivor (#125's rule at
    the posting level). `job_hunter_upsert_posting` and `job_hunter_merge_posting_batch` are
    re-created to resolve through the redirect, and `job_hunter_merge_jobs` to delegate to
-   it: it is now the per-user consequence of one global decision, not a second authority,
-   and #178 removes it with the rest of the duplicated job-row machinery.) Job Hunter's runtime reads and writes these tables through
+   it: it is now the per-user consequence of one global decision, not a second authority.
+   `29999999000000_job_hunter_job_membership.sql` finishes the sequence (#178): every
+   posting-level column comes off `job_hunter_jobs`, which becomes one user's membership of
+   a posting — user, posting, market, status, first and last seen — unique on
+   `(user_id, posting_id)`, with `posting_id` not null and the fingerprint's uniqueness now
+   on the posting. Identity resolution moves with the columns: `job_hunter_upsert_job`
+   resolves a listing against `job_hunter_postings` (canonical URL, ATS triple, normalized
+   company/title/location via the new `job_hunter_find_posting_by_identity`) and merges what
+   it finds there, so the decision is made once for everyone; it is `security definer` for
+   that reason, which is what keeps `job_hunter_merge_postings` revoked from
+   `authenticated` rather than callable on any two posting ids. `job_hunter_merge_jobs` is
+   left as the per-user entry point and does nothing but merge the postings behind two of a
+   caller's rows, and the new internal `job_hunter_collapse_job_rows` folds the membership
+   rows a posting merge would otherwise duplicate — for every affected user, not only the
+   caller. An additional user now costs one narrow row per posting.) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
 

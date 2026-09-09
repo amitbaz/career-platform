@@ -2265,7 +2265,17 @@ def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
     assert survivor_id == application_id
     assert is_new is False
     assert store.count_jobs() == 1
-    assert store.get_job(survivor_id).url == canonical_url
+    # The link is the surviving posting's since #178, and which posting
+    # survives is decided by job_hunter_merge_postings' ladder rather than by
+    # which of this user's rows was created first. Every listing here has an
+    # empty description, so the ladder falls through to "a complete ATS
+    # identity wins" -- and in this fixture the ATS-identified listings are the
+    # ones carrying an aggregator URL, while the employer's lever link sits on
+    # a listing with no ATS triple at all. Before #178 the answer came from
+    # whichever job row was created first, which happened to be the lever one.
+    # Neither answer is arrived at by recognising an employer link; the
+    # difference is that this one is decided once for everyone.
+    assert store.get_job(survivor_id).url == "https://aggregator.test/jobs/ats-1"
     assert store.get_evaluation(survivor_id) is not None
     assert store.get_material(survivor_id) is not None
     assert store.has_delivery(survivor_id, "telegram_message")
@@ -2781,13 +2791,15 @@ def test_backfill_ats_identity_fills_rows_from_their_urls(store, supabase_client
 
     assert store.backfill_ats_identity() == 1
 
+    # The identity is the advertisement's, so it is read back off the posting
+    # the job row is a membership of (#178).
     row = supabase_client.select(
         "job_hunter_jobs",
         params={
             "id": f"eq.{job_id}",
-            "select": "ats_provider,ats_board,ats_job_id",
+            "select": "posting:job_hunter_postings(ats_provider,ats_board,ats_job_id)",
         },
-    )[0]
+    )[0]["posting"]
     assert (row["ats_provider"], row["ats_board"], row["ats_job_id"]) == (
         "lever",
         "acme",
@@ -2815,8 +2827,11 @@ def test_backfill_ats_identity_leaves_non_ats_and_already_attributed_rows_alone(
 
     row = supabase_client.select(
         "job_hunter_jobs",
-        params={"id": f"eq.{attributed_id}", "select": "ats_board"},
-    )[0]
+        params={
+            "id": f"eq.{attributed_id}",
+            "select": "posting:job_hunter_postings(ats_board)",
+        },
+    )[0]["posting"]
     assert row["ats_board"] == "acme"
 
 
@@ -2840,9 +2855,9 @@ def test_backfill_ats_identity_attributes_job_boards_greenhouse_rows(store, supa
         "job_hunter_jobs",
         params={
             "id": f"eq.{job_id}",
-            "select": "ats_provider,ats_board,ats_job_id",
+            "select": "posting:job_hunter_postings(ats_provider,ats_board,ats_job_id)",
         },
-    )[0]
+    )[0]["posting"]
     assert (row["ats_provider"], row["ats_board"], row["ats_job_id"]) == (
         "greenhouse",
         "acme",

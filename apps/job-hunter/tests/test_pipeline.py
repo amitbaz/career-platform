@@ -40,6 +40,7 @@ from job_hunter.pipeline import run_pipeline, should_run_scheduled
 from job_hunter.ranking import rank_jobs
 from job_hunter.sources import GmailStagedSource, LearnedAtsSource
 from job_hunter.sources.company_watch import CompanyWatchSource
+from job_hunter.supabase_client import SupabaseRequestError
 from job_hunter.telegram import build_digest, build_ai_pause_warning, select_deliverable_items
 from job_hunter.watchlist import promote_company as persist_promoted_company
 from tests.facet_fixtures import REACT_MUST_HAVE, make_facets
@@ -3195,37 +3196,29 @@ def test_pipeline_extracts_a_posting_once(store, settings):
     assert gemini.facet_calls == 1
 
 
-def test_a_job_with_no_posting_is_never_read(store, supabase_client):
-    # The mirror of the store's own guarantee: a job with no posting is not
-    # reported as needing extraction, so scoring takes the "already read"
-    # branch, finds nothing, and must NOT fall through into a provider call
-    # whose result could not be stored -- that call would be spent again on
-    # every later run.
+def test_a_job_with_no_posting_cannot_exist_to_be_read(store, supabase_client):
+    # This used to insert a job row with no posting and prove that scoring
+    # refused to spend a provider call on it -- a result that could not have
+    # been stored, and would have been spent again on every later run.
+    #
+    # #178 removed the case rather than the guard: `posting_id` is `not null`,
+    # so the row the old test built is refused by the database. The guard in
+    # `_facets_for_scoring` still stands; what is asserted here is that
+    # nothing can reach it, which is the stronger version of the same claim.
     from job_hunter.store_mapping import to_iso as _to_iso
 
     now = _to_iso(datetime.now(timezone.utc))
-    row = supabase_client.insert(
-        "job_hunter_jobs",
-        [
-            {
-                "user_id": supabase_client.user_id,
-                "fingerprint": f"no-posting-{uuid.uuid4()}",
-                "description": "React TypeScript remote role",
-                "first_seen_at": now,
-                "last_seen_at": now,
-            }
-        ],
-    )[0]
-    gemini = FakeGemini()
-    summary = RunSummary()
-
-    facets = job_hunter.pipeline._facets_for_scoring(
-        row["id"], _job(), store, gemini, summary, set()
-    )
-
-    assert facets is None
-    assert gemini.facet_calls == 0
-    assert summary.facet_extraction_attempted == 0
+    with pytest.raises(SupabaseRequestError):
+        supabase_client.insert(
+            "job_hunter_jobs",
+            [
+                {
+                    "user_id": supabase_client.user_id,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                }
+            ],
+        )
 
 
 def test_a_second_users_run_reuses_the_first_users_extraction(store, other_store, settings):

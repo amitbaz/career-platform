@@ -419,4 +419,16 @@ def test_a_batched_job_upsert_points_at_the_posting_the_merge_resolved(
     rows = supabase_client.select(
         "job_hunter_jobs", params={"id": f"eq.{job_id}", "select": "posting_id"}
     )
-    assert rows[0]["posting_id"] == batch.posting_ids[job_fingerprint(jobs[0])]
+    # Through the redirect, because the batch's posting is not necessarily
+    # still a survivor by the time the membership row is written. Since #178
+    # the job upsert resolves identity against the whole corpus of postings --
+    # canonical URL, ATS triple, normalized company/title/location -- and
+    # merges what it finds, so a listing whose identity matches a posting
+    # somebody else already holds ends up on that survivor. What must hold is
+    # that the row points at whatever the batch's posting resolves to, which
+    # is the same advertisement either way.
+    resolved = supabase_client.rpc(
+        "job_hunter_resolve_posting",
+        {"p_posting_id": batch.posting_ids[job_fingerprint(jobs[0])]},
+    )
+    assert rows[0]["posting_id"] == resolved[0]

@@ -187,8 +187,14 @@ def _migrate_jobs(
     job_id_map: dict[int, str] = {}
     migrated = 0
     for row in _rows(conn, "jobs"):
-        payload = {
-            "user_id": client.user_id,
+        # One legacy row becomes two: the advertisement, keyed by the
+        # fingerprint it always carried, and this user's membership of it
+        # (#178). The fingerprint's uniqueness moved to the posting with the
+        # columns, so that is what the first upsert conflicts on and
+        # `(user_id, posting_id)` is what the second one does.
+        first_seen_at = _iso("jobs", "first_seen_at", row["first_seen_at"])
+        last_seen_at = _iso("jobs", "last_seen_at", row["last_seen_at"])
+        posting = {
             "fingerprint": row["fingerprint"],
             "source": row.get("source") or "",
             "source_job_id": row.get("source_job_id"),
@@ -204,12 +210,23 @@ def _migrate_jobs(
             "ats_provider": row.get("ats_provider"),
             "ats_board": row.get("ats_board"),
             "ats_job_id": row.get("ats_job_id"),
+            "first_seen_at": first_seen_at,
+            "last_seen_at": last_seen_at,
+        }
+        posting_row = _upsert_one(
+            client, "job_hunter_postings", posting, on_conflict="fingerprint"
+        )
+        payload = {
+            "user_id": client.user_id,
+            "posting_id": posting_row["id"],
             "market_id": row.get("market_id") or "",
             "status": row.get("status") or "new",
-            "first_seen_at": _iso("jobs", "first_seen_at", row["first_seen_at"]),
-            "last_seen_at": _iso("jobs", "last_seen_at", row["last_seen_at"]),
+            "first_seen_at": first_seen_at,
+            "last_seen_at": last_seen_at,
         }
-        new_row = _upsert_one(client, "job_hunter_jobs", payload, on_conflict="user_id,fingerprint")
+        new_row = _upsert_one(
+            client, "job_hunter_jobs", payload, on_conflict="user_id,posting_id"
+        )
         job_id_map[row["id"]] = new_row["id"]
         migrated += 1
     counts["jobs"] = migrated

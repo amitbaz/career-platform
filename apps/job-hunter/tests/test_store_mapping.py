@@ -268,8 +268,12 @@ def test_job_from_row_lets_the_posting_answer_a_fact_with_an_empty_value() -> No
     assert job.remote is None
 
 
-def test_job_from_row_falls_back_to_the_job_row_when_there_is_no_posting() -> None:
-    """`posting_id` is nullable, so a row can still arrive without one."""
+def test_job_from_row_falls_back_to_the_row_when_the_embed_was_not_selected() -> None:
+    """A mapping with no `posting` key reads as itself rather than as blanks.
+
+    `posting_id` is `not null` since #178, so this is no longer a job row
+    without an advertisement -- it is a select that did not ask for the embed.
+    """
     job = job_from_row(_job_row_with(posting=None))
 
     assert job.title == "Stale Title"
@@ -277,17 +281,19 @@ def test_job_from_row_falls_back_to_the_job_row_when_there_is_no_posting() -> No
     assert job.remote is True
 
 
-def test_job_from_row_keeps_the_merged_rows_url() -> None:
-    """A job row can stand for several postings; its URL is the resolved one.
+def test_job_from_row_takes_the_url_from_the_posting() -> None:
+    """The resolved link is the posting's since #178.
 
-    `posting_id` names only one of the postings a merged row collapses, and
-    that one's URL is whatever source it was seen under -- the aggregator
-    link rather than the employer's. See `job_from_row`.
+    #177 kept `url` on the job row because a merged job row was the only row
+    that had seen every posting behind it. #176 moved merging onto the
+    posting -- the survivor carries the folded link -- so the posting is now
+    that row, and reading it here is the same answer for every user rather
+    than one each. See `job_from_row`.
     """
     job = job_from_row(
         _job_row_with(
-            url="https://acme.example/careers/9",
-            posting={"url": "https://aggregator.example/j/9", "remote": None},
+            url="https://stale-membership-copy.example/9",
+            posting={"url": "https://acme.example/careers/9", "remote": None},
         )
     )
 

@@ -56,10 +56,12 @@ select has_function('public', 'job_hunter_eligible_inbound_jobs', array[]::text[
   'job_hunter_eligible_inbound_jobs exists');
 select has_function('public', 'job_hunter_find_job_by_identity', array['text', 'text', 'text'],
   'job_hunter_find_job_by_identity exists');
+select has_function('public', 'job_hunter_find_posting_by_identity', array['text', 'text', 'text'],
+  'job_hunter_find_posting_by_identity exists');
 select has_function('public', 'job_hunter_get_provider_credentials', array[]::text[],
   'job_hunter_get_provider_credentials exists');
 
--- Three security-definer exceptions, and no more. Every store and normalizer
+-- Five security-definer exceptions, and no more. Every store and normalizer
 -- function must continue to run with the caller's own privileges so one
 -- user's call cannot read another user's rows.
 --
@@ -69,12 +71,19 @@ select has_function('public', 'job_hunter_get_provider_credentials', array[]::te
 --     row-level security scopes one to its own rows, under which the update
 --     would silently touch nothing and leave other users pointing at a
 --     posting nobody maintains. It is revoked from anon, authenticated and
---     service_role, so the only way in is the function below.
---   * job_hunter_merge_jobs (#176), definer so that it -- and only it -- can
---     execute the above. It never relied on RLS: every statement in it
---     carries its own `user_id = (select auth.uid())` predicate, and RLS on
---     each per-user table it touches is exactly that same predicate, so the
---     two express one restriction. Asserted below rather than assumed.
+--     service_role, so the only ways in are the two functions below.
+--   * job_hunter_merge_jobs (#176), definer so that it can execute the above.
+--   * job_hunter_collapse_job_rows (#178), which folds two membership rows of
+--     one user and is called for every affected user by the posting merge --
+--     the same cross-user requirement. It is revoked from every role and
+--     takes its user explicitly rather than reading auth.uid().
+--   * job_hunter_upsert_job (#178), definer so that identity resolution can
+--     reach the posting merge without that merge becoming callable on any two
+--     posting ids an authenticated user cares to name. Neither it nor
+--     merge_jobs relied on RLS: every statement in both carries its own
+--     `user_id = (select auth.uid())` predicate, and RLS on each per-user
+--     table they touch is exactly that same predicate, so the two express one
+--     restriction. Asserted below rather than assumed.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -82,8 +91,22 @@ select is(
     where n.nspname = 'public'
       and p.proname like 'job\_hunter\_%'
       and p.prosecdef),
-  array['job_hunter_get_provider_credentials', 'job_hunter_merge_jobs', 'job_hunter_merge_postings'],
-  'credential retrieval and the two merges are the only public.job_hunter_* security definers');
+  array['job_hunter_collapse_job_rows', 'job_hunter_get_provider_credentials',
+        'job_hunter_merge_jobs', 'job_hunter_merge_postings',
+        'job_hunter_upsert_job'],
+  'credential retrieval, the merges, the row collapse and the job upsert are the only public.job_hunter_* security definers');
+
+-- The collapse is internal to the schema: no role may call it at all, which
+-- is what keeps "fold these two membership rows" reachable only as a
+-- consequence of a merge.
+select is(
+  (select array_agg(g.grantee::text order by g.grantee)
+     from information_schema.routine_privileges g
+    where g.specific_schema = 'public'
+      and g.routine_name = 'job_hunter_collapse_job_rows'
+      and g.grantee in ('anon', 'authenticated', 'service_role', 'PUBLIC')),
+  null,
+  'no role may execute the membership-row collapse directly');
 
 -- The revoke is the point of making the merge definer, so pin it: no role a
 -- user can hold may reach job_hunter_merge_postings directly.
@@ -118,9 +141,11 @@ select is(
     where n.nspname = 'public' and p.proname like 'job\_hunter\_%'),
   array[
     'job_hunter_canonicalize_url',
+    'job_hunter_collapse_job_rows',
     'job_hunter_confidence_rank',
     'job_hunter_eligible_inbound_jobs',
     'job_hunter_find_job_by_identity',
+    'job_hunter_find_posting_by_identity',
     'job_hunter_get_provider_credentials',
     'job_hunter_gmail_candidate_complete',
     'job_hunter_locations_compatible',
@@ -142,45 +167,67 @@ select is(
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs',
     'job_hunter_upsert_posting'],
-  'exactly the twenty-five expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the twenty-seven expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
-insert into public.job_hunter_jobs
-  (id, user_id, fingerprint, source, source_job_id, url, canonical_url,
+-- The advertisement and the membership of it are two rows since #178. The
+-- posting carries everything about the advertisement -- including the
+-- fingerprint, which names it rather than one user's copy -- and the job row
+-- carries the user, the market and the funnel status.
+insert into public.job_hunter_postings
+  (id, fingerprint, source, source_job_id, url, canonical_url,
    company, title, location, description, description_hash, content_confidence,
    first_seen_at, last_seen_at)
 values
-  ('10000000-0000-0000-0000-000000000001', '11111111-0000-0000-0000-00000000000a', 'fp-deliver',
+  ('1a000000-0000-0000-0000-000000000001', 'fp-deliver',
    'greenhouse', 'g-1', 'https://deliver.example/1', 'https://deliver.example/1',
    'Deliver Co', 'Staff Engineer', 'Vienna', 'deliver desc', 'h-deliver', 'official_ats',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
-  ('10000000-0000-0000-0000-000000000002', '11111111-0000-0000-0000-00000000000a', 'fp-stale',
+  ('1a000000-0000-0000-0000-000000000002', 'fp-stale',
    'lever', 'l-2', 'https://stale.example/2', 'https://stale.example/2',
    'Stale Co', 'Site Reliability Engineer', 'Graz', 'stale desc', 'h-stale', 'official_ats',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
-  ('10000000-0000-0000-0000-000000000003', '11111111-0000-0000-0000-00000000000a', 'fp-delivered',
+  ('1a000000-0000-0000-0000-000000000003', 'fp-delivered',
    'ashby', 'a-3', 'https://delivered.example/3', 'https://delivered.example/3',
    'Delivered Co', 'Principal Engineer', 'Linz', 'delivered desc', 'h-delivered', 'official_ats',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
-  ('10000000-0000-0000-0000-000000000004', '11111111-0000-0000-0000-00000000000a', 'fp-identity',
+  ('1a000000-0000-0000-0000-000000000004', 'fp-identity',
    'greenhouse', 'g-4', 'https://acme.example/jobs/9', 'https://acme.example/jobs/9',
    'Acme GmbH', 'Senior  Backend Engineer!', 'Berlin, Germany', 'acme desc', 'h-acme', 'official_ats',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
-  ('10000000-0000-0000-0000-000000000005', '11111111-0000-0000-0000-00000000000a', 'fp-merge-old',
+  ('1a000000-0000-0000-0000-000000000005', 'fp-merge-old',
    '', null, 'https://m.example/old', '',
    'Merge Co', 'Merge Engineer', 'Zurich', 'short', 'h-old', 'aggregator_text',
    '2026-01-01T00:00:00Z', '2026-01-05T00:00:00Z'),
-  ('10000000-0000-0000-0000-000000000006', '11111111-0000-0000-0000-00000000000a', 'fp-merge-new',
+  ('1a000000-0000-0000-0000-000000000006', 'fp-merge-new',
    'greenhouse', 'g-6', 'https://m.example/new', 'https://m.example/new',
    '', 'Merge Engineer', '', 'a much longer description than the other one', 'h-new', 'aggregator_text',
    '2026-01-03T00:00:00Z', '2026-01-04T00:00:00Z'),
-  ('10000000-0000-0000-0000-000000000007', '11111111-0000-0000-0000-00000000000a', 'fp-inbound',
+  ('1a000000-0000-0000-0000-000000000007', 'fp-inbound',
    'gmail:greenhouse', 'cand-key-1', 'https://inbound.example/7', 'https://inbound.example/7',
    'Inbound Materialized Co', 'Inbound Engineer', 'Salzburg', 'inbound desc', 'h-inbound', 'aggregator_text',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+insert into public.job_hunter_jobs
+  (id, user_id, posting_id, first_seen_at, last_seen_at)
+values
+  ('10000000-0000-0000-0000-000000000001', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000001', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000002', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000002', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000003', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000003', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000004', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000004', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000005', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000005', '2026-01-01T00:00:00Z', '2026-01-05T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000006', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000006', '2026-01-03T00:00:00Z', '2026-01-04T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000007', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000007', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
 -- Latest evaluation is decided by evaluated_at, not by insertion order, so
 -- the stale job's GOOD evaluation is inserted last on purpose.
@@ -262,15 +309,21 @@ values
 
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 
-insert into public.job_hunter_jobs
-  (id, user_id, fingerprint, source, source_job_id, url, canonical_url,
+insert into public.job_hunter_postings
+  (id, fingerprint, source, source_job_id, url, canonical_url,
    company, title, location, description, description_hash, content_confidence,
    first_seen_at, last_seen_at)
 values
-  ('20000000-0000-0000-0000-000000000001', '22222222-0000-0000-0000-00000000000b', 'fp-b-deliver',
+  ('2b000000-0000-0000-0000-000000000001', 'fp-b-deliver',
    'greenhouse', 'gb-1', 'https://b.example/1', 'https://b.example/1',
    'B Deliver Co', 'B Staff Engineer', 'Berlin', 'b desc', 'h-b', 'official_ats',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+insert into public.job_hunter_jobs
+  (id, user_id, posting_id, first_seen_at, last_seen_at)
+values
+  ('20000000-0000-0000-0000-000000000001', '22222222-0000-0000-0000-00000000000b',
+   '2b000000-0000-0000-0000-000000000001', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
 insert into public.job_hunter_evaluations (user_id, job_id, total_score, decision, evaluated_at)
 values ('22222222-0000-0000-0000-00000000000b', '20000000-0000-0000-0000-000000000001',
@@ -412,24 +465,27 @@ select results_eq(
   'upsert_job: the same job with a better description updates in place and reports the change');
 
 select is(
-  (select count(*)::int from public.job_hunter_jobs where fingerprint = 'fp-upsert-1'),
+  (select count(*)::int from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.fingerprint = 'fp-upsert-1'),
   1,
-  'upsert_job: two calls leave exactly one job row');
+  'upsert_job: two calls leave exactly one membership row');
 
 select is(
   (select count(*)::int from public.job_hunter_job_sources s
      join public.job_hunter_jobs j on j.id = s.job_id
-    where j.fingerprint = 'fp-upsert-1'),
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.fingerprint = 'fp-upsert-1'),
   1,
   'upsert_job: the discovery source is recorded once, not once per call');
 
 select is(
-  (select description from public.job_hunter_jobs where fingerprint = 'fp-upsert-1'),
+  (select description from public.job_hunter_postings where fingerprint = 'fp-upsert-1'),
   'a materially longer description than the first one',
   'upsert_job: the better description wins at equal confidence');
 
 select is(
-  (select description_hash from public.job_hunter_jobs where fingerprint = 'fp-upsert-1'),
+  (select description_hash from public.job_hunter_postings where fingerprint = 'fp-upsert-1'),
   -- The literal is what Python's normalize.py:description_hash returns for
   -- that exact string. Hard-coded on purpose: recomputing it in SQL here
   -- would only prove the function agrees with itself.
@@ -472,15 +528,17 @@ select results_eq(
   'match_mode fingerprint: a different fingerprint inserts a second job even though the canonical URL and identity already match one');
 
 select is(
-  (select count(*)::int from public.job_hunter_jobs
-    where canonical_url = 'https://mode.example/1'),
+  (select count(*)::int from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.canonical_url = 'https://mode.example/1'),
   2,
   'match_mode fingerprint: it really did create a second row, it did not merge');
 
 select is(
   (select count(*)::int from public.job_hunter_job_sources s
      join public.job_hunter_jobs j on j.id = s.job_id
-    where j.fingerprint = 'fp-mode-other'),
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.fingerprint = 'fp-mode-other'),
   0,
   'match_mode fingerprint: no discovery source is recorded, matching upsert_job which never called _record_job_source');
 
@@ -494,8 +552,9 @@ select results_eq(
   'match_mode logical: the same third fingerprint resolves onto the existing job instead of inserting');
 
 select is(
-  (select count(*)::int from public.job_hunter_jobs
-    where canonical_url = 'https://mode.example/1'),
+  (select count(*)::int from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.canonical_url = 'https://mode.example/1'),
   1,
   'match_mode logical: the duplicate the fingerprint mode created is merged away');
 
@@ -513,12 +572,22 @@ select results_eq(
          "company":"Upsert Test Co","title":"Data Engineer","location":"Vienna",
          "description":"first","content_confidence":"official_ats"}'::jsonb) $$,
   $$ values (true) $$,
-  'upsert_job: B cannot see or update A''s job with the same fingerprint, it gets its own');
+  'upsert_job: B joins A''s posting with a membership row of its own rather than updating A''s');
+
+-- What an additional user costs, which is the whole point of #178: one narrow
+-- row against the posting that already exists, not a second copy of the
+-- advertisement.
+select is(
+  (select count(*)::int from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where p.fingerprint = 'fp-upsert-1'),
+  1,
+  'upsert_job: B sees exactly one membership row for that posting, its own');
 
 select is(
-  (select count(*)::int from public.job_hunter_jobs where fingerprint = 'fp-upsert-1'),
+  (select count(*)::int from public.job_hunter_postings where fingerprint = 'fp-upsert-1'),
   1,
-  'upsert_job: B sees exactly one job with that fingerprint, its own');
+  'upsert_job: the second user added no second posting');
 
 -- 6. job_hunter_merge_jobs ---------------------------------------------------------------
 -- store.py:906-1090. Run last: it deletes a fixture job.
@@ -543,12 +612,16 @@ select is_empty(
   'merge_jobs: the losing job is deleted');
 
 select is(
-  (select company from public.job_hunter_jobs where id = '10000000-0000-0000-0000-000000000006'),
+  (select p.company from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.id = '10000000-0000-0000-0000-000000000006'),
   'Merge Co',
   'merge_jobs: an empty survivor field is backfilled from the duplicate');
 
 select is(
-  (select description from public.job_hunter_jobs where id = '10000000-0000-0000-0000-000000000006'),
+  (select p.description from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.id = '10000000-0000-0000-0000-000000000006'),
   'a much longer description than the other one',
   'merge_jobs: the longer description wins at equal confidence');
 
@@ -618,14 +691,20 @@ select is(
 
 -- A survivor can itself be merged away later. Redirects are repointed when
 -- that happens, so a reader never has to walk a chain to a deleted row.
-insert into public.job_hunter_jobs
-  (id, user_id, fingerprint, source, url, company, title, location,
+insert into public.job_hunter_postings
+  (id, fingerprint, source, url, company, title, location,
    description, description_hash, content_confidence, first_seen_at, last_seen_at)
 values
-  ('10000000-0000-0000-0000-000000000009', '11111111-0000-0000-0000-00000000000a',
+  ('1a000000-0000-0000-0000-000000000009',
    'fp-merge-third', '', 'https://m.example/third', 'Merge Co', 'Merge Engineer',
    'Zurich', 'third description', 'h-third', 'aggregator_text',
    '2025-12-31T00:00:00Z', '2025-12-31T00:00:00Z');
+
+insert into public.job_hunter_jobs
+  (id, user_id, posting_id, first_seen_at, last_seen_at)
+values
+  ('10000000-0000-0000-0000-000000000009', '11111111-0000-0000-0000-00000000000a',
+   '1a000000-0000-0000-0000-000000000009', '2025-12-31T00:00:00Z', '2025-12-31T00:00:00Z');
 
 -- The merge above left every history signal on 006, so this row has to match
 -- it on all of them and win on the first_seen_at tie-break, which is what

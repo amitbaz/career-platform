@@ -195,12 +195,18 @@ select ok(
   (select created_at from temp_clock_batch where input_index = 1),
   'two jobs upserted in one batch call get strictly increasing created_at');
 
--- When two elements of one batch canonicalize to the same identity, the
--- earlier-input job must be the merge survivor. A tied first_seen_at (the
--- bug this pins) lets survivor selection fall through to `id asc` on
--- random uuids, which has no relationship to input order -- so this checks
--- an observable field only the earlier-input job's row carries, rather
--- than just that a merge happened at all (already covered above).
+-- When two elements of one batch canonicalize to the same identity, they
+-- collapse to one membership row, and that row keeps the earlier input's
+-- first_seen_at. A tied first_seen_at (the bug this pins) would leave the
+-- row's first sighting decided by whichever uuid sorted lower rather than by
+-- input order.
+--
+-- What the row says about the advertisement is a separate question and is no
+-- longer decided by input order at all (#178): the two payloads resolve to
+-- two postings, the postings merge, and the survivor is the one with the
+-- better description -- here the longer 'second', from the later input. That
+-- is job_hunter_merge_postings' documented ladder, applied once for everyone,
+-- and it is asserted below so a change to it fails here.
 create temporary table temp_survivor_batch as
 select * from public.job_hunter_upsert_jobs(
   jsonb_build_array(
@@ -218,11 +224,17 @@ select is(
   1,
   'sanity check: the two survivor-test jobs really did merge into one');
 
+select ok(
+  (select j.first_seen_at < j.last_seen_at from public.job_hunter_jobs j
+    where j.id = (select id from temp_survivor_batch limit 1)),
+  'the surviving membership row was first seen by the earlier input and last seen by the later one');
+
 select is(
-  (select company from public.job_hunter_jobs
-    where id = (select id from temp_survivor_batch limit 1)),
-  'Survivor Co',
-  'the earlier-input job (input_index 0) is the merge survivor, not whichever id sorts lower');
+  (select p.company from public.job_hunter_jobs j
+     join public.job_hunter_postings p on p.id = j.posting_id
+    where j.id = (select id from temp_survivor_batch limit 1)),
+  'Loser Co',
+  'the merged posting is the one with the better description, whichever input it came from');
 
 -- The function is security invoker, so it can never be a way around RLS.
 select is(
@@ -315,10 +327,10 @@ select is(
 
 -- The asymmetric null comparison, pinned independently of Python -----------
 --
--- Both `job_hunter_jobs.description_hash` and
+-- Both `job_hunter_postings.description_hash` and
 -- `job_hunter_evaluations.description_hash_at_eval` are `not null default
 -- ''`, so a real NULL can never reach either column through the normal
--- upsert/save-evaluation paths -- the coalesce on the job side is
+-- upsert/save-evaluation paths -- the coalesce on the posting side is
 -- defensive, not reachable in production today. To pin the deliberate
 -- asymmetry described in the migration comment (job side coalesced,
 -- evaluation side not) at the SQL layer regardless, this relaxes the
@@ -327,7 +339,9 @@ select is(
 -- (asymmetric) verdict. A "tidied" comparison that coalesced the
 -- evaluation side too (`coalesce(e.description_hash_at_eval, '') is
 -- distinct from j.description_hash`) would report `false` here instead --
--- do not "fix" this test to match that if it starts failing.
+-- do not "fix" this test to match that if it starts failing. The job side of
+-- the comparison is the posting's since #178; the asymmetry itself is
+-- unchanged.
 select pg_temp.become_postgres();
 alter table public.job_hunter_evaluations alter column description_hash_at_eval drop not null;
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
@@ -339,7 +353,9 @@ select id from public.job_hunter_upsert_jobs(
     'title', 'Engineer', 'location', 'Remote', 'remote', true,
     'description', '', 'url', 'https://example.test/n-asym')));
 
-update public.job_hunter_jobs set description_hash = '' where id = (select id from temp_asym_job);
+update public.job_hunter_postings set description_hash = ''
+ where id = (select j.posting_id from public.job_hunter_jobs j
+              where j.id = (select id from temp_asym_job));
 
 insert into public.job_hunter_evaluations
   (user_id, job_id, status, description_hash_at_eval, content_confidence_at_eval, evaluated_at)

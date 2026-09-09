@@ -97,7 +97,10 @@ it wrong:
   `job_hunter_ats_registry`, `job_hunter_company_watch`, `job_hunter_search_api_usage` and
   `job_hunter_gmail_sync_state` — carry `user_id`, and the pipeline builds its source list from
   that per-user state under row-level security. **N users means N crawls of substantially the
-  same market**, and `job_hunter_jobs` still produces N job rows per posting.
+  same market.** What N users no longer means is N copies of each advertisement: since #178 a
+  job row is one user's membership of a shared posting, so the Nth user costs a narrow row
+  rather than the description, the identity columns and the fetch metadata again. The crawl
+  is what still duplicates.
 
 **The consequence for pricing is direct.** A licensed feed's quota is a *platform* quota —
 Adzuna's is 2,500 calls a month on the key — so if each user's crawl spends from it, the

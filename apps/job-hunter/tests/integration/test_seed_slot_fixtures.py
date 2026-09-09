@@ -59,12 +59,22 @@ def test_the_claimed_users_exist_in_the_database(
     seed users", which would name the wrong cause.
     """
     now = datetime.now(timezone.utc).isoformat()
+    posting = supabase_client.insert(
+        "job_hunter_postings",
+        [
+            {
+                "fingerprint": f"seed-slot-check-{uuid.uuid4()}",
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+        ],
+    )[0]
     rows = supabase_client.insert(
         "job_hunter_jobs",
         [
             {
                 "user_id": supabase_client.user_id,
-                "fingerprint": f"seed-slot-check-{uuid.uuid4()}",
+                "posting_id": posting["id"],
                 "first_seen_at": now,
                 "last_seen_at": now,
             }

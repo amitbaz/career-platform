@@ -66,9 +66,16 @@ begin
   execute 'set local role authenticated';
 end $$;
 
--- Create a test job for use in duplicate tests
-insert into public.job_hunter_jobs (id, user_id, fingerprint, first_seen_at, last_seen_at)
-values ('dddddddd-0000-0000-0000-000000000004', 'cccccccc-0000-0000-0000-000000000003', 'test-fingerprint', now(), now())
+-- Create a test job for use in duplicate tests. A job row is a membership of
+-- a posting since #178, so the advertisement -- which is what the fingerprint
+-- names -- is inserted first.
+insert into public.job_hunter_postings (id, fingerprint, first_seen_at, last_seen_at)
+values ('eeeeeeee-0000-0000-0000-000000000005', 'test-fingerprint', now(), now())
+on conflict (id) do nothing;
+
+insert into public.job_hunter_jobs (id, user_id, posting_id, first_seen_at, last_seen_at)
+values ('dddddddd-0000-0000-0000-000000000004', 'cccccccc-0000-0000-0000-000000000003',
+        'eeeeeeee-0000-0000-0000-000000000005', now(), now())
 on conflict (id) do nothing;
 
 -- Behavioral test: job_hunter_evaluations rejects duplicate

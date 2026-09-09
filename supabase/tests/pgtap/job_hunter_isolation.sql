@@ -84,6 +84,19 @@ select unnest(array[
 -- Minimal row per table -----------------------------------------------------------
 -- Child tables create their own parent row for the same owner first.
 
+-- A membership row needs an advertisement to be a membership of (#178), so
+-- every seeded job row gets its own posting. The postings are shared and
+-- carry no user_id, which is why this helper takes none.
+create function pg_temp.job_hunter_seed_posting() returns uuid
+language plpgsql as $$
+declare
+  v_id uuid;
+begin
+  insert into public.job_hunter_postings (fingerprint, first_seen_at, last_seen_at)
+  values (gen_random_uuid()::text, now(), now()) returning id into v_id;
+  return v_id;
+end $$;
+
 create function pg_temp.job_hunter_seed_row(p_table text, p_owner uuid) returns uuid
 language plpgsql as $$
 declare
@@ -94,8 +107,8 @@ declare
 begin
   case p_table
     when 'job_hunter_jobs' then
-      insert into public.job_hunter_jobs (user_id, fingerprint, first_seen_at, last_seen_at)
-      values (p_owner, gen_random_uuid()::text, now(), now()) returning id into v_id;
+      insert into public.job_hunter_jobs (user_id, posting_id, first_seen_at, last_seen_at)
+      values (p_owner, pg_temp.job_hunter_seed_posting(), now(), now()) returning id into v_id;
     when 'job_hunter_job_sources' then
       v_job := pg_temp.job_hunter_seed_row('job_hunter_jobs', p_owner);
       insert into public.job_hunter_job_sources (user_id, job_id, source, identity_key, first_seen_at, last_seen_at)
@@ -341,8 +354,9 @@ from pg_temp.job_hunter_tables t;
 select pg_temp.become_postgres();
 create temporary table _a_job (id uuid);
 with ins as (
-  insert into public.job_hunter_jobs (user_id, fingerprint, first_seen_at, last_seen_at)
-  values ('aaaaaaaa-0000-0000-0000-000000000001', 'fk-test', now(), now())
+  insert into public.job_hunter_jobs (user_id, posting_id, first_seen_at, last_seen_at)
+  values ('aaaaaaaa-0000-0000-0000-000000000001',
+          pg_temp.job_hunter_seed_posting(), now(), now())
   returning id
 )
 insert into _a_job select id from ins;
