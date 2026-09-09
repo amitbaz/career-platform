@@ -178,11 +178,19 @@ ledger looks clean and the behaviour still does not.
 `pnpm db:reset` drops every peer's unmerged migration, so resetting to install your own is
 destructive to everyone else mid-run. But applying without the ledger row leaves a stack whose
 recorded migration set looks exactly like `main` while its functions do not, and the next agent's
-cheap check silently fails them:
+cheap check silently fails them. Use the CLI rather than writing the row yourself — it touches
+only your own version and does not depend on the ledger's shape staying as it is:
 
-```sql
-insert into supabase_migrations.schema_migrations (version, name) values ('<version>', '<name>');
+```bash
+supabase migration repair --local --status applied <version>
 ```
+
+If your objects are already installed from an earlier hand-apply that skipped this, drop and
+re-apply them before repairing, so the row and the objects agree. And **never repair a version
+that is not yours.** A row claiming a version somebody else's migration owns is worse than a
+missing one: a missing row gets investigated, a wrong row gets trusted. This has already happened
+once — stage-queue functions were recorded under a version that a different, since-merged
+migration owns, so the ledger matched `main` while the objects did not.
 
 **And know what a reset costs other people.** `pnpm db:reset` serialises against other runs
 through the stack lock, so it will not corrupt anyone mid-statement — but it still drops every
