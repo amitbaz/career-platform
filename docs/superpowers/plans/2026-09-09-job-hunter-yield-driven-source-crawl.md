@@ -17,6 +17,8 @@
 - **One migration file** for the whole ticket: `supabase/migrations/PLACEHOLDER_job_hunter_source_registry.sql`. `PLACEHOLDER` is deliberately not a timestamp. The real timestamp is allocated at pull-request open, in merge order, per PR #202 — ask for it then.
 - **Tests:** `pnpm job-hunter:test` with `SUPABASE_TEST_URL`, `SUPABASE_TEST_PUBLISHABLE_KEY`, `SUPABASE_TEST_SIGNING_KEY_B64` **and `SUPABASE_TEST_DB_URL`** exported. The last one became required at `conftest.py:55` in the #179 merge (`a975945`): without it no posting, facet, company or board can be persisted at all, so every write path under test is unreachable. Get it from `supabase status -o env` as `export SUPABASE_TEST_DB_URL="$DB_URL"`. Partial configuration always fails loudly since #208; a run that names one of these variables is that, not your diff. This worktree needs its own `.venv` first (present and verified).
 - **Tasks 1–3 only** may use `JOB_HUNTER_ALLOW_MISSING_STACK=1` — they touch no database. Tasks 4–10 must never use it: the escape hatch on a schema task is exactly how a migration gets verified by nothing.
+- **pgTAP runs as `pnpm db:test`, never as a bare `supabase test db`.** The bare form scans all of `supabase/tests/`, which contains `202608310001_planned_practice_sessions.verify.sql` — a standalone psql script that RAISEs rather than emitting TAP, so the run always ends `No plan found in TAP output / Result: FAIL` on a perfectly green tree. `pnpm db:test` scopes to `supabase/tests/pgtap/` and also takes the shared stack lock, which matters with parallel agents. Same for `pnpm db:reset` over `supabase db reset`. (`--linked=false` is also not a valid flag on CLI 2.116; it takes `--local`.)
+- **A new shared table or `security definer` function must join #179's enforced inventories**, or their assertions fail: `pg_temp.job_hunter_shared_tables` and `pg_temp.job_hunter_ingestion_tables` in `job_hunter_isolation.sql`, the read-only-definer list in `job_hunter_shared_writes.sql`, and both the function array and the definer list in `job_hunter_store_functions.sql`. Shared *knowledge* goes on the shared-tables list; shared *machinery* goes on the ingestion list.
 - **Any new stage's test fixture gets the ingestion connection.** #185 shipped two live platform-key cost defects — a posting enqueued once per persist phase (three per crawl) and a failed read re-draining the same message in the same run — and both were invisible because the store fixture held no `IngestionDatabase` while production always sets `SUPABASE_DB_URL`. Both are fixed on `main` as of `a975945`, along with a per-run enqueue dedup that Task 9's stage must not defeat.
 - **Two table shapes, and they are not interchangeable.** Shared *knowledge* (`job_hunter_sources`) takes #179's shape: `select` to `authenticated`, writes revoked from `anon`, `authenticated` and `service_role`, pgTAP proving the refusal. Shared *machinery* (`job_hunter_source_crawls`, `job_hunter_source_cursors`) takes #183's shape: row-level security enabled with **no policy**, and grants revoked as well.
 - **No `user_id` in the display-credit path.** `job_hunter_posting_display_credit` resolves from the posting to the source and nowhere else.
@@ -665,7 +667,7 @@ rollback;
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `supabase test db --linked=false`
+Run: `pnpm db:test`
 Expected: FAIL — `relation "public.job_hunter_sources" does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -789,7 +791,7 @@ grant execute on function public.job_hunter_posting_display_credit(uuid)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `supabase db reset --local && supabase test db --linked=false`
+Run: `pnpm db:reset && pnpm db:test`
 Expected: PASS — `job_hunter_source_registry.sql .. ok`, 11/11
 
 - [ ] **Step 5: Commit**
@@ -852,7 +854,7 @@ select lives_ok(
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `supabase test db --linked=false`
+Run: `pnpm db:test`
 Expected: FAIL — `relation "public.job_hunter_source_crawls" does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -952,7 +954,7 @@ revoke all on table public.job_hunter_source_cursors
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `supabase db reset --local && supabase test db --linked=false`
+Run: `pnpm db:reset && pnpm db:test`
 Expected: PASS — 17/17
 
 - [ ] **Step 5: Commit**
@@ -1075,7 +1077,7 @@ and
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `supabase test db --linked=false`
+Run: `pnpm db:test`
 Expected: FAIL — `function public.job_hunter_schedule_stage_enqueue(unknown, unknown, jsonb, unknown) does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1192,7 +1194,7 @@ revoke all on function public.job_hunter_source_schedule_slug(text)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `supabase db reset --local && supabase test db --linked=false`
+Run: `pnpm db:reset && pnpm db:test`
 Expected: PASS — `job_hunter_stage_queues.sql` and `job_hunter_store_functions.sql` both green.
 
 - [ ] **Step 5: Commit**
@@ -1275,7 +1277,7 @@ Name the constraint to match when you create it in the migration — add `constr
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `supabase test db --linked=false`
+Run: `pnpm db:test`
 Expected: FAIL — `relation "public.job_hunter_platform_search_usage" does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1359,7 +1361,7 @@ This belongs here rather than in Task 8: the drop and the fixture that walks the
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `supabase db reset --local && supabase test db --linked=false`
+Run: `pnpm db:reset && pnpm db:test`
 Expected: PASS — all pgTAP files green, including `job_hunter_isolation.sql` with one fewer table.
 
 - [ ] **Step 5: Commit**
@@ -2168,7 +2170,7 @@ select is_empty(
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `supabase test db --linked=false`
+Run: `pnpm db:test`
 Expected: FAIL — `function public.job_hunter_reschedule_sources() does not exist`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2340,7 +2342,7 @@ In `apps/job-hunter/AGENTS.md`, extend the paragraph that begins "Since #183 tha
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `supabase db reset --local && supabase test db --linked=false`
+Run: `pnpm db:reset && pnpm db:test`
 Expected: PASS — 25/25 in `job_hunter_source_registry.sql`, every other pgTAP file still green.
 
 Run the full Python suite: `pnpm job-hunter:test`
@@ -2406,10 +2408,26 @@ git commit -m "feat(job-hunter): schedule each source on its measured yield (#18
 
 ## Before opening the pull request
 
-- [ ] Ask the owner for the migration timestamp, in merge order (PR #202 policy). Rename `PLACEHOLDER_job_hunter_source_registry.sql` to `<timestamp>_job_hunter_source_registry.sql` and update any reference to it in `AGENTS.md`.
+- [ ] Allocate the migration timestamp yourself, at PR-open, by re-running this enumeration — do not ask for it, and do not use a number derived earlier than this moment:
+
+```bash
+git fetch origin -q
+# every migration filename on main, on every remote branch, and on every local branch
+{ for b in $(git branch -r --format='%(refname:short)' | grep -v HEAD) \
+           $(git branch --format='%(refname:short)'); do
+    git ls-tree -r --name-only "$b" supabase/migrations/ 2>/dev/null | sed 's|.*/||'
+  done; } | sort -u | tail -5
+gh pr list --state open --json number,headRefName   # a PR branch you have not fetched
+```
+
+  Take the next `YYYYMMDDHHMMSS` slot above everything that returns, in **UTC** (`date -u`) — the local date can be a day ahead of UTC and a timestamp from the wrong one sorts wrong. Then rename `PLACEHOLDER_job_hunter_source_registry.sql` to `<timestamp>_job_hunter_source_registry.sql` and update every reference to it, including `AGENTS.md`.
+
+  The rule about not reaching for "the next number after the highest on `main`" is about placeholders chosen at *dispatch*, when other agents are choosing simultaneously and none of you can see the others. At PR-open, with the enumeration above returning nothing in flight, the next slot is correct by construction — that is what "issued in merge order" means. What makes it correct is that the enumeration ran *now*, not that a human said the number.
+
+  The only part that is genuinely not yours to decide: if that enumeration shows another branch ready to merge at the same time, the merge *order* between you is the board's call. Ask then, and only then.
 - [ ] Confirm #179 has merged and this branch is rebased onto it.
 - [ ] Run `pnpm job-hunter:test` with the `SUPABASE_TEST_*` variables exported and confirm from the summary that integration tests **ran**. A green run with hundreds of skips verifies nothing.
-- [ ] Run `supabase db reset --local && supabase test db --linked=false` on a clean stack, so the migration is proved from empty rather than against a hand-applied one.
+- [ ] Run `pnpm db:reset && pnpm db:test` on a clean stack, so the migration is proved from empty rather than against a hand-applied one.
 - [ ] Post the completed status to the coordination log, and to `career-platform-9c` in the six-field format.
 - [ ] In the pull-request body, state plainly which acceptance criteria are met in substance rather than in shape: criterion 1's "cursor" is the HTTP validator for the nine sources that have no pagination cursor, and criterion 6 is measured from `job_hunter_source_crawls`' own `fetched` versus `new_to_corpus` rather than against the 14,014 partial count.
 
