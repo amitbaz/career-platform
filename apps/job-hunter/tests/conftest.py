@@ -400,15 +400,15 @@ def ingestion_database():
         database.close()
 
 
-#: The one stage queue a leftover message can make a test lie about. Named as
-#: `postgres_stage_queue._QUEUE_NAMES` names it, and duplicated rather than
+#: The one stage queue a leftover message can make a test lie about, named as
+#: `postgres_stage_queue._QUEUE_NAMES` names it. Duplicated rather than
 #: imported so a rename there fails this cleanup loudly instead of silently
-#: purging nothing.
-_EXTRACT_FACETS_QUEUE = "job_hunter_extract_facets"
+#: cleaning nothing.
+_EXTRACT_FACETS_QUEUE_TABLE = "pgmq.q_job_hunter_extract_facets"
 
 
 def _purge_stage_queues(database) -> None:
-    """Empty the extract_facets queue before every store-backed test.
+    """Drop orphaned extract_facets messages before every store-backed test.
 
     The queues are shared engine machinery with no user dimension, so the
     seed-user partitioning that keeps two concurrent runs apart does not reach
@@ -417,31 +417,35 @@ def _purge_stage_queues(database) -> None:
     turns "this run read one posting" into "this run read one posting and four
     of somebody else's", which is both a false assertion and a real cost.
 
-    Only this queue, and only with a bounded wait, because purging is a
-    table-wide write against machinery a concurrently running suite is also
-    using -- and an unbounded, four-queue purge is how that becomes a
-    deadlock rather than a wait. The other three queues cost nothing when a
-    foreign message is drained: `resolve_persist` merges a staged batch that
-    is already empty, and the remaining two have no consumer here.
+    Orphaned, not all, and that distinction is what makes this safe to do on a
+    stack another suite is using. A message names a posting; this run's own
+    leftovers name postings whose membership rows `_clean_seed_users` has
+    already deleted, so nothing holds them any more. A concurrently running
+    suite's in-flight messages name postings it still holds a row on, and are
+    left alone. The rule reads the same way outside the tests: a queued read
+    for an advertisement nobody is a member of is work nobody asked for.
 
-    A purge that loses the race is skipped rather than raised. The cost is a
-    test that may see another suite's messages and over-count its facet reads;
-    the cost of not skipping is a hard failure in a suite that did nothing
-    wrong. Purging can also drop a message a concurrent suite enqueued, which
-    is a slowdown for that suite and never a wrong result -- an unread posting
-    is re-enqueued by the next crawl that persists a job over it, the same
-    recovery a killed run relies on.
+    Bounded wait and best-effort. Losing the race costs a test that may see
+    another suite's messages; raising would fail a suite that did nothing
+    wrong.
     """
     try:
         with database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("set local lock_timeout = '5s'")
-                cursor.execute("select pgmq.purge_queue(%s)", (_EXTRACT_FACETS_QUEUE,))
+                cursor.execute(
+                    f"delete from {_EXTRACT_FACETS_QUEUE_TABLE} q "
+                    " where q.message ? 'posting_id' "
+                    "   and not exists ("
+                    "         select 1 from public.job_hunter_jobs j "
+                    "          where j.posting_id = (q.message->>'posting_id')::uuid)"
+                )
     except Exception:
         logging.getLogger(__name__).warning(
-            "could not purge %s before this test; a concurrent suite is using it, "
-            "so a facet-read count here may include its messages",
-            _EXTRACT_FACETS_QUEUE,
+            "could not clear orphaned messages from %s before this test; a "
+            "concurrent suite is using it, so a facet-read count here may "
+            "include its messages",
+            _EXTRACT_FACETS_QUEUE_TABLE,
         )
 
 

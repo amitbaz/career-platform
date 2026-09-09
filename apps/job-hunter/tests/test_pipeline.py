@@ -4716,6 +4716,22 @@ def test_a_run_without_the_privileged_connection_scores_and_delivers_what_exists
         job_id
     ]
 
+    # A second job whose posting has moved on since it was read, so it needs a
+    # fresh extraction the degraded run cannot store. Without this the test
+    # would prove only that a run reuses facets it already had.
+    stale = _job(source_job_id="stale-1", company="Globex")
+    run_pipeline(settings, sources=[FakeSource([stale])], store=store,
+                 ai=deferring, telegram=FakeTelegram())
+    stale_id, _, _ = store.upsert_job(stale)
+    assert store.get_job_facets(stale_id) is not None
+    store._shared_write(
+        "update public.job_hunter_postings set description_hash = %s "
+        " where id = (select j.posting_id from public.job_hunter_jobs j "
+        "              where j.id = %s::uuid)",
+        ("moved-on-since-it-was-read", stale_id),
+    )
+    assert store.jobs_needing_facets([stale_id]) == {stale_id}
+
     degraded = PostgresJobStore(supabase_client)
     assert degraded.can_write_shared_rows is False
     gemini = FakeGemini()
@@ -4729,10 +4745,16 @@ def test_a_run_without_the_privileged_connection_scores_and_delivers_what_exists
     assert "cannot write shared rows" in caplog.text
 
     # Nothing was added to the corpus and nothing was read into it, and both
-    # numbers are reported rather than absent.
+    # numbers are reported rather than absent. The stale job in particular is
+    # left unscored rather than read: a call it cannot store would be spent
+    # again on every later run for as long as the connection is missing.
     assert summary.postings_written == 0
     assert summary.facet_extraction_attempted == 0
     assert gemini.facet_calls == 0
+    assert summary.scoring_skipped_without_facets == 1
+    # Still stale afterwards: nothing was read, so nothing was written, and
+    # the next run that *can* write will read it.
+    assert store.jobs_needing_facets([stale_id]) == {stale_id}
 
     # The listing the source offered was never persisted -- ingestion is
     # skipped, not attempted and refused.

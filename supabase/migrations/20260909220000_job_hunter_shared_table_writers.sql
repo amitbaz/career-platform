@@ -674,6 +674,21 @@ drop function public.job_hunter_find_posting_by_identity(text, text, text);
 -- authenticated and service_role would leave it wide open through role
 -- inheritance. The named roles are revoked as well so a later default-privilege
 -- change cannot quietly re-grant them.
+--
+-- Nothing is granted back, which means these are callable by the function
+-- *owner* alone. **That makes the owner part of the deployment contract, not
+-- an implementation detail: `SUPABASE_DB_URL` must connect as the role that
+-- owns these functions.** It does today -- migrations run as `postgres` and
+-- the DSN is `postgres` -- and `job_hunter_shared_writes.sql` proves the whole
+-- path works for that role.
+--
+-- If a least-privilege ingestion role is ever introduced, adding the DSN is
+-- not enough: it needs `grant execute` on these four functions and on
+-- `job_hunter_merge_posting_batch`, plus the table writes the shared tables no
+-- longer grant anyone. Skipping that gives 42501 at the first write, and the
+-- only symptom is the per-job `logger.exception` in
+-- `_upsert_jobs_individually` -- a run that looks like it is dropping unlucky
+-- postings rather than one that cannot write at all.
 
 revoke all on function public.job_hunter_upsert_job(jsonb, uuid)
   from public, anon, authenticated, service_role;

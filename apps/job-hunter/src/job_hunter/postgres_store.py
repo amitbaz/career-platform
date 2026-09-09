@@ -352,14 +352,22 @@ class PostgresJobStore:
         Since #179 `job_hunter_postings`, `job_hunter_job_facets`,
         `job_hunter_companies`, `job_hunter_ats_boards` and
         `job_hunter_posting_merges` are writable only by the privileged
-        ingestion role, so this is exactly "was a direct connection
-        configured". Callers use it to *skip* work rather than to attempt a
-        write and handle the refusal: a run with no connection has nothing
-        to ingest and nothing to enrich, and pretending otherwise would
-        spend a crawl's worth of network on rows the database will not
-        accept.
+        ingestion role. Callers use this to *skip* work rather than to attempt
+        a write and handle the refusal: a run with no connection has nothing
+        to ingest and nothing to enrich, and pretending otherwise would spend
+        a crawl's worth of network -- and the platform key's allowance -- on
+        rows the database will not accept.
+
+        "Configured" is not enough to answer with, which is why this consults
+        the pool as well. `IngestionDatabase` opens lazily and latches
+        unreachable on its first failed lease, so a wrong or dead
+        `SUPABASE_DB_URL` produces a store that would otherwise report itself
+        able to write right up until the first write. Asked again between
+        phases, this turns that into the same skip a missing DSN gets.
         """
-        return self._ingestion is not None
+        if self._ingestion is None:
+            return False
+        return not self._ingestion.unavailable
 
     def _shared_write(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple]:
         """Run one shared-table write over the direct connection.
@@ -633,7 +641,6 @@ class PostgresJobStore:
         )
         if not ids or self._ingestion is None:
             return 0
-        self._enqueued_postings.update(ids)
         queue = PostgresStageQueue(self._ingestion)
         enqueued = 0
         try:
@@ -656,6 +663,11 @@ class PostgresJobStore:
                         {"posting_id": posting_id},
                         connection=connection,
                     )
+                    # Recorded per send rather than for the whole batch up
+                    # front: a send that throws must leave its posting
+                    # unmarked, or the crawl's later phases skip it and the
+                    # advertisement is never enqueued at all this run.
+                    self._enqueued_postings.add(posting_id)
                     enqueued += 1
         except Exception:
             logger.exception(
@@ -878,7 +890,7 @@ class PostgresJobStore:
                 results.append(None)
         return results
 
-    def merge_jobs(self, survivor_id: str, duplicate_id: str) -> str:
+    def merge_jobs(self, survivor_id: str, duplicate_id: str) -> str | None:
         """Transactionally merge a duplicate job and all attached records.
 
         Translates store.py:906-1038 (`merge_jobs`/`_merge_jobs`) into a
@@ -895,7 +907,12 @@ class PostgresJobStore:
             "select public.job_hunter_merge_jobs(%s::uuid, %s::uuid, %s::uuid)",
             (survivor_id, duplicate_id, self._client.user_id),
         )
-        return str(rows[0][0])
+        survivor = rows[0][0] if rows else None
+        # `job_hunter_merge_jobs` returns NULL when this user holds no row on
+        # the surviving posting. `str()` would turn that into the string
+        # "None", which reads as a job id everywhere downstream -- the
+        # PostgREST call this replaced returned None, and so does this.
+        return None if survivor is None else str(survivor)
 
     def resolve_merged_job_id(self, job_id: str) -> str | None:
         """Where a merged-away job's records belong now, or None if it still exists.

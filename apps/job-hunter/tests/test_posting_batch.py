@@ -121,6 +121,8 @@ def test_a_job_upsert_carries_no_posting_id_when_the_batch_resolved_none():
 
 def test_merging_an_empty_list_never_reaches_the_connection():
     class ExplodingDatabase:
+        unavailable = False
+
         def connection(self):
             raise AssertionError("an empty batch must not open a connection")
 
@@ -131,6 +133,8 @@ def test_merging_an_empty_list_never_reaches_the_connection():
 
 def test_a_failed_merge_degrades_to_the_per_listing_path(caplog):
     class BrokenDatabase:
+        unavailable = False
+
         def connection(self):
             raise RuntimeError("no route to host")
 
@@ -304,6 +308,10 @@ class QueueRecordingConnection:
 
 
 class QueueRecordingDatabase:
+    #: `IngestionDatabase` latches this when a lease fails, and
+    #: `can_write_shared_rows` reads it. A fake is always reachable.
+    unavailable = False
+
     def __init__(self, fingerprint=None):
         self.fingerprint = fingerprint
         self.batch_id = None

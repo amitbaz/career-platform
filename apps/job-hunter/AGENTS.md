@@ -147,6 +147,13 @@ Migration rules:
    deliberately unreachable by `anon` and `authenticated` — neither a grant nor a policy lets
    a user near them.
 
+   **`SUPABASE_DB_URL` must connect as the role that owns the migrations.**
+   The shared-table writers are revoked from every named role and granted back
+   to none, so only the owner can execute them; that is `postgres` today. A
+   least-privilege ingestion role would need `grant execute` on them before it
+   could write anything, and the symptom of forgetting is a run that logs
+   individual postings failing rather than one that says it cannot write.
+
    **The connection is not optional for writing (#179).** Since the shared tables are
    writable only by the privileged role, a deployment with no `SUPABASE_DB_URL` cannot
    discover or enrich at all: `run_pipeline` asks `store.can_write_shared_rows` and skips

@@ -139,8 +139,6 @@ class ExtractFacetsStage:
 
     def __call__(self, message: QueueMessage) -> ExtractedFacets | FacetsAlreadyCurrent:
         posting_id = self._posting_id(message)
-        if posting_id in self._already_attempted:
-            raise DeferredToALaterRun(_ALREADY_ATTEMPTED_RETRY_DELAY_SECONDS)
         exists, posting = self._read_posting_needing_facets(posting_id)
         if not exists:
             raise PermanentStageFailure(f"posting_id={posting_id} no longer exists")
@@ -148,8 +146,17 @@ class ExtractFacetsStage:
             # Read since this message was enqueued -- by the run's inline pass,
             # by an earlier message for the same posting, or by another user's
             # run entirely. Spending a call here would buy the same answer
-            # twice against the platform key's one allowance.
+            # twice against the platform key's one allowance, and the message
+            # is finished: it asked for a read that has happened.
             return FacetsAlreadyCurrent(posting_id=posting_id)
+        if posting_id in self._already_attempted:
+            # Still uncurrent *and* this run already spent a read on it, so
+            # that read failed. Checked after the currency question and not
+            # before it, because a posting the run read *successfully* is
+            # finished rather than deferred -- deferring it would leave a
+            # completed message in the queue to consume the next run's drain
+            # budget.
+            raise DeferredToALaterRun(_ALREADY_ATTEMPTED_RETRY_DELAY_SECONDS)
 
         try:
             facets = extract_facets(posting, self._ai)

@@ -83,6 +83,19 @@ class IngestionDatabase:
         self._opened = False
         self._unavailable = False
 
+    @property
+    def unavailable(self) -> bool:
+        """Whether this pool has already been found unreachable this run.
+
+        The pool opens lazily, so a wrong or unreachable DSN is indistinguishable
+        from a good one until the first lease. Once that lease fails the answer
+        latches (see `connection`), and callers deciding whether to *start* work
+        that ends in a shared write need to be able to ask -- otherwise a run
+        crawls, reads postings against the platform key, and discovers only at
+        the write that none of it can be stored.
+        """
+        return self._unavailable
+
     @contextmanager
     def connection(self) -> Iterator[Any]:
         """Lease a connection for one unit of work.

@@ -615,35 +615,28 @@ def _extract_and_store_facets(
     so counting it as an extraction failure would make a run that behaved
     correctly look unhealthy.
     """
-    # Recorded before the call and for both callers, not after and not per
-    # call site: a read that *fails* leaves the posting uncurrent, and the
-    # extract_facets queue holds a message for it that would otherwise be
-    # drained moments later in this same run and buy the same non-answer
-    # again. Telling the store here is what makes the queue leave it for a
-    # later run, which is where a retry belongs (#185's own rule; the
-    # duplicate only became reachable once #179 made every run hold the
-    # ingestion connection).
-    try:
-        store.note_facet_read_attempt(job_id)
-    except Exception:
-        logger.exception("could not record the facet read attempt for job_id=%s", job_id)
-
     try:
         facets = extract_facets(PostingFacts.from_job(job), ai)
     except (AITemporaryCapacity, PlatformAllowanceExhausted):
+        # Nothing was spent and nothing was charged (#128), so this is not a
+        # read attempt and must not be recorded as one: the queue is welcome
+        # to try this posting later in the same run if the allowance frees up.
         raise
     except FacetExtractionError:
         logger.exception("facet extraction response could not be parsed for job_id=%s", job_id)
+        _note_facet_read_attempt(store, job_id)
         summary.facet_extraction_attempted += 1
         summary.facet_extraction_failed += 1
         summary.extraction_parse_failures += 1
         return None
     except Exception:
         logger.exception("facet extraction failed for job_id=%s", job_id)
+        _note_facet_read_attempt(store, job_id)
         summary.facet_extraction_attempted += 1
         summary.facet_extraction_failed += 1
         return None
 
+    _note_facet_read_attempt(store, job_id)
     summary.facet_extraction_attempted += 1
     try:
         store.save_job_facets(job_id, facets)
@@ -651,6 +644,26 @@ def _extract_and_store_facets(
         logger.exception("storing facets failed for job_id=%s", job_id)
         summary.facet_extraction_failed += 1
     return facets
+
+
+def _note_facet_read_attempt(store: PostgresJobStore, job_id: str) -> None:
+    """Tell the store this run has spent a read on `job_id`'s posting.
+
+    Called on every path that actually made a provider call, and on none that
+    did not: an exhausted allowance or a full rolling window spends nothing
+    and is not an attempt. A read that *failed* is -- it leaves the posting
+    uncurrent, and the extract_facets queue holds a message for it that would
+    otherwise be drained moments later in this same run and buy the same
+    non-answer again, which is what that stage's dead-letter-immediately rule
+    exists to prevent (#185; only reachable once #179 made every run hold the
+    ingestion connection).
+
+    Never fatal. Failing to record it costs at most one duplicate read.
+    """
+    try:
+        store.note_facet_read_attempt(job_id)
+    except Exception:
+        logger.exception("could not record the facet read attempt for job_id=%s", job_id)
 
 
 def _facets_for_scoring(
@@ -711,6 +724,20 @@ def _facets_for_scoring(
             )
             return None
         logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
+
+    # Nowhere to store the answer is the same argument as the one above, one
+    # level up: without the privileged connection a facet row cannot be
+    # written at all (#179), so reading the posting would cost a platform call,
+    # discard the result, and cost the same call again on every later run for
+    # as long as the connection is missing. The job is left unscored, which is
+    # what a posting nobody has read has always meant.
+    if not store.can_write_shared_rows:
+        logger.info(
+            "job_id=%s has no facets and this run cannot store any; not scored "
+            "this run",
+            job_id,
+        )
+        return None
 
     try:
         facets = _waiting_out_capacity(
@@ -1758,7 +1785,10 @@ def run_pipeline(
     #
     # Skipped entirely without the privileged connection (#179): facets are a
     # shared row, so the provider call would be paid for and then refused.
-    if can_ingest:
+    # Asked again rather than reusing `can_ingest`, because a pool that was
+    # configured can still have been found unreachable since the run started,
+    # and this pass is where the platform key gets spent.
+    if store.can_write_shared_rows:
         _extract_facets_for_run(
             [(job_id, None) for job_id in pending_evaluation_ids if job_id in needs_facets]
             + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
@@ -1785,9 +1815,9 @@ def run_pipeline(
     # amortised over every role that employer publishes, a one-run delay is
     # not worth a single lost offer.
     #
-    # Skipped for the same reason as the facet pass without the privileged
-    # connection: a company row is shared.
-    if can_ingest:
+    # Skipped for the same reason as the facet pass, and re-asked for the same
+    # reason: a company row is shared.
+    if store.can_write_shared_rows:
         _enrich_companies_for_run(
             ranked,
             company_facets,
