@@ -20,6 +20,7 @@ from .models import (
     DEFAULT_FRONTEND_SIGNALS,
     DEFAULT_SOURCE_TIME_BUDGET_SECONDS,
     DEFAULT_SPECIALIST_BOARD_HOSTS,
+    CompanyPreferences,
     CompanyWatchSeed,
     AIQuotaSettings,
     ProviderCredentials,
@@ -190,6 +191,7 @@ def load_settings(store: "PostgresJobStore") -> Settings:
             data.get("backend_heavy_signals") or DEFAULT_BACKEND_HEAVY_SIGNALS
         ),
         markets=_parse_markets(data.get("markets", [])),
+        company_preferences=_parse_company_preferences(data),
     )
 
     ai_model = _ai_model()
@@ -579,6 +581,43 @@ def _parse_markets(entries: object) -> list[MarketPolicy]:
         ))
 
     return markets
+
+
+def _parse_company_preferences(data: dict) -> CompanyPreferences:
+    """Read the profile's company preferences, tolerating an older row (#198).
+
+    Every list defaults to empty, which is "no opinion" rather than "match
+    nothing": a profile written before these columns existed, or one whose
+    owner has expressed nothing, must leave the ranking exactly as it was.
+    Vocabulary membership is enforced where the profile is *written*, on
+    `SearchProfile`; a value that reaches here regardless simply matches no
+    company, which is a far better failure than refusing to run at all.
+    """
+
+    def _strings(key: str) -> list[str]:
+        # "unknown" is dropped here as well as refused on `SearchProfile`.
+        # The column deliberately carries no CHECK -- a preference naming a
+        # vocabulary member that no longer exists should match nothing rather
+        # than refuse the whole profile write -- so this is the only guard on
+        # a row that did not come through `SearchProfile`: a hand edit, a
+        # restored dump, a future writer. An "unknown" that reached
+        # `excluded_industries` would suppress every company the engine read
+        # and could not characterise, turning a gap in the corpus into a lost
+        # opportunity, which is the one outcome this feature must not have.
+        return [
+            value.strip().lower()
+            for value in (data.get(key) or [])
+            if isinstance(value, str) and value.strip().lower() not in ("", "unknown")
+        ]
+
+    return CompanyPreferences(
+        preferred_industries=_strings("preferred_industries"),
+        excluded_industries=_strings("excluded_industries"),
+        preferred_business_models=_strings("preferred_business_models"),
+        excluded_business_models=_strings("excluded_business_models"),
+        preferred_stages=_strings("preferred_company_stages"),
+        preferred_size_bands=_strings("preferred_company_sizes"),
+    )
 
 
 def _parse_manual_company_watch(entries: object) -> list[CompanyWatchSeed]:

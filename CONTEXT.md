@@ -32,8 +32,24 @@ which is still an `Evaluation`, not the combined call.
 remote policy, seniority, compensation, a stated requirement and its depth. Facets are
 what make filtering possible without reading a description.
 
+**Company facet** — one structured objective fact about an *employer* rather than an
+advertisement: its industry, its business model, its stage, its approximate size, its
+headquarters region. Stored once per company in `job_hunter_companies`, keyed on
+`normalize_company_name` — the suffix-stripping normalization, so "Acme Ltd" and "Acme"
+are one employer — and shared by every user (#198). A posting facet amortises over one
+posting; a company facet amortises over every role that employer publishes, which is why
+it is the cheapest cache the engine has. Refreshed on a long interval, deliberately not
+by a posting's description hash: a company does not stop being a marketplace because it
+edited a job advert.
+
+**Unknown** — the value every facet, posting or company, carries when nothing was
+established. It is never "no". A company nobody has read scores neutrally on the company
+dimensions and is neither promoted nor suppressed, and a missing fact must never block a
+posting from being scored.
+
 **Matching** — scoring enriched jobs against a user's profile and filters to produce
-ranked results. Per-user, fast, answerable on demand.
+ranked results. Per-user, fast, answerable on demand. One ranking consumes the posting's
+facets and the company's together; there is no separate company-matching path.
 
 **Surface** — anything that consumes the engine and presents results: Telegram, the
 scheduled daily run, a future application. A surface never contains matching logic.

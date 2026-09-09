@@ -30,6 +30,7 @@ from typing import Any
 
 from job_hunter.models import (
     AtsRegistryEntry,
+    CompanyFacets,
     Compensation,
     Evaluation,
     Job,
@@ -216,6 +217,27 @@ def job_facets_from_row(row: dict[str, Any]) -> JobFacets:
         requirements=list(row.get("requirements_json") or []),
         source_supplied=list(row.get("source_supplied") or []),
         description_hash_at_extraction=row.get("description_hash_at_extraction") or "",
+        model=row.get("model") or "",
+    )
+
+
+def company_facets_from_row(row: dict[str, Any]) -> CompanyFacets:
+    """Map a ``job_hunter_companies`` PostgREST row to a `CompanyFacets`.
+
+    Every dimension falls back to ``"unknown"`` rather than to an empty
+    string: an absent value here means "not established", which is a real
+    first-class value the ranking and the prompt both read, and an empty
+    string is not one of them.
+    """
+    return CompanyFacets(
+        identity=row.get("identity") or "",
+        display_name=row.get("display_name") or "",
+        industry=row.get("industry") or "unknown",
+        business_model=row.get("business_model") or "unknown",
+        stage=row.get("stage") or "unknown",
+        size_band=row.get("size_band") or "unknown",
+        headquarters_region=row.get("headquarters_region") or "unknown",
+        source_supplied=list(row.get("source_supplied") or []),
         model=row.get("model") or "",
     )
 

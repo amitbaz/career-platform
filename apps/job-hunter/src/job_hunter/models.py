@@ -182,6 +182,79 @@ class JobFacets:
 
 
 @dataclass(slots=True)
+class CompanyFacets:
+    """The objective facts about the employer behind a posting (issue #198).
+
+    A company facet is identical for every user -- it is a property of the
+    employer, not of anyone reading it -- so facets are stored once per
+    company, keyed on `job_identity.normalize_company_name`, and reused by
+    every later run of every user. See `company_facets.py` for the
+    extraction, which is deliberately unable to see anything per-user.
+
+    Every field has an "it is not established" value of `"unknown"`. None of
+    them means "no", and none of them may block a posting from being scored:
+    a company nobody has read yet scores neutrally on these dimensions.
+
+    `identity` is the normalized key; `display_name` is what to show a person.
+    """
+
+    identity: str = ""
+    display_name: str = ""
+    industry: str = "unknown"
+    business_model: str = "unknown"
+    stage: str = "unknown"
+    size_band: str = "unknown"
+    headquarters_region: str = "unknown"
+    #: Facet names taken from structured data or deterministic code rather
+    #: than from the model, so the split can be measured.
+    source_supplied: list[str] = field(default_factory=list)
+    model: str = ""
+
+    def is_known(self) -> bool:
+        """Whether anything at all was established about this company."""
+        return any(
+            getattr(self, name) != "unknown"
+            for name in (
+                "industry",
+                "business_model",
+                "stage",
+                "size_band",
+                "headquarters_region",
+            )
+        )
+
+
+@dataclass(slots=True)
+class CompanyPreferences:
+    """What kind of employer this user wants, from their search profile (#198).
+
+    Lists are in `company_facets`' controlled vocabularies. Empty means "no
+    opinion", which is not the same as "no match": a user who states nothing
+    is neither helped nor penalised on these dimensions, and neither is a
+    company nothing is known about.
+    """
+
+    preferred_industries: list[str] = field(default_factory=list)
+    excluded_industries: list[str] = field(default_factory=list)
+    preferred_business_models: list[str] = field(default_factory=list)
+    excluded_business_models: list[str] = field(default_factory=list)
+    preferred_stages: list[str] = field(default_factory=list)
+    preferred_size_bands: list[str] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.preferred_industries,
+                self.excluded_industries,
+                self.preferred_business_models,
+                self.excluded_business_models,
+                self.preferred_stages,
+                self.preferred_size_bands,
+            )
+        )
+
+
+@dataclass(slots=True)
 class AtsReference:
     provider: str
     board: str
@@ -324,6 +397,10 @@ class SearchPolicy:
     frontend_signals: list[str] = field(default_factory=list)
     backend_heavy_signals: list[str] = field(default_factory=list)
     markets: list[MarketPolicy] = field(default_factory=list)
+    #: What kind of employer this user wants (#198). Weighted alongside the
+    #: preferences the profile already holds by one ranking, not a second
+    #: company-matching path.
+    company_preferences: CompanyPreferences = field(default_factory=CompanyPreferences)
 
 
 @dataclass(slots=True)
@@ -541,6 +618,17 @@ class RunSummary:
     # a deployment where it stays near zero is paying per user for something
     # it believes it pays for once.
     facets_reused: int = 0
+    # Company enrichment (issue #198), counted apart from posting facets
+    # because the whole claim behind it is a ratio: how many *companies* a run
+    # read against how many postings it saw. `companies_seen` is the number of
+    # distinct employers among the run's eligible postings -- logged from the
+    # first implementation precisely so the amortisation argument stops being
+    # a guess (#120). `company_facets_reused` counts companies a run scored
+    # against without paying, which is the saving made measurable.
+    companies_seen: int = 0
+    company_extraction_attempted: int = 0
+    company_extraction_failed: int = 0
+    company_facets_reused: int = 0
     # Final parser failures after the one fresh-sample retry. These are job
     # outcomes, not raw malformed samples: a first bad response that recovers
     # on retry did not leave extraction failed.

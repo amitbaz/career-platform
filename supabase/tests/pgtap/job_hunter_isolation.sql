@@ -10,10 +10,12 @@
 -- returns zero rows, it does not raise. Only writes that fail a policy's
 -- WITH CHECK raise 42501. The assertions below match that behaviour.
 --
--- Two tables are deliberately absent: job_hunter_postings (#174) and
--- job_hunter_job_facets (#175). Both hold one row per advertisement rather
--- than one per user, and shared readability is the property they have --
--- asserted in their own files. Anything with a user_id belongs here.
+-- Three tables are deliberately absent: job_hunter_postings (#174),
+-- job_hunter_job_facets (#175) and job_hunter_companies (#198). Each holds
+-- one row per thing in the world -- an advertisement, what it says, the
+-- employer behind it -- rather than one per user, and shared readability is
+-- the property they have, asserted in their own files. Anything with a
+-- user_id belongs here.
 begin;
 create extension if not exists pgtap with schema extensions;
 select no_plan();
@@ -257,17 +259,20 @@ select unnest(array[
 ]) as table_name;
 
 -- The shared tables, for the same reason in reverse. A posting (issue #174)
--- is one advertisement in the world, not one user's copy of it, and its
--- facets (issue #175) are what that advertisement says to everybody:
--- neither has a user_id, every authenticated user may read every row, and
--- so per-user isolation is the property they deliberately do not have. What
--- they do have -- one row per fingerprint and one set of facets per
--- posting, readable by anyone authenticated and deletable by no one -- is
--- asserted in job_hunter_postings.sql and job_hunter_job_facets.sql.
+-- is one advertisement in the world, not one user's copy of it; its facets
+-- (issue #175) are what that advertisement says to everybody; and a company
+-- (issue #198) is the employer behind it, which is the same employer to
+-- everyone. None has a user_id, every authenticated user may read every
+-- row, and so per-user isolation is the property they deliberately do not
+-- have. What they do have -- one row per fingerprint, one set of facets per
+-- posting, one row per employer, readable by anyone authenticated and
+-- deletable by no one -- is asserted in job_hunter_postings.sql,
+-- job_hunter_job_facets.sql and job_hunter_companies.sql.
 create view pg_temp.job_hunter_shared_tables as
 select unnest(array[
   'job_hunter_postings',
-  'job_hunter_job_facets'
+  'job_hunter_job_facets',
+  'job_hunter_companies'
 ]) as table_name;
 
 -- Ingestion's own scratch space (issue #182), which is neither per-user nor

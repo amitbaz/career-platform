@@ -4,6 +4,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from job_hunter.company_facets import (
+    VALID_BUSINESS_MODELS,
+    VALID_INDUSTRIES,
+    VALID_SIZE_BANDS,
+    VALID_STAGES,
+)
+
 _REMOTE_POLICIES = {"preferred", "required", "allowed"}
 _RELOCATION_POLICIES = {"none", "selective", "allowed"}
 _SPONSORSHIP_POLICIES = {"not_required", "required"}
@@ -15,6 +22,22 @@ _SPONSORSHIP_POLICIES = {"not_required", "required"}
 # silence the digest permanently. Below the `possible` decision threshold the
 # floor stops filtering anything the decision ladder does not already drop.
 DailyOfferLimit = Literal[5, 10, 20]
+
+#: Which company-preference list is checked against which vocabulary (#198).
+#: "unknown" is excluded from all six on purpose. It is a member of every
+#: extraction vocabulary because a company nobody has read has to be
+#: representable, but it must never become something a user can express a
+#: preference over: "exclude unknown industries" would suppress exactly the
+#: companies the engine has not got to yet, turning a gap in the data into a
+#: lost opportunity, which is the one outcome this feature must not produce.
+_COMPANY_PREFERENCE_VOCABULARIES: dict[str, frozenset[str]] = {
+    "preferred_industries": VALID_INDUSTRIES - {"unknown"},
+    "excluded_industries": VALID_INDUSTRIES - {"unknown"},
+    "preferred_business_models": VALID_BUSINESS_MODELS - {"unknown"},
+    "excluded_business_models": VALID_BUSINESS_MODELS - {"unknown"},
+    "preferred_company_stages": VALID_STAGES - {"unknown"},
+    "preferred_company_sizes": VALID_SIZE_BANDS - {"unknown"},
+}
 _MATCH_SCORE_FLOOR_MIN = 50
 _MATCH_SCORE_FLOOR_MAX = 95
 
@@ -113,7 +136,28 @@ class SearchProfile(BaseModel):
     manual_company_watch: list[dict] = Field(default_factory=list)
     ats: dict = Field(default_factory=dict)
 
+    # What kind of employer this user wants (#198). Values come from
+    # `company_facets`' controlled vocabularies -- the same ones extraction
+    # writes -- because a preference naming something no company can ever be
+    # is a silently dead setting, and the profile is where a person can still
+    # be told about it. Empty means "no opinion", never "match nothing".
+    preferred_industries: list[str] = Field(default_factory=list)
+    excluded_industries: list[str] = Field(default_factory=list)
+    preferred_business_models: list[str] = Field(default_factory=list)
+    excluded_business_models: list[str] = Field(default_factory=list)
+    preferred_company_stages: list[str] = Field(default_factory=list)
+    preferred_company_sizes: list[str] = Field(default_factory=list)
+
     markets: list[SearchProfileMarket] = Field(default_factory=list)
+
+    def model_post_init(self, __context) -> None:
+        for field_name, vocabulary in _COMPANY_PREFERENCE_VOCABULARIES.items():
+            for value in getattr(self, field_name):
+                if value not in vocabulary:
+                    raise ValueError(
+                        f"invalid {field_name} entry {value!r}: "
+                        f"must be one of {sorted(vocabulary)}"
+                    )
 
     def to_profile_row(self) -> dict:
         row = self.model_dump()
