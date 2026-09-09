@@ -49,6 +49,14 @@ jobs:
         with:
           version: latest
 
+      # config.toml sets signing_keys_path, and that file is git-ignored, so the CLI
+      # refuses to read its own config on a fresh checkout -- before it ever reaches the
+      # database. The generated key is a throwaway for the local stack and is never used
+      # by `db push --db-url`, which talks straight to the remote over the connection
+      # string. relay-ci and job-hunter-ci already do the same thing for the same reason.
+      - name: Generate the throwaway local signing key
+        run: bash supabase/local-signing-key.sh
+
       - name: Show what would be applied
         run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
         env:
