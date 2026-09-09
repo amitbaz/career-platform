@@ -169,6 +169,23 @@ running `pnpm db:reset` to create the new users — test writes go through Postg
 JWT, which cannot insert into `auth.users`, so the pool cannot grow itself.
 `tests/test_seed_pool.py` fails if the two ever disagree.
 
+### Never `supabase db push` from a worktree
+
+Migrations are applied to the live project by CI when they reach `main` (#190). No one applies
+them by hand, and a worktree must never try.
+
+A worktree that is linked to the live project can push an unmerged branch's migration to
+production. Because Supabase refuses a migration filename that sorts *before* one already
+applied, doing so can permanently block a lower-numbered migration sitting on another branch:
+the live project ends up ahead of `main`, and the only recovery is renumbering a migration that
+has already been merged and reviewed.
+
+- **Push nothing from a worktree.** Merge to `main` and let CI apply it.
+- **Do not copy `supabase/.temp` into a new workspace.** It carries the production project link.
+  `pnpm workspace:setup` deliberately omits it; the local stack does not need it.
+- **`supabase db reset`, `supabase start` and `pnpm db:test` are local-only and always fine.**
+  It is `db push` and `link` that reach production.
+
 ### Migration filenames are allocated across the whole repository
 
 Supabase applies migrations in the order their numeric filename prefixes sort, and the hosted

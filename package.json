@@ -11,6 +11,7 @@
     "relay:start": "pnpm --filter relay start",
     "relay:lint": "pnpm --filter relay lint",
     "relay:test": "pnpm --filter relay test",
+    "workspace:setup": "bash scripts/workspace-setup.sh",
     "db:key": "bash supabase/local-signing-key.sh",
     "db:test": "python3 scripts/stack_lock.py supabase test db supabase/tests/pgtap",
     "db:reset": "python3 scripts/stack_lock.py supabase db reset",

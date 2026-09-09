@@ -1,0 +1,62 @@
+# Apply migrations to the live Supabase project when they reach main (#190).
+#
+# Nobody pushes migrations by hand. A worktree sitting on an unmerged branch that pushes
+# first can permanently block a lower-numbered migration on another branch, because
+# Supabase refuses a filename that sorts before one already applied. Making this the only
+# path removes that possibility rather than discouraging it -- see AGENTS.md.
+#
+# `--db-url` is the CLI's own CI pattern: it targets the database directly and skips
+# `supabase link`, so this needs one connection-string secret rather than an access token,
+# a database password and a project ref -- and no Management API token scopes at all.
+#
+# SUPABASE_DB_URL must be the **session pooler** connection string, not the direct one:
+# GitHub's runners are IPv4-only and a direct Supabase connection is IPv6-only without the
+# IPv4 add-on. Transaction mode (port 6543) is also wrong here -- migrations need session
+# mode for advisory locks and multi-statement transactions. The password inside it must be
+# percent-encoded.
+name: Apply Supabase migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+  workflow_dispatch:
+
+# Two applications must never overlap: the second would race the first's advisory locks
+# and could report success against a half-applied set.
+concurrency:
+  group: supabase-migrations
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment in repository settings to gate
+    # production behind an approval. Without that, a merge applies unattended.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Show what would be applied
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      # --yes is required: db push prompts for confirmation, and without it the
+      # step hangs until the job times out rather than failing.
+      - name: Apply
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --yes
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Report what is applied
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
