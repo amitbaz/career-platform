@@ -4384,12 +4384,15 @@ def test_a_company_whose_region_a_source_supplied_is_not_asked_for_it(store, set
     # The employer's own careers domain carries a country code, so the region
     # is recorded directly and no call is spent deriving it.
     company = _company_name()
+    # The employer's own careers domain, spelling its name: that is what
+    # makes the host the company's rather than some board's.
+    host = f"{normalize_company_name(company).replace(' ', '-')}.de"
     job = _job(
         source="greenhouse",
         source_job_id="acme-de-1",
         company=company,
-        url="https://acme-hiring.de/careers/1",
-        canonical_url="https://acme-hiring.de/careers/1",
+        url=f"https://{host}/careers/1",
+        canonical_url=f"https://{host}/careers/1",
     )
     gemini = FakeGemini()
 
@@ -4496,16 +4499,96 @@ def test_a_posting_is_scored_even_when_its_company_is_unknown(store, settings):
 
 
 def test_the_scoring_prompt_carries_the_companys_facts_once_they_are_known(
-    store, settings
+    store, other_store, settings
 ):
+    # Company enrichment runs after every posting read, so what a run reads
+    # reaches the next run's prompt rather than its own. The first run scores
+    # the employer as unread; the second scores it with the facts.
+    job = _job(company=_company_name())
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([_job(company=_company_name())])],
-                 store=store, ai=gemini, telegram=FakeTelegram())
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini,
+                 telegram=FakeTelegram())
+    assert "Nothing has been established about this employer yet" in gemini.eval_prompts[0]
 
-    assert "- Industry: fintech" in gemini.eval_prompts[0]
-    assert "- Business model: b2b_saas" in gemini.eval_prompts[0]
-    assert "- Stage: seed" in gemini.eval_prompts[0]
+    # A second user, so the job is scored afresh rather than short-circuited
+    # as already delivered -- and the employer their run reads about is the
+    # one the first run paid for.
+    run_pipeline(settings, sources=[FakeSource([job])], store=other_store,
+                 ai=gemini, telegram=FakeTelegram())
+
+    assert "- Industry: fintech" in gemini.eval_prompts[1]
+    assert "- Business model: b2b_saas" in gemini.eval_prompts[1]
+    assert "- Stage: seed" in gemini.eval_prompts[1]
+
+
+def test_company_enrichment_never_outbids_the_posting_reads_scoring_needs(
+    store, settings, monkeypatch
+):
+    # Both spend the same platform key against the same shared-extraction
+    # ledger, so they are not independent budgets. A posting's facets are a
+    # precondition for scoring it at all; a company's are extra evidence. So
+    # every posting this run is going to score is read before the run spends
+    # anything at all on an employer.
+    jobs = [
+        _job(source_job_id=f"job-{index}", company=_company_name(f"Employer{index}"))
+        for index in range(4)
+    ]
+    gemini = FakeGemini()
+
+    order = []
+    real_company = job_hunter.pipeline.extract_company_facets
+    real_facets = job_hunter.pipeline.extract_facets
+
+    def recording_company(evidence, ai):
+        order.append("company")
+        return real_company(evidence, ai)
+
+    def recording_facets(posting, ai):
+        order.append("posting")
+        return real_facets(posting, ai)
+
+    monkeypatch.setattr(job_hunter.pipeline, "extract_company_facets", recording_company)
+    monkeypatch.setattr(job_hunter.pipeline, "extract_facets", recording_facets)
+
+    run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini,
+                 telegram=FakeTelegram())
+
+    assert order.count("posting") == 4
+    assert order.count("company") == 4
+    # Every posting read precedes every company read: the last "posting" sits
+    # before the first "company".
+    assert order == ["posting"] * 4 + ["company"] * 4
+
+
+def test_a_run_that_spends_its_allowance_on_postings_reads_no_companies(
+    store, settings, monkeypatch
+):
+    # The budget left after the postings is the whole of what this pass may
+    # spend, so a run whose posting reads consumed the allowance reads no
+    # employer at all rather than borrowing from work the user is waiting on.
+    settings.policy.max_jobs_per_run = 4
+    jobs = [
+        _job(source_job_id=f"job-{index}", company=_company_name(f"Employer{index}"))
+        for index in range(4)
+    ]
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store,
+                           ai=gemini, telegram=FakeTelegram())
+
+    assert summary.facet_extraction_attempted == 4
+    assert gemini.company_calls == 0
+    assert summary.company_extraction_attempted == 0
+    # And the user still got everything scoring produced.
+    assert summary.evaluated == 4
+
+
+def test_the_company_budget_is_a_share_of_what_the_postings_left():
+    assert job_hunter.pipeline._company_extraction_limit(0) == 0
+    assert job_hunter.pipeline._company_extraction_limit(3) == 0
+    assert job_hunter.pipeline._company_extraction_limit(-8) == 0
+    assert job_hunter.pipeline._company_extraction_limit(40) == 10
 
 
 def test_a_stated_company_preference_reorders_the_ranking(store, settings):

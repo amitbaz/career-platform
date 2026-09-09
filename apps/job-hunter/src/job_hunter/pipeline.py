@@ -873,18 +873,25 @@ def _extract_facets_for_run(
     )
 
 
-#: How much of a run's AI allowance company enrichment may take. A run's
+#: How much of what a run has left company enrichment may take. A run's
 #: `max_jobs_per_run` is already the answer to "how much AI work may one run
-#: do", and companies are far fewer than postings -- a quarter of it is enough
-#: to drain a corpus of employers over consecutive runs without ever competing
-#: with the postings the user is waiting on. Reusing that figure rather than
-#: adding a knob keeps this bounded without asking an operator to size it.
+#: do", and companies are far fewer than postings -- a quarter of the
+#: remainder is enough to drain a corpus of employers over consecutive runs.
+#: Reusing that figure rather than adding a knob keeps this bounded without
+#: asking an operator to size it.
 _COMPANY_EXTRACTION_SHARE = 4
 
 
-def _company_extraction_limit(policy_max_jobs_per_run: int) -> int:
-    """How many companies one run may read, from the run's own AI allowance."""
-    return max(0, policy_max_jobs_per_run // _COMPANY_EXTRACTION_SHARE)
+def _company_extraction_limit(remaining: int) -> int:
+    """How many companies one run may read, from what its posting reads left.
+
+    `remaining` is what is left of `max_jobs_per_run` once the run's posting
+    extractions are subtracted, so a day that spends its whole allowance
+    reading postings leaves this at zero -- which is the intended answer.
+    Company facts must never be bought with a posting read the user's scoring
+    needed.
+    """
+    return max(0, remaining // _COMPANY_EXTRACTION_SHARE)
 
 
 def _companies_in_rank_order(
@@ -931,8 +938,8 @@ def _extract_one_company(
     user was charged. Counting either as a failure would make a run that
     behaved correctly look unhealthy.
     """
-    evidence = CompanyEvidence.from_postings(jobs[0].company or identity, jobs)
     try:
+        evidence = CompanyEvidence.from_postings(jobs[0].company or identity, jobs)
         facets = extract_company_facets(evidence, ai)
     except (AITemporaryCapacity, PlatformAllowanceExhausted):
         raise
@@ -972,10 +979,15 @@ def _enrich_companies_for_run(
 ) -> dict[str, CompanyFacets]:
     """Read the employers behind this run's candidates, once each.
 
-    Returns everything known about them afterwards, keyed by identity: the
-    rows the corpus already held plus whatever this run read. An employer
-    missing from the result is one nothing is established about, which every
-    caller must treat as neutral rather than negative.
+    Runs after every posting read the run makes, and after scoring, so what it
+    reads reaches the *next* run's ordering and prompts rather than this
+    one's. That is deliberate -- see the call site -- and it is why this
+    returns the map for tests to inspect while the pipeline ignores it: the
+    value of this pass is the rows it leaves in the corpus, not anything it
+    hands back today.
+
+    An employer missing from the returned map is one nothing is established
+    about, which every caller must treat as neutral rather than negative.
 
     Nothing in here may end the run or change what it delivers. Company facts
     are extra evidence; a run that reads none of them still scores and still
@@ -1000,7 +1012,6 @@ def _enrich_companies_for_run(
     known = {
         identity: facets for identity, facets in known.items() if identity in grouped
     }
-    summary.company_facets_reused = len(known)
 
     try:
         needed = store.companies_needing_facets(list(grouped))
@@ -1010,8 +1021,16 @@ def _enrich_companies_for_run(
         logger.exception("could not determine which companies need extraction")
         needed = set()
 
+    # Reuse is what the run scored against *without paying*, so a stored row
+    # this run is about to re-read is not reuse. Counting `known` whole would
+    # report a run that refreshed all eight of its eight employers as a 100%
+    # saving while it paid for every one of them -- and this counter exists
+    # precisely so the amortisation claim is measured rather than believed.
+    summary.company_facets_reused = len(set(known) - needed)
+
     attempted = 0
     quota_blocked = False
+    capacity_blocked = False
     for identity, jobs in grouped.items():
         if attempted >= limit or identity not in needed:
             continue
@@ -1021,11 +1040,21 @@ def _enrich_companies_for_run(
             # The platform key's rolling window is full and nobody is waiting
             # on this pass, so it gives up its turn rather than holding the run
             # open. It never reached the provider, so it is not an attempt.
+            #
+            # The whole pass ends rather than trying the next employer.
+            # Capacity does not clear inside this loop, so continuing would
+            # walk every remaining company into the adapter's preflight -- a
+            # pause read and two ledger reads each, hundreds of round trips on
+            # a corpus of any size -- to be refused every time, and `attempted`
+            # never rises so `limit` would not stop it. The employers not
+            # reached keep their turn for the next run, which is what they
+            # would have had anyway.
             logger.info(
-                "company extraction skipped on rolling capacity for company=%r",
+                "company extraction stopped on rolling capacity at company=%r",
                 identity,
             )
-            continue
+            capacity_blocked = True
+            break
         except PlatformAllowanceExhausted as exc:
             # Not a failure, and logged so it cannot be read as one: the
             # platform key is spent or absent, no company was touched, and the
@@ -1038,8 +1067,8 @@ def _enrich_companies_for_run(
             known[identity] = facets
 
     logger.info(
-        "company_extraction companies=%s postings=%s known_before=%s needed=%s "
-        "attempted=%s failed=%s limit=%s quota_blocked=%s",
+        "company_extraction companies=%s postings=%s reused=%s needed=%s "
+        "attempted=%s failed=%s limit=%s quota_blocked=%s capacity_blocked=%s",
         len(grouped),
         len(ranked),
         summary.company_facets_reused,
@@ -1048,8 +1077,42 @@ def _enrich_companies_for_run(
         summary.company_extraction_failed,
         limit,
         quota_blocked,
+        capacity_blocked,
     )
     return known
+
+
+def _company_for_job(
+    job: Job,
+    store: PostgresJobStore,
+    company_facets: dict[str, CompanyFacets | None],
+) -> CompanyFacets | None:
+    """This job's employer, from the run's map or from one store read.
+
+    The run's bulk read covers the employers behind the *eligible* set. A job
+    replayed from the pending-evaluation queue was selected on an earlier run
+    and its employer may not appear in this one's discovery at all, so without
+    this it would be scored against "nothing has been established" while a
+    `job_hunter_companies` row sat there unread -- the same posting and the
+    same profile getting a different prompt depending on which run reached it.
+
+    The result is memoized either way, a miss included, so an employer nothing
+    is known about costs one read per run rather than one per posting.
+    """
+    identity = normalize_company_name(job.company or "")
+    if not identity:
+        return None
+    if identity in company_facets:
+        return company_facets[identity]
+    try:
+        facets = store.get_company_facets(job.company or "")
+    except Exception:
+        # Company facts are extra evidence. Failing to read them scores the
+        # job without them rather than not scoring it.
+        logger.exception("could not read company facets for company=%r", job.company)
+        facets = None
+    company_facets[identity] = facets
+    return facets
 
 
 def _evaluate_and_deliver_job(
@@ -1063,7 +1126,7 @@ def _evaluate_and_deliver_job(
     summary: RunSummary,
     queued_job_ids: set[str],
     needs_facets: set[str],
-    company_facets: dict[str, CompanyFacets],
+    company_facets: dict[str, CompanyFacets | None],
 ) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest, containing its failures.
 
@@ -1143,7 +1206,7 @@ def _evaluate_and_deliver_one_job(
     summary: RunSummary,
     queued_job_ids: set[str],
     needs_facets: set[str],
-    company_facets: dict[str, CompanyFacets],
+    company_facets: dict[str, CompanyFacets | None],
 ) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest.
 
@@ -1213,7 +1276,7 @@ def _evaluate_and_deliver_one_job(
                     candidate_context,
                     settings.policy,
                     ai,
-                    company_facets.get(normalize_company_name(job.company or "")),
+                    _company_for_job(job, store, company_facets),
                 ),
                 doing="scoring",
                 job_id=job_id,
@@ -1510,14 +1573,6 @@ def run_pipeline(
         company_facets = {}
     ranked = rank_jobs(discovery.eligible, settings.policy, preferences, company_facets)
     selected = _select_candidates(ranked, settings.policy, preferences)
-    company_facets = _enrich_companies_for_run(
-        ranked,
-        company_facets,
-        store,
-        ai,
-        summary,
-        limit=_company_extraction_limit(settings.policy.max_jobs_per_run),
-    )
     eligible_source_counts = _source_counts(ranked)
     selected_source_counts = _source_counts(selected)
     selected_by_market = _market_counts(selected)
@@ -1703,6 +1758,33 @@ def run_pipeline(
         ai,
         summary,
         limit=max(0, settings.policy.max_jobs_per_run - summary.facet_extraction_attempted),
+    )
+
+    # Company enrichment runs last, after every posting read this run makes.
+    #
+    # Both spend the *same* platform key against the same shared-extraction
+    # ledger, so they are not independent budgets: a company call taken early
+    # is a posting read the run may not be able to afford later. The two are
+    # not equally important. A posting's facets are a precondition for scoring
+    # it at all (#126) -- a job whose posting goes unread is not scored and the
+    # user does not see it today -- while a company's facts are extra evidence
+    # that changes how a job scores, never whether it does. Running this pass
+    # first let an optional workload deny the user offers, so it runs on what
+    # the required work leaves, and its own `limit` bounds it further.
+    #
+    # The cost is that a company read here reaches the *next* run's scoring
+    # and ordering rather than this one's. For a fact cached for 180 days and
+    # amortised over every role that employer publishes, a one-run delay is
+    # not worth a single lost offer.
+    _enrich_companies_for_run(
+        ranked,
+        company_facets,
+        store,
+        ai,
+        summary,
+        limit=_company_extraction_limit(
+            settings.policy.max_jobs_per_run - summary.facet_extraction_attempted
+        ),
     )
 
     logger.info(
