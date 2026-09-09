@@ -22,6 +22,11 @@ on:
     paths:
       - 'supabase/migrations/**'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only report what would be applied, and change nothing'
+        type: boolean
+        default: true
 
 # Two applications must never overlap: the second would race the first's advisory locks
 # and could report success against a half-applied set.
@@ -51,7 +56,10 @@ jobs:
 
       # --yes is required: db push prompts for confirmation, and without it the
       # step hangs until the job times out rather than failing.
+      # Skipped only for a manual dry-run dispatch, which exists to verify the
+      # connection secret without writing to production. A push to main always applies.
       - name: Apply
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run == false }}
         run: supabase db push --db-url "$SUPABASE_DB_URL" --yes
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
