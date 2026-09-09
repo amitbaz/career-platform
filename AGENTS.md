@@ -208,8 +208,11 @@ supabase migration repair --local --status applied <version>
 ```
 
 If your objects are already installed from an earlier hand-apply that skipped this, drop and
-re-apply them before repairing, so the row and the objects agree. And **never repair a version
-that is not yours.** A row claiming a version somebody else's migration owns is worse than a
+re-apply them before repairing, so the row and the objects agree — **unless a passing suite
+already asserts the installed objects.** In that case they are demonstrably the ones your
+migration produces, the row is the only thing missing, and dropping and re-applying churns state
+that three other worktrees are reading, for no gain. Record the row and leave the objects alone.
+And **never repair a version that is not yours.** A row claiming a version somebody else's migration owns is worse than a
 missing one: a missing row gets investigated, a wrong row gets trusted.
 
 **And a missing row is not merely absent — it is read as belonging to the highest recorded
