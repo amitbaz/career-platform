@@ -163,8 +163,20 @@ COMPANY_FACET_FIELDS = (
 )
 
 #: Country-code top-level domains, mapped into `hiring_scope`'s regions. Read
-#: only off a host the *employer* owns -- see `_employer_hosts` -- because an
-#: ATS vendor's domain says where the vendor is, not where its customer is.
+#: only off a host the employer demonstrably owns -- see `_employer_hosts`,
+#: and read its docstring before relaxing anything here.
+#:
+#: **Why a source-supplied fact must prefer silence.** A fact the model
+#: produced is re-derived when the description hash moves; a fact taken from
+#: a source is written once and believed forever, because a supplied facet is
+#: never re-asked. So any heuristic reading a fact off a URL, a host, a board
+#: identifier or any other incidental artefact of *where* a posting was found
+#: has to be conservative to the point of preferring to supply nothing.
+#: Supplying nothing is cheap -- the model is asked instead. A wrong shared
+#: fact is not recoverable by any mechanism this system currently has.
+#:
+#: The asymmetry in one line: a per-user wrong answer is annoying and
+#: self-correcting, a shared wrong answer is permanent and invisible.
 _CCTLD_REGIONS = {
     # Europe
     "de": EUROPE, "at": EUROPE, "ch": EUROPE, "nl": EUROPE, "fr": EUROPE,
@@ -332,11 +344,15 @@ def source_supplied_company_facets(evidence: CompanyEvidence) -> dict[str, Any]:
     `.de` is headquartered in Europe, and asking the model to re-derive that
     would spend a call on a fact already in hand (#198, user story 10).
 
-    Deliberately narrow, and it fails open in three separate ways: a gTLD
-    supplies nothing, an ATS vendor's host is not an employer host at all, and
-    two employer hosts disagreeing about the region supply nothing rather than
-    picking one. A wrong fact here is never corrected, because a supplied
-    facet is never asked of the model.
+    Deliberately narrow, and it fails open in four separate ways: a host that
+    does not spell the company's name is not an employer host at all, nor is
+    an ATS vendor's, a gTLD supplies nothing, and two employer hosts
+    disagreeing about the region supply nothing rather than picking one.
+
+    That narrowness is the point, not an oversight. A wrong fact here is
+    never corrected, because a supplied facet is never asked of the model --
+    see `_CCTLD_REGIONS` for the full argument, and `_employer_hosts` for the
+    bug that established it.
     """
     supplied: dict[str, Any] = {}
     regions = {

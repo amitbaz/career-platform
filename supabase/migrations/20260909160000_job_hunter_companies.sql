@@ -27,6 +27,30 @@
 -- the live pipeline is a real pre-existing defect, tracked separately; this
 -- migration does not fix it, it names the right one.
 --
+-- Provenance: a supplied fact must prefer silence -------------------------
+--
+-- Some of these facts are taken from structured data rather than asked of
+-- the model -- today, the headquarters region, read off the employer's own
+-- careers domain. Anything read that way has to be conservative to the point
+-- of preferring to record nothing, and the reason is a property of this
+-- table rather than of any one heuristic:
+--
+-- A fact the model produced is re-derived when the posting's description
+-- hash moves. A fact taken from a source is written once and believed
+-- forever, because a supplied facet is never re-asked. And this row is
+-- shared, so a per-user wrong answer is annoying and self-correcting, while
+-- a wrong answer here is permanent and invisible -- it is served to every
+-- user, for the whole refresh interval, after which the same source
+-- re-derives the same wrong value.
+--
+-- The first version of the domain heuristic got this wrong: it trusted any
+-- host that was not one of six known ATS vendors, so a company whose only
+-- posting the engine held came from a job board on a country domain was
+-- recorded as headquartered wherever that board is. See `_employer_hosts` in
+-- apps/job-hunter/src/job_hunter/company_facets.py, which now requires the
+-- domain to spell the company's name. That condition looks over-strict in
+-- isolation; the argument above is why it is not.
+
 -- Sharing ----------------------------------------------------------------
 --
 -- Nothing here is per-user, so nothing here carries a user_id. Reads are
