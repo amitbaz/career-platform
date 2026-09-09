@@ -1,11 +1,12 @@
 -- Shared ATS board registry (issue #203).
 --
--- Board identity and health (job_hunter_ats_boards) are shared, the same
--- open-write shape job_hunter_postings and job_hunter_companies carry until
--- #179 narrows all three together. Eligible-job yield
--- (job_hunter_ats_registry) is per-user and asserted for isolation in
--- job_hunter_isolation.sql; this file only proves the shared half and the
--- shape of what got left behind on the per-user table.
+-- Board identity and health (job_hunter_ats_boards) are shared, and since #179
+-- they carry the same shape as job_hunter_postings and job_hunter_companies:
+-- reads open to every authenticated user, writes revoked from every role a
+-- user can hold, and the crawl writing them as the privileged ingestion role.
+-- Eligible-job yield (job_hunter_ats_registry) is per-user and asserted for
+-- isolation in job_hunter_isolation.sql; this file only proves the shared half
+-- and the shape of what got left behind on the per-user table.
 
 begin;
 create extension if not exists pgtap with schema extensions;
@@ -101,58 +102,64 @@ select is(
   true,
   'row level security is on');
 
+-- Reads open, writes closed (#179). A board rejection is the most expensive
+-- fact in this table to relearn, and it is also the one that, written by the
+-- wrong hand, makes a working board unreachable for everybody -- so learning
+-- it is ingestion's job and nobody else's.
 select is(
   (select array_agg(polname::text order by polname)
      from pg_policy where polrelid = 'public.job_hunter_ats_boards'::regclass),
-  array['insert_authenticated', 'select_authenticated', 'update_authenticated'],
-  'read and write are open to authenticated users; nobody may delete a shared board row');
+  array['select_authenticated'],
+  'reads are open to authenticated users; nobody but the privileged role writes a board row');
 
 -- Behaviour ---------------------------------------------------------------
 
-select pg_temp.authenticate_as('dddddddd-0000-0000-0000-000000000007');
-
+-- The crawl learns the board, as the privileged role.
 select lives_ok(
   $$ insert into public.job_hunter_ats_boards
        (provider, board_identifier, company_name, first_seen_at, last_seen_at)
      values ('greenhouse', 'pgtap-shared-board', 'Acme', now(), now()) $$,
-  'the user who discovered the board may store what it says');
+  'the crawl that discovered the board stores what it says');
 
 select lives_ok(
   $$ update public.job_hunter_ats_boards
         set active = false, rejected_reason = 'aggregator: pgtap fixture'
       where provider = 'greenhouse' and board_identifier = 'pgtap-shared-board' $$,
-  'a user may record a board rejection');
+  'and records a board rejection');
 
--- A second user, who never discovered the board, reads the rejection
--- anyway and does not pay to rediscover it. This is the whole point of the
--- ticket.
+-- Both users read the rejection, and neither paid to rediscover the board.
+-- This is the whole point of #203, and #179 does not touch it: only the
+-- writing narrowed.
+select pg_temp.authenticate_as('dddddddd-0000-0000-0000-000000000007');
+
+select is(
+  (select rejected_reason from public.job_hunter_ats_boards
+    where provider = 'greenhouse' and board_identifier = 'pgtap-shared-board'),
+  'aggregator: pgtap fixture',
+  'the user whose crawl found it reads the rejection');
+
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-000000000008');
 
 select is(
   (select rejected_reason from public.job_hunter_ats_boards
     where provider = 'greenhouse' and board_identifier = 'pgtap-shared-board'),
   'aggregator: pgtap fixture',
-  'a second user reads the rejection the first user paid to learn');
+  'a second user reads the rejection nobody charged them to learn');
 
-select lives_ok(
+select throws_ok(
   $$ update public.job_hunter_ats_boards
         set last_checked_at = now()
       where provider = 'greenhouse' and board_identifier = 'pgtap-shared-board' $$,
-  'a second user may refresh board health it did not originally record');
+  '42501', null,
+  'a user cannot write board health, which decides what every crawl visits');
 
--- Nobody may take a shared board away from the others.
-select lives_ok(
+select throws_ok(
   $$ delete from public.job_hunter_ats_boards
       where provider = 'greenhouse' and board_identifier = 'pgtap-shared-board' $$,
-  'a delete is refused silently by row-level security rather than erroring');
+  '42501', null,
+  'nor take a shared board away from the others');
 
-select is(
-  (select count(*)::int from public.job_hunter_ats_boards
-    where provider = 'greenhouse' and board_identifier = 'pgtap-shared-board'),
-  1,
-  'and the row is still there: no user may delete another user''s board');
-
--- anon may read but never write, same as every other shared table.
+-- anon may read nothing and write nothing, same as every other shared table.
 select pg_temp.become_anon();
 
 select is(

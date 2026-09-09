@@ -123,20 +123,25 @@ select is(
   true,
   'row level security is on');
 
+-- Reads open, writes closed (#179). The read policy is what makes the sharing
+-- real; the absent write policies are half of what makes enrichment a
+-- privileged-role job. The other half -- the revoked grants -- and the 42501 a
+-- user actually gets are proved in job_hunter_shared_writes.sql.
 select is(
   (select array_agg(polname::text order by polname)
      from pg_policy where polrelid = 'public.job_hunter_job_facets'::regclass),
-  array['insert_authenticated', 'select_authenticated', 'update_authenticated'],
-  'read and write are open to authenticated users; nobody may delete a shared facet row');
+  array['select_authenticated'],
+  'reads are open to authenticated users; nobody but the privileged role writes a facet row');
 
 -- Behaviour -----------------------------------------------------------------
 
 insert into public.job_hunter_postings (fingerprint, description, description_hash, first_seen_at, last_seen_at)
 values ('facets-shared-fixture', 'React and TypeScript.', 'hash-one', now(), now());
 
--- User A discovers the advertisement and reads it once.
-select pg_temp.authenticate_as('cccccccc-0000-0000-0000-000000000003');
-
+-- The advertisement is read once, by enrichment, as the privileged role.
+-- Before #179 this ran as whichever user's crawl got there first; the row it
+-- writes is identical, and what changed is that a user can no longer write one
+-- by hand.
 select lives_ok(
   $$ insert into public.job_hunter_job_facets
        (posting_id, description_hash_at_extraction, remote_policy, seniority,
@@ -144,10 +149,19 @@ select lives_ok(
      select p.id, 'hash-one', 'remote', 'senior', array['europe'], 120000, now()
        from public.job_hunter_postings p
       where p.fingerprint = 'facets-shared-fixture' $$,
-  'the user who read the posting may store what it says');
+  'enrichment stores what the posting says');
 
--- User B, who never read it, gets the answer anyway. This is the whole
--- issue: the second user's run costs no provider call.
+-- Both users get the answer, and neither paid for it in their own run. This is
+-- the whole issue: the second user's run costs no provider call.
+select pg_temp.authenticate_as('cccccccc-0000-0000-0000-000000000003');
+
+select is(
+  (select f.seniority from public.job_hunter_job_facets f
+     join public.job_hunter_postings p on p.id = f.posting_id
+    where p.fingerprint = 'facets-shared-fixture'),
+  'senior',
+  'the user who discovered the posting reads the facets');
+
 select pg_temp.authenticate_as('cccccccc-0000-0000-0000-000000000004');
 
 select is(
@@ -155,16 +169,36 @@ select is(
      join public.job_hunter_postings p on p.id = f.posting_id
     where p.fingerprint = 'facets-shared-fixture'),
   'senior',
-  'a second user reads the facets the first user paid for');
+  'a second user reads the facets nobody charged them for');
 
--- ...and may replace them when the advertisement is edited, so a re-read is
--- one call whoever makes it.
+-- No user may rewrite them, whether or not they discovered the posting. A
+-- fabricated compensation figure here changes what every other user is
+-- blocked on, which is the hazard #179 closes.
+select throws_ok(
+  $$ update public.job_hunter_job_facets f
+        set seniority = 'staff', description_hash_at_extraction = 'hash-two'
+       from public.job_hunter_postings p
+      where p.id = f.posting_id and p.fingerprint = 'facets-shared-fixture' $$,
+  '42501', null,
+  'a user cannot replace facets another user is scored against');
+
+select throws_ok(
+  $$ delete from public.job_hunter_job_facets f
+      using public.job_hunter_postings p
+      where p.id = f.posting_id and p.fingerprint = 'facets-shared-fixture' $$,
+  '42501', null,
+  'nor take a shared reading away from the others');
+
+-- Re-extraction, on the transport it now runs on, still replaces the answer
+-- rather than appending a second one.
+select pg_temp.become_postgres();
+
 select lives_ok(
   $$ update public.job_hunter_job_facets f
         set seniority = 'staff', description_hash_at_extraction = 'hash-two'
        from public.job_hunter_postings p
       where p.id = f.posting_id and p.fingerprint = 'facets-shared-fixture' $$,
-  'a second user may replace the facets after the posting changes');
+  'enrichment replaces the facets after the posting changes');
 
 select is(
   (select count(*)::int from public.job_hunter_job_facets f
@@ -172,20 +206,6 @@ select is(
     where p.fingerprint = 'facets-shared-fixture'),
   1,
   're-extraction replaces the answer rather than appending a second one');
-
--- Nobody may take a shared row away from the others.
-select lives_ok(
-  $$ delete from public.job_hunter_job_facets f
-      using public.job_hunter_postings p
-      where p.id = f.posting_id and p.fingerprint = 'facets-shared-fixture' $$,
-  'a delete is refused silently by row-level security rather than erroring');
-
-select is(
-  (select count(*)::int from public.job_hunter_job_facets f
-     join public.job_hunter_postings p on p.id = f.posting_id
-    where p.fingerprint = 'facets-shared-fixture'),
-  1,
-  'and the row is still there: no user may delete another user''s reading');
 
 -- Facets describe a posting. When the posting goes, so do they.
 select pg_temp.become_postgres();

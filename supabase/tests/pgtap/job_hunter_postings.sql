@@ -64,6 +64,39 @@ begin
   perform set_config('request.jwt.claims', '', true);
 end $$;
 
+-- Since #179 a posting is written only by the privileged ingestion role, and
+-- the job upsert that writes one takes the user it acts for as an argument
+-- rather than reading auth.uid(). These helpers are that transport in
+-- miniature: drop to the owner, make the call for the named user, hand the
+-- session back to them. Every scenario below is still "this user's crawl
+-- discovers this advertisement"; only the role making the write moved.
+create function pg_temp.upsert_job_as(p_user uuid, p_job jsonb)
+returns table (id uuid, is_new boolean, description_changed boolean)
+language plpgsql as $$
+declare
+  v_row record;
+begin
+  perform pg_temp.become_postgres();
+  select * into v_row from public.job_hunter_upsert_job(p_job, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  id := v_row.id;
+  is_new := v_row.is_new;
+  description_changed := v_row.description_changed;
+  return next;
+end $$;
+
+create function pg_temp.merge_jobs_as(p_user uuid, p_survivor uuid, p_duplicate uuid)
+returns uuid
+language plpgsql as $$
+declare
+  v_id uuid;
+begin
+  perform pg_temp.become_postgres();
+  v_id := public.job_hunter_merge_jobs(p_survivor, p_duplicate, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  return v_id;
+end $$;
+
 -- Shape ---------------------------------------------------------------------
 
 select has_table('public', 'job_hunter_postings',
@@ -122,11 +155,15 @@ select is(
   true,
   'row level security is on');
 
+-- Reads open, writes closed (#179). The hazard the original table comment
+-- described is what this closes: identity columns are only backfilled when
+-- empty, so a row inserted first with a made-up company or title kept them
+-- against every later real discovery, and nobody could delete it.
 select is(
   (select array_agg(polname::text order by polname)
      from pg_policy where polrelid = 'public.job_hunter_postings'::regclass),
-  array['insert_authenticated', 'select_authenticated', 'update_authenticated'],
-  'read and write are open to authenticated users; nobody may delete a posting');
+  array['select_authenticated'],
+  'reads are open to authenticated users; nobody but the privileged role writes a posting');
 
 -- Behaviour -----------------------------------------------------------------
 
@@ -135,7 +172,7 @@ select is(
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-shared-posting',
        'source', 'remoteok',
        'source_job_id', 'ro-1',
@@ -174,7 +211,7 @@ select is(
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000b');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'fingerprint', 'fp-shared-posting',
        'source', 'greenhouse',
        'source_job_id', 'ro-1',
@@ -238,7 +275,7 @@ select is(
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-shared-posting',
        'source', 'remoteok',
        'source_job_id', 'ro-1',
@@ -261,7 +298,7 @@ select is(
 -- An equally-confident but fuller fetch does win, matching the job-level
 -- merge rule: tier first, length only as the tiebreak.
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-shared-posting',
        'source', 'greenhouse',
        'source_job_id', 'ro-1',
@@ -298,7 +335,7 @@ select cmp_ok(
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000b');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000b'::uuid, jsonb_build_object(
        'match_mode', 'fingerprint',
        'fingerprint', 'fp-narrow',
        'source', 'ashby',
@@ -332,7 +369,7 @@ select is(
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'match_mode', 'fingerprint',
        'fingerprint', 'fp-merge-weak',
        'source', 'remoteok',
@@ -346,7 +383,7 @@ select lives_ok(
   'A holds the aggregator copy');
 
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'match_mode', 'fingerprint',
        'fingerprint', 'fp-merge-strong',
        'source', 'greenhouse',
@@ -369,7 +406,7 @@ select isnt(
   'two source-scoped fingerprints are two postings, before the merge');
 
 select lives_ok(
-  $$ select public.job_hunter_merge_jobs(
+  $$ select pg_temp.merge_jobs_as('dddddddd-0000-0000-0000-00000000000a'::uuid, 
        (select j.id from public.job_hunter_jobs j
           join public.job_hunter_postings p on p.id = j.posting_id
          where j.user_id = 'dddddddd-0000-0000-0000-00000000000a' and p.fingerprint = 'fp-merge-weak'),
@@ -400,7 +437,7 @@ select is(
 -- Readability. B never discovered this one.
 select pg_temp.authenticate_as('dddddddd-0000-0000-0000-00000000000a');
 select lives_ok(
-  $$ select public.job_hunter_upsert_job(jsonb_build_object(
+  $$ select pg_temp.upsert_job_as('dddddddd-0000-0000-0000-00000000000a'::uuid, jsonb_build_object(
        'fingerprint', 'fp-a-only',
        'source', 'lever',
        'source_job_id', 'lv-9',
@@ -424,8 +461,12 @@ select is_empty(
      where p.fingerprint = 'fp-a-only' $$,
   'the job row behind it stays private to A');
 
-select is_empty(
-  $$ delete from public.job_hunter_postings where fingerprint = 'fp-a-only' returning 1 $$,
+-- Before #179 this was a silent no-op: row-level security filtered the delete
+-- to zero rows and the caller was told nothing. Now the grant refuses it
+-- outright, which is the louder and the more honest of the two.
+select throws_ok(
+  $$ delete from public.job_hunter_postings where fingerprint = 'fp-a-only' $$,
+  '42501', null,
   'no user can delete a posting out from under everyone else');
 
 select pg_temp.become_anon();

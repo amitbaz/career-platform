@@ -39,11 +39,41 @@ begin
   perform set_config('request.jwt.claims', '', true);
 end $$;
 
+-- Since #179 the job upsert writes shared rows, so it runs as the privileged
+-- ingestion role and takes the user it acts for as an argument. These helpers
+-- are that transport in miniature: drop to the owner, make the call for the
+-- named user, hand the session back to them. Every scenario below is still
+-- "this user's crawl persists this batch"; only the role making the write
+-- moved, so what each assertion means is unchanged.
+create function pg_temp.upsert_job_as(p_user uuid, p_job jsonb)
+returns table (id uuid, is_new boolean, description_changed boolean)
+language plpgsql as $$
+declare
+  v_row record;
+begin
+  perform pg_temp.become_postgres();
+  select * into v_row from public.job_hunter_upsert_job(p_job, p_user);
+  perform pg_temp.authenticate_as(p_user);
+  id := v_row.id;
+  is_new := v_row.is_new;
+  description_changed := v_row.description_changed;
+  return next;
+end $$;
+
+create function pg_temp.upsert_jobs_as(p_user uuid, p_jobs jsonb)
+returns table (input_index int, id uuid, is_new boolean, description_changed boolean)
+language plpgsql as $$
+begin
+  perform pg_temp.become_postgres();
+  return query select * from public.job_hunter_upsert_jobs(p_jobs, p_user);
+  perform pg_temp.authenticate_as(p_user);
+end $$;
+
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 -- Two jobs in one array come back in input order, tagged by position.
 select is(
-  (select count(*)::int from public.job_hunter_upsert_jobs(
+  (select count(*)::int from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
      jsonb_build_array(
        jsonb_build_object('fingerprint', 'batch-fp-1', 'source', 'test',
                           'company', 'Acme', 'title', 'Frontend Engineer',
@@ -63,19 +93,19 @@ select is(
 -- together (idempotently, since identity resolution is stable) so the
 -- batch's per-index id can be checked against a known-good id per job.
 create temporary table temp_order_a as
-select id from public.job_hunter_upsert_job(
+select id from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_object('fingerprint', 'batch-ord-a', 'source', 'test',
                      'company', 'Acme', 'title', 'A', 'location', 'Remote',
                      'remote', true, 'description', 'x', 'url', 'https://example.test/ord-a'));
 
 create temporary table temp_order_b as
-select id from public.job_hunter_upsert_job(
+select id from pg_temp.upsert_job_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_object('fingerprint', 'batch-ord-b', 'source', 'test',
                      'company', 'Acme', 'title', 'B', 'location', 'Remote',
                      'remote', true, 'description', 'y', 'url', 'https://example.test/ord-b'));
 
 create temporary table temp_order_batch as
-select * from public.job_hunter_upsert_jobs(
+select * from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_array(
     jsonb_build_object('fingerprint', 'batch-ord-a', 'source', 'test',
                        'company', 'Acme', 'title', 'A', 'location', 'Remote',
@@ -106,13 +136,13 @@ select is(
 
 -- An empty array is a no-op, not an error.
 select is(
-  (select count(*)::int from public.job_hunter_upsert_jobs('[]'::jsonb)),
+  (select count(*)::int from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, '[]'::jsonb)),
   0,
   'an empty array returns no rows');
 
 -- A non-array argument is rejected rather than silently doing nothing.
 select throws_ok(
-  $$select * from public.job_hunter_upsert_jobs('{"fingerprint":"x"}'::jsonb)$$,
+  $$select * from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, '{"fingerprint":"x"}'::jsonb)$$,
   null,
   'a non-array p_jobs raises');
 
@@ -121,7 +151,7 @@ select throws_ok(
 -- one shared id, and the second row's is_new = false proving it merged
 -- rather than the batch silently dropping the duplicate element.
 create temporary table temp_dup_batch as
-select * from public.job_hunter_upsert_jobs(
+select * from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_array(
     jsonb_build_object('fingerprint', 'batch-dup-a', 'source', 'test',
                        'company', 'Dup Co', 'title', 'Engineer', 'location', 'Remote',
@@ -168,7 +198,7 @@ select is(
 -- while the two-step form below (matching temp_order_batch's pattern
 -- above) reads back cleanly.
 create temporary table temp_clock_ids as
-select * from public.job_hunter_upsert_jobs(
+select * from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
     jsonb_build_array(
       jsonb_build_object('fingerprint', 'clock-fp-1', 'source', 'test',
                          'company', 'Clock Co', 'title', 'Engineer One',
@@ -208,7 +238,7 @@ select ok(
 -- is job_hunter_merge_postings' documented ladder, applied once for everyone,
 -- and it is asserted below so a change to it fails here.
 create temporary table temp_survivor_batch as
-select * from public.job_hunter_upsert_jobs(
+select * from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_array(
     jsonb_build_object('fingerprint', 'survivor-fp-a', 'source', 'test',
                        'company', 'Survivor Co', 'title', 'Engineer',
@@ -248,7 +278,7 @@ select is(
 -- A's identities must create B's own row, not merge into or return A's,
 -- and must not be able to see A's row afterward.
 create temporary table temp_rls_user_a as
-select id from public.job_hunter_upsert_jobs(
+select id from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_array(
     jsonb_build_object('fingerprint', 'batch-rls-a', 'source', 'test',
                        'company', 'Acme', 'title', 'Eng A', 'location', 'Remote',
@@ -258,7 +288,7 @@ select id from public.job_hunter_upsert_jobs(
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
 
 create temporary table temp_rls_user_b as
-select id from public.job_hunter_upsert_jobs(
+select id from pg_temp.upsert_jobs_as('22222222-0000-0000-0000-00000000000b'::uuid, 
   jsonb_build_array(
     jsonb_build_object('fingerprint', 'batch-rls-b', 'source', 'test',
                        'company', 'Acme', 'title', 'Eng B', 'location', 'Remote',
@@ -286,7 +316,7 @@ select is(
 
 -- A job with no evaluation needs one.
 with created as (
-  select id from public.job_hunter_upsert_jobs(
+  select id from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
     jsonb_build_array(jsonb_build_object(
       'fingerprint', 'needs-fp-1', 'source', 'test', 'company', 'Acme',
       'title', 'Engineer', 'location', 'Remote', 'remote', true,
@@ -347,15 +377,22 @@ alter table public.job_hunter_evaluations alter column description_hash_at_eval 
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 create temporary table temp_asym_job as
-select id from public.job_hunter_upsert_jobs(
+select id from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_array(jsonb_build_object(
     'fingerprint', 'needs-fp-asym', 'source', 'test', 'company', 'Acme',
     'title', 'Engineer', 'location', 'Remote', 'remote', true,
     'description', '', 'url', 'https://example.test/n-asym')));
 
+-- The posting is a shared row, so blanking its hash is a privileged write
+-- since #179. The fixture it produces is what the assertion below is about,
+-- and that is unchanged.
+select pg_temp.become_postgres();
+
 update public.job_hunter_postings set description_hash = ''
  where id = (select j.posting_id from public.job_hunter_jobs j
               where j.id = (select id from temp_asym_job));
+
+select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
 
 insert into public.job_hunter_evaluations
   (user_id, job_id, status, description_hash_at_eval, content_confidence_at_eval, evaluated_at)
@@ -378,7 +415,7 @@ select is(
 -- an implementation that wrote the first row's market everywhere would
 -- fail two of the three checks below.
 create temporary table temp_market_jobs as
-select input_index, id from public.job_hunter_upsert_jobs(
+select input_index, id from pg_temp.upsert_jobs_as('11111111-0000-0000-0000-00000000000a'::uuid, 
   jsonb_build_array(
     jsonb_build_object('fingerprint', 'market-fp-1', 'source', 'test', 'company', 'Acme',
                        'title', 'Engineer 1', 'location', 'Remote', 'remote', true,
