@@ -240,6 +240,17 @@ difference, and a difference nobody's branch explains means the schema was edite
 before concluding that a missing column or a failed constraint is "pre-existing" — that claim has
 been made and withdrawn twice in one day, both times from a contaminated stack.
 
+**"Not mine" and "pre-existing" are different claims, and only one of them is cheap to defend.**
+*Not mine* is provable from your own diff: the file is byte-identical to `main`, your branch
+touches nothing in that area, therefore the failure is not yours. *Pre-existing* asserts something
+about `main` itself, and on a shared stack you cannot see `main` — you see a database several
+worktrees have written to. Claiming the second when you have only established the first is how a
+false report reaches the board, and it has happened twice.
+
+So say what you actually know: **"unconfirmed as a live `main` run, but provably not mine"** is
+both honest and enough to keep going. If the claim about `main` matters, CI on a clean stack is
+what settles it, not a local run.
+
 **A hand-applied change with no migration file is not a shortcut, it is an unrecorded schema.**
 Recording a ledger row only helps when a file exists to record. If you change the schema directly
 while developing, there is nothing for the next agent's checks to find, and the state is only
