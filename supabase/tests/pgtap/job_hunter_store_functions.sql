@@ -222,11 +222,12 @@ select is(
     'job_hunter_resolve_posting',
     'job_hunter_schedule_stage_enqueue',
     'job_hunter_set_job_markets',
+    'job_hunter_source_schedule_slug',
     'job_hunter_stage_queue_metrics',
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs',
     'job_hunter_upsert_posting'],
-  'exactly the twenty-eight expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the twenty-nine expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

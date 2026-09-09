@@ -199,3 +199,109 @@ revoke all on table public.job_hunter_source_crawls
   from public, anon, authenticated, service_role;
 revoke all on table public.job_hunter_source_cursors
   from public, anon, authenticated, service_role;
+
+-- One cron entry per source, not one per stage -----------------------------
+--
+-- #183 shipped job_hunter_schedule_stage_enqueue deriving its cron job name
+-- from the stage alone:
+--
+--   cron.schedule('job-hunter-enqueue-' || replace(p_stage, '_', '-'), ...)
+--
+-- cron.schedule replaces by name. This ticket installs one schedule per
+-- source, so under that name every schedule would overwrite the last and
+-- exactly one source would ever be crawled. Nothing raises; the corpus just
+-- stops growing, which reads as a quiet job market. The pgTAP asserting the
+-- literal stage-derived name locked it in, so the fix is the signature and
+-- the assertion together.
+create or replace function public.job_hunter_source_schedule_slug(p_key text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  -- Lower-cased, punctuation collapsed to single hyphens, trimmed. Long keys
+  -- keep a hash tail so two that share a prefix cannot land on one job name
+  -- after truncation -- which would reintroduce the collapse this fixes.
+  select case
+           when length(v.slug) <= 40 then v.slug
+           else left(v.slug, 31) || '-' ||
+                left(encode(sha256(convert_to(p_key, 'UTF8')), 'hex'), 8)
+         end
+    from (
+      select trim(both '-' from
+               regexp_replace(lower(coalesce(p_key, '')), '[^a-z0-9]+', '-', 'g')
+             ) as slug
+    ) v;
+$$;
+
+comment on function public.job_hunter_source_schedule_slug(text) is
+  'A source key rendered as a pg_cron job-name fragment: lower case, '
+  'punctuation collapsed, hashed tail past 40 characters so two long keys '
+  'cannot collide (issue #184).';
+
+drop function if exists public.job_hunter_schedule_stage_enqueue(text, text, jsonb);
+
+create or replace function public.job_hunter_schedule_stage_enqueue(
+  p_stage text,
+  p_schedule text,
+  p_payload jsonb default '{}'::jsonb,
+  p_schedule_key text default null
+)
+returns bigint
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_queue_name text;
+  v_job_name text;
+  v_job_id bigint;
+begin
+  v_queue_name := case p_stage
+    when 'crawl_source' then 'job_hunter_crawl_source'
+    when 'resolve_persist' then 'job_hunter_resolve_persist'
+    when 'extract_facets' then 'job_hunter_extract_facets'
+    when 'recheck_freshness' then 'job_hunter_recheck_freshness'
+    else null
+  end;
+
+  if v_queue_name is null then
+    raise exception 'unknown job hunter stage: %', p_stage
+      using errcode = '22023';
+  end if;
+  if jsonb_typeof(p_payload) <> 'object' then
+    raise exception 'stage payload must be a JSON object'
+      using errcode = '22023';
+  end if;
+
+  v_job_name := 'job-hunter-enqueue-' || replace(p_stage, '_', '-');
+  if p_schedule_key is not null then
+    if public.job_hunter_source_schedule_slug(p_schedule_key) = '' then
+      raise exception 'schedule key % has no usable job-name form', p_schedule_key
+        using errcode = '22023';
+    end if;
+    v_job_name := v_job_name || '-'
+      || public.job_hunter_source_schedule_slug(p_schedule_key);
+  end if;
+
+  select cron.schedule(
+    v_job_name,
+    p_schedule,
+    format('select pgmq.send(%L, %L::jsonb);', v_queue_name, p_payload::text)
+  ) into v_job_id;
+  return v_job_id;
+end;
+$$;
+
+comment on function public.job_hunter_schedule_stage_enqueue(text, text, jsonb, text) is
+  'Store a pg_cron schedule whose whole command is one pgmq.send. The cron '
+  'session enqueues due work and never performs stage work itself (#183). '
+  'p_schedule_key names one schedule within a stage: cron.schedule replaces '
+  'by name, so without it N per-source schedules collapse into one and '
+  'exactly one source is ever visited (#184).';
+
+revoke all on function
+  public.job_hunter_schedule_stage_enqueue(text, text, jsonb, text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.job_hunter_source_schedule_slug(text)
+  from public, anon, authenticated, service_role;

@@ -101,12 +101,12 @@ select is_empty(
 -- revoking execute means they cannot reach the queue state at all.
 select is_empty(
   $$ select 1 where has_function_privilege('authenticated',
-       'public.job_hunter_schedule_stage_enqueue(text, text, jsonb)',
+       'public.job_hunter_schedule_stage_enqueue(text, text, jsonb, text)',
        'execute') $$,
   'scheduling an enqueue is not a function a user may call');
 select is_empty(
   $$ select 1 where has_function_privilege('anon',
-       'public.job_hunter_schedule_stage_enqueue(text, text, jsonb)',
+       'public.job_hunter_schedule_stage_enqueue(text, text, jsonb, text)',
        'execute') $$,
   'nor may anon');
 select is_empty(
@@ -149,23 +149,55 @@ select is(
   1,
   'unfinished work becomes visible again after its visibility timeout');
 
--- pg_cron only enqueues -------------------------------------------------------
+-- pg_cron only enqueues, and one schedule per source ------------------------
 
 select lives_ok(
   $$ select public.job_hunter_schedule_stage_enqueue(
-       'crawl_source', '* * * * *', '{"source":"test"}'::jsonb) $$,
-  'a stage enqueue can be scheduled');
+       'crawl_source', '* * * * *', '{"source_key":"remotive"}'::jsonb,
+       'remotive') $$,
+  'a stage enqueue can be scheduled for one source');
+select lives_ok(
+  $$ select public.job_hunter_schedule_stage_enqueue(
+       'crawl_source', '0 * * * *', '{"source_key":"lever:acme"}'::jsonb,
+       'lever:acme') $$,
+  'and for a second source');
+
+-- The regression this signature exists to prevent. cron.schedule replaces by
+-- name, so a job name derived from the stage alone means every per-source
+-- schedule overwrites the last and exactly one source is ever crawled -- with
+-- no error anywhere, presenting as a quiet job market.
+select is(
+  (select count(*)::int from cron.job
+    where jobname like 'job-hunter-enqueue-crawl-source-%'),
+  2,
+  'two sources produce two cron entries rather than replacing each other');
+select is(
+  (select jobname from cron.job
+    where command like '%lever:acme%'),
+  'job-hunter-enqueue-crawl-source-lever-acme',
+  'a source key with punctuation becomes a usable job name');
 
 select alike(
   (select command from cron.job
-    where jobname = 'job-hunter-enqueue-crawl-source'),
+    where jobname = 'job-hunter-enqueue-crawl-source-remotive'),
   'select pgmq.send(%',
   'the scheduled command only sends a queue message');
 select unalike(
   (select command from cron.job
-    where jobname = 'job-hunter-enqueue-crawl-source'),
+    where jobname = 'job-hunter-enqueue-crawl-source-remotive'),
   '%job_hunter_merge_posting_batch%',
   'pg_cron performs no resolve_persist work');
+
+-- Omitting the key keeps the stage-wide name, for a stage with one schedule.
+select lives_ok(
+  $$ select public.job_hunter_schedule_stage_enqueue(
+       'recheck_freshness', '0 4 * * *', '{}'::jsonb) $$,
+  'a stage with a single schedule needs no key');
+select is(
+  (select count(*)::int from cron.job
+    where jobname = 'job-hunter-enqueue-recheck-freshness'),
+  1,
+  'and keeps the stage-wide job name');
 
 -- Operational metrics, with no user identity anywhere in the path -----------
 
