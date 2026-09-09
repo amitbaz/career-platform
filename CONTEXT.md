@@ -79,6 +79,20 @@ posting it stands for and its identity columns are backfilled from each, so a lo
 asking "does this user already hold this advertisement" gets a better answer from the job
 row than from any single posting.
 
+**Merge** — collapsing two postings that are the same advertisement into one survivor.
+The fingerprint is source-scoped, so an advertisement seen on an aggregator and on the
+employer's ATS board is two postings until something resolves them; merging them is a
+decision about the world, so it is made once and recorded once, in
+`job_hunter_posting_merges` (#176). Every affected user's job row is re-pointed at the
+survivor, whether or not that user merged anything, and a caller holding a merged-away
+posting id resolves to the survivor through `job_hunter_resolve_posting`. The merged-away
+posting keeps its row so its fingerprint stays claimed: without it the next crawl of that
+source would insert a fresh competing posting and the decision would have to be made
+again every day. Its facets are discarded rather than moved, because facts read from one
+advertisement's text must not be stamped on another's as permanently current. Do not
+confuse this with deduplication, which is resolving a discovered record against the
+posting that shares its fingerprint — that has one answer and no decision in it.
+
 **Source** — one origin of postings. A feed, a public ATS board, a targeted search
 backend, a watched company, or staged email.
 

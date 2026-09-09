@@ -23,9 +23,9 @@ Target direction:
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
-   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and twenty-one
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and twenty-three
    SQL functions — all `security invoker` except `job_hunter_get_provider_credentials`,
-   which is `security definer` — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
+   `job_hunter_merge_postings` and `job_hunter_merge_jobs`, which are `security definer` — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
    `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`, and
    `supabase/migrations/20260907104935_job_hunter_gmail_candidate_eligibility.sql`, which drops
    `job_hunter_unmaterialized_inbound_jobs` and adds `job_hunter_gmail_candidate_complete` and
@@ -44,10 +44,13 @@ Migration rules:
    same advertisement cause one extraction between them (#175).
    `20260909100000_job_hunter_postings.sql` adds `job_hunter_postings` — one row per job
    advertisement, keyed by fingerprint and shared by every user who discovers it, which
-   `job_hunter_jobs.posting_id` points at. It and `job_hunter_job_facets` are the two Job
-   Hunter tables shared between users: neither has a `user_id`, and any authenticated user
-   may read — and, for now, write — any row of either. Neither has a delete policy: a
-   shared row must not be removable out from under the other users. (The two
+   `job_hunter_jobs.posting_id` points at. It, `job_hunter_job_facets`,
+   `job_hunter_companies` (#198) and `job_hunter_posting_merges` (#176) are the four Job
+   Hunter tables shared between users: none has a `user_id`, and any authenticated user may
+   read any row of any of them. The first three may also be written by any authenticated
+   user for now; the fourth may be written by nobody, because every write to it happens
+   inside `job_hunter_merge_postings`. None has a
+   delete policy: a shared row must not be removable out from under the other users. (The two
    `job_hunter_platform_*` tables also have no `user_id`, but they are the platform key's
    own ledger and no user reaches them at all.) It adds
    `job_hunter_upsert_posting`, and re-creates both `job_hunter_upsert_job`, to write the
@@ -71,7 +74,31 @@ Migration rules:
    identity predicates of `job_hunter_eligible_inbound_jobs`. Those ask which of a user's
    rows covers an advertisement, and a job row accumulates evidence from every posting
    merged into it while `posting_id` names one of them, so the job row is the better
-   answer. Match on the job row; decide currency from the posting.) Job Hunter's runtime reads and writes these tables through
+   answer. Match on the job row; decide currency from the posting.
+   `20260909180000_job_hunter_posting_merges.sql` moves cross-identity merging onto the
+   posting (#176). The fingerprint is source-scoped, so the same advertisement on an
+   aggregator and on the employer's ATS is two postings; collapsing them was
+   `job_hunter_merge_jobs`, per user, which meant every user repeated the decision and two
+   could reach different conclusions. It adds `job_hunter_posting_merges` — a third shared
+   table, reads open to every authenticated user and **no write policy at all** —
+   `job_hunter_resolve_posting`, which turns a stale posting id into the survivor in one
+   lookup, and `job_hunter_merge_postings`, which is `security definer` because re-pointing
+   *every* affected user's job row is what the ticket is for and an invoker is scoped by
+   RLS to its own rows. That function is revoked from `anon`, `authenticated` and
+   `service_role`: the only way in is `job_hunter_merge_jobs`, itself made `security
+   definer` so it can execute it, which confines a posting merge to two job rows the caller
+   already owns rather than any two posting ids they can name. Making it definer is safe
+   because it never relied on RLS — every statement carries its own `user_id` predicate,
+   and RLS on each per-user table it touches is exactly that same predicate. It is not full
+   closure: a user can still upsert two job rows resolving to two chosen postings and merge
+   those. Taking shared-table writes off PostgREST entirely is #179, and needs #178 first.
+   The merged-away posting keeps its row, so its
+   fingerprint stays claimed and the next crawl of that source cannot resurrect a competing
+   posting; its facets are discarded rather than stamped onto the survivor (#125's rule at
+   the posting level). `job_hunter_upsert_posting` and `job_hunter_merge_posting_batch` are
+   re-created to resolve through the redirect, and `job_hunter_merge_jobs` to delegate to
+   it: it is now the per-user consequence of one global decision, not a second authority,
+   and #178 removes it with the rest of the duplicated job-row machinery.) Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
 

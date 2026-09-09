@@ -59,9 +59,22 @@ select has_function('public', 'job_hunter_find_job_by_identity', array['text', '
 select has_function('public', 'job_hunter_get_provider_credentials', array[]::text[],
   'job_hunter_get_provider_credentials exists');
 
--- The credential retrieval RPC is the only security-definer exception. Every
--- store and normalizer function must continue to run with the caller's own
--- privileges so one user's call cannot read another user's rows.
+-- Three security-definer exceptions, and no more. Every store and normalizer
+-- function must continue to run with the caller's own privileges so one
+-- user's call cannot read another user's rows.
+--
+--   * job_hunter_get_provider_credentials, the runner-only retrieval RPC.
+--   * job_hunter_merge_postings (#176), which must re-point every affected
+--     user's job row at the surviving posting and cannot as an invoker:
+--     row-level security scopes one to its own rows, under which the update
+--     would silently touch nothing and leave other users pointing at a
+--     posting nobody maintains. It is revoked from anon, authenticated and
+--     service_role, so the only way in is the function below.
+--   * job_hunter_merge_jobs (#176), definer so that it -- and only it -- can
+--     execute the above. It never relied on RLS: every statement in it
+--     carries its own `user_id = (select auth.uid())` predicate, and RLS on
+--     each per-user table it touches is exactly that same predicate, so the
+--     two express one restriction. Asserted below rather than assumed.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -69,8 +82,19 @@ select is(
     where n.nspname = 'public'
       and p.proname like 'job\_hunter\_%'
       and p.prosecdef),
-  array['job_hunter_get_provider_credentials'],
-  'credential retrieval is the only public.job_hunter_* security definer');
+  array['job_hunter_get_provider_credentials', 'job_hunter_merge_jobs', 'job_hunter_merge_postings'],
+  'credential retrieval and the two merges are the only public.job_hunter_* security definers');
+
+-- The revoke is the point of making the merge definer, so pin it: no role a
+-- user can hold may reach job_hunter_merge_postings directly.
+select is(
+  (select array_agg(g.grantee::text order by g.grantee)
+     from information_schema.routine_privileges g
+    where g.specific_schema = 'public'
+      and g.routine_name = 'job_hunter_merge_postings'
+      and g.grantee in ('anon', 'authenticated', 'service_role', 'PUBLIC')),
+  null,
+  'no user-reachable role may execute the posting merge directly');
 
 -- Every one must pin an empty search_path so an attacker-controlled
 -- search_path cannot swap a table out from under it.
@@ -102,6 +126,7 @@ select is(
     'job_hunter_locations_compatible',
     'job_hunter_merge_jobs',
     'job_hunter_merge_posting_batch',
+    'job_hunter_merge_postings',
     'job_hunter_needs_evaluation',
     'job_hunter_normalize_company',
     'job_hunter_normalize_text',
@@ -110,11 +135,12 @@ select is(
     'job_hunter_pending_review_events',
     'job_hunter_preferred_description',
     'job_hunter_record_ats_eligible_jobs',
+    'job_hunter_resolve_posting',
     'job_hunter_set_job_markets',
     'job_hunter_upsert_job',
     'job_hunter_upsert_jobs',
     'job_hunter_upsert_posting'],
-  'exactly the twenty-one expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
+  'exactly the twenty-three expected public.job_hunter_* functions exist, so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

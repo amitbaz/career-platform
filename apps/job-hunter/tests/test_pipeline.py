@@ -3061,9 +3061,17 @@ def test_pipeline_records_evaluation_against_survivor_when_job_merged_mid_run(
     assert store.has_delivery(merge["survivor"], "telegram_message")
     # Exactly once: the survivor's id has to join the run's working set, or
     # the pending-delivery sweep queues the same job into the digest again.
-    assert telegram.messages[0].count("Staff Product Engineer") == 1
-    # The card describes the surviving row, not the one the merge discarded.
-    assert "Senior Product Engineer" not in telegram.messages[0]
+    #
+    # The title on the card is the surviving *posting*'s. #177 moved the
+    # posting-level facts off the job row and onto the posting the row points
+    # at, and #176 merges the two postings behind the two job rows rather than
+    # picking one of them: the two fixtures carry the same description at the
+    # same confidence, so the description ladder ties and the older posting --
+    # the discovered job's -- survives. Which job row survives is still
+    # decided by this user's history, and still the one the evaluation and the
+    # delivery are recorded against, as asserted above.
+    assert telegram.messages[0].count("Senior Product Engineer") == 1
+    assert "Staff Product Engineer" not in telegram.messages[0]
 
 
 def test_pipeline_contains_a_store_write_failure_for_one_job(store, settings, monkeypatch):
