@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -1588,22 +1589,29 @@ def test_collect_candidates_survives_unattributed_uncertainty_for_remote_job(
 
 
 def test_collect_candidates_teaches_ats_board_even_for_backend_only_role(store, policy):
+    # job_hunter_ats_boards is shared and has no delete policy (#203), so
+    # the board identifier is salted unique to this test run rather than
+    # asserting store.count_ats_boards() -- a global count over every
+    # board any test or concurrent worktree has ever registered.
+    board = f"example-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="feed",
         title="Backend Engineer",
         company="Example",
-        url="https://jobs.ashbyhq.com/example/backend-1",
+        url=f"https://jobs.ashbyhq.com/{board}/backend-1",
         description="Python backend services",
     )
 
     result = collect_candidates([FakeSource([job])], store, NoOpHttp(), policy)
 
     assert result.eligible == []
-    assert store.count_ats_boards() == 1
+    due = store.list_due_ats_boards(datetime.now(timezone.utc))
+    assert [e.board_identifier for e in due if e.board_identifier == board] == [board]
     assert result.stats.ats_boards_discovered == 1
 
 
 def test_collect_candidates_teaches_ats_board_from_canonical_resolution(store, policy):
+    board = f"acme-{uuid.uuid4().hex[:8]}"
     job = Job(
         source="aggregator",
         source_job_id="1",
@@ -1615,8 +1623,8 @@ def test_collect_candidates_teaches_ats_board_from_canonical_resolution(store, p
     )
     resolver = FakeResolver(
         CanonicalResolution(
-            url="https://boards.greenhouse.io/acme/jobs/123",
-            ats=AtsReference(provider="greenhouse", board="acme", job_id="123"),
+            url=f"https://boards.greenhouse.io/{board}/jobs/123",
+            ats=AtsReference(provider="greenhouse", board=board, job_id="123"),
             confidence=0.9,
             method="targeted_search",
         )
@@ -1627,12 +1635,13 @@ def test_collect_candidates_teaches_ats_board_from_canonical_resolution(store, p
     )
 
     assert len(result.eligible) == 1
-    assert store.count_ats_boards() == 1
     assert result.stats.ats_boards_discovered == 1
     due = store.list_due_ats_boards(datetime.now(timezone.utc))
-    assert [(entry.provider, entry.board_identifier) for entry in due] == [
-        ("greenhouse", "acme")
-    ]
+    assert [
+        (entry.provider, entry.board_identifier)
+        for entry in due
+        if entry.board_identifier == board
+    ] == [("greenhouse", board)]
 
 
 def test_collect_candidates_counts_one_eligible_per_canonical_duplicate_group_by_market(

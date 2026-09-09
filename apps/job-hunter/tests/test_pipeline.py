@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -2583,22 +2584,28 @@ class RoutingAtsHttp:
 
 
 def test_pipeline_logs_source_quality_and_ats_registry_metrics(store, settings, caplog):
+    # job_hunter_ats_boards is shared and has no delete policy (#203), so
+    # `total` in the logged line is a global count over every board any
+    # test or concurrent worktree has ever registered -- not just this
+    # one -- and the board identifier is salted so this run's board is
+    # its own row rather than colliding with another test's "acme-ashby".
+    board = f"acme-ashby-{uuid.uuid4().hex[:8]}"
     store.upsert_ats_board(
         provider="ashby",
-        board_identifier="acme-ashby",
+        board_identifier=board,
         company_name="Acme",
         market_hint="",
     )
     devjobs_job = _job(source="devjobs", source_job_id="1", company="Acme")
     ats_http = RoutingAtsHttp(
         responses={
-            "ashbyhq.com": {
+            board: {
                 "jobs": [
                     {
                         "id": 1,
                         "title": "Senior Product Engineer",
                         "location": "Remote",
-                        "jobUrl": "https://jobs.ashbyhq.com/acme-ashby/1",
+                        "jobUrl": f"https://jobs.ashbyhq.com/{board}/1",
                         "descriptionPlain": "React",
                         "isRemote": True,
                     },
@@ -2606,7 +2613,7 @@ def test_pipeline_logs_source_quality_and_ats_registry_metrics(store, settings, 
                         "id": 2,
                         "title": "Senior Product Engineer",
                         "location": "Remote",
-                        "jobUrl": "https://jobs.ashbyhq.com/acme-ashby/2",
+                        "jobUrl": f"https://jobs.ashbyhq.com/{board}/2",
                         "descriptionPlain": "React",
                         "isRemote": True,
                     },
@@ -2617,7 +2624,10 @@ def test_pipeline_logs_source_quality_and_ats_registry_metrics(store, settings, 
     learned_source = LearnedAtsSource(
         store,
         ats_http,
-        limit=10,
+        # Large enough that this test's never-checked board is never
+        # excluded by whatever else has accumulated in the shared registry
+        # this session -- see the module-level note on job_hunter_ats_boards.
+        limit=500,
         market_order=[],
         now=lambda: datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc),
     )
@@ -2638,9 +2648,20 @@ def test_pipeline_logs_source_quality_and_ats_registry_metrics(store, settings, 
         "selected=1 high_priority=1 package_match=0 possible_match=0 skip=0 "
         "blocked=0 delivered=1"
     ) in caplog.text
-    assert (
-        "ats_registry total=1 discovered=0 scanned=1 successful=1 failed=0 jobs_raw=2"
-    ) in caplog.text
+    # `total` and `scanned` reflect the whole shared registry, not just
+    # this test's board, so only the parts this run actually controls are
+    # asserted precisely.
+    match = re.search(
+        r"ats_registry total=(\d+) discovered=0 scanned=(\d+) successful=(\d+) "
+        r"failed=(\d+) jobs_raw=(\d+)",
+        caplog.text,
+    )
+    assert match is not None
+    total, scanned, successful, failed, jobs_raw = (int(g) for g in match.groups())
+    assert total >= 1
+    assert scanned >= 1
+    assert successful >= 1
+    assert jobs_raw >= 2
 
 
 def test_should_run_scheduled_matches_local_hour():
