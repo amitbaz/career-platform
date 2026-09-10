@@ -4,21 +4,23 @@ This file provides guidance to AI coding agents (Claude Code, Codex, etc.) when 
 
 ## What this is
 
-A daily, mostly hands-off job-hunting assistant that runs on GitHub Actions. It discovers public remote job postings, deduplicates them in Postgres, evaluates each against a candidate profile with Gemini, and delivers a digest via Telegram. Cover letters + PDFs are generated on demand, triggered by tapping "Gen CL" on a job's Telegram card, not automatically for strong matches. **It never submits applications** — see "v1 safety boundary" in README.md.
+The search-and-match engine — the product ([ADR-0001](../../docs/adr/0001-the-engine-is-the-product.md)).
+Product direction is in [docs/product-vision.md](../../docs/product-vision.md); read its "What
+the engine must do" section before shaping engine work.
+
+It is mid-restructure (#181, #189). Ingestion and enrichment run as queued stages on Render
+(`render.yaml`); matching is one operation (`match_jobs`, #187); and the older single-process
+daily run on GitHub Actions — crawl, score and Telegram digest in one pass — is being retired.
+Telegram is not part of the product, and there is no backward compatibility to keep with it
+(root `AGENTS.md`, "Product direction"). Sections below that describe the daily run describe
+what is being removed. **The engine never submits applications** — see "v1 safety boundary" in
+README.md.
 
 ## Project direction and architectural constraints
 
-This repository is part of a larger job-seeking ecosystem together with [`amitbaz/interviewer-app`](https://github.com/amitbaz/interviewer-app).
-
-Current state:
-- Job Hunter Bot and Interviewer App both persist to the same Supabase/Postgres project.
-- They do not yet share a data model, only a database — the exact shared schema for
-  candidate/profile data, jobs, evaluations, applications, application status, and related
-  interview-preparation context is not defined yet.
-
-Target direction:
-- Both applications should eventually operate within the same Supabase ecosystem with a
-  deliberately shared domain model, not just a shared database.
+Relay (formerly the separate Interviewer App, now `apps/relay`) is a legacy proof of concept and
+not the base for the product. It shares the Supabase project, and the engine still reads the
+user's CV, cover letter and provider keys from Relay's Profile screen.
 
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository

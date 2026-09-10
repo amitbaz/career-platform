@@ -1,5 +1,10 @@
 # Relay — AI Interview Coach
 
+> **Legacy.** Relay is an early proof of concept and is not the base for the product: nothing
+> from it is kept, neither code nor schema ([product vision](../../docs/product-vision.md), D5).
+> It stays deployed only because the engine reads the user's CV, cover letter and provider keys
+> from its Profile screen.
+
 A personal, authenticated interview-practice POC for software-engineering candidates.
 
 ## What works now

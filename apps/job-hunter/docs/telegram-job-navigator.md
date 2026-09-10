@@ -1,5 +1,9 @@
 # Telegram Job Navigator
 
+> **Legacy.** The Telegram bot is not part of the product and is being retired
+> ([docs/product-vision.md](../../../docs/product-vision.md)). This describes what exists until it
+> is removed; do not extend it.
+
 The bot delivers matching jobs as one interactive Telegram card instead of one long digest. `Previous` and `Next` edit the same message in place. `View job` opens the source posting. `Apply` is intentionally a placeholder and only shows `Apply functionality coming soon.`
 
 ## Current architecture

@@ -8,8 +8,9 @@ came from. The cited pages were fetched on 2026-09-10 without an account, so any
 sign-in is described only as far as their own public demos show it. Where a claim is an
 inference rather than something they state, it is marked **inference**.
 
-Read [positioning.md](../positioning.md) and [product-shape.md](../product-shape.md) first.
-This document is written against both.
+It was written against [positioning.md](../positioning.md) and the since-deleted
+`product-shape.md`. The current product direction is [product-vision.md](../product-vision.md),
+which wins where they disagree.
 
 ## The short version
 
@@ -64,8 +65,8 @@ signed-in app: `/interview`, `/simulator`, `/practice`, `/predicted`, `/tailored
   and codes, emergency procedure, revenue management, vendor negotiation, objection handling,
   CRM cockpit, case interview, Fermi estimation, product sense, metric diagnosis, SQL, system
   design, ML system design, on-call incident, and "AI-ready" ([sitemap](https://preproom.ai/sitemap.xml)
-  under `/resources/*`). This is exactly the generalisation
-  [product-shape.md](../product-shape.md) says our readiness vocabulary lacks.
+  under `/resources/*`). This is exactly the generalisation our coach needs: a
+  profession-neutral question vocabulary ([product-vision.md](../product-vision.md), D5).
 - **Every question page carries a spec.** An example is
   [air-001](https://preproom.ai/answer/air-001):
   - the answer shape ("Explanation"), a target length (160 words), usual seniority ("Entry to
@@ -234,10 +235,10 @@ no details.
 | Drafted application with per-field provenance | Cover-letter text and PDF only (`pdf.py:35`) | No field-level answers, no provenance, no review queue |
 | Resume tailoring against a posting | None | Whole feature |
 | Likely questions from a posting | The coach plans rounds from an opportunity's job description and gaps (`apps/relay/src/lib/coach.ts:989`, `lib/interview-planner.ts:471`) | Internal only; no "why this made the set" |
-| Voice practice | Relay has a transcribe route on Gemini (`apps/relay/src/app/api/transcribe/route.ts`) | The POC is being rewritten ([product-shape.md](../product-shape.md)) |
-| Profession-neutral round types | Readiness vocabulary is engineering-shaped ([product-shape.md](../product-shape.md), structural items 2 and 3) | Needs generalising; their taxonomy is a ready-made seed |
+| Voice practice | Relay has a transcribe route on Gemini (`apps/relay/src/app/api/transcribe/route.ts`) | Relay is a legacy POC; nothing from it is kept ([product-vision.md](../product-vision.md), D5) |
+| Profession-neutral round types | Relay's readiness vocabulary is engineering-shaped; the coach is designed fresh ([product-vision.md](../product-vision.md), D5) | Needs generalising; their taxonomy is a ready-made seed |
 | Upskill from matched postings | Facets are extracted once per posting and shared (#175, #178) | Not built, but cheaper for us than for them |
-| Career stories, evidence, observations, practice plans | `career_stories`, `profile_evidence`, `coach_observations`, `practice_plans`, `practice_plan_opportunities` (migrations 202608290005–202608310001) | **Our advantage.** Nothing equivalent is visible on their side |
+| Career stories, evidence, observations, practice plans | `career_stories`, `profile_evidence`, `coach_observations`, `practice_plans`, `practice_plan_opportunities` (migrations 202608290005–202608310001) | Modelled in Relay, which is not kept ([product-vision.md](../product-vision.md), D5); the coach's story set is designed fresh. Nothing equivalent is visible on their side |
 
 ## What to take as our starting point
 
@@ -246,17 +247,18 @@ scope.
 
 1. **Match card format.** One grounded sentence, one gap sentence, a band rather than a raw
    number, and freshness. We already compute all of it. Build the posting surface
-   ([product-shape.md](../product-shape.md) moments 1 and 2) to this spec, in our voice.
+   (the stack and its cards, [product-vision.md](../product-vision.md) D1) to this spec, in our
+   voice.
 2. **Application review queue with per-field provenance.** Every answer names where it came
    from: CV, profile, or an answer the user gave on a date. It flags gaps instead of rounding
-   up, and nothing leaves unseen. This is the spec for application packs (moment 3), and it
+   up, and nothing leaves unseen. This is the spec for prepared applications (the bucket, D2), and it
    matches our rule against automatic submission.
 3. **Resume tailoring rules, word for word:** nothing invented; reorder for this posting;
    every number comes from the source; ask when one is missing; never add a skill. Adopt
    these as the acceptance criteria for any CV-tailoring work. They are also the
    hallucination guardrails we would want anyway.
-4. **The single-question practice spec**, for the coach rebuild (product-shape sequence step
-   6): answer shape with named beats, target length, think time, and a model answer and
+4. **The single-question practice spec**, for the coach ([product-vision.md](../product-vision.md),
+   D5): answer shape with named beats, target length, think time, and a model answer and
    coach note sealed until you stop. Critique is one strength plus one concrete thing to
    say next time.
 5. **Their round taxonomy as the seed vocabulary** when generalising `competencies`, the
@@ -274,13 +276,14 @@ scope.
 
 ## What stays ours, and should be sharpened because of them
 
-- **Delivery.** A curated note each morning with reasons, where they offer a board you visit.
+- **Delivery.** A continuous, curated stack pushed to the user with reasons
+  ([product-vision.md](../product-vision.md), D1), where they offer a board you visit.
   Their existence makes [docs/voice.md](../positioning.md#the-voice-is-the-differentiator-we-can-ship)
   more urgent, not less.
 - **The coach remembers.** Stories, evidence and observations build up across the search, and
   preparation for a specific opportunity draws on them. They prepare you from your resume;
-  we prepare you from everything the coach has learned. That is the product-shape spine's
-  moment 4, and it is the claim to prove.
+  we prepare you from everything the coach has learned. That is
+  [product-vision.md](../product-vision.md) D5, and it is the claim to prove.
 - **Quality over volume.** They sell 300K roles. We should never compete on that number, only
   on #80's evidence that fewer, better matches get more responses.
 - **Four launch markets: EU, US, UK and Israel.** Their product is US-shaped. In the US we

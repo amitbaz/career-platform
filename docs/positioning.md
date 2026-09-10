@@ -1,6 +1,6 @@
 # Positioning
 
-Last updated: 2026-09-09.
+Last updated: 2026-09-11.
 
 Written as recommendations with the reasoning behind them, not as open questions. Where a
 decision genuinely needs the founder's taste it is marked **founder's call**; everything else
@@ -15,6 +15,12 @@ beat both known competitors, and several of its conclusions revise this document
 competitor pricing below is stale.** As of 2026-09-10 caddie.careers charges £9.99 a
 *month*, not £6.99 a week ([research/caddie-careers-teardown.md](research/caddie-careers-teardown.md)),
 so the argument that €7.99 a week "matches rather than undercuts" them no longer holds.
+
+**Read [product-vision.md](product-vision.md) first; where the two disagree, it wins.** It
+changes this document in three places. The main interface is a mobile app, with no Telegram bot.
+There are two customer modes — active search and keep watching — so the premise below that
+every customer leaves when hired holds only for active search (D6, D7). And the shape of the
+free and paid tiers is decided there, with prices and allowances parked (D7).
 
 ## The proof gap, which constrains everything below
 
@@ -65,17 +71,26 @@ prepares you for it. No other framing connects those two products.
 sentences, five rules, and about a dozen worked before-and-after examples drawn from real
 strings. Plus one line in AGENTS.md saying user-facing text is written to it.
 
-**Later: every user-facing string in three codebases.** The voice has to hold in the digest,
-the Telegram bot's replies, the web app's copy, transactional email, and **every error
+**Later: every user-facing string in three codebases.** The voice has to hold on every card
+and *why* line, in push notifications, the app's copy, transactional email, and **every error
 message** — which is the hard case, because error strings are written by whoever hit the
 error, are scattered across the tree, and are precisely where a persona dies. Retrofitting
 means finding all of them across `job-hunter` and `relay` and the future app, rewriting them,
 and living with the ones that are missed.
 
-**Recommendation: write `docs/voice.md` before the web posting surface is built**, since that
-surface is on the launch-precondition list and will otherwise establish a voice by accident.
+**Recommendation: write `docs/voice.md` before the app's first screens are built**, since they
+will otherwise establish a voice by accident.
 
 ## Pricing
+
+> **Status (2026-09-11): input to a parked decision, not a recommendation.** The tier *shape* is
+> decided in [product-vision.md](product-vision.md), D7: the mode (active search or keep
+> watching) is separate from the tier (what the user pays); free gives the watching and paid does
+> the work; nothing is lost moving between states. Prices and allowances are parked by the
+> owner. The analysis below was written assuming every customer leaves when hired, which D6
+> found true only for active search — people employed and quietly looking stay for years. Its
+> free-tier table also predates the stack (D1): "once daily" delivery and "five scored matches a
+> day" describe the retired digest.
 
 ### The customer does not stay, and that changes everything
 
@@ -332,5 +347,4 @@ Nothing here asks for a ticket that does not exist. It changes emphasis:
   positioning.
 - **#203 and #204** are pricing prerequisites, not efficiency work: they are what turns
   unlimited watching from an intention into a claim, and they gate advertising it.
-- **The web posting surface**, already on the launch-precondition list, should not be built
-  before `docs/voice.md` exists.
+- **The app's first screens** should not be built before `docs/voice.md` exists.

@@ -1,35 +1,32 @@
-# Job Hunter Bot
+# Job Hunter — the engine
 
-A daily, mostly hands-off job-hunting assistant that runs on GitHub Actions. It reads Gmail job signals, discovers public remote job postings, deduplicates them in Postgres, evaluates each one against your candidate profile with Gemini, and delivers a concise digest through Telegram. Tapping "Gen CL" on a job's card triggers on-demand cover letter drafting and PDF rendering for that job.
+The search-and-match engine, which is the product
+([ADR-0001](../../docs/adr/0001-the-engine-is-the-product.md),
+[product vision](../../docs/product-vision.md)). It ingests job postings from public sources
+into one shared corpus, extracts objective facts from each posting once, and matches postings
+against each user's profile on demand.
 
-The bot **never submits applications**. It prepares material for you to review and send yourself — see [v1 safety boundary](#v1-safety-boundary) below.
+**It is mid-restructure.** Ingestion and enrichment run as queued stages (#181): three Render
+cron services defined in [`render.yaml`](../../render.yaml) drain the crawl, facet-extraction and
+freshness queues. Matching is one operation, `match_jobs` (#187). The older single-process daily
+run (`.github/workflows/job-hunter-daily.yml`), which crawls, scores and delivers a Telegram
+digest in one pass, is being retired (#189), and Telegram is not part of the product. **Much of
+the rest of this README still describes that older run** and is rewritten when #189 lands;
+where it disagrees with the code or [`AGENTS.md`](AGENTS.md), trust those.
+
+The engine **never submits applications**. It prepares material for the user to review and send
+themselves — see [v1 safety boundary](#v1-safety-boundary) below.
 
 ## Project direction
 
-Job Hunter Bot persists to Postgres — the shared Supabase project also used by the
-[Interviewer App](https://github.com/amitbaz/interviewer-app). Both applications now write to
-the same database; they do not yet share a domain model beyond that.
+Product direction lives in [docs/product-vision.md](../../docs/product-vision.md); engine
+direction in epic #114 and #181.
 
-Postgres is the production source of truth for Job Hunter Bot, via `PostgresJobStore`
-(`src/job_hunter/postgres_store.py`), which reaches PostgREST with a short-lived per-user ES256
-token. Row-level security decides which rows are visible.
-
-Target ecosystem:
-
-```text
-Job Hunter Bot  ->  Supabase/Postgres  <-  Interviewer App
-```
-
-## Roadmap
-
-Current product direction includes:
-
-- Improve Telegram job browsing and navigation.
-- Add an explicit application workflow and application status tracking.
-- Share candidate, job, application, and related data with the Interviewer App where appropriate.
-- Move toward a unified job-search -> application -> interview-preparation workflow across both projects.
-
-The exact shared schema and migration phases are intentionally not defined here. Each migration phase should have its own design and implementation plan before code changes begin.
+Postgres (the shared Supabase project) is the production source of truth. Per-user reads and
+writes go through `PostgresJobStore` (`src/job_hunter/postgres_store.py`), which reaches
+PostgREST with a short-lived per-user ES256 token, so row-level security decides which rows are
+visible. The ingestion stages connect to Postgres directly as a privileged role, because the
+corpus they write is shared and has no per-user dimension.
 
 ## Architecture
 

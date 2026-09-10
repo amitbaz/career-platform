@@ -51,8 +51,10 @@ posting from being scored.
 ranked results. Per-user, fast, answerable on demand. One ranking consumes the posting's
 facets and the company's together; there is no separate company-matching path.
 
-**Surface** — anything that consumes the engine and presents results: Telegram, the
-scheduled daily run, a future application. A surface never contains matching logic.
+**Surface** — anything that consumes the engine and presents results: the mobile app (the
+main interface), its desktop helper for long application forms, and push notifications. The
+Telegram bot and the scheduled daily digest are legacy surfaces being retired. A surface never
+contains matching logic.
 
 **Stage** — one bounded unit of the shared ingestion/enrichment pipeline. The four
 stages are `crawl_source`, `resolve_persist`, `extract_facets`, and
@@ -130,10 +132,13 @@ different rules and the cost being sized is paid per row.
 **Yield** — selected divided by raw, for a source. The value half of a source's
 scorecard; elapsed time and request count are the cost half.
 
-**Digest** — the set of offers delivered to one user in one run.
+**Digest** — legacy: the set of offers the daily run delivers to one user. The product
+replaces it with the stack (see "The product" below).
 
-**Offer** — a job delivered to a user. Not every scored job becomes one; a delivery cap
-and a match-score floor both sit between scoring and delivery.
+**Offer** — legacy: a job the daily run delivered to a user. Not every scored job becomes
+one; a delivery cap and a match-score floor both sit between scoring and delivery. In the
+product's language an offer is the employer's job offer — an outcome — and a posting shown to
+a user is a card.
 
 **Deferred** — a candidate that ranked well enough but was not reached this run. Deferred
 candidates stay eligible for later runs. They are not rejected, and the two must not be
@@ -163,3 +168,42 @@ for the run and the postings it did not read are enriched by a later one.
 (objective, reusable, platform-funded) or `USER_SUBJECTIVE` (a judgement about one person,
 funded by their key). The class selects the credential and the quota; nothing infers
 either from the call site or from configuration.
+
+## The product
+
+What the user sees and does, as decided in [docs/product-vision.md](docs/product-vision.md).
+The D-numbers point at the decision each term comes from.
+
+**Stack** — the user's current match cards: up to twenty a day, refreshed continuously. A
+ceiling, never a quota; a thin day gives a short stack (D1). Prefer this to "digest" or
+"feed".
+
+**Card** — one posting in the stack, showing only what an instant decision needs: the why
+line, then the posting's known facts, with unknowns shown as unknown (D1).
+
+**Why line** — the one line on a card that tells this user why this posting is worth their
+time. Per user and posting (D1).
+
+**Swipe** — the user's decision on a card. Right: prepare it for me. Left: not this one, a
+soft signal. An optional reason after a left swipe can create a rule (D4).
+
+**Rule** — a learned preference, created only by an explicit reason, shown to the user when it
+is learned and reversible. A left swipe alone never creates one (D4).
+
+**Prepared application** — what a right swipe produces: the CV tailored to the posting, a
+short cover note and the screening answers, every field naming its source (D2). "Application
+pack" and "cover letter" name older, narrower artefacts.
+
+**Bucket** — the user's prepared applications waiting for review: approve, edit or drop. Not a
+to-do list (D2).
+
+**Submit session** — one sitting at a laptop in which a desktop helper fills long employer forms
+from prepared applications; the user sends each one (D8).
+
+**Outcome** — what happened after the user applied: a reply, an interview, a rejection, an
+offer, or silence inferred from time (D9). Not a preference: a swipe is the user's opinion, an
+outcome is the employer's answer (D3, D4).
+
+**Active search / keep watching** — the user's mode. Active search is the stack and applying;
+keep watching is rare alerts on excellent matches only. Separate from the tier, which is what
+the user pays (D7).
