@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import time
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from job_hunter import content_confidence
@@ -1147,6 +1148,7 @@ def _evaluate_and_deliver_job(
     queued_job_ids: set[str],
     needs_facets: set[str],
     company_facets: dict[str, CompanyFacets | None],
+    sql_match_by_job_id: dict[str, dict[str, Any]],
 ) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest, containing its failures.
 
@@ -1172,6 +1174,7 @@ def _evaluate_and_deliver_job(
             queued_job_ids,
             needs_facets,
             company_facets,
+            sql_match_by_job_id,
         )
     except Exception:
         logger.exception(
@@ -1227,6 +1230,7 @@ def _evaluate_and_deliver_one_job(
     queued_job_ids: set[str],
     needs_facets: set[str],
     company_facets: dict[str, CompanyFacets | None],
+    sql_match_by_job_id: dict[str, dict[str, Any]],
 ) -> tuple[bool, bool, str | None, bool, bool]:
     """Evaluate one job and add it to the digest.
 
@@ -1245,6 +1249,11 @@ def _evaluate_and_deliver_one_job(
 
     # Scoring is handed the posting's facets, not its description (#126), so
     # a posting nobody has read yet is read here, once, before it is scored.
+    # Captured before the call: `_facets_for_scoring` discards `job_id` from
+    # `needs_facets` the moment it reads it (line 783), so checking
+    # membership afterward would always say "did not need reading" for the
+    # very job that just did.
+    needed_fresh_facets = job_id in needs_facets
     try:
         facets = _facets_for_scoring(job_id, job, store, ai, summary, needs_facets)
     except PlatformAllowanceExhausted as exc:
@@ -1277,8 +1286,23 @@ def _evaluate_and_deliver_one_job(
     # A job those same facts already disqualify for this user costs nothing
     # more to establish (#127): the comparison is between the posting's shared
     # facets and this profile's own numbers, and everything below handles the
-    # resulting evaluation exactly as it handles the model's.
-    facet_blockers = _facet_decided_blockers(job, facets, settings)
+    # resulting evaluation exactly as it handles the model's. When this run
+    # ranked in SQL (#187), that same call already decided this job's
+    # blockers -- reusing it here is what keeps blocking a single
+    # implementation rather than a second one recomputed from facets. Except
+    # when this job needed a fresh facets read (`needed_fresh_facets`):
+    # `sql_match_by_job_id` was built before this pass read (or re-read) its
+    # facets, so its row still reflects what was on file *before* this run --
+    # missing entirely for a first-read job, stale for a re-extracted one.
+    # Only a job whose facets were already current when the SQL ranking ran
+    # can trust its answer; every other job -- that one, and any the SQL
+    # ranking never saw at all -- falls back to computing it from the facets
+    # just read.
+    sql_row = sql_match_by_job_id.get(job_id)
+    if sql_row is not None and not needed_fresh_facets:
+        facet_blockers = sql_row["hard_blockers"] or []
+    else:
+        facet_blockers = _facet_decided_blockers(job, facets, settings)
     scored = not facet_blockers
     if facet_blockers:
         evaluation = blocked_evaluation(job, facet_blockers)
@@ -1664,7 +1688,46 @@ def run_pipeline(
         # be a reason a run stops ranking or delivering.
         logger.exception("could not read stored company facets for the eligible set")
         company_facets = {}
-    ranked = rank_jobs(eligible, settings.policy, preferences, company_facets)
+
+    # One ranking implementation for every caller (#187): the SQL port of
+    # `profile_priority_score` and `hard_blockers_from_facets` ranks and
+    # flags this user's whole corpus in a single round trip. `sql_match_by_job_id`
+    # is empty whenever there is no profile to rank against (the Python
+    # fallback below is the only ranking for that case, unchanged) or the SQL
+    # call itself failed -- either way `ranked` falls back to the pre-#187
+    # Python ranking, and `_facet_decided_blockers` becomes the per-job
+    # fallback for hard blockers too.
+    sql_match_by_job_id: dict[str, dict[str, Any]] = {}
+    if preferences is not None:
+        try:
+            sql_match_by_job_id = {
+                row["job_id"]: row
+                for row in store.match_jobs(
+                    preferred_roles=preferences.preferred_roles,
+                    preferred_seniority=preferences.preferred_seniority,
+                    must_have_signals=preferences.must_have_signals,
+                    nice_to_have_signals=preferences.nice_to_have_signals,
+                    preferred_locations=preferences.preferred_locations,
+                    avoid_signals=preferences.avoid_signals,
+                )
+            }
+        except Exception:
+            logger.exception("SQL ranking failed; falling back to the Python ranking")
+            sql_match_by_job_id = {}
+
+    if sql_match_by_job_id:
+        job_by_id = {job_id: job for job_id, job in eligible}
+        # `sql_match_by_job_id` iterates in the SQL ranking's own order
+        # (score desc, company, title, job_id); filtering a totally ordered
+        # sequence down to this run's eligible ids keeps it ordered, so no
+        # re-sort is needed here.
+        ranked = [
+            (row["job_id"], job_by_id[row["job_id"]], row["score"])
+            for row in sql_match_by_job_id.values()
+            if row["job_id"] in job_by_id
+        ]
+    else:
+        ranked = rank_jobs(eligible, settings.policy, preferences, company_facets)
     selected = _select_candidates(ranked, settings.policy, preferences)
     eligible_source_counts = _source_counts(ranked)
     selected_source_counts = _source_counts(selected)
@@ -1755,6 +1818,7 @@ def run_pipeline(
             queued_job_ids,
             needs_facets,
             company_facets,
+            sql_match_by_job_id,
         )
         if decision is not None and scored:
             summary.evaluated += 1
@@ -1805,6 +1869,7 @@ def run_pipeline(
             queued_job_ids,
             needs_facets,
             company_facets,
+            sql_match_by_job_id,
         )
         if decision is not None and scored:
             summary.evaluated += 1
