@@ -192,6 +192,17 @@ Migration rules:
    moved to `job_hunter_platform_search_usage`, keyed on the provider — the quota belongs
    to the API key, not to a person. `crawl_source.py` is the stage handler and, like
    `resolve_persist.py`, imports nothing user-scoped.
+
+   The posting-freshness migration (#186) gives a posting its freshness state —
+   `closed_at` and `closed_reason`, `freshness_checked_at`, `freshness_next_check_at`, and
+   the validators that make the next check conditional — plus
+   `job_hunter_freshness_interval` (a quarter of the posting's age, clamped to 6 hours–7
+   days) and `job_hunter_enqueue_due_freshness`, which a `pg_cron` entry runs every 30
+   minutes to put due, open, surviving postings on the `recheck_freshness` queue, each at
+   most once. It re-creates `job_hunter_pending_delivery_jobs` so a closed posting is never
+   delivered, and `job_hunter_merge_posting_batch` so the employer's own board listing a
+   closed posting again reopens it (an aggregator's listing does not). `recheck_freshness_stage.py` is the stage handler and imports nothing
+   user-scoped at module level.
 2. **Do not bypass `PostgresJobStore` opportunistically while implementing unrelated features.**
 3. Feature development must continue independently of any further schema evolution.
 4. Prefer boundaries that make future persistence changes easier.
@@ -446,6 +457,23 @@ Key modules:
   transactions and reports queue/visible/dead-letter depth for every stage. The
   `resolve_persist` handler consumes a `batch_id` and runs the existing set-based posting
   merge; do not make queue payloads carry a `user_id`.
+- `src/job_hunter/recheck_freshness_stage.py` — the `recheck_freshness` stage (#186). Run
+  by `python -m job_hunter recheck-freshness` from its own workflow
+  (`job-hunter-recheck-freshness.yml`), never inside the daily run, so a slow pass cannot
+  delay a crawl or an extraction. One conditional request per posting. A Greenhouse, Lever
+  or Ashby posting is re-read on its board through the adapter that crawls it — one fetch
+  per board per drain — and only an `official_ats` posting's description is compared
+  there; a changed one is updated and queued for `extract_facets` in the same
+  transaction, so the one existing notion of a changed posting (the description hash)
+  re-runs extraction and scoring. Every other posting's own page answers existence only:
+  its text came from another channel and would hash differently every time. A 404/410, a
+  closure phrase, a missing board entry or a gone board closes the posting; a timeout, a
+  5xx or a 429 goes back to the queue, and a 401/403 is recorded as `unverified` —
+  failing to reach a page never closes one. A closed posting keeps its row, text and
+  facets, is skipped by `job_hunter_pending_delivery_jobs`, by extraction and by the daily
+  run's candidate selection (`closed_job_ids`, before ranking), and is reopened only when
+  its employer's own board lists it again. Gmail inbound candidates are not filtered by
+  it.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids(match_score_floor)` retries undelivered Telegram work without re-calling Gemini, applying the profile's inclusive floor. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, `upsert_ats_boards`, and `record_ats_eligible_jobs` — `collect_candidates` calls these instead of looping the single-job methods. Since #183 the crawl stages and enqueues its postings through `merge_posting_batch`; a bounded `resolve_persist` consumer hands each job upsert the posting the merge resolved, so `job_hunter_upsert_job` no longer resolves one per listing. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time. `collect_candidates`'s canonical-resolution tail no longer uses them: it pays only for a job whose resolution actually changed something, and those jobs' writes are collected during the loop and flushed after it as one staged posting merge plus `upsert_logical_jobs`, `set_job_markets` and `needs_evaluation_bulk` — three PostgREST round trips per resolved job (1170.8s for 1,221 of them in run 34289288702) became four calls for the whole run. The loop records its outcomes in order and a single walk afterwards decides eligibility, so deferring the writes cannot reorder what the run delivers. A job already on a supported ATS URL resolves to what it already was and writes nothing at all (#160): its row, market, board and `needs_evaluation` answer all come from the batched phases, and `discovery.py::_resolution_fingerprint` is what tells the two cases apart — a future resolution step that mutates another stored field must be added there or its change will not be written. Board registration left the tail with #160 (batched through `upsert_ats_boards`, so no board is registered twice in a run) and eligibility recording left it with #151. Those jobs still bypass the `max_canonical_resolutions_per_run` shortlist, which bounds network resolutions only. New bulk work should use the batch methods rather than looping the single-job ones.
 - `src/job_hunter/ai/` — the AI provider port (#73). `port.py` holds the vocabulary core
   modules are allowed to know: `AIProvider`, `CallClass` (who funds a call and whether its

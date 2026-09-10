@@ -74,6 +74,13 @@ from the advertisement and never from the user who found it. It carries what the
 advertisement says and how it was fetched; where two users hold different text for it,
 the higher content confidence wins.
 
+**Closed** — a posting a freshness re-check found gone: its page answered 404 or 410 or
+states it is closed, or its ATS board no longer lists it (#186). A closed posting is never
+delivered and never read for facets, but keeps its row, text and facets for anything
+already pointing at it. Its employer's own ATS board listing it again reopens it; an
+aggregator still listing it does not. Failing to reach a page is not evidence of closure. Prefer this to "expired", which implies a timer, and to
+"deleted", which it is not.
+
 **Job** — one user's membership of a posting, in `job_hunter_jobs`, pointing at it through
 `posting_id`. It says nothing about the advertisement and carries only what is that user's:
 which market it was attributed to, where it sits in their funnel, when they first and last
