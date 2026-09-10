@@ -23,12 +23,17 @@ Target direction:
 Migration rules:
 1. **Postgres is the persistence layer.** The shared Supabase project lives at the repository
    root under `supabase/`; its migrations define Job Hunter's tables (`public.job_hunter_*`, see
-   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and twenty-seven
+   `supabase/migrations/202609060002_job_hunter_discovery_state.sql`) and thirty-two
    SQL functions — all `security invoker` except `job_hunter_get_provider_credentials`,
    `job_hunter_merge_postings`, `job_hunter_merge_jobs`, `job_hunter_collapse_job_rows`,
-   `job_hunter_upsert_job` and `job_hunter_find_job_by_identity`, which are
-   `security definer`; of those, only the credential retrieval and the identity read are
-   reachable by `authenticated`, and neither writes anything (#179) — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
+   `job_hunter_upsert_job`, `job_hunter_find_job_by_identity` and
+   `job_hunter_posting_display_credit`, which are `security definer`; of those, only the
+   credential retrieval, the identity read and the display-credit read are reachable by
+   `authenticated`, and none of the three writes anything (#179, #184). Neither count is
+   maintained by hand: `supabase/tests/pgtap/job_hunter_store_functions.sql` pins the
+   exact function set and `job_hunter_shared_writes.sql` the definer functions
+   `authenticated` may execute, and both fail when one is added, so update this sentence
+   when they do — sixteen of them from three migrations (`supabase/migrations/202609060004_job_hunter_store_functions.sql`,
    `supabase/migrations/202609070003_job_hunter_batch_discovery_writes.sql`, and
    `supabase/migrations/20260907104935_job_hunter_gmail_candidate_eligibility.sql`, which drops
    `job_hunter_unmaterialized_inbound_jobs` and adds `job_hunter_gmail_candidate_complete` and
