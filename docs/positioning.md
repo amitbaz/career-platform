@@ -10,6 +10,12 @@ Read [marketing-and-brand.md](marketing-and-brand.md) first for the name, the pr
 visual direction. This document covers what we claim, how the product sounds, and what we
 charge.
 
+Read [research/beating-both.md](research/beating-both.md) alongside this. It sets out how we
+beat both known competitors, and several of its conclusions revise this document. **The
+competitor pricing below is stale.** As of 2026-09-10 caddie.careers charges £9.99 a
+*month*, not £6.99 a week ([research/caddie-careers-teardown.md](research/caddie-careers-teardown.md)),
+so the argument that €7.99 a week "matches rather than undercuts" them no longer holds.
+
 ## The proof gap, which constrains everything below
 
 Two columns. Anything in the right-hand column that reaches a landing page unlabelled is a

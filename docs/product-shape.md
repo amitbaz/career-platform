@@ -9,6 +9,11 @@ says what that app is, what survives the rewrite, and what it costs.
 Recommendations with reasoning, not options. **Founder's call** marks the few that need his
 taste.
 
+Read [research/beating-both.md](research/beating-both.md) alongside this. Its conclusions
+sharpen the spine below. #80 is the join between inbox outcomes and `opportunities`. The
+coach rebuild's first feature is the interview-invitation trigger, which builds preparation
+from the application actually sent.
+
 ## The finding that decides the shape
 
 **There are two application trackers in this repository and neither knows the other exists.**
