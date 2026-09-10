@@ -1356,6 +1356,127 @@ def test_has_delivery_filters_by_type(store):
     assert store.has_delivery(job_id) is True
 
 
+def test_delivered_job_ids_is_the_bulk_form_of_has_delivery(store):
+    delivered = Job(source="x", source_job_id=f"delivered-{uuid.uuid4()}", title="Engineer")
+    undelivered = Job(source="x", source_job_id=f"undelivered-{uuid.uuid4()}", title="Engineer")
+    delivered_id, _, _ = store.upsert_job(delivered)
+    undelivered_id, _, _ = store.upsert_job(undelivered)
+    store.mark_delivered(delivered_id, "telegram_message")
+
+    result = store.delivered_job_ids([delivered_id, undelivered_id], "telegram_message")
+
+    assert result == {delivered_id}
+
+
+def test_delivered_job_ids_of_empty_list_is_empty(store):
+    assert store.delivered_job_ids([], "telegram_message") == set()
+
+
+def test_get_evaluations_bulk_returns_each_jobs_latest_evaluation(store):
+    job_a = Job(source="x", source_job_id=f"bulk-a-{uuid.uuid4()}", title="Engineer")
+    job_b = Job(source="x", source_job_id=f"bulk-b-{uuid.uuid4()}", title="Engineer")
+    job_a_id, _, _ = store.upsert_job(job_a)
+    job_b_id, _, _ = store.upsert_job(job_b)
+    store.save_evaluation(job_a_id, _evaluation(job_a_id, total_score=70))
+    # A second save on the same job must win over the first (latest, not
+    # merely present) -- the same guarantee `get_evaluation` makes per job.
+    store.save_evaluation(job_a_id, _evaluation(job_a_id, total_score=91))
+    store.save_evaluation(job_b_id, _evaluation(job_b_id, total_score=55))
+
+    result = store.get_evaluations_bulk([job_a_id, job_b_id])
+
+    assert set(result) == {job_a_id, job_b_id}
+    assert result[job_a_id].total_score == 91
+    assert result[job_b_id].total_score == 55
+
+
+def test_get_evaluations_bulk_omits_a_job_with_no_evaluation(store):
+    evaluated = Job(source="x", source_job_id=f"has-eval-{uuid.uuid4()}", title="Engineer")
+    unevaluated = Job(source="x", source_job_id=f"no-eval-{uuid.uuid4()}", title="Engineer")
+    evaluated_id, _, _ = store.upsert_job(evaluated)
+    unevaluated_id, _, _ = store.upsert_job(unevaluated)
+    store.save_evaluation(evaluated_id, _evaluation(evaluated_id))
+
+    result = store.get_evaluations_bulk([evaluated_id, unevaluated_id])
+
+    assert set(result) == {evaluated_id}
+
+
+def test_get_evaluations_bulk_of_empty_list_is_empty(store):
+    assert store.get_evaluations_bulk([]) == {}
+
+
+def test_posting_display_credit_is_none_for_a_source_with_no_obligation(
+    store, seed_postings
+):
+    (posting_id,) = seed_postings(
+        [
+            {
+                "source": f"no-credit-source-{uuid.uuid4().hex[:8]}",
+                "source_job_id": None,
+                "fingerprint": f"no-credit-{uuid.uuid4().hex[:8]}",
+                "url": "https://example.test/no-credit",
+                "canonical_url": "https://example.test/no-credit",
+                "company": "Acme",
+                "title": "Engineer",
+                "description_hash": "",
+                "content_confidence": "official_ats",
+                "first_seen_at": "2026-01-01T00:00:00Z",
+                "last_seen_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
+
+    assert store.posting_display_credit(posting_id) is None
+
+
+def test_posting_display_credit_reads_the_sources_obligation(
+    store, seed_postings, ingestion_database
+):
+    source_key = f"licensed-source-{uuid.uuid4().hex[:8]}"
+    (posting_id,) = seed_postings(
+        [
+            {
+                "source": source_key,
+                "source_job_id": None,
+                "fingerprint": f"credit-{uuid.uuid4().hex[:8]}",
+                "url": "https://example.test/credit",
+                "canonical_url": "https://example.test/credit",
+                "company": "Acme",
+                "title": "Engineer",
+                "description_hash": "",
+                "content_confidence": "official_ats",
+                "first_seen_at": "2026-01-01T00:00:00Z",
+                "last_seen_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
+    with ingestion_database.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "insert into public.job_hunter_sources (source_key, kind, display_credit) "
+                "values (%s, 'licensed', %s::jsonb) "
+                "on conflict (source_key) do update set display_credit = excluded.display_credit",
+                (
+                    source_key,
+                    '{"required": true, "text": "Jobs by Acme Feed", '
+                    '"link_text": "Jobs", "link_url": "https://acme.test/jobs", '
+                    '"badge_url": "https://acme.test/logo.png", "badge_min_px": [116, 23]}',
+                ),
+            )
+
+    credit = store.posting_display_credit(posting_id)
+
+    assert credit == {
+        "required": True,
+        "text": "Jobs by Acme Feed",
+        "link_text": "Jobs",
+        "link_url": "https://acme.test/jobs",
+        "badge_url": "https://acme.test/logo.png",
+        "badge_min_px": [116, 23],
+    }
+
+
 #: An arbitrary delivery floor for the tests below. Scores are written
 #: relative to it (`_FLOOR - 1` is withheld, `_FLOOR` is delivered) so the
 #: inclusive boundary is visible without hunting for a bare literal.

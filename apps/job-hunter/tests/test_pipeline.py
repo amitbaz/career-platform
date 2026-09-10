@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import job_hunter.ai.retry
+import job_hunter.matching
 import job_hunter.pipeline
+from tests.conftest import insert_search_profile as _insert_search_profile
 from job_hunter.ai import CallClass
 from job_hunter.ai.gemini import build_gemini_provider
 from job_hunter.ai.usage import (
@@ -607,6 +610,15 @@ def settings(policy):
     )
 
 
+@pytest.fixture(autouse=True)
+def _use_default_search_profile(default_search_profile):
+    """Opt this whole file into `conftest.default_search_profile` (#187,
+    #188): every test here that touches `store`/`other_store` runs
+    `run_pipeline` end-to-end and needs `job_hunter_match_jobs` to have
+    something to rank against.
+    """
+
+
 def test_canonical_search_sites_keeps_original_filter_order():
     # _CANONICAL_SEARCH_SITES is generated from SUPPORTED_ATS_HOSTS and goes
     # verbatim into a public search query, where reordering OR terms can move
@@ -640,6 +652,32 @@ def test_pipeline_delivers_strong_match_and_dedupes_within_run(store, settings):
     source2 = FakeSource([strong_job])
     run_pipeline(settings, sources=[source2], store=store, ai=gemini, telegram=telegram)
     assert gemini.eval_calls == 1
+
+
+def test_a_display_credit_read_failure_does_not_cost_the_job_its_digest_slot(
+    store, settings, monkeypatch
+):
+    """`posting_display_credit` is metadata about how a digest item is shown,
+
+    not whether an already-scored, already-persisted job belongs in it: a
+    transient RPC error there must not fall through to the per-job
+    `except Exception` and drop the job from today's digest."""
+    job = _job()
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    def _raise(posting_id):
+        raise RuntimeError("display credit RPC unavailable")
+
+    monkeypatch.setattr(store, "posting_display_credit", _raise)
+
+    summary = run_pipeline(
+        settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram
+    )
+
+    assert summary.ready_to_apply == 1
+    assert summary.errors == 0
+    assert len(telegram.messages) == 1
 
 
 def test_every_pipeline_call_declares_the_user_subjective_class(store, settings):
@@ -1331,7 +1369,7 @@ def test_pipeline_marks_evaluation_attempted_but_not_evaluated_on_failure(
         raise RuntimeError("gemini evaluation exploded")
 
     monkeypatch.setattr(
-        "job_hunter.pipeline.evaluate_job",
+        "job_hunter.matching.evaluate_job",
         raise_evaluation_failure,
         raising=False,
     )
@@ -1745,6 +1783,9 @@ def test_pipeline_passes_loaded_preferences_into_discovery(store, settings, monk
 
 
 def test_pipeline_defers_evaluation_when_budget_exceeded(store, settings):
+    # Since #188 there is no separate pending-evaluation queue: a deferred
+    # job simply has no stored evaluation, so the next run's SQL ranking
+    # surfaces it again unresolved and it is retried naturally.
     job = _job()
     gemini = RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded())
     telegram = FakeTelegram()
@@ -1753,12 +1794,17 @@ def test_pipeline_defers_evaluation_when_budget_exceeded(store, settings):
 
     job_id, _, _ = store.upsert_job(job)
     assert store.get_evaluation(job_id) is None
-    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")] == [job_id]
     assert summary.errors == 0
     assert summary.skipped == 0
     assert summary.possible_matches == 0
     assert summary.ready_to_apply == 0
     assert telegram.messages == []
+
+    # The retry is implicit: a later run with a working key evaluates it.
+    run_pipeline(
+        settings, sources=[FakeSource([job])], store=store, ai=FakeGemini(), telegram=FakeTelegram()
+    )
+    assert store.get_evaluation(job_id) is not None
 
 
 def test_pipeline_defers_evaluation_when_quota_paused(store, settings):
@@ -1770,7 +1816,6 @@ def test_pipeline_defers_evaluation_when_quota_paused(store, settings):
 
     job_id, _, _ = store.upsert_job(job)
     assert store.get_evaluation(job_id) is None
-    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")] == [job_id]
     assert summary.errors == 0
     assert summary.skipped == 0
 
@@ -1803,7 +1848,7 @@ def test_pipeline_waits_and_retries_when_gemini_capacity_is_temporary(
     sleeps = []
 
     monkeypatch.setattr(
-        job_hunter.pipeline.time,
+        job_hunter.ai.retry.time,
         "sleep",
         lambda seconds: sleeps.append(seconds),
     )
@@ -1820,7 +1865,6 @@ def test_pipeline_waits_and_retries_when_gemini_capacity_is_temporary(
 
     assert sleeps == [2.5]
     assert store.get_evaluation(job_id) is not None
-    assert store.list_pending_ai_work("job_evaluation") == []
     assert summary.ready_to_apply == 1
     assert gemini.eval_calls == 1
 
@@ -1835,18 +1879,32 @@ def test_pipeline_defers_remaining_candidates_after_first_quota_exception(store,
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
     evaluated = [job_id for job_id in job_ids if store.get_evaluation(job_id) is not None]
-    pending = {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
 
     assert len(evaluated) == 1
-    assert pending == set(job_ids) - set(evaluated)
     # The blocked jobs were deferred directly, without a second wasted Gemini attempt.
     assert gemini.eval_calls == 1
 
 
 def test_pipeline_retries_pending_evaluation_before_new_candidates(store, settings):
+    # Since #188 there is no priority queue favouring the older deferred job
+    # by recency: `matching.match_jobs` re-ranks the whole corpus every call,
+    # so whichever row the SQL ranking puts first wins a scarce evaluation
+    # slot. "Deferred Co" sorts ahead of "Fresh Co" in that ranking's
+    # company/title tie-break when both jobs otherwise score identically,
+    # which is what makes the older job win here -- alphabetical rank order,
+    # not insertion order.
     old_job = _job(source_job_id="deferred-job", company="Deferred Co")
+    # Run 1: read the old job's facets and leave it deferred (unevaluated) --
+    # simulating a prior run that ran out of budget on it.
+    run_pipeline(
+        settings,
+        sources=[FakeSource([old_job])],
+        store=store,
+        ai=RaisingGemini(raise_on_purpose="job_evaluation", exception=_budget_exceeded()),
+        telegram=FakeTelegram(),
+    )
     old_job_id, _, _ = store.upsert_job(old_job)
-    store.enqueue_ai_work("job_evaluation", old_job_id)
+    assert store.get_evaluation(old_job_id) is None
 
     new_job = _job(source_job_id="fresh-job", company="Fresh Co")
     # Only one job_evaluation call is allowed this run.
@@ -1857,12 +1915,10 @@ def test_pipeline_retries_pending_evaluation_before_new_candidates(store, settin
 
     new_job_id, _, _ = store.upsert_job(new_job)
 
-    # The older, already-pending job wins the single available call...
+    # The older, still-unevaluated job wins the single available call...
     assert store.get_evaluation(old_job_id) is not None
-    # ...and the fresh candidate is deferred instead of evaluated, taking the
-    # older job's place in the pending queue.
+    # ...and the fresh candidate is deferred instead, to be retried next time.
     assert store.get_evaluation(new_job_id) is None
-    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")] == [new_job_id]
     assert gemini.eval_calls == 1
 
 
@@ -1902,9 +1958,12 @@ def test_pipeline_delivered_card_has_no_warning_for_a_normal_posting(store, sett
 
 
 def test_pipeline_retries_pending_evaluation_and_delivers_it(store, settings):
+    # Since #188 a job simply left unevaluated (no queue row needed) is
+    # picked up and scored the next time `run_pipeline` runs, as long as it
+    # already has facets to score against.
     job = _job()
     job_id, _, _ = store.upsert_job(job)
-    store.enqueue_ai_work("job_evaluation", job_id)
+    store.save_job_facets(job_id, _stored_facets())
 
     gemini = FakeGemini()
     telegram = FakeTelegram()
@@ -1912,18 +1971,19 @@ def test_pipeline_retries_pending_evaluation_and_delivers_it(store, settings):
     summary = run_pipeline(settings, sources=[FakeSource([])], store=store, ai=gemini, telegram=telegram)
 
     assert store.get_evaluation(job_id) is not None
-    assert store.list_pending_ai_work("job_evaluation") == []
     assert summary.ready_to_apply == 1
     assert len(telegram.messages) == 1
     assert len(telegram.documents) == 0
 
 
 def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(store, settings):
-    """A crash between save_evaluation and complete_ai_work can leave an
+    """A job already evaluated and delivered must never be re-spent or
 
-    already-evaluated-and-delivered job's `job_evaluation` row stuck pending.
-    A later run must not re-spend Gemini or re-deliver duplicates for it --
-    it should just clear the stale row.
+    re-delivered by a later run. Since #188 there is no separate pending-work
+    row to go stale: `matching.match_jobs` excludes an already-delivered,
+    already-evaluated job outright (its first check, before any model call),
+    so this is a property of the ordinary steady state rather than a crash
+    window to simulate.
     """
     job = _job()
     gemini = FakeGemini()
@@ -1939,14 +1999,8 @@ def test_pipeline_ignores_stale_pending_evaluation_for_already_delivered_job(sto
     assert len(telegram.documents) == 0
     assert gemini.eval_calls == 1
 
-    # Simulate the crash window: the queue row survives even though the job
-    # was already fully evaluated and delivered.
-    store.enqueue_ai_work("job_evaluation", job_id)
-
-    # Run 2: no new candidates, only the stale pending row to process.
+    # Run 2: same job still in the corpus, nothing new discovered.
     run_pipeline(settings, sources=[FakeSource([])], store=store, ai=gemini, telegram=telegram)
-
-    assert store.list_pending_ai_work("job_evaluation") == []
     # Zero wasted Gemini evaluation calls...
     assert gemini.eval_calls == 1
     # ...and zero duplicate deliveries.
@@ -2159,9 +2213,7 @@ def test_pipeline_defers_all_evaluations_when_context_load_is_quota_blocked(stor
     summary = run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram)
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
-    pending = {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
 
-    assert pending == set(job_ids)
     assert all(store.get_evaluation(job_id) is None for job_id in job_ids)
     assert summary.errors == 0
     assert summary.skipped == 0
@@ -2209,7 +2261,7 @@ def test_pipeline_caps_evaluations_at_diverse_shortlist_budget(store, settings, 
     assert "selected sources: ashby=60 remotive=40" in caplog.text
     assert (
         "evaluation_capacity selected=100 evaluated=100 blocked_by_facets=0 "
-        "deferred_by_budget=100 quota_deferred=0"
+        "deferred_by_budget=100"
     ) in caplog.text
 
 
@@ -2226,9 +2278,13 @@ def test_pipeline_delivers_at_most_the_daily_offer_limit(store, settings, limit)
 
     assert summary.ready_to_apply == limit
     assert _digest_offer_count(telegram.messages[0]) == limit
-    # The cap is the run's budget, not a filter at the end: evaluation stops
-    # once the user has their offers, so the Gemini spend falls with it.
-    assert gemini.eval_calls == limit
+    # Since #188 the cap bounds delivery, not scoring: `matching.match_jobs`
+    # scores every ranked candidate up to `max_jobs_per_run` regardless of
+    # how many already qualify as offers, and the caller applies the cap to
+    # the results afterward. Gemini spend therefore tracks the pool size
+    # (`limit + 8` jobs), not the cap -- the accepted cost/consistency
+    # trade-off from the #188 design doc, not an early-stop optimization.
+    assert gemini.eval_calls == limit + 8
 
 
 def test_pipeline_delivers_the_highest_ranked_offers_when_the_cap_bites(store, settings):
@@ -2281,11 +2337,15 @@ def test_pipeline_delivers_what_it_found_when_the_pool_is_smaller_than_the_cap(s
 
 
 def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settings):
-    """A run that keeps rejecting candidates keeps going until it has the cap.
+    """The cap still gates delivery even though every candidate gets scored.
 
     The cap counts what reaches the user, so a `skip` costs an evaluation but
-    no delivery budget -- otherwise a day of poor candidates would deliver
-    almost nothing while still reporting the cap as met.
+    no delivery budget -- ready_to_apply stops at the cap regardless of how
+    many more offers scoring turns up behind it. Since #188 scoring itself no
+    longer stops at the cap (`matching.match_jobs` scores the whole ranked
+    pool up to `max_jobs_per_run`, and the caller applies the cap to the
+    results afterward), so all 20 jobs are evaluated rather than only the
+    nine it used to take to find five offers.
     """
     settings.policy.daily_offer_limit = 5
     jobs = _jobs_for_source("ashby", 20)
@@ -2296,13 +2356,13 @@ def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settin
         settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
-    # Every other candidate scores about 30 -- below the `possible` rung,
-    # so a decision-ladder skip rather than a job the floor took away.
-    # Reaching five offers costs nine evaluations rather than five.
+    # Every other candidate scores about 30 -- below the `possible` rung, so
+    # a decision-ladder skip rather than a job the floor took away. Ten of
+    # the twenty alternate to an offer; the cap lets five of them through.
     assert summary.ready_to_apply == 5
-    assert summary.skipped == 4
+    assert summary.skipped == 10
     assert summary.withheld_by_score_floor == 0
-    assert gemini.eval_calls == 9
+    assert gemini.eval_calls == 20
 
 
 def test_pipeline_does_not_spend_the_cap_on_offers_below_the_match_score_floor(store, settings):
@@ -2513,6 +2573,18 @@ def test_pipeline_logs_the_match_score_floor_and_withheld_count(store, settings,
 
 
 def test_pipeline_leaves_candidates_beyond_the_cap_for_the_next_run(store, settings):
+    """Cap-deferred candidates reach the user the next call, still capped.
+
+    Since #188 a cap-deferred candidate is not "simply unevaluated" the way
+    it was before -- `matching.match_jobs` scores the whole ranked pool up
+    to `max_jobs_per_run` regardless of the cap, so all twelve get scored
+    and persisted in the first call, five delivered and seven withheld only
+    by the cap. The second call reuses those seven (evaluated, undelivered)
+    rather than re-scoring them -- `gemini.eval_calls` stays at twelve, not
+    twenty-two -- and the cap still bounds what reaches the digest: five of
+    the seven go out, two wait for a third call. The run reports zero
+    *fresh* offers, since nothing new was scored.
+    """
     settings.policy.daily_offer_limit = 5
     jobs = _jobs_for_source("ashby", 12)
     gemini = FakeGemini()
@@ -2523,17 +2595,17 @@ def test_pipeline_leaves_candidates_beyond_the_cap_for_the_next_run(store, setti
     )
 
     first_run_companies = _digest_companies(telegram.messages[0])
-    # Cap-deferred candidates are not queued work: they are simply unevaluated
-    # and get ranked again tomorrow, like anything else discovery finds.
-    assert store.list_pending_ai_work("job_evaluation") == []
+    assert len(first_run_companies) == 5
 
     summary = run_pipeline(
         settings, sources=[FakeSource(jobs)], store=store, ai=gemini, telegram=telegram
     )
 
     second_run_companies = _digest_companies(telegram.messages[1])
-    assert summary.ready_to_apply == 5
-    assert gemini.eval_calls == 10
+    # Nothing new was scored -- everything reused from the first call.
+    assert summary.ready_to_apply == 0
+    assert gemini.eval_calls == 12
+    assert len(second_run_companies) == 5
     assert not (first_run_companies & second_run_companies)
 
 
@@ -2549,11 +2621,14 @@ def test_pipeline_logs_the_offer_cap_and_what_it_deferred(store, settings, caplo
         )
 
     # Deferred by the cap is kept apart from deferred by the ranking budget:
-    # they answer different questions about a short digest.
+    # they answer different questions about a short digest. Since #188 every
+    # ranked candidate is scored eagerly (bounded by max_jobs_per_run, not
+    # the offer cap), so all 9 postings get evaluated even though only 5
+    # are delivered.
     assert (
-        "evaluation_capacity selected=9 evaluated=5 blocked_by_facets=0 "
+        "evaluation_capacity selected=9 evaluated=9 blocked_by_facets=0 "
         "deferred_by_budget=0 "
-        "quota_deferred=0 daily_offer_limit=5 delivered_offers=5 "
+        "daily_offer_limit=5 delivered_offers=5 "
         "deferred_by_offer_cap=4"
     ) in caplog.text
 
@@ -2815,8 +2890,8 @@ def test_pipeline_sends_exactly_one_warning_despite_many_locally_blocked_calls(s
     run_pipeline(settings, sources=[FakeSource(jobs)], store=store, ai=gemini, usage=usage, telegram=telegram)
 
     job_ids = [store.upsert_job(job)[0] for job in jobs]
-    pending = {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
-    assert len(pending) == 4  # confirms many calls were in fact locally blocked
+    unevaluated = [job_id for job_id in job_ids if store.get_evaluation(job_id) is None]
+    assert len(unevaluated) == 4  # confirms many calls were in fact locally blocked
 
     expected_warning = build_ai_pause_warning(_usage_summary(internal_budget_exhausted=True))
     warning_occurrences = [msg for msg in telegram.messages if msg == expected_warning]
@@ -3088,7 +3163,7 @@ def test_pipeline_records_evaluation_against_survivor_when_job_merged_mid_run(
     discovered = _job()
     survivor_job = _job(source_job_id="job-survivor", title="Staff Product Engineer")
     merge = {}
-    real_evaluate = job_hunter.pipeline.evaluate_job
+    real_evaluate = job_hunter.matching.evaluate_job
 
     def evaluate_then_merge(job, *args, **kwargs):
         evaluation = real_evaluate(job, *args, **kwargs)
@@ -3103,7 +3178,7 @@ def test_pipeline_records_evaluation_against_survivor_when_job_merged_mid_run(
             merge["survivor"] = store.merge_jobs(survivor_id, duplicate_id)
         return evaluation
 
-    monkeypatch.setattr(job_hunter.pipeline, "evaluate_job", evaluate_then_merge)
+    monkeypatch.setattr(job_hunter.matching, "evaluate_job", evaluate_then_merge)
     telegram = FakeTelegram()
 
     summary = run_pipeline(
@@ -3196,7 +3271,7 @@ def test_pipeline_does_not_offer_a_job_merged_into_an_already_delivered_one(
     store.mark_delivered(delivered_id, "telegram_message", "msg-yesterday")
 
     merge = {}
-    real_evaluate = job_hunter.pipeline.evaluate_job
+    real_evaluate = job_hunter.matching.evaluate_job
 
     def evaluate_then_merge(job, *args, **kwargs):
         evaluation = real_evaluate(job, *args, **kwargs)
@@ -3205,7 +3280,7 @@ def test_pipeline_does_not_offer_a_job_merged_into_an_already_delivered_one(
             merge["survivor"] = store.merge_jobs(delivered_id, duplicate_id)
         return evaluation
 
-    monkeypatch.setattr(job_hunter.pipeline, "evaluate_job", evaluate_then_merge)
+    monkeypatch.setattr(job_hunter.matching, "evaluate_job", evaluate_then_merge)
     telegram = FakeTelegram()
 
     summary = run_pipeline(
@@ -3534,8 +3609,11 @@ def test_running_out_of_shared_budget_only_defers_the_unread_posting(store, sett
     assert summary.scoring_skipped_without_facets == 0
     assert summary.facet_extraction_failed == 0
     assert summary.errors == 0
-    # Deferred, not discarded: it is queued for the next run.
-    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
+    # Deferred, not discarded: with no facets, `matching.match_jobs` skips
+    # the row rather than scoring it, so it stays unevaluated and is
+    # reconsidered from the same rank position next run.
+    globex_id, _, _ = store.upsert_job(_job(source_job_id="job-2", company="Globex"))
+    assert store.get_evaluation(globex_id) is None
 
 
 def test_facet_extraction_is_bounded_per_run(store, settings):
@@ -3797,30 +3875,6 @@ def _seed_facets(store, job, **overrides):
     return job_id
 
 
-def _insert_search_profile(supabase_client, user_id, **overrides):
-    """A `job_hunter_search_profiles` row for this user (#187).
-
-    Without one, `job_hunter_match_jobs` has no profile to rank against and
-    returns nothing, so the run falls back to the pre-#187 Python ranking --
-    the same fallback a real deployment takes if the SQL call itself fails.
-    Inserting this row is what lets a test exercise the SQL path instead.
-    """
-    row = dict(
-        user_id=user_id,
-        timezone="Europe/Berlin",
-        scheduled_hour=9,
-        max_jobs_per_run=35,
-        source_minimum_per_run=0,
-        source_max_share=0.5,
-        salary_floor_eur=90000,
-        max_search_queries_per_run=30,
-        max_canonical_resolutions_per_run=80,
-        max_learned_ats_boards_per_run=75,
-    )
-    row.update(overrides)
-    supabase_client.insert("job_hunter_search_profiles", [row])
-
-
 def test_pay_below_the_users_floor_blocks_a_job_without_a_scoring_call(store, settings):
     job = _job()
     job_id = _seed_facets(
@@ -3847,9 +3901,10 @@ def test_pay_below_the_users_floor_blocks_via_sql_ranking_when_a_profile_exists(
     store, settings, policy, supabase_client, monkeypatch
 ):
     """AC1 (#187): with a search profile in place, ranking and hard blocking
-    both come from `job_hunter_match_jobs`, not from the Python originals --
-    `rank_jobs` and `_facet_decided_blockers` are patched to fail the test if
-    either is reached, so this only passes if the SQL path actually ran.
+    both come from `job_hunter_match_jobs`, not from `rank_jobs` -- the one
+    Python original left since #188, kept only as the logging-only fallback
+    when no profile exists at all. Patched to fail the test if reached, so
+    this only passes if the SQL path actually ran.
     """
     _insert_search_profile(
         supabase_client, supabase_client.user_id, salary_floor_eur=policy.salary_floor_eur
@@ -3858,13 +3913,7 @@ def test_pay_below_the_users_floor_blocks_via_sql_ranking_when_a_profile_exists(
     def _fail_rank_jobs(*args, **kwargs):
         raise AssertionError("rank_jobs was called; the SQL ranking should have run instead")
 
-    def _fail_facet_decided_blockers(*args, **kwargs):
-        raise AssertionError(
-            "_facet_decided_blockers was called; the SQL hard blockers should have run instead"
-        )
-
     monkeypatch.setattr("job_hunter.pipeline.rank_jobs", _fail_rank_jobs)
-    monkeypatch.setattr("job_hunter.pipeline._facet_decided_blockers", _fail_facet_decided_blockers)
 
     job = _job()
     job_id = _seed_facets(
@@ -4022,26 +4071,51 @@ def test_facets_that_disqualify_nothing_reach_scoring_unchanged(store, settings)
     assert store.get_evaluation(job_id).decision == "high_priority"
 
 
-def test_the_block_is_decided_against_this_users_own_floor(store, policy, settings):
+def test_the_block_is_decided_against_this_users_own_floor(
+    store, policy, settings, supabase_client
+):
     # The facts are shared; the floor is not. The same disclosed maximum is a
     # blocker under one profile and not under another, so the answer can never
     # be reused across users.
+    #
+    # Since #188 the floor blocking compares against is read from this user's
+    # `job_hunter_search_profiles` row (`job_hunter_match_jobs`, #187), not
+    # from the `settings.policy` object passed to `run_pipeline` in Python --
+    # both calls below share one user and one row, so the row has to be
+    # re-synced between them for the second call's floor to actually differ
+    # from the first's, exactly as a real profile edit between two runs would.
+    #
+    # A facet-decided block also costs nothing to redo, so #188's
+    # `matching.match_jobs` recomputes it fresh from the *current* profile on
+    # every call rather than trusting a stored decision forever -- otherwise
+    # a floor a user relaxed would leave old blocks stuck. `blocked_job`'s
+    # maximum stays below both floors so it is a genuine, still-blocked
+    # control; `scored_job`'s sits between them, blocked under the first
+    # profile and not the second, which is the actual thing this test
+    # checks.
     blocked_job = _job(source_job_id="job-blocked")
     scored_job = _job(source_job_id="job-scored", company="Globex")
+    stays_blocked = dict(
+        compensation=Compensation(
+            disclosed=True, currency="EUR", minimum=70000, maximum=80000, period="year"
+        )
+    )
     disclosed = dict(
         compensation=Compensation(
             disclosed=True, currency="EUR", minimum=90000, maximum=100000, period="year"
         )
     )
-    blocked_id = _seed_facets(store, blocked_job, **disclosed)
+    blocked_id = _seed_facets(store, blocked_job, **stays_blocked)
     scored_id = _seed_facets(store, scored_job, **disclosed)
 
     strict = dataclasses.replace(settings, policy=dataclasses.replace(policy, salary_floor_eur=120000))
     lenient = dataclasses.replace(settings, policy=dataclasses.replace(policy, salary_floor_eur=90000))
 
+    _insert_search_profile(supabase_client, supabase_client.user_id, salary_floor_eur=120000)
     strict_gemini = FakeGemini()
     run_pipeline(strict, sources=[FakeSource([blocked_job])], store=store,
                  ai=strict_gemini, telegram=FakeTelegram())
+    _insert_search_profile(supabase_client, supabase_client.user_id, salary_floor_eur=90000)
     lenient_gemini = FakeGemini()
     run_pipeline(lenient, sources=[FakeSource([scored_job])], store=store,
                  ai=lenient_gemini, telegram=FakeTelegram())
@@ -4332,7 +4406,6 @@ def test_an_exhausted_platform_allowance_defers_extraction_and_a_later_run_drain
     job_id, _, _ = store.upsert_job(job)
     assert store.get_job_facets(job_id) is None
     assert store.get_evaluation(job_id) is None
-    assert job_id in {row["job_id"] for row in store.list_pending_ai_work("job_evaluation")}
 
     # No user credential was used for extraction -- not on the exhausted path,
     # which is the branch on which borrowing one would be invisible.
@@ -4345,7 +4418,7 @@ def test_an_exhausted_platform_allowance_defers_extraction_and_a_later_run_drain
     assert "job_facets" not in _purposes_in(user_rows)
 
     # Exhaustion reads as exhaustion, not as a broken extractor.
-    assert "not read" in caplog.text
+    assert "facet extraction deferred" in caplog.text
     assert "facet extraction failed" not in caplog.text
 
     # The backlog drains on its own: the next run, with allowance, enriches the
@@ -4414,7 +4487,7 @@ def test_the_inline_read_gives_up_rather_than_waiting_out_a_shared_window(
     waiting -- so the read gives up its turn and the run finishes.
     """
     slept = []
-    monkeypatch.setattr(job_hunter.pipeline.time, "sleep", slept.append)
+    monkeypatch.setattr(job_hunter.ai.retry.time, "sleep", slept.append)
 
     class AlwaysFull(FakeGemini):
         def generate_text(self, prompt, *, call_class, purpose=None, **kwargs):
@@ -4863,9 +4936,7 @@ def test_a_run_without_the_privileged_connection_scores_and_delivers_what_exists
     run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=deferring,
                  telegram=FakeTelegram())
     job_id, _, _ = store.upsert_job(job)
-    assert [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")] == [
-        job_id
-    ]
+    assert store.get_evaluation(job_id) is None
 
     # A second job whose posting has moved on since it was read, so it needs a
     # fresh extraction the degraded run cannot store. Without this the test
@@ -4959,12 +5030,14 @@ def test_a_closed_posting_in_this_runs_crawl_is_not_scored_or_delivered(
 def test_a_deferred_evaluation_for_a_closed_posting_is_dropped_not_scored(
     store, settings, ingestion_database
 ):
-    """Issue #186. A job waiting on scoring quota whose posting closes in the
+    """Issue #186. A job left unevaluated whose posting closes in the
     meantime is gone, not deferred: scoring it would spend the user's key on
-    an advertisement nobody can apply to."""
+    an advertisement nobody can apply to. Since #188 `job_hunter_match_jobs`
+    excludes a closed posting from its ranking outright, so this is a
+    property of the SQL exclusion rather than anything `run_pipeline` has to
+    notice and skip itself."""
     job = _job(source_job_id=f"deferred-closed-{uuid.uuid4()}", company="Gone Co")
     job_id, _, _ = store.upsert_job(job)
-    store.enqueue_ai_work("job_evaluation", job_id)
     _close_posting_of(ingestion_database, job_id)
     gemini = FakeGemini()
     telegram = FakeTelegram()
@@ -4973,4 +5046,4 @@ def test_a_deferred_evaluation_for_a_closed_posting_is_dropped_not_scored(
 
     assert gemini.eval_calls == 0
     assert not store.has_delivery(job_id)
-    assert store.list_pending_ai_work("job_evaluation") == []
+    assert store.get_evaluation(job_id) is None

@@ -704,3 +704,54 @@ def other_store(
         ingestion_database,
         stage_queue_names=_clean_isolated_stage_queues,
     )
+
+
+def insert_search_profile(supabase_client, user_id, **overrides):
+    """Sync a `job_hunter_search_profiles` row for this user (#187, #188).
+
+    `job_hunter_match_jobs` -- the only ranking/blocking path since #188,
+    there is no Python fallback left -- inner-joins the caller's profile, so
+    with no row it returns nothing at all rather than an unblocked/unranked
+    default. Upserted (not inserted) so a test that wants a different value
+    for a second `run_pipeline` call -- same user, same row -- can call this
+    again rather than colliding on the unique `user_id`.
+    """
+    row = dict(
+        user_id=user_id,
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        max_jobs_per_run=35,
+        source_minimum_per_run=0,
+        source_max_share=0.5,
+        salary_floor_eur=90000,
+        max_search_queries_per_run=30,
+        max_canonical_resolutions_per_run=80,
+        max_learned_ats_boards_per_run=75,
+    )
+    row.update(overrides)
+    supabase_client.upsert("job_hunter_search_profiles", [row], on_conflict="user_id")
+
+
+@pytest.fixture
+def default_search_profile(request):
+    """Give the requesting test a `job_hunter_search_profiles` row for
+    `job_hunter_match_jobs` to rank against (#187, #188) -- with none, it
+    returns nothing at all, and there is no Python fallback left to catch
+    that (#188 removed it).
+
+    Not autouse: some tests (`test_store.py`'s own profile tests,
+    `test_matching.py`'s hand-rolled `.insert()`-based helper) need a fresh
+    user with *no* row, or manage the row themselves and would collide with
+    a default inserted ahead of them. A test file that runs `run_pipeline`
+    end-to-end and expects real matches back (`test_pipeline.py`,
+    `test_pipeline_navigator.py`) opts in with its own local autouse fixture
+    that requests this one -- see either file for the pattern. A test that
+    needs a non-default `salary_floor_eur` calls `insert_search_profile`
+    again itself; it upserts, so this default never collides with that.
+    """
+    if "store" in request.fixturenames:
+        supabase_client = request.getfixturevalue("supabase_client")
+        insert_search_profile(supabase_client, supabase_client.user_id)
+    if "other_store" in request.fixturenames:
+        other_supabase_client = request.getfixturevalue("other_supabase_client")
+        insert_search_profile(other_supabase_client, other_supabase_client.user_id)

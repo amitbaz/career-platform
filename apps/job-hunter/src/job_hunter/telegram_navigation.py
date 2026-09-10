@@ -63,6 +63,13 @@ def build_navigation_card(
 
     note_line = f"\nNote: {card.market_note}" if card.market_note else ""
     availability_line = f"\n{card.availability_note}" if card.availability_note else ""
+    # Text and link only, matching `telegram.py::_digest_line` -- a badge/logo
+    # is not renderable here either (#184, #188).
+    credit_line = (
+        f"\n{card.display_credit_text}: {card.display_credit_url}"
+        if card.display_credit_text and card.display_credit_url
+        else ""
+    )
     text = (
         f"{card.title}\n\n"
         f"Company: {card.company or 'Not specified'}\n"
@@ -70,6 +77,7 @@ def build_navigation_card(
         f"Match: {card.score}%"
         f"{note_line}"
         f"{availability_line}"
+        f"{credit_line}"
     )
 
     actions: list[dict[str, str]] = []

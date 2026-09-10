@@ -105,6 +105,13 @@ Competitor facts live in `docs/research/preproom-teardown.md` and
 changed between two reads a day apart. Re-fetch before quoting a competitor's price or
 feature, and update the teardown when it has changed.
 
+### Product surface
+
+Read `docs/product-shape.md` before touching the app/Telegram/digest boundary, delivery
+policy, or anything shaped like "what does the user see and decide." It records agreed
+direction plus an open-questions parking lot — check that section before starting related
+work, and add to it rather than losing an idea raised mid-task on something else.
+
 ### Memory (MemPalace)
 
 Cross-session memory lives in a MemPalace **shared-brain hub**, wing `career_platform` —

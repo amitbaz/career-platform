@@ -21,6 +21,7 @@ from job_hunter.models import (
     CandidateContext,
     CandidatePreferences,
     Compensation,
+    Evaluation,
     Job,
     MarketPolicy,
     SalaryPolicy,
@@ -157,6 +158,24 @@ def _posting_row(**overrides):
     return row
 
 
+def _evaluation(job_id, **overrides):
+    defaults = dict(
+        job_id=job_id,
+        total_score=75,
+        scores={},
+        decision="possible_match",
+        hard_blockers=[],
+        strengths=[],
+        gaps=[],
+        salary_note="",
+        location_note="",
+        rationale="",
+        model="gemini-test",
+    )
+    defaults.update(overrides)
+    return Evaluation(**defaults)
+
+
 def _insert_membership(supabase_client, user_id, posting_id, **overrides) -> str:
     row = dict(
         user_id=user_id,
@@ -191,7 +210,7 @@ def test_match_jobs_skips_a_facetless_row_and_never_calls_the_model(
     _insert_membership(supabase_client, user_id, posting_id)
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
 
     assert results == []
     assert ai.calls == 0
@@ -219,11 +238,12 @@ def test_match_jobs_scores_a_clean_facets_row(store, supabase_client, seed_posti
     store.save_job_facets(job_id, make_facets(compensation=Compensation()))
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
 
     assert ai.calls == 1
     assert len(results) == 1
     assert results[0].scored is True
+    assert results[0].fresh is True
     assert results[0].evaluation.model == ai.model
 
 
@@ -256,13 +276,225 @@ def test_match_jobs_blocks_on_facets_at_zero_cost(store, supabase_client, seed_p
     )
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
 
     assert ai.calls == 0
     assert len(results) == 1
     assert results[0].scored is False
+    assert results[0].fresh is True
     assert results[0].evaluation.decision == "blocked"
     assert results[0].evaluation.hard_blockers
+
+
+def test_match_jobs_isolates_one_rows_scoring_failure_from_the_rest(
+    store, supabase_client, seed_postings
+):
+    """#145's guarantee, carried into the operation: one bad row costs only
+
+    that row its turn, and is reported back rather than crashing the call."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    posting_ids = seed_postings(
+        [
+            _posting_row(
+                fingerprint=f"failing-{i}",
+                url=f"https://boards.greenhouse.io/acme/failing-{i}",
+                canonical_url=f"https://boards.greenhouse.io/acme/failing-{i}",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash=f"h-failing-{i}",
+            )
+            for i in range(2)
+        ]
+    )
+    for posting_id in posting_ids:
+        job_id = _insert_membership(supabase_client, user_id, posting_id)
+        store.save_job_facets(job_id, make_facets(compensation=Compensation()))
+
+    class FlakyAI(FakeAI):
+        def generate_text(self, *args, **kwargs):
+            if self.calls == 0:
+                self.calls += 1
+                raise RuntimeError("provider blew up")
+            return super().generate_text(*args, **kwargs)
+
+    ai = FlakyAI()
+    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+
+    assert len(result.matched) == 1
+    assert result.matched[0].fresh is True
+    assert len(result.failed_job_ids) == 1
+
+
+def test_match_jobs_stops_and_returns_what_it_has_on_quota_exhaustion(
+    store, supabase_client, seed_postings
+):
+    """A user-key exhaustion must not lose rows already decided in this call.
+
+    Every later row would fail identically (same key, no other claimant), so
+    the operation stops rather than raising past work away (#188)."""
+    from job_hunter.ai import AIBudgetExceeded
+
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    posting_ids = seed_postings(
+        [
+            _posting_row(
+                fingerprint=f"quota-{i}",
+                url=f"https://boards.greenhouse.io/acme/quota-{i}",
+                canonical_url=f"https://boards.greenhouse.io/acme/quota-{i}",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash=f"h-quota-{i}",
+            )
+            for i in range(3)
+        ]
+    )
+    job_ids = []
+    for posting_id in posting_ids:
+        job_id = _insert_membership(supabase_client, user_id, posting_id)
+        store.save_job_facets(job_id, make_facets(compensation=Compensation()))
+        job_ids.append(job_id)
+
+    class ExhaustingAI(FakeAI):
+        def generate_text(self, *args, **kwargs):
+            if self.calls == 1:
+                self.calls += 1
+                raise AIBudgetExceeded("user key exhausted")
+            return super().generate_text(*args, **kwargs)
+
+    ai = ExhaustingAI()
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+
+    assert ai.calls == 2
+    assert len(results) == 1
+    assert results[0].fresh is True
+    assert results[0].scored is True
+
+
+def test_match_jobs_skips_a_delivered_job_and_never_calls_the_model(
+    store, supabase_client, seed_postings
+):
+    """AC: previously-delivered jobs do not reappear, at zero cost (#188)."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    (posting_id,) = seed_postings(
+        [
+            _posting_row(
+                fingerprint="delivered",
+                url="https://boards.greenhouse.io/acme/delivered",
+                canonical_url="https://boards.greenhouse.io/acme/delivered",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash="h-delivered",
+            )
+        ]
+    )
+    job_id = _insert_membership(supabase_client, user_id, posting_id)
+    store.save_job_facets(job_id, make_facets(compensation=Compensation()))
+    store.save_evaluation(job_id, _evaluation(job_id))
+    store.mark_delivered(job_id, "telegram_message")
+
+    ai = FakeAI()
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+
+    assert results == []
+    assert ai.calls == 0
+
+
+def test_match_jobs_reuses_an_evaluated_undelivered_job_without_calling_the_model(
+    store, supabase_client, seed_postings
+):
+    """AC: delivery failures do not affect what was matched (#188) -- an
+
+    evaluated-but-undelivered job is handed back as-is, not rescored."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    (posting_id,) = seed_postings(
+        [
+            _posting_row(
+                fingerprint="undelivered",
+                url="https://boards.greenhouse.io/acme/undelivered",
+                canonical_url="https://boards.greenhouse.io/acme/undelivered",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash="h-undelivered",
+            )
+        ]
+    )
+    job_id = _insert_membership(supabase_client, user_id, posting_id)
+    store.save_job_facets(job_id, make_facets(compensation=Compensation()))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=91))
+
+    ai = FakeAI()
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+
+    assert ai.calls == 0
+    assert len(results) == 1
+    assert results[0].job_id == job_id
+    assert results[0].fresh is False
+    assert results[0].scored is True  # the reused evaluation is the model's own answer
+    assert results[0].evaluation.total_score == 91
+
+
+def test_match_jobs_does_not_reuse_an_evaluation_whose_posting_has_since_changed(
+    store, supabase_client
+):
+    """A stored evaluation is only a cached model answer if the posting it
+
+    answered still reads the way it did when scored. `store.upsert_job` with
+    a changed description invalidates the facets row's
+    `description_hash_at_extraction` the same way it would for a fresh
+    extraction (`test_job_facets_store.py`); `match_jobs` must treat a job in
+    that state as `skipped_without_facets`, never as a row to reuse verbatim
+    -- reusing it would serve a score computed against text the posting no
+    longer carries, forever, since nothing after this call would ever
+    re-derive it."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    job = Job(
+        source="greenhouse",
+        title="Senior Backend Engineer",
+        company="Acme",
+        location="Berlin",
+        url="https://boards.greenhouse.io/acme/stale-facets",
+        description="kubernetes postgres",
+    )
+    job_id, _, _ = store.upsert_job(job)
+    store.save_job_facets(job_id, make_facets(compensation=Compensation()))
+    store.save_evaluation(job_id, _evaluation(job_id, total_score=91))
+
+    changed = Job(
+        source="greenhouse",
+        title="Senior Backend Engineer",
+        company="Acme",
+        location="Berlin",
+        url="https://boards.greenhouse.io/acme/stale-facets",
+        description="a materially different description",
+    )
+    same_id, _, description_changed = store.upsert_job(changed)
+    assert same_id == job_id
+    assert description_changed is True
+
+    ai = FakeAI()
+    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+
+    assert ai.calls == 0  # nothing trustworthy to score against either
+    assert result.matched == []
+    assert result.skipped_without_facets_job_ids == [job_id]
 
 
 def test_match_jobs_stops_at_limit(store, supabase_client, seed_postings):
@@ -289,7 +521,7 @@ def test_match_jobs_stops_at_limit(store, supabase_client, seed_postings):
         store.save_job_facets(job_id, make_facets(compensation=Compensation()))
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=2)
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=2).matched
 
     assert ai.calls == 2
     assert len(results) == 2

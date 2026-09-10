@@ -51,6 +51,25 @@ def test_build_navigation_card_first_and_last_do_not_wrap():
     assert parse_callback(last_keyboard[1][2]["callback_data"]) == ("x", "s", 2)
 
 
+def test_build_navigation_card_carries_a_sources_required_text_credit_and_link():
+    text, _ = build_navigation_card(
+        _card(
+            display_credit_text="Jobs by Acme Feed",
+            display_credit_url="https://acme.example/jobs",
+        ),
+        "s",
+        index=0,
+        total=1,
+    )
+    assert "Jobs by Acme Feed" in text
+    assert "https://acme.example/jobs" in text
+
+
+def test_build_navigation_card_carries_no_credit_line_for_a_source_with_no_obligation():
+    text, _ = build_navigation_card(_card(), "s", index=0, total=1)
+    assert "Jobs by" not in text
+
+
 def test_build_navigation_card_fallbacks_and_missing_url():
     text, keyboard = build_navigation_card(
         _card(company="", location="", url=""), "s", index=0, total=1

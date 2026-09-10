@@ -117,7 +117,7 @@ def test_discovery_reports_market_reattribution_from_query_hint_to_real_location
 
 
 def test_market_delivered_metric_counts_only_successful_telegram_delivery(
-    store, monkeypatch, caplog
+    store, supabase_client, monkeypatch, caplog
 ):
     policy = make_market_policy()
     policy.max_jobs_per_run = 1
@@ -145,8 +145,8 @@ def test_market_delivered_metric_counts_only_successful_telegram_delivery(
 
     monkeypatch.setattr("job_hunter.pipeline.get_candidate_context", lambda *a, **k: _context())
     monkeypatch.setattr(
-        "job_hunter.pipeline.evaluate_job",
-        lambda current_job, context, current_policy, gemini: Evaluation(
+        "job_hunter.matching.evaluate_job",
+        lambda current_job, facets, context, current_policy, gemini, company=None: Evaluation(
             job_id=0,
             total_score=70,
             scores={},
@@ -160,6 +160,14 @@ def test_market_delivered_metric_counts_only_successful_telegram_delivery(
             model="gemini-test",
             market_id=current_job.market_id or "",
         ),
+    )
+    supabase_client.upsert(
+        "job_hunter_search_profiles",
+        [{"user_id": supabase_client.user_id, "timezone": "Europe/Berlin", "scheduled_hour": 9,
+          "max_jobs_per_run": 35, "source_minimum_per_run": 0, "source_max_share": 0.5,
+          "salary_floor_eur": 0, "max_search_queries_per_run": 30,
+          "max_canonical_resolutions_per_run": 80, "max_learned_ats_boards_per_run": 75}],
+        on_conflict="user_id",
     )
 
     with caplog.at_level(logging.INFO):

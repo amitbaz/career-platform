@@ -1430,6 +1430,41 @@ class PostgresJobStore:
             return None
         return evaluation_from_row(rows[0])
 
+    def get_evaluations_bulk(self, job_ids: list[str]) -> dict[str, Evaluation]:
+        """The latest evaluation for many jobs at once (#188).
+
+        `matching.match_jobs` needs this for every row its SQL ranking
+        returns, to decide "already delivered", "evaluated but not
+        delivered" or "neither" without one `get_evaluation` round trip per
+        row. Ordered `job_id, then latest-first` so the first row seen per
+        `job_id` in the loop below is that job's most recent evaluation --
+        the same ordering `get_evaluation` applies per job, just requested
+        for the whole chunk in one call instead of one call per job.
+        """
+        unique_ids = list(dict.fromkeys(job_ids))
+        if not unique_ids:
+            return {}
+        found: dict[str, Evaluation] = {}
+        for chunk in _chunked(unique_ids, _URL_FILTER_CHUNK_SIZE):
+            rows = self._client.select(
+                "job_hunter_evaluations",
+                params={
+                    "job_id": f"in.({','.join(chunk)})",
+                    "select": (
+                        "job_id,total_score,scores_json,decision,hard_blockers_json,"
+                        "strengths_json,gaps_json,salary_note,location_note,rationale,"
+                        "model,status,market_id,content_confidence_at_eval,"
+                        "requirements_json,raw_model_score"
+                    ),
+                    "order": f"job_id.asc,{_LATEST_EVALUATION_ORDER}",
+                },
+            )
+            for row in rows:
+                job_id = row["job_id"]
+                if job_id not in found:
+                    found[job_id] = evaluation_from_row(row)
+        return found
+
     # ------------------------------------------------------------------
     # Objective facets
     # ------------------------------------------------------------------
@@ -1588,6 +1623,24 @@ class PostgresJobStore:
             return None
         return job_facets_from_row(rows[0])
 
+    def posting_display_credit(self, posting_id: str) -> dict[str, Any] | None:
+        """What a surface must display alongside this posting, or None (#184, read by #188).
+
+        Calls `job_hunter_posting_display_credit`, which is `security
+        definer` with no user parameter: the obligation belongs to the
+        posting's source, never to whoever is reading it, so nothing here
+        takes or forwards a `user_id`. `None` means the source imposes
+        nothing -- the SQL function's own `null` for an empty
+        `display_credit` object -- never "unknown".
+        """
+        rows = self._client.rpc(
+            "job_hunter_posting_display_credit",
+            {"p_posting_id": posting_id},
+        )
+        # A bare-scalar function always yields one element (`rpc`'s own
+        # contract) -- `[None]` for "no obligation", `[{...}]` for one.
+        return (rows[0] if rows else None) or None
+
     def match_jobs(
         self,
         *,
@@ -1638,9 +1691,7 @@ class PostgresJobStore:
         out entirely. Row-level security filters the first before this sees
         it, and neither has a shared row to read or write: reporting one as
         needing work would send the pipeline into a call whose result it
-        could not store. `pipeline._facets_for_scoring` asks this again for
-        the single job before it reads, so the absence here means "no work to
-        do" there rather than "read it anyway".
+        could not store.
         """
         unique_ids = list(dict.fromkeys(job_ids))
         if not unique_ids:
@@ -1939,6 +1990,30 @@ class PostgresJobStore:
             params["delivery_type"] = f"eq.{delivery_type}"
         rows = self._client.select("job_hunter_deliveries", params=params)
         return len(rows) > 0
+
+    def delivered_job_ids(self, job_ids: list[str], delivery_type: str) -> set[str]:
+        """Which of `job_ids` already have a delivery of `delivery_type` (#188).
+
+        The bulk sibling of `has_delivery`: `matching.match_jobs` asks this
+        once for every row its SQL ranking returned, so a corpus of
+        already-delivered history costs one request per chunk to skip
+        rather than one `has_delivery` round trip per row.
+        """
+        unique_ids = list(dict.fromkeys(job_ids))
+        if not unique_ids:
+            return set()
+        delivered: set[str] = set()
+        for chunk in _chunked(unique_ids, _URL_FILTER_CHUNK_SIZE):
+            rows = self._client.select(
+                "job_hunter_deliveries",
+                params={
+                    "job_id": f"in.({','.join(chunk)})",
+                    "delivery_type": f"eq.{delivery_type}",
+                    "select": "job_id",
+                },
+            )
+            delivered.update(row["job_id"] for row in rows)
+        return delivered
 
     def pending_delivery_job_ids(
         self,
@@ -4142,13 +4217,18 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         # SQL ranking and hard blocking over the caller's whole corpus (#187):
         # no write, so a dry run answers it exactly as a real run would.
         "match_jobs",
+        # The obligation a source imposes on a display surface (#184, read
+        # by #188): resolved from the posting's source, writes nothing.
+        "posting_display_credit",
         "get_job",
         "needs_evaluation",
         "needs_evaluation_bulk",
         "get_evaluation",
+        "get_evaluations_bulk",
         "get_material",
         "resolve_merged_job_id",
         "has_delivery",
+        "delivered_job_ids",
         "pending_delivery_job_ids",
         "closed_job_ids",
         "get_company_watch",

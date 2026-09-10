@@ -9,7 +9,7 @@
 -- RLS still scopes everything to the caller.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(17);
+select plan(20);
 
 -- Seed users ------------------------------------------------------------------
 
@@ -85,6 +85,40 @@ values
    'we use kubernetes and postgres every day', 'h-thin', 'partial_unknown',
    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
+-- Closed posting (issue #186): a freshness re-check found it gone. #188's
+-- fix is that this row must never reach job_hunter_match_jobs's results at
+-- all, since the caller can no longer be trusted to filter it out itself.
+insert into public.job_hunter_postings
+  (id, fingerprint, source, source_job_id, url, canonical_url,
+   company, title, location, remote, description, description_hash, content_confidence,
+   closed_at, closed_reason, first_seen_at, last_seen_at)
+values
+  ('c1000000-0000-0000-0000-000000000006', 'match-fp-closed',
+   'greenhouse', 'g-6', 'https://boards.greenhouse.io/acme/jobs/6', 'https://boards.greenhouse.io/acme/jobs/6',
+   'Acme', 'Senior Backend Engineer', 'Berlin', true,
+   'we use kubernetes and postgres every day', 'h-closed', 'official_ats',
+   now(), 'http_404', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+-- Rejected/closed membership rows (issue #188): two open postings, otherwise
+-- identical to the clean/scoreable fixture above, whose *membership* row
+-- (not the posting) carries a non-default status -- prefilter's own verdict
+-- (`discovery.py`'s `set_job_statuses`), never a fact about the posting.
+insert into public.job_hunter_postings
+  (id, fingerprint, source, source_job_id, url, canonical_url,
+   company, title, location, remote, description, description_hash, content_confidence,
+   first_seen_at, last_seen_at)
+values
+  ('c1000000-0000-0000-0000-000000000007', 'match-fp-rejected',
+   'greenhouse', 'g-7', 'https://boards.greenhouse.io/acme/jobs/7', 'https://boards.greenhouse.io/acme/jobs/7',
+   'Acme', 'Senior Backend Engineer', 'Berlin', true,
+   'we use kubernetes and postgres every day', 'h-rejected', 'official_ats',
+   '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('c1000000-0000-0000-0000-000000000008', 'match-fp-membership-closed',
+   'greenhouse', 'g-8', 'https://boards.greenhouse.io/acme/jobs/8', 'https://boards.greenhouse.io/acme/jobs/8',
+   'Acme', 'Senior Backend Engineer', 'Berlin', true,
+   'we use kubernetes and postgres every day', 'h-membership-closed', 'official_ats',
+   '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
 insert into public.job_hunter_job_facets
   (posting_id, description_hash_at_extraction, seniority, remote_policy, relocation_policy,
    compensation_disclosed, compensation_currency, compensation_max, compensation_period, extracted_at)
@@ -117,7 +151,16 @@ values
   ('d1000000-0000-0000-0000-000000000004', 'aaaaaaaa-1111-0000-0000-000000000001',
    'c1000000-0000-0000-0000-000000000004', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
   ('d1000000-0000-0000-0000-000000000005', 'aaaaaaaa-1111-0000-0000-000000000001',
-   'c1000000-0000-0000-0000-000000000005', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+   'c1000000-0000-0000-0000-000000000005', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('d1000000-0000-0000-0000-000000000006', 'aaaaaaaa-1111-0000-0000-000000000001',
+   'c1000000-0000-0000-0000-000000000006', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+insert into public.job_hunter_jobs (id, user_id, posting_id, market_id, status, first_seen_at, last_seen_at)
+values
+  ('d1000000-0000-0000-0000-000000000007', 'aaaaaaaa-1111-0000-0000-000000000001',
+   'c1000000-0000-0000-0000-000000000007', '', 'rejected', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('d1000000-0000-0000-0000-000000000008', 'aaaaaaaa-1111-0000-0000-000000000001',
+   'c1000000-0000-0000-0000-000000000008', '', 'closed', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
 -- Behaviour ---------------------------------------------------------------------
 
@@ -194,6 +237,27 @@ select ok(
      p_preferred_roles => array['Backend Engineer'], p_must_have_signals => array['kubernetes', 'postgres']
    ) where job_id = 'd1000000-0000-0000-0000-000000000004'),
   'match_jobs: a matching title/signal set outscores an unrelated posting'
+);
+
+select is(
+  (select count(*) from public.job_hunter_match_jobs()
+    where job_id = 'd1000000-0000-0000-0000-000000000006'),
+  0::bigint,
+  'match_jobs: a membership row on a closed posting is excluded outright (#188)'
+);
+
+select is(
+  (select count(*) from public.job_hunter_match_jobs()
+    where job_id = 'd1000000-0000-0000-0000-000000000007'),
+  0::bigint,
+  'match_jobs: a membership row prefilter already rejected is excluded outright (#188)'
+);
+
+select is(
+  (select count(*) from public.job_hunter_match_jobs()
+    where job_id = 'd1000000-0000-0000-0000-000000000008'),
+  0::bigint,
+  'match_jobs: a membership row with status=closed is excluded outright (#188)'
 );
 
 -- Company preferences (#198) ----------------------------------------------------
