@@ -1,5 +1,8 @@
 # PRD Gap Analysis
 
+> **Legacy.** This audits Relay, an early proof of concept that is not the base for the product.
+> The coach is designed fresh from [docs/product-vision.md](../../../docs/product-vision.md), D5.
+
 This document records the gaps between the current implementation and the approved POC PRD. It is an implementation audit, not a replacement for the PRD.
 
 ## P0 gaps

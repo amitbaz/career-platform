@@ -13,3 +13,26 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
 Edit the right-hand column to match whatever vocabulary you actually use.
+
+`needs-rewrite` is this repo's addition: the issue's direction changed, and it must be
+re-specified against `docs/product-vision.md` before anyone works on it.
+
+## Area labels
+
+Separate from triage state, every open issue carries exactly one area label (epics are
+exempt). `.github/workflows/issue-areas.yml` checks this daily.
+
+| Label             | What belongs there                                                                  |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| `area:ingestion`  | Sources, crawling, freshness, and enrichment of the shared corpus; the stages       |
+| `area:matching`   | Ranking, the why line, stack selection, learning from swipes and outcomes           |
+| `area:applying`   | Prepared applications, the bucket, submitting (D2, D8)                              |
+| `area:outcomes`   | What happened after applying: inbox, forwarding, check-ins, response rates (D3, D9) |
+| `area:coach`      | Interview preparation and the user's story set (D5)                                 |
+| `area:app`        | The mobile app and its desktop helper                                               |
+| `area:platform`   | Infrastructure, QA, security, database and repository hygiene                       |
+| `area:business`   | Launch, pricing, legal and commercial posture                                       |
+
+When an issue straddles two areas, label it with the area whose code or decision it changes
+first, and link the other area's issue if one exists. If no area fits, ask the owner rather
+than inventing one.

@@ -5,6 +5,10 @@ title: ""
 labels: enhancement
 ---
 
+<!-- Add exactly one area:* label (ingestion, matching, applying, outcomes, coach, app,
+     platform, business) — see docs/agents/triage-labels.md. A daily check flags issues
+     without one. -->
+
 ## Summary
 
 <!-- What this adds and why it's worth doing. -->

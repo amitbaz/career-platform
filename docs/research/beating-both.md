@@ -7,6 +7,9 @@ This draws conclusions from [preproom-teardown.md](preproom-teardown.md) and
 document is the argument. Recommendations are stated with their reasoning. **Founder's call**
 marks what needs the owner.
 
+The owner's decisions on these insights are recorded in
+[product-vision.md](../product-vision.md), which wins where the two disagree.
+
 ## The answer in one paragraph
 
 Both competitors stop before the job seeker's outcome is known. Caddie's product ends at "sent,
@@ -57,10 +60,11 @@ So the coach can open with: "They will ask about the three claims in your cover 
 is the story behind each, and here is where it is thin." Prep Room needs the user to paste
 the job description again and knows nothing of what they sent. Caddie has no coach.
 
-**This is wiring, not invention.** The pieces are the inbox classifier, `opportunities` with
-its `interview_scheduled` event, and `practice_plan_opportunities`, the bridge that
-[product-shape.md](../product-shape.md) found already modelled. **Recommendation: make the
-interview-invitation trigger the coach rebuild's first feature**, ahead of a question bank.
+**This is wiring, not invention.** The pieces are the inbox classifier, the application the
+user sent, and the coach ([product-vision.md](../product-vision.md), D5 and D9). Relay's
+`opportunities` and `practice_plan_opportunities` once modelled this bridge; nothing from Relay
+is kept, so the coach and its link to applications are designed fresh. **Recommendation: make
+the interview-invitation trigger the coach's first feature**, ahead of a question bank.
 
 ### 3. Evidence is the shared currency between applying and preparing
 
@@ -88,6 +92,10 @@ not fast. **For Strong matches, draft the application before notifying.** It is 
 packs are the expensive per-user unit, as both competitors' caps confirm. The measure is
 time from posting seen to application ready. That is the condition positioning.md wants #189
 to carry, extended from delivery to *ready*.
+
+**What was decided (2026-09-11):** drafting starts on the user's right swipe
+([product-vision.md](../product-vision.md), D2). Drafting before the card is shown was not
+discussed. The measure still holds: time from posting seen to application ready.
 
 ### 5. Honesty rules are table stakes; published proof is not
 
@@ -183,7 +191,7 @@ against positioning.md's five scored matches a day.
 | #80 (record applied jobs in the shared opportunities lifecycle) | **Becomes the strategic ticket.** It is the join between inbox outcomes and opportunities, and insights 1, 2 and 5 all rest on it |
 | #189 | Its latency measure should run to *application ready*, not just delivered |
 | #201 launch prerequisites | **Parked (founder, 2026-09-10).** Gmail restricted-scope verification and CASA go on #201 once the engine is strong enough, not now |
-| Coach rebuild ([product-shape.md](../product-shape.md), step 6) | The first feature is the interview-invitation trigger |
+| Coach ([product-vision.md](../product-vision.md), D5) | The first feature is the interview-invitation trigger |
 | [positioning.md](../positioning.md), pricing | Reopen against the €29 bundle anchor (founder's call); correct the stale Caddie figures regardless |
 | Matching | Adopt Caddie's disagreement signal and drop the title prefilter (Caddie teardown, "What to take", item 1) |
 

@@ -260,7 +260,7 @@ least have its competitor figures corrected.
 | Company angle | `company_facets.py` holds per-company facts | Facts exist; no angle distilled per application |
 | ATS-specific formatting | None | New |
 | Pack with an audit trail | Cover letter only (`cover_letter.py`, `pdf.py`) | No CV tailoring, no screening answers, no diff view |
-| Learning from skip, save and edit | None; "not interested teaches the ranking" is planned in [product-shape.md](../product-shape.md) moment 2 | New |
+| Learning from skip, save and edit | None; learning from swipes is decided in [product-vision.md](../product-vision.md), D4 | New |
 | Warm intro | None | New, and counsel first |
 | Interview preparation | Relay's adaptive coach and evidence model | **Ours.** They have nothing |
 

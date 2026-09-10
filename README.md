@@ -1,7 +1,12 @@
 # Career Platform
 
-Monorepo for the career platform: the **Job Hunter** Python service, the **Relay** Next.js
-web application, and the shared **Supabase** schema.
+Monorepo for the career platform: the **Job Hunter** Python service — the search-and-match
+engine, which is the product — the legacy **Relay** Next.js proof of concept, and the shared
+**Supabase** schema.
+
+What the product is and where it is going: [docs/product-vision.md](docs/product-vision.md).
+Relay is not the base for the product. It stays deployed only because the engine reads the
+user's CV, cover letter and provider keys from its Profile screen.
 
 This repository is the canonical home for platform work. It replaces the standalone
 `amitbaz/job-hunter-bot` and `amitbaz/interviewer-app` repositories, whose Git history was
@@ -75,6 +80,9 @@ Both apps deploy from this repository as separate Vercel projects. Each project'
 | -------------- | ------------------ | ------------------------------------------------ |
 | Relay          | `apps/relay`       | Next.js; keep "Include files outside root directory" on so the workspace lockfile is used. |
 | Job Hunter     | `apps/job-hunter`  | Flask webhook via `apps/job-hunter/vercel.json`.  |
+
+The engine's ingestion and enrichment stages run as Render cron services defined in
+[`render.yaml`](render.yaml).
 
 The Telegram webhook dispatches GitHub workflows through `GITHUB_REPOSITORY`, which must now
 be set to `amitbaz/career-platform`.

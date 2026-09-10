@@ -1,6 +1,10 @@
 # Product Requirements Document
 ## AI Interview Coach — POC
 
+> **Legacy.** This is the requirements document for Relay, an early proof of concept that is not
+> the base for the product. The coach is designed fresh from
+> [docs/product-vision.md](../../../docs/product-vision.md), D5.
+
 **Status:** Approved for POC development  
 **Version:** 1.1  
 **Target:** Mobile-first web POC  

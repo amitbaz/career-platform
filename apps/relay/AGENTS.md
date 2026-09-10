@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+> **Legacy.** Relay is an early proof of concept and is not the base for the product: nothing
+> from it is kept, neither code nor schema ([product vision](../../docs/product-vision.md), D5).
+> It stays deployed only because the engine reads the user's CV, cover letter and provider keys
+> from its Profile screen. Do not build new product features here.
+
 ## Project Structure & Module Organization
 
 Relay is a Next.js, TypeScript, and Tailwind CSS interview-coach POC. Keep route UI in `src/app/`: `page.tsx` is the client shell, `layout.tsx` provides layout, and `api/*/route.ts` contains route handlers. Put server-side persistence and AI logic in `src/lib/` (`db.ts`, `coach.ts`, and shared `types.ts`). Static files belong in `public/`; product and design notes belong in `docs/`. Runtime SQLite data lives under `data/` and must not be committed.

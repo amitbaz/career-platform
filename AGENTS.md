@@ -4,10 +4,11 @@ Guidance for coding agents working in this repository.
 
 ## What this project is optimising for
 
-**The search-and-match engine is the product. Everything else is a surface.** Telegram, the
-scheduled daily run, and any future application consume the engine; none of them is where
-matching lives. See [ADR-0001](docs/adr/0001-the-engine-is-the-product.md), and epic #114 for
-the decisions in full.
+**The search-and-match engine is the product. Everything else is a surface.** The mobile app —
+the product's main interface — and anything else that shows a user results consume the engine;
+none of them is where matching lives. See [ADR-0001](docs/adr/0001-the-engine-is-the-product.md),
+epic #114 for the engine decisions in full, and [docs/product-vision.md](docs/product-vision.md)
+for what the product is.
 
 Six rules follow, and they decide most judgement calls in this repository:
 
@@ -60,7 +61,7 @@ A single monorepo holding the whole career platform:
 | Path                | What it is                          | Toolchain                  |
 | ------------------- | ----------------------------------- | -------------------------- |
 | `apps/job-hunter`   | Job Hunter service                  | Python 3.12+, pytest       |
-| `apps/relay`        | Relay web app                       | Next.js, pnpm, vitest      |
+| `apps/relay`        | Relay — legacy POC, see below       | Next.js, pnpm, vitest      |
 | `supabase`          | Shared schema: migrations, SQL tests| Supabase CLI               |
 
 A platform change that spans Job Hunter, Relay and the schema belongs in **one branch and one
@@ -82,6 +83,21 @@ GitHub Issues (repo: amitbaz/career-platform), via `gh` CLI. See `docs/agents/is
 ### Triage labels
 
 Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Issue areas
+
+Every open issue carries **exactly one** `area:*` label saying which part of the product it
+belongs to: `area:ingestion`, `area:matching`, `area:applying`, `area:outcomes`, `area:coach`,
+`area:app`, `area:platform` or `area:business`. Epics (label `epic`) are exempt, because they
+span areas. Add the area label in the same command that creates the issue, and move it when an
+issue's scope moves. If no area fits, ask the owner rather than inventing a new one. What
+belongs in each area is in `docs/agents/triage-labels.md`.
+`.github/workflows/issue-areas.yml` checks the rule daily and fails, naming the issues, when it
+stops holding.
+
+State is separate from area: the triage labels above, plus `needs-rewrite` for an issue whose
+direction changed and which must be re-specified against `docs/product-vision.md` before anyone
+works on it.
 
 ### Domain docs
 
@@ -105,12 +121,35 @@ Competitor facts live in `docs/research/preproom-teardown.md` and
 changed between two reads a day apart. Re-fetch before quoting a competitor's price or
 feature, and update the teardown when it has changed.
 
-### Product surface
+### Product direction
 
-Read `docs/product-shape.md` before touching the app/Telegram/digest boundary, delivery
-policy, or anything shaped like "what does the user see and decide." It records agreed
-direction plus an open-questions parking lot — check that section before starting related
-work, and add to it rather than losing an idea raised mid-task on something else.
+Read [`docs/product-vision.md`](docs/product-vision.md) before recommending or deciding anything
+about what the user sees, decides or is sent — and before shaping engine work, whose
+requirements are collected in its "What the engine must do" section. It records the owner's
+decisions (D1, D2, …) with their reasons. When it disagrees with any older document, it wins.
+
+Three standing rules from the owner:
+
+- **No backward compatibility with the Telegram bot or the daily digest** (2026-09-10). Nobody
+  uses them; only the owner has access to the system. Do not shape engine work around keeping
+  them working, and treat acceptance criteria such as "what the user receives is unchanged" as
+  void unless the owner re-affirms one. This removes compatibility constraints, not rigour:
+  engine behaviour is still tested and measured.
+- **Nothing from Relay is kept** (2026-09-11) — not its code, not its schema. It was an early
+  proof of concept; the coach is designed fresh. Relay stays deployed for one reason only: the
+  engine reads the user's CV, cover letter and provider keys from Relay's Profile screen. Until
+  something replaces that screen, do not remove Relay or the tables behind it.
+- **Nothing sends an application for the user** (D2). The user always presses the final send,
+  on the employer's own form.
+
+### Dated records are not current truth
+
+Specs, plans and task reports named with a date — under `apps/*/docs/superpowers/`,
+`apps/*/docs/plans/` and `apps/*/.superpowers/sdd/` — are records of what was decided at the
+time. They are not rewritten when things change, so many are stale. Read them for why something
+was built the way it was, never as a statement of how the product or the system works today.
+Current truth lives in `docs/product-vision.md`, `docs/adr/`, `CONTEXT.md`, the `AGENTS.md`
+files, and the code.
 
 ### Memory (MemPalace)
 
