@@ -5,11 +5,9 @@ import secrets
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from job_hunter import content_confidence
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
 from job_hunter.availability import UNVERIFIED
 from job_hunter.candidate_context import get_candidate_context
@@ -27,7 +25,6 @@ from job_hunter.company_facets import (
     CompanyFacetExtractionError,
     extract_company_facets,
 )
-from job_hunter.evaluation import EvaluationError, evaluate_job
 from job_hunter.facets import FacetExtractionError, PostingFacts, extract_facets
 from job_hunter.ai import (
     AI_PURPOSES,
@@ -36,16 +33,12 @@ from job_hunter.ai import (
     AIQuotaPaused,
     AITemporaryCapacity,
     PlatformAllowanceExhausted,
+    wait_out_capacity,
 )
 from job_hunter.ai.usage import AIUsageTracker
-from job_hunter.hard_blockers import (
-    BlockingThresholds,
-    blocked_evaluation,
-    hard_blockers_from_facets,
-)
 from job_hunter.http import HttpClient
 from job_hunter.job_identity import normalize_company_name
-from job_hunter.market_policy import market_by_id
+from job_hunter.matching import MatchResult, match_jobs
 from job_hunter.models import (
     AtsReference,
     CandidateContext,
@@ -98,6 +91,12 @@ _OFFER_DECISIONS = _READY_DECISIONS | {"possible_match"}
 _NAVIGATION_SESSION_TTL = timedelta(days=30)
 _SUPPORTED_WATCH_ATS_PROVIDERS = frozenset({"ashby", "greenhouse", "lever"})
 _SEARCH_FAILURE_THRESHOLD = 5
+#: How many times a shared-platform-key posting read waits out rolling
+#: capacity before giving up. Bounded, unlike scoring's wait: the platform
+#: key is shared with every other user's run, and none of them alone can
+#: clear it, so unbounded patience here can hold two overlapping runs over
+#: the ceiling for as long as they both keep waiting.
+_READ_CAPACITY_WAITS = 3
 _CANONICAL_SEARCH_SITES = (
     " OR ".join(f"site:{host}" for host in SUPPORTED_ATS_HOSTS) + " OR careers"
 )
@@ -517,97 +516,6 @@ def _closed_job_ids(store, job_ids: list[str]) -> set[str]:
         return set()
 
 
-def _requeue_pending_delivery(
-    job_id: str,
-    store: PostgresJobStore,
-    digest_items: list[DigestItem],
-    match_score_floor: int,
-) -> None:
-    """Re-add a rediscovered job's digest entry if it was never delivered.
-
-    `match_score_floor` is the profile's inclusive delivery floor. A retry
-    is held to the same floor as a first delivery, so lowering the floor
-    releases previously withheld jobs and raising it withdraws them,
-    rather than letting the retry path deliver what a fresh run would not.
-    """
-    evaluation = store.get_evaluation(job_id)
-    if evaluation is None or evaluation.total_score < match_score_floor:
-        return
-
-    job = store.get_job(job_id)
-    if job is None:
-        return
-
-    item = DigestItem(
-        job_id=job_id,
-        company=job.company,
-        title=job.title,
-        score=evaluation.total_score,
-        decision=evaluation.decision,
-        url=job.url,
-        hard_blockers=evaluation.hard_blockers,
-        location=job.location,
-        market_id=evaluation.market_id or job.market_id or "",
-        market_note=evaluation.location_note or "",
-    )
-
-    if not store.has_delivery(job_id, "telegram_message"):
-        digest_items.append(item)
-
-
-#: How many rolling windows the inline read of a posting will wait out before
-#: giving up its turn. Scoring waits without a bound because it paces against
-#: the user's own key, where the only other claimant is this run. Reading a
-#: posting paces against the *platform* key (#128), which every user's run
-#: shares: two overlapping runs can hold each other over the rolling ceiling
-#: indefinitely, and a run that waits for that to clear delivers nothing at
-#: all. Three windows is long enough to ride out a burst and short enough that
-#: the run still finishes; a posting not read by then is deferred like any
-#: other the platform could not pay for.
-_READ_CAPACITY_WAITS = 3
-
-
-def _waiting_out_capacity(call, *, doing: str, job_id: str, max_waits: int | None = None):
-    """Run `call`, waiting out the provider's rolling window.
-
-    Both provider calls a user is waiting on -- reading the posting and
-    scoring it -- wait rather than give up their turn: the run is producing
-    this person's digest and there is no later chance today.
-    The adapter's preflight pacing has already slept out one window and
-    re-checked before raising, so each pass here is a second, deliberate wait.
-
-    `max_waits` bounds that patience where the capacity being waited on is not
-    this run's alone to clear; `None` waits as long as it takes, and re-raises
-    nothing. The last `AITemporaryCapacity` propagates when the bound is spent,
-    for the caller to turn into whatever giving up means to it.
-
-    The backfill pass deliberately does not use this. Nobody is waiting on it,
-    so it gives up its turn instead of holding the run open.
-    """
-    waits = 0
-    while True:
-        try:
-            return call()
-        except AITemporaryCapacity as exc:
-            if max_waits is not None and waits >= max_waits:
-                logger.info(
-                    "AI temporary capacity still full after %s waits; giving up on "
-                    "%s for job_id=%s",
-                    waits,
-                    doing,
-                    job_id,
-                )
-                raise
-            waits += 1
-            logger.info(
-                "AI temporary capacity reached; waiting %.2fs before %s for job_id=%s",
-                exc.retry_after_seconds,
-                doing,
-                job_id,
-            )
-            time.sleep(exc.retry_after_seconds)
-
-
 def _extract_and_store_facets(
     job_id: str,
     job: Job,
@@ -687,103 +595,6 @@ def _note_facet_read_attempt(store: PostgresJobStore, job_id: str) -> None:
         logger.exception("could not record the facet read attempt for job_id=%s", job_id)
 
 
-def _facets_for_scoring(
-    job_id: str,
-    job: Job,
-    store: PostgresJobStore,
-    ai: AIProvider,
-    summary: RunSummary,
-    needs_facets: set[str],
-) -> JobFacets | None:
-    """The facets a scoring call must be given, reading the posting if needed.
-
-    Scoring no longer receives the job description (#126), so a job cannot be
-    scored until its posting has been read once. `needs_facets` is the run's
-    single `jobs_needing_facets` answer, so the ordinary case -- a posting
-    already read on an earlier run, by this user or by any other (#175) --
-    costs one store read and no provider call, and the same posting is never
-    read twice in a run. Those reuses are counted, so the run log can say how
-    much of its scoring rode on work it did not pay for.
-
-    Returns None when the posting could not be read this run, or when the job
-    has no posting to read facets from or store them against. The caller must
-    leave the job unscored rather than score it against nothing.
-
-    `needs_facets` is narrowed as the run reads, so it ends the scoring loops
-    holding exactly the postings the run has *not* spent a read on. The
-    backfill pass is given those and no others: a posting whose read failed
-    here must not be read a second time in the same run, which would spend two
-    calls to learn the same nothing.
-    """
-    if job_id not in needs_facets:
-        try:
-            facets = store.get_job_facets(job_id)
-        except Exception:
-            logger.exception("could not read stored facets for job_id=%s", job_id)
-            return None
-        if facets is not None:
-            summary.facets_reused += 1
-            return facets
-        # The bulk check said this job had current facets and there are none.
-        # Ask again for this one job before spending a call, because the two
-        # ways that happens want opposite answers: a row replaced or removed
-        # mid-run has to be read again, while a job with no posting has
-        # nowhere to store an extraction at all -- reading it would cost a
-        # call, discard the result, and cost the same call on every later run
-        # forever. A failed re-ask is treated as the first case, which costs
-        # one call rather than silently dropping a job from the run.
-        try:
-            still_needed = store.jobs_needing_facets([job_id])
-        except Exception:
-            logger.exception("could not re-check whether job_id=%s needs reading", job_id)
-            still_needed = {job_id}
-        if job_id not in still_needed:
-            logger.info(
-                "job_id=%s has no facets and no posting to store any against; "
-                "not scored this run",
-                job_id,
-            )
-            return None
-        logger.info("facets for job_id=%s vanished after the run's bulk check", job_id)
-
-    # Nowhere to store the answer is the same argument as the one above, one
-    # level up: without the privileged connection a facet row cannot be
-    # written at all (#179), so reading the posting would cost a platform call,
-    # discard the result, and cost the same call again on every later run for
-    # as long as the connection is missing. The job is left unscored, which is
-    # what a posting nobody has read has always meant.
-    if not store.can_write_shared_rows:
-        logger.info(
-            "job_id=%s has no facets and this run cannot store any; not scored "
-            "this run",
-            job_id,
-        )
-        return None
-
-    try:
-        facets = _waiting_out_capacity(
-            lambda: _extract_and_store_facets(job_id, job, store, ai, summary),
-            doing="reading the posting",
-            job_id=job_id,
-            max_waits=_READ_CAPACITY_WAITS,
-        )
-    except AITemporaryCapacity as exc:
-        # The platform key's rolling window stayed full, which for this run is
-        # indistinguishable from having no allowance: the posting is not read
-        # today. Raised as the same exhaustion every other platform refusal
-        # raises, so the caller has one thing to handle and the job keeps its
-        # turn -- `needs_facets.discard` below is not reached.
-        raise PlatformAllowanceExhausted(
-            "the platform key's rolling capacity stayed full while reading a posting"
-        ) from exc
-    # A turn is spent once the provider has actually answered -- including an
-    # answer that could not be read, which cost a call. A refusal that never
-    # reached the provider raises out of here instead, leaving the job in the
-    # set, because it has not had its turn.
-    needs_facets.discard(job_id)
-    return facets
-
-
 def _extract_facets_for_run(
     run_candidates: list[tuple[str, Job | None]],
     store: PostgresJobStore,
@@ -791,34 +602,38 @@ def _extract_facets_for_run(
     summary: RunSummary,
     *,
     limit: int,
-) -> None:
-    """Read the postings this run's scoring did not need, then drain the queue.
+) -> set[str]:
+    """Read this run's shortlist before matching runs at all, then drain the queue.
 
-    `run_candidates` are the jobs this run selected but did not read -- the
-    shortlist tail the offer cap never reached, and the retry queue it never
-    got to. A job it *did* score was read inline first, so it is not here.
+    `run_candidates` are this run's shortlist (#188): `matching.match_jobs`
+    cannot itself read a posting, only skip a row with no current facets, so
+    a job discovered today has to be read here, before that call, to be
+    scorable today.
 
     Only jobs with no current facets are extracted, so the ordinary steady
     state -- everything already read, nothing rewritten -- costs one store
     read and no provider call at all.
 
-    `limit` is what is left of `max_jobs_per_run` -- the shortlist size the
-    user's search profile already sets as "how much AI work one run may do" --
-    once the run's inline reads have been subtracted. It bounds this pass, not
-    the run: an inline read is the unavoidable cost of scoring a job and is
-    never refused for want of budget, so a run that scores a full shortlist of
-    unread postings simply leaves this pass nothing. Reusing that figure
-    rather than adding a knob keeps this bounded without asking an operator
-    to size it. What the shortlist tail leaves unspent drains the
-    `extract_facets` queue (#185) -- the durable backfill over postings the
-    run's own crawl re-saw and found lacking current facets, enqueued as a
-    side effect of every job persist (`PostgresJobStore` write methods call
-    `_enqueue_needing_facets_for_job_ids`). There is no separate backfill
-    step: the queue is it, and a failure draining it retries or dead-letters
-    visibly instead of vanishing with a cancelled run, unlike the inline pass
-    this replaced.
+    `limit` is `max_jobs_per_run` -- the shortlist size the user's search
+    profile already sets as "how much AI work one run may do". What the
+    shortlist leaves unspent drains the `extract_facets` queue (#185) -- the
+    durable backfill over postings the run's own crawl re-saw and found
+    lacking current facets, enqueued as a side effect of every job persist
+    (`PostgresJobStore` write methods call `_enqueue_needing_facets_for_job_ids`).
+    There is no separate backfill step: the queue is it, and a failure
+    draining it retries or dead-letters visibly instead of vanishing with a
+    cancelled run.
 
     Nothing in here may end the run or change what it delivers.
+
+    Returns the subset of `run_candidates` left needing facets specifically
+    because the platform key's allowance was exhausted (#188) -- distinct
+    from one that failed to parse, or was never reached at all for lack of
+    `limit`. A caller reporting *why* a candidate still has no facets
+    (`RunSummary.scoring_deferred_by_read_budget` vs
+    `.scoring_skipped_without_facets`) reads this rather than guessing from
+    the aggregate counters, which mix this call's work with the queue
+    drain's.
     """
     ordered_candidates = list(dict.fromkeys(job_id for job_id, _job in run_candidates))
     known_jobs = {job_id: job for job_id, job in run_candidates if job is not None}
@@ -831,19 +646,32 @@ def _extract_facets_for_run(
         needed = set()
         logger.exception("could not determine which jobs need facet extraction")
 
+    # Reuse is what the shortlist scored against *without paying*, mirroring
+    # `_enrich_companies_for_run`'s identical measurement for companies: a
+    # candidate this pre-pass did not have to read because an earlier run
+    # (by this user or, since #175, any other) already read its posting.
+    summary.facets_reused += len(set(ordered_candidates) - needed)
+
     remaining = limit
     quota_blocked = False
+    budget_deferred_ids: set[str] = set()
 
     for job_id in ordered_candidates:
-        if quota_blocked or remaining <= 0:
-            break
         if job_id not in needed:
+            continue
+        if quota_blocked or remaining <= 0:
+            # Not reached this call. Once the platform allowance is known to
+            # be exhausted, everything still needed behind it in rank order
+            # is exhausted for the identical reason -- there is no point
+            # attempting each to learn that again.
+            if quota_blocked:
+                budget_deferred_ids.add(job_id)
             continue
         job = known_jobs.get(job_id)
         if job is None:
-            # `pending_evaluation_ids` arrives as `(job_id, None)`: its jobs
-            # are not already in hand the way a freshly scored shortlist
-            # entry is, so this is the one path that pays a read for them.
+            # A candidate can arrive as `(job_id, None)` -- its job is not
+            # already in hand the way a freshly ranked shortlist entry is --
+            # so this is the one path that pays a read for it.
             try:
                 job = store.get_job(job_id)
             except Exception:
@@ -852,12 +680,28 @@ def _extract_facets_for_run(
         if job is None:
             continue
         try:
-            _extract_and_store_facets(job_id, job, store, ai, summary)
+            wait_out_capacity(
+                lambda: _extract_and_store_facets(job_id, job, store, ai, summary),
+                doing="reading the posting",
+                job_id=job_id,
+                max_waits=_READ_CAPACITY_WAITS,
+            )
         except AITemporaryCapacity:
-            logger.info("facet extraction skipped on rolling capacity for job_id=%s", job_id)
+            # The platform key's rolling window stayed full even after
+            # waiting it out a bounded number of times -- for this run that
+            # is indistinguishable from having no allowance at all, so it is
+            # treated the same way an exhausted allowance is: the posting
+            # is not read today, and neither is anything ranked behind it.
+            logger.info(
+                "facet extraction gave up waiting on rolling capacity for job_id=%s",
+                job_id,
+            )
+            quota_blocked = True
+            budget_deferred_ids.add(job_id)
         except PlatformAllowanceExhausted as exc:
             logger.info("facet extraction deferred for job_id=%s: %s", job_id, exc)
             quota_blocked = True
+            budget_deferred_ids.add(job_id)
         else:
             remaining -= 1
 
@@ -892,6 +736,7 @@ def _extract_facets_for_run(
         summary.extraction_parse_failures,
         len(drained),
     )
+    return budget_deferred_ids
 
 
 #: How much of what a run has left company enrichment may take. A run's
@@ -1103,347 +948,6 @@ def _enrich_companies_for_run(
     return known
 
 
-def _company_for_job(
-    job: Job,
-    store: PostgresJobStore,
-    company_facets: dict[str, CompanyFacets | None],
-) -> CompanyFacets | None:
-    """This job's employer, from the run's map or from one store read.
-
-    The run's bulk read covers the employers behind the *eligible* set. A job
-    replayed from the pending-evaluation queue was selected on an earlier run
-    and its employer may not appear in this one's discovery at all, so without
-    this it would be scored against "nothing has been established" while a
-    `job_hunter_companies` row sat there unread -- the same posting and the
-    same profile getting a different prompt depending on which run reached it.
-
-    The result is memoized either way, a miss included, so an employer nothing
-    is known about costs one read per run rather than one per posting.
-    """
-    identity = normalize_company_name(job.company or "")
-    if not identity:
-        return None
-    if identity in company_facets:
-        return company_facets[identity]
-    try:
-        facets = store.get_company_facets(job.company or "")
-    except Exception:
-        # Company facts are extra evidence. Failing to read them scores the
-        # job without them rather than not scoring it.
-        logger.exception("could not read company facets for company=%r", job.company)
-        facets = None
-    company_facets[identity] = facets
-    return facets
-
-
-def _evaluate_and_deliver_job(
-    job_id: str,
-    job: Job,
-    candidate_context: CandidateContext,
-    settings: Settings,
-    store: PostgresJobStore,
-    ai: AIProvider,
-    digest_items: list[DigestItem],
-    summary: RunSummary,
-    queued_job_ids: set[str],
-    needs_facets: set[str],
-    company_facets: dict[str, CompanyFacets | None],
-    sql_match_by_job_id: dict[str, dict[str, Any]],
-) -> tuple[bool, bool, str | None, bool, bool]:
-    """Evaluate one job and add it to the digest, containing its failures.
-
-    No single job may end a run. The inner function already catches a failed
-    model call, but everything after it -- persisting the evaluation,
-    promoting the company, building the digest item -- could still raise out
-    of the evaluation loop and kill the process, discarding every remaining
-    candidate and the digest with them (#145). This wrapper is the guarantee
-    that the invariant holds for the whole per-job unit of work and not just
-    the model call: one job's failure is counted in `summary.errors`, logged
-    with enough identity to trace it, and the run continues.
-    """
-    try:
-        return _evaluate_and_deliver_one_job(
-            job_id,
-            job,
-            candidate_context,
-            settings,
-            store,
-            ai,
-            digest_items,
-            summary,
-            queued_job_ids,
-            needs_facets,
-            company_facets,
-            sql_match_by_job_id,
-        )
-    except Exception:
-        logger.exception(
-            "job handling failed for job_id=%s source=%s company=%s",
-            job_id,
-            metric_source_label(job.source),
-            job.company,
-        )
-        summary.errors += 1
-        return False, False, None, False, False
-
-
-def _facet_decided_blockers(
-    job: Job, facets: JobFacets, settings: Settings
-) -> list[str]:
-    """Return the hard blockers this job's facets establish, if any (#127).
-
-    `facets` are the ones scoring is about to be given, so blocking reads
-    exactly what the model would have read -- there is no second, staler view
-    of the posting to disagree with it, and no extra store read.
-
-    Empty means "score it". Every step fails open on purpose: an absent fact
-    is not evidence of a disqualifying one, and dropping a job over one would
-    be a far worse failure than spending the call.
-    """
-    if not content_confidence.is_sufficient(job.content_confidence):
-        # Thin or unverified content is the one case where a facet may have
-        # been read from a search-result snippet rather than the posting.
-        # `evaluate_job` already refuses a confident decision on such a job,
-        # and a block is a confident decision -- so it goes to the model,
-        # which sees the same thin material and can weigh it in context.
-        return []
-
-    market = (
-        market_by_id(settings.policy, job.market_id)
-        if job.market_id and settings.policy.markets
-        else None
-    )
-    return hard_blockers_from_facets(
-        facets, BlockingThresholds.for_job(job, settings.policy, market)
-    )
-
-
-def _evaluate_and_deliver_one_job(
-    job_id: str,
-    job: Job,
-    candidate_context: CandidateContext,
-    settings: Settings,
-    store: PostgresJobStore,
-    ai: AIProvider,
-    digest_items: list[DigestItem],
-    summary: RunSummary,
-    queued_job_ids: set[str],
-    needs_facets: set[str],
-    company_facets: dict[str, CompanyFacets | None],
-    sql_match_by_job_id: dict[str, dict[str, Any]],
-) -> tuple[bool, bool, str | None, bool, bool]:
-    """Evaluate one job and add it to the digest.
-
-    Returns (promoted, blocked, decision, offered, scored). `summary.evaluation_attempted`
-    is incremented here rather than reported back, so it counts the fresh
-    model evaluations actually made (not the already-evaluated shortcut
-    below) even when a later step for the same job fails and the caller never
-    sees a return value. `offered` is True when this job will reach the user
-    as an offer, which is what the daily offer limit counts. `scored` is False
-    when the decision came from the job's facets rather than from the model,
-    so the caller can keep `summary.evaluated` a count of model evaluations.
-    """
-    if store.get_evaluation(job_id) is not None and store.has_delivery(job_id, "telegram_message"):
-        store.complete_ai_work("job_evaluation", job_id)
-        return False, False, None, False, False
-
-    # Scoring is handed the posting's facets, not its description (#126), so
-    # a posting nobody has read yet is read here, once, before it is scored.
-    # Captured before the call: `_facets_for_scoring` discards `job_id` from
-    # `needs_facets` the moment it reads it (line 783), so checking
-    # membership afterward would always say "did not need reading" for the
-    # very job that just did.
-    needed_fresh_facets = job_id in needs_facets
-    try:
-        facets = _facets_for_scoring(job_id, job, store, ai, summary, needs_facets)
-    except PlatformAllowanceExhausted as exc:
-        # The platform key is out, not the user's (#128). That distinction is
-        # the whole of this branch: this must not block the run the way a
-        # paused user model does, because the user's own key is untouched and
-        # every job whose posting has already been read still scores. Only a
-        # posting nobody has read yet waits for tomorrow, and it waits in the
-        # queue, unenriched and undamaged.
-        logger.warning(
-            "the posting for job_id=%s was not read; not scored this run: %s",
-            job_id,
-            exc,
-        )
-        summary.scoring_deferred_by_read_budget += 1
-        store.enqueue_ai_work("job_evaluation", job_id)
-        return False, False, None, False, False
-
-    if facets is None:
-        # Scoring against an empty requirements list would read "this posting
-        # demands nothing" instead of "nobody has read this posting", which
-        # inflates the score of exactly the jobs least is known about. The job
-        # keeps its place in the ranking and is scored on a later run.
-        logger.warning(
-            "job_id=%s has no readable facets; not scored this run", job_id
-        )
-        summary.scoring_skipped_without_facets += 1
-        return False, False, None, False, False
-
-    # A job those same facts already disqualify for this user costs nothing
-    # more to establish (#127): the comparison is between the posting's shared
-    # facets and this profile's own numbers, and everything below handles the
-    # resulting evaluation exactly as it handles the model's. When this run
-    # ranked in SQL (#187), that same call already decided this job's
-    # blockers -- reusing it here is what keeps blocking a single
-    # implementation rather than a second one recomputed from facets. Except
-    # when this job needed a fresh facets read (`needed_fresh_facets`):
-    # `sql_match_by_job_id` was built before this pass read (or re-read) its
-    # facets, so its row still reflects what was on file *before* this run --
-    # missing entirely for a first-read job, stale for a re-extracted one.
-    # Only a job whose facets were already current when the SQL ranking ran
-    # can trust its answer; every other job -- that one, and any the SQL
-    # ranking never saw at all -- falls back to computing it from the facets
-    # just read.
-    sql_row = sql_match_by_job_id.get(job_id)
-    if sql_row is not None and not needed_fresh_facets:
-        facet_blockers = sql_row["hard_blockers"] or []
-    else:
-        facet_blockers = _facet_decided_blockers(job, facets, settings)
-    scored = not facet_blockers
-    if facet_blockers:
-        evaluation = blocked_evaluation(job, facet_blockers)
-        logger.info(
-            "blocked job_id=%s from facets without a scoring call: %s",
-            job_id,
-            "; ".join(facet_blockers),
-        )
-    else:
-        try:
-            evaluation = _waiting_out_capacity(
-                lambda: evaluate_job(
-                    job,
-                    facets,
-                    candidate_context,
-                    settings.policy,
-                    ai,
-                    _company_for_job(job, store, company_facets),
-                ),
-                doing="scoring",
-                job_id=job_id,
-            )
-        except (AIBudgetExceeded, AIQuotaPaused):
-            logger.warning(
-                "job evaluation deferred by AI quota for job_id=%s",
-                job_id,
-            )
-            store.enqueue_ai_work("job_evaluation", job_id)
-            return False, True, None, False, False
-        except EvaluationError:
-            logger.exception("evaluation response could not be parsed for job_id=%s", job_id)
-            summary.evaluation_attempted += 1
-            summary.scoring_parse_failures += 1
-            summary.errors += 1
-            return False, False, None, False, False
-        except Exception:
-            logger.exception("evaluation failed for job_id=%s", job_id)
-            summary.evaluation_attempted += 1
-            summary.errors += 1
-            return False, False, None, False, False
-
-        summary.evaluation_attempted += 1
-
-    # A job selected earlier in the run can have been merged away since --
-    # discovery merges duplicates while it is still building the shortlist --
-    # so the id that row lives under now is whatever the store wrote against,
-    # not necessarily the one selected. Everything below has to use that one:
-    # the id it replaced names a row that no longer exists (#145).
-    written_job_id = store.save_evaluation(job_id, evaluation)
-    if not scored:
-        # Counted here rather than where the block was decided: the counter
-        # reports what the run did, and a write that did not land leaves the
-        # job unevaluated and eligible again tomorrow, to be counted then.
-        summary.blocked_by_facets += 1
-    already_delivered = False
-    if written_job_id != job_id:
-        job_id = written_job_id
-        # The surviving row is the one the merge kept the better fields on --
-        # the canonical URL a card sends the user to, above all -- so the
-        # digest describes it rather than the row that was discarded.
-        surviving_job = store.get_job(job_id)
-        if surviving_job is not None:
-            job = surviving_job
-        # Keep the run's working set honest about where this job ended up:
-        # the pending-delivery sweep at the end of the run subtracts these
-        # ids, and without the survivor in it the same job is queued into the
-        # digest a second time.
-        queued_job_ids.add(job_id)
-        # A duplicate can merge into a job that was already sent: the merge
-        # moves the deliveries onto the survivor, so the already-delivered
-        # check at the top of this function, made against the duplicate's id,
-        # saw none.
-        already_delivered = store.has_delivery(job_id, "telegram_message")
-    store.complete_ai_work("job_evaluation", job_id)
-
-    if evaluation.total_score != evaluation.raw_model_score:
-        logger.info(
-            "capped match score job_id=%s raw=%s effective=%s decision=%s",
-            job_id, evaluation.raw_model_score, evaluation.total_score, evaluation.decision,
-        )
-
-    promoted = False
-    try:
-        promotion_before = _watch_promotion_state(store.get_company_watch(job.company))
-        promoted_watch_id = promote_company(
-            store,
-            job_id=job_id,
-            job=job,
-            evaluation=evaluation,
-            package_threshold=settings.policy.thresholds.get("package", 75),
-        )
-        promotion_after = _watch_promotion_state(store.get_company_watch(job.company))
-        promoted = promoted_watch_id is not None and promotion_after != promotion_before
-    except Exception:
-        logger.exception("company watch promotion failed for job_id=%s", job_id)
-        summary.errors += 1
-
-    if evaluation.total_score < settings.policy.match_score_floor:
-        # The floor withholds every tier, warnings included -- but only an
-        # offer that the floor took away is a signal that the floor is set
-        # too high. A `skip` or a `blocked` was never going to be an offer,
-        # so it stays on the decision-ladder counter it has always used;
-        # counting it here would drown the number this exists to expose.
-        if evaluation.decision in _OFFER_DECISIONS:
-            summary.withheld_by_score_floor += 1
-        else:
-            summary.skipped += 1
-        return promoted, False, evaluation.decision, False, scored
-
-    item = DigestItem(
-        job_id=job_id,
-        company=job.company,
-        title=job.title,
-        score=evaluation.total_score,
-        decision=evaluation.decision,
-        url=job.url,
-        hard_blockers=evaluation.hard_blockers,
-        location=job.location,
-        market_id=evaluation.market_id or job.market_id or "",
-        market_note=evaluation.location_note or "",
-        availability_note=_AVAILABILITY_WARNING if job.availability == UNVERIFIED else "",
-    )
-    if already_delivered:
-        logger.info(
-            "job_id=%s was merged into a job already delivered; not offering it twice",
-            job_id,
-        )
-    else:
-        digest_items.append(item)
-
-    if evaluation.decision in _READY_DECISIONS:
-        summary.ready_to_apply += 1
-    elif evaluation.decision == "possible_match":
-        summary.possible_matches += 1
-    else:
-        summary.skipped += 1
-
-    offered = not already_delivered and evaluation.decision in _OFFER_DECISIONS
-    return promoted, False, evaluation.decision, offered, scored
-
-
 def _format_ai_usage_log(summary: AIUsageSummary, account: str) -> str:
     """One structured log line per ledger at run completion.
 
@@ -1486,6 +990,8 @@ def _build_navigation_session(items: list[DigestItem], now: datetime) -> Navigat
                 market_id=item.market_id,
                 market_note=item.market_note,
                 availability_note=item.availability_note,
+                display_credit_text=item.display_credit_text,
+                display_credit_url=item.display_credit_url,
             )
             for item in ordered
         ],
@@ -1640,33 +1146,31 @@ def run_pipeline(
     watch_checks, watch_paused = _watch_check_outcomes(store, due_watches)
     summary.skipped += discovery.stats.prefilter_rejected + discovery.stats.profession_rejected
 
-    pending_evaluation_ids = [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
     # A posting a freshness re-check found gone (#186) is neither scored nor
-    # delivered. This run can still meet one three ways: its own crawl (an
-    # aggregator is slower to drop an advert than the board it copied, and its
-    # listing deliberately does not reopen it), the deferred-scoring queue,
-    # and the rediscovered set. One read answers for all three, before ranking,
-    # so a closed posting never takes a shortlist place from a live one.
+    # delivered. `job_hunter_match_jobs` excludes a closed posting outright
+    # (#188) -- the caller can no longer be trusted to filter it out, now
+    # that matching reads the whole corpus rather than a pre-filtered
+    # `eligible` list -- but discovery's own candidate set still reads this
+    # once, so a dead posting is never selected, ranked, or sent to the
+    # facet pre-pass below either.
     closed_job_ids = _closed_job_ids(
         store,
         [job_id for job_id, _job in discovery.eligible]
-        + pending_evaluation_ids
         + list(discovery.rediscovered_job_ids),
     )
     eligible = [
         (job_id, job) for job_id, job in discovery.eligible if job_id not in closed_job_ids
     ]
-    rediscovered_job_ids = [
-        job_id for job_id in discovery.rediscovered_job_ids if job_id not in closed_job_ids
-    ]
-    for job_id in pending_evaluation_ids:
-        if job_id in closed_job_ids:
-            # Gone, not deferred. If its board lists it again it reopens and
-            # the crawl brings it back as a candidate like any other.
-            store.complete_ai_work("job_evaluation", job_id)
-    pending_evaluation_ids = [
-        job_id for job_id in pending_evaluation_ids if job_id not in closed_job_ids
-    ]
+    # `Job.availability` (and any other field the canonical resolver sets
+    # in-memory this run) is not persisted -- it exists only on the object
+    # discovery just built (see models.py's `availability` docstring). A
+    # matched job that came out of this run's own discovery must keep using
+    # that object rather than a plain `store.get_job` re-fetch, or the
+    # availability warning below silently goes dark for every fresh
+    # candidate. A job `matching.match_jobs` surfaces from outside this
+    # run's discovery (a retry, a reused row) was never resolved this run
+    # either way, so `store.get_job` is the correct, unchanged source for it.
+    eligible_jobs_by_id = {job_id: job for job_id, job in eligible}
     if closed_job_ids:
         logger.info(
             "closed postings skipped this run: %s (found gone by a freshness re-check)",
@@ -1689,14 +1193,16 @@ def run_pipeline(
         logger.exception("could not read stored company facets for the eligible set")
         company_facets = {}
 
-    # One ranking implementation for every caller (#187): the SQL port of
-    # `profile_priority_score` and `hard_blockers_from_facets` ranks and
-    # flags this user's whole corpus in a single round trip. `sql_match_by_job_id`
-    # is empty whenever there is no profile to rank against (the Python
-    # fallback below is the only ranking for that case, unchanged) or the SQL
-    # call itself failed -- either way `ranked` falls back to the pre-#187
-    # Python ranking, and `_facet_decided_blockers` becomes the per-job
-    # fallback for hard blockers too.
+    # This SQL call is a second one from what `matching.match_jobs` makes
+    # below for the actual scoring decision (#188) -- this one exists only to
+    # order and diversity-cap *today's newly discovered* candidates for the
+    # `eligible sources:`/`selected sources:` log lines, which describe what
+    # this run's crawl contributed. Neither `ranked` nor `selected` bounds
+    # what gets scored or delivered any more; that is `matching.match_jobs`'s
+    # decision alone, over the whole corpus. `sql_match_by_job_id` is empty
+    # whenever there is no profile to rank against or the call failed, and
+    # `ranked` falls back to the pre-#187 Python ranking for the log lines
+    # only.
     sql_match_by_job_id: dict[str, dict[str, Any]] = {}
     if preferences is not None:
         try:
@@ -1735,11 +1241,10 @@ def run_pipeline(
     decision_counts: dict[str, dict[str, int]] = {}
     decision_counts_by_source: dict[str, dict[str, int]] = {}
     deferred_by_budget = max(0, len(ranked) - len(selected))
-    quota_deferred_count = 0
-    # The user's daily offer limit is the run's delivery budget. Walking the
-    # selected candidates in rank order and stopping once it is met needs no
-    # assumed ratio between candidates evaluated and offers delivered, and
-    # keeps adapting when that ratio moves.
+    # The user's daily offer limit is the run's delivery budget. Walking
+    # `matching.match_jobs`'s ordered results and stopping once it is met
+    # needs no assumed ratio between candidates evaluated and offers
+    # delivered, and keeps adapting when that ratio moves.
     offer_limit = settings.policy.daily_offer_limit
     delivered_offers = 0
     cap_deferred_count = 0
@@ -1759,189 +1264,88 @@ def run_pipeline(
     logger.info("eligible sources: %s", _format_source_counts(eligible_source_counts))
     logger.info("selected sources: %s", _format_source_counts(selected_source_counts))
 
-    pending_evaluation_id_set = set(pending_evaluation_ids)
-
-    # Which of the jobs this run may score have not been read yet, asked once
-    # for the whole run rather than per job. Scoring needs a posting's facets
-    # (#126), and this is the one mechanism that decides whether a stored set
-    # is still current -- the same description hash that gates re-evaluation.
-    scoring_candidate_ids = pending_evaluation_ids + [job_id for job_id, _job, _score in selected]
-    try:
-        needs_facets = store.jobs_needing_facets(scoring_candidate_ids)
-    except Exception:
-        # Reading the posting again costs a provider call; not scoring at all
-        # costs the user their digest. Assume nothing has been read.
-        logger.exception("could not determine which postings still need reading")
-        needs_facets = set(scoring_candidate_ids)
-
-    queued_job_ids = (
-        {job_id for job_id, _job, _score in selected}
-        | pending_evaluation_id_set
-    )
     companies_promoted = 0
-    for job_id in rediscovered_job_ids:
-        _requeue_pending_delivery(
-            job_id,
-            store,
-            digest_items,
-            settings.policy.match_score_floor,
-        )
+    deferred_by_read_budget_ids: set[str] = set()
 
-    quota_blocked = candidate_context is None
-    if quota_blocked and pending_evaluation_ids:
-        logger.warning(
-            "candidate context unavailable this run; leaving %s pending job_evaluation "
-            "retries queued",
-            len(pending_evaluation_ids),
-        )
-
-    for job_id in pending_evaluation_ids:
-        if quota_blocked:
-            continue
-        # Left in the queue rather than completed, so it is retried tomorrow.
-        if delivered_offers >= offer_limit:
-            cap_deferred_count += 1
-            continue
-        job = store.get_job(job_id)
-        if job is None:
-            store.complete_ai_work("job_evaluation", job_id)
-            continue
-        promoted, blocked, decision, offered, scored = _evaluate_and_deliver_job(
-            job_id,
-            job,
-            candidate_context,
-            settings,
-            store,
-            ai,
-            digest_items,
-            summary,
-            queued_job_ids,
-            needs_facets,
-            company_facets,
-            sql_match_by_job_id,
-        )
-        if decision is not None and scored:
-            summary.evaluated += 1
-        if offered:
-            delivered_offers += 1
-        if blocked:
-            quota_deferred_count += 1
-        _record_decision(decision_counts, job.market_id, decision)
-        _record_decision(decision_counts_by_source, metric_source_label(job.source), decision)
-        if promoted:
-            companies_promoted += 1
-        quota_blocked = quota_blocked or blocked
-
-    for job_id, job, _score in selected:
-        if job_id in pending_evaluation_id_set:
-            continue
-        # The user has the offers they asked for. The rest of the shortlist is
-        # left unevaluated -- not queued, not discarded: it ranks again on the
-        # next run, so a low limit trades breadth for pace rather than jobs.
-        if delivered_offers >= offer_limit:
-            cap_deferred_count += 1
-            continue
-        if quota_blocked:
-            # Outside the per-job wrapper, so it needs its own guard: this
-            # write carries the same foreign key as the evaluation, and
-            # letting it raise here would end the run on the very failure
-            # #145 is about.
-            try:
-                store.enqueue_ai_work("job_evaluation", job_id)
-            except Exception:
-                logger.exception(
-                    "deferring evaluation failed for job_id=%s source=%s",
-                    job_id,
-                    metric_source_label(job.source),
-                )
-                summary.errors += 1
-            quota_deferred_count += 1
-            continue
-        promoted, blocked, decision, offered, scored = _evaluate_and_deliver_job(
-            job_id,
-            job,
-            candidate_context,
-            settings,
-            store,
-            ai,
-            digest_items,
-            summary,
-            queued_job_ids,
-            needs_facets,
-            company_facets,
-            sql_match_by_job_id,
-        )
-        if decision is not None and scored:
-            summary.evaluated += 1
-        if offered:
-            delivered_offers += 1
-        if blocked:
-            quota_deferred_count += 1
-        _record_decision(decision_counts, job.market_id, decision)
-        _record_decision(decision_counts_by_source, metric_source_label(job.source), decision)
-        if promoted:
-            companies_promoted += 1
-        quota_blocked = quota_blocked or blocked
-
-    # The backfill half of objective extraction, over the postings this run's
-    # scoring did not need. A job that was scored has already been read, so
-    # `jobs_needing_facets` inside this pass skips it; what is left is the
-    # shortlist tail the offer cap never reached, and the jobs discovery
-    # rediscovered.
-    #
-    # Rediscovered jobs are how the existing corpus acquires facets at all: an
-    # already-evaluated job never re-enters the shortlist, so leaving them out
-    # would mean only jobs first seen today ever gained facets, and a failed
-    # extraction would never be retried. Every job here survived the non-AI
-    # filters -- this run's shortlist did so this run, a rediscovered job did
-    # so on the run that first evaluated it -- so this pass never spends a
-    # provider call on a posting the prefilter or the profession gate rejected.
-    #
-    # It runs *after* every scoring call. Since #128 the two halves cannot
-    # take each other's budget at all -- extraction spends the platform key
-    # and its own ledger, scoring spends the user's -- so a 429 tripped here
-    # pauses the platform model row and leaves every score untouched. The
-    # ordering survives for the remaining reason: this pass is given what the
-    # run's inline reads left of the budget, which is not known until they are
-    # done.
-    #
-    # The run's whole facet budget is `max_jobs_per_run`, and the inline reads
-    # have already spent part of it, so the queue drain gets what is left.
-    #
-    # Skipped entirely without the privileged connection (#179): facets are a
-    # shared row, so the provider call would be paid for and then refused.
-    # Asked again rather than reusing `can_ingest`, because a pool that was
-    # configured can still have been found unreachable since the run started,
-    # and this pass is where the platform key gets spent.
+    # The facet pre-pass, before matching runs at all (#188). `matching
+    # .match_jobs` cannot itself read a posting -- it can only skip a row
+    # with no current facets -- so a job discovered today has to be read
+    # here to be scorable today; a job the durable `extract_facets` queue
+    # would otherwise reach eventually gets no priority boost from being
+    # unread, exactly as before. Skipped entirely without the privileged
+    # connection (#179): facets are a shared row, so the call would be paid
+    # for and then refused.
     if store.can_write_shared_rows:
-        _extract_facets_for_run(
-            [(job_id, None) for job_id in pending_evaluation_ids if job_id in needs_facets]
-            + [(job_id, job) for job_id, job, _score in selected if job_id in needs_facets],
+        shortlist_job_ids = [job_id for job_id, _job, _score in selected]
+        budget_deferred_ids = _extract_facets_for_run(
+            [(job_id, job) for job_id, job, _score in selected],
             store,
             ai,
             summary,
-            limit=max(0, settings.policy.max_jobs_per_run - summary.facet_extraction_attempted),
+            limit=settings.policy.max_jobs_per_run,
         )
+        # Of this run's shortlist, whatever the pre-pass still could not read
+        # splits into "the platform key ran out" and "everything else" (a
+        # parse failure, or never reached at all) -- the same two health
+        # signals `_evaluate_and_deliver_one_job` used to report per job,
+        # now read back from the pre-pass's own accounting instead of
+        # guessed from the aggregate counters it shares with the queue
+        # drain that runs after it.
+        try:
+            still_needing_facets = store.jobs_needing_facets(shortlist_job_ids)
+        except Exception:
+            logger.exception("could not determine which shortlist jobs still need reading")
+            still_needing_facets = set()
+        deferred_by_read_budget_ids = still_needing_facets & budget_deferred_ids
+        summary.scoring_deferred_by_read_budget += len(deferred_by_read_budget_ids)
 
-    # Company enrichment runs last, after every posting read this run makes.
-    #
-    # Both spend the *same* platform key against the same shared-extraction
-    # ledger, so they are not independent budgets: a company call taken early
-    # is a posting read the run may not be able to afford later. The two are
-    # not equally important. A posting's facets are a precondition for scoring
-    # it at all (#126) -- a job whose posting goes unread is not scored and the
-    # user does not see it today -- while a company's facts are extra evidence
-    # that changes how a job scores, never whether it does. Running this pass
-    # first let an optional workload deny the user offers, so it runs on what
-    # the required work leaves, and its own `limit` bounds it further.
-    #
-    # The cost is that a company read here reaches the *next* run's scoring
-    # and ordering rather than this one's. For a fact cached for 180 days and
-    # amortised over every role that employer publishes, a one-run delay is
-    # not worth a single lost offer.
-    #
-    # Skipped for the same reason as the facet pass, and re-asked for the same
-    # reason: a company row is shared.
+    # The one matching operation decides which jobs, in what order -- scored,
+    # facet-blocked, or reused from an earlier run -- up to this run's AI
+    # budget (#188). Skipped when the candidate profile itself could not
+    # load: nothing can be scored without it, and it is what the operation
+    # ranks against. A failure in the call itself must not cost the run its
+    # digest (#145) -- discovery and enrichment already happened -- so it is
+    # logged and treated as "nothing new to match this run" rather than
+    # allowed to propagate.
+    match_result = MatchResult(
+        matched=[], failed_job_ids=[], parse_failure_job_ids=[], skipped_without_facets_job_ids=[]
+    )
+    if candidate_context is not None:
+        try:
+            match_result = match_jobs(
+                store,
+                ai,
+                settings.policy,
+                candidate_context,
+                limit=settings.policy.max_jobs_per_run,
+            )
+        except Exception:
+            logger.exception("matching failed; delivering nothing new this run")
+    else:
+        logger.warning(
+            "candidate context unavailable this run; scoring skipped entirely"
+        )
+    summary.errors += len(match_result.failed_job_ids)
+    summary.evaluation_attempted += len(match_result.failed_job_ids)
+    summary.scoring_parse_failures += len(match_result.parse_failure_job_ids)
+    # `deferred_by_read_budget_ids` is excluded: a job the platform key
+    # could not read this run already has its own, more specific counter
+    # above, and every one of them also lacks facets in `match_jobs`'s own
+    # eyes -- counting it here too would report the same job under both
+    # health signals instead of the one that actually explains it.
+    summary.scoring_skipped_without_facets += len(
+        set(match_result.skipped_without_facets_job_ids) - deferred_by_read_budget_ids
+    )
+
+    # Company enrichment runs after matching, on what the facet pre-pass left
+    # of the shared budget -- see the module-level rationale on
+    # `_enrich_companies_for_run` for why company reads never take a posting
+    # read a user's scoring needed. It also has to run after `match_jobs`
+    # itself: what this pass reads must reach the *next* run's ordering and
+    # prompts, not this one's -- an employer's facts appearing mid-run would
+    # make `matching.match_jobs`'s own company lookup, made moments earlier
+    # for the very same run, silently inconsistent with what enrichment just
+    # wrote.
     if store.can_write_shared_rows:
         _enrich_companies_for_run(
             ranked,
@@ -1954,10 +1358,159 @@ def run_pipeline(
             ),
         )
 
+    for matched_job in match_result.matched:
+        job_id = matched_job.job_id
+        evaluation = matched_job.evaluation
+        already_delivered = False
+
+        try:
+            if matched_job.fresh:
+                # A job selected can have been merged away before its evaluation
+                # is written; `save_evaluation` follows the redirect and returns
+                # the id it actually wrote against (#145).
+                written_job_id = store.save_evaluation(job_id, evaluation)
+                if written_job_id != job_id:
+                    job_id = written_job_id
+                    # A duplicate can merge into a job already delivered: the
+                    # merge moves the deliveries onto the survivor, and
+                    # `matching.match_jobs`'s own already-delivered check, made
+                    # against the duplicate's id before the merge happened,
+                    # never saw it.
+                    already_delivered = store.has_delivery(job_id, "telegram_message")
+
+                if matched_job.scored:
+                    summary.evaluation_attempted += 1
+                    summary.evaluated += 1
+                else:
+                    summary.blocked_by_facets += 1
+
+                job = eligible_jobs_by_id.get(job_id) or store.get_job(job_id)
+                if job is None:
+                    continue
+
+                try:
+                    promotion_before = _watch_promotion_state(store.get_company_watch(job.company))
+                    promoted_watch_id = promote_company(
+                        store,
+                        job_id=job_id,
+                        job=job,
+                        evaluation=evaluation,
+                        package_threshold=settings.policy.thresholds.get("package", 75),
+                    )
+                    promotion_after = _watch_promotion_state(store.get_company_watch(job.company))
+                    if promoted_watch_id is not None and promotion_after != promotion_before:
+                        companies_promoted += 1
+                except Exception:
+                    logger.exception("company watch promotion failed for job_id=%s", job_id)
+                    summary.errors += 1
+
+                if evaluation.total_score != evaluation.raw_model_score:
+                    logger.info(
+                        "capped match score job_id=%s raw=%s effective=%s decision=%s",
+                        job_id, evaluation.raw_model_score, evaluation.total_score, evaluation.decision,
+                    )
+
+                _record_decision(decision_counts, job.market_id, evaluation.decision)
+                _record_decision(
+                    decision_counts_by_source, metric_source_label(job.source), evaluation.decision
+                )
+
+                if already_delivered:
+                    logger.info(
+                        "job_id=%s was merged into a job already delivered; not offering it twice",
+                        job_id,
+                    )
+                    continue
+            else:
+                # Reused: already evaluated on an earlier run, not yet
+                # delivered. Nothing to persist or promote -- that already
+                # happened the run that first decided it.
+                job = eligible_jobs_by_id.get(job_id) or store.get_job(job_id)
+                if job is None:
+                    continue
+
+            if evaluation.total_score < settings.policy.match_score_floor:
+                # The floor withholds every tier, warnings included -- but only
+                # an offer the floor took away signals that the floor is set too
+                # high. A reused row was already counted the run it was first
+                # decided, so only a fresh decision touches these counters.
+                if matched_job.fresh:
+                    if evaluation.decision in _OFFER_DECISIONS:
+                        summary.withheld_by_score_floor += 1
+                    else:
+                        summary.skipped += 1
+                continue
+
+            if evaluation.decision in _OFFER_DECISIONS:
+                # The daily offer limit is the run's delivery *pacing*, not just
+                # this call's scoring budget -- it must bound a reused row too.
+                # Under the pre-#188 design a cap-deferred candidate was simply
+                # never evaluated, so retries were always a small, incidental
+                # backlog (a failed send, a rediscovery). Since #188 scoring no
+                # longer stops at the cap (`matching.match_jobs` scores the whole
+                # ranked pool), the "not yet delivered" backlog routinely holds
+                # everything the cap withheld today -- and without this check it
+                # would all flood out uncapped the next call, defeating the
+                # cap's entire purpose. `delivered_offers` counts fresh and
+                # reused alike so the pacing is real either way.
+                if delivered_offers >= offer_limit:
+                    cap_deferred_count += 1
+                    continue
+
+            try:
+                credit = store.posting_display_credit(matched_job.posting_id)
+            except Exception:
+                # A source's attribution obligation is metadata about how the
+                # digest item is *displayed*, not whether it belongs there --
+                # a transient RPC error here must not cost an already-scored,
+                # already-persisted job its place in today's digest the way
+                # letting it propagate to the loop's own `except Exception`
+                # would (and would misreport a scoring success as a "job
+                # handling failed").
+                logger.exception(
+                    "could not read display credit for posting_id=%s", matched_job.posting_id
+                )
+                credit = None
+            item = DigestItem(
+                job_id=job_id,
+                company=job.company,
+                title=job.title,
+                score=evaluation.total_score,
+                decision=evaluation.decision,
+                url=job.url,
+                hard_blockers=evaluation.hard_blockers,
+                location=job.location,
+                market_id=evaluation.market_id or job.market_id or "",
+                market_note=evaluation.location_note or "",
+                availability_note=_AVAILABILITY_WARNING if job.availability == UNVERIFIED else "",
+                display_credit_text=(credit or {}).get("text", ""),
+                display_credit_url=(credit or {}).get("link_url", ""),
+            )
+            digest_items.append(item)
+
+            if evaluation.decision in _OFFER_DECISIONS:
+                delivered_offers += 1
+            if matched_job.fresh:
+                if evaluation.decision in _READY_DECISIONS:
+                    summary.ready_to_apply += 1
+                elif evaluation.decision == "possible_match":
+                    summary.possible_matches += 1
+                else:
+                    summary.skipped += 1
+        except Exception:
+            # No single job may end a run (#145): everything above --
+            # persisting the evaluation, promoting the company, building the
+            # digest item -- must be contained the same way the model call
+            # inside `matching.match_jobs` already is, or one bad row loses
+            # every remaining candidate and the digest with them.
+            logger.exception("job handling failed for job_id=%s", matched_job.job_id)
+            summary.errors += 1
+            continue
+
     logger.info(
         "evaluation_capacity selected=%s evaluated=%s blocked_by_facets=%s "
         "deferred_by_budget=%s "
-        "quota_deferred=%s daily_offer_limit=%s delivered_offers=%s "
+        "daily_offer_limit=%s delivered_offers=%s "
         "deferred_by_offer_cap=%s match_score_floor=%s "
         "withheld_by_score_floor=%s skipped_without_facets=%s "
         "deferred_by_read_budget=%s parse_failures=%s",
@@ -1965,7 +1518,6 @@ def run_pipeline(
         summary.evaluated,
         summary.blocked_by_facets,
         deferred_by_budget,
-        quota_deferred_count,
         offer_limit,
         delivered_offers,
         cap_deferred_count,
@@ -1975,18 +1527,6 @@ def run_pipeline(
         summary.scoring_deferred_by_read_budget,
         summary.scoring_parse_failures,
     )
-
-    for job_id in (
-        set(store.pending_delivery_job_ids(settings.policy.match_score_floor))
-        - queued_job_ids
-        - set(discovery.rediscovered_job_ids)
-    ):
-        _requeue_pending_delivery(
-            job_id,
-            store,
-            digest_items,
-            settings.policy.match_score_floor,
-        )
 
     now_for_usage = datetime.now(timezone.utc)
     usage_summary = usage.snapshot(now_for_usage) if usage is not None else None

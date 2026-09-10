@@ -218,3 +218,47 @@ preconditions rather than being discovered in launch week.
 5. Demote Telegram to notification plus one decision.
 6. Rebuild the coach from new specifications, attached to the opportunity, generalising the
    readiness vocabulary and the hands-on checkpoint as part of that work.
+
+## Open questions (parking lot)
+
+Raised mid-task, deliberately not answered here. Read before starting related work; add to
+this list rather than letting an idea raised while doing something else get lost.
+
+### User feedback on a match: applied / not interested, and how long "no" lasts
+
+Today the engine tracks exactly one thing about a delivered job: sent or not sent
+(`has_delivery(job_id, "telegram_message")`). There is no "I applied," no "not interested,"
+no way to say "never show me this again" versus "you were right to try, but not now." Raised
+2026-09-10 while scoping #188 (the daily digest becoming a call to the matching operation),
+because that ticket's "previously-delivered jobs do not reappear" rule is the same seam this
+question lives on, and the wrong answer there would bake in the wrong model of "delivered."
+
+Open, not decided:
+- Where the signal is captured (see below — possibly a swipe surface).
+- What a hard "no" means: never show again, full stop, or does the engine still learn
+  something from it (steer the ranking away from similar postings)?
+- What a soft "no" means, and how long before the engine may show it again — a fixed cooldown,
+  or only on new evidence (comp now disclosed, remote policy changed, a re-scoring)? Rediscovery
+  already re-offers a job that clears a *hard blocker* it used to trip; this is the same shape
+  of question for a *user's own* rejection, not the facts about the posting.
+- Whether "interested" needs its own state at all, or whether tapping through to the
+  `opportunities` spine (see "What the app is" above) already **is** that signal.
+
+This is a real mentality/policy decision, not a schema afterthought — do not let it get
+implemented as a side effect of an unrelated ticket.
+
+### Swipe-style surface for the decide step
+
+Raised alongside the above: instead of a scored list, a swipe-left/swipe-right surface for
+"a match arrives -> you decide" (spine moment 2). Fits the existing shape — Telegram is
+already scoped down to "take one tap for interested or not interested," and a swipe is that
+tap with better affordance for a feed of many matches rather than one message at a time. It
+would also be the natural place to finally capture the feedback signal above with a clean,
+explicit gesture instead of retrofitting buttons onto chat cards.
+
+Main risk: a swipe rewards a fast, shallow judgement (it works for dating apps because a face
+reads in under a second); a job posting needs actual reading, and match quality is this
+product's whole differentiator (see "Competitors and how to validate" in memory). A bad
+thumbnail could get a good match swiped away before it is read. Worth prototyping as one
+surface's interaction pattern, not committing the whole decide step to it — and it's a
+front-end design problem to solve well, not a reason to reject the idea outright.

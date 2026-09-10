@@ -140,6 +140,27 @@ def test_build_digest_renders_low_scores_selected_by_the_engine():
     assert "Blocked" in digest
 
 
+def test_build_digest_carries_a_sources_required_text_credit_and_link():
+    """#188: a source's display_credit obligation reaches the digest as text
+
+    and link only -- never the advert body (never present here to begin
+    with) and never a badge/logo (Telegram's sendMessage cannot render one)."""
+    digest = build_digest([
+        _item(
+            company="Acme",
+            display_credit_text="Jobs by Acme Feed",
+            display_credit_url="https://acme.example/jobs",
+        )
+    ])
+    assert "Jobs by Acme Feed" in digest
+    assert "https://acme.example/jobs" in digest
+
+
+def test_build_digest_carries_no_credit_line_for_a_source_with_no_obligation():
+    digest = build_digest([_item(company="Acme")])
+    assert "Jobs by" not in digest
+
+
 def test_select_deliverable_items_keeps_only_supported_decisions():
     """Decision is the only filter left here; see the digest test above."""
     selected = select_deliverable_items([

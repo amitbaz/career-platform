@@ -416,9 +416,10 @@ Key modules:
   foreign currency or a non-annual period all send the job on to scoring. Only the disclosed
   *maximum* is compared, matching the scoring prompt's own rule, and that prompt keeps both
   rules — this removes calls, it does not remove the model's authority over what the facets
-  cannot settle. It reads the same `JobFacets` object `_facets_for_scoring` just returned, so
-  there is no second, staler view of the posting to disagree with it and no extra store read.
-  `pipeline.py::_facet_decided_blockers` is the seam; a block builds the same `Evaluation`
+  cannot settle. Since #188, `job_hunter_match_jobs`'s SQL port of this function is what a ranked
+  row's `hard_blockers` column already carries by the time `matching.match_jobs` sees it, so there
+  is no second, staler Python-side facets read to disagree with it. `matching.match_jobs` is the
+  seam; a block builds the same `Evaluation`
   shape a model block produces (`decision="blocked"`, zero scores, empty `model`) and
   everything downstream — the merge-following write, company promotion, the score floor, the
   digest, the decision counters — handles it identically. Counted in

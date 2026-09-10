@@ -1,8 +1,18 @@
 import json
 
+import pytest
+
 from job_hunter.models import AIQuotaSettings, Job, SearchPolicy, Settings
 from job_hunter.pipeline import run_pipeline
 from job_hunter.telegram_navigation import parse_callback
+
+
+@pytest.fixture(autouse=True)
+def _use_default_search_profile(default_search_profile):
+    """Opt this file into `conftest.default_search_profile` (#187, #188):
+    every test here runs `run_pipeline` end-to-end and needs
+    `job_hunter_match_jobs` to have something to rank against.
+    """
 
 
 class FakeGemini:

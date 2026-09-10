@@ -10,6 +10,7 @@ from job_hunter.ai.credentials import (
     CredentialUnavailable,
     EnvCredentialResolver,
 )
+from job_hunter.ai.retry import wait_out_capacity
 from job_hunter.ai.port import (
     AI_PURPOSES,
     CORE_PURPOSE,
@@ -46,4 +47,5 @@ __all__ = [
     "PauseKind",
     "PlatformAllowanceExhausted",
     "QuotaUnavailable",
+    "wait_out_capacity",
 ]

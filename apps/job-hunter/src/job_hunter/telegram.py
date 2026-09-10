@@ -65,6 +65,12 @@ def _digest_line(item: DigestItem) -> str:
     line = f"- {item.score} | {item.company} - {item.title}"
     if item.url:
         line += f" | {item.url}"
+    if item.display_credit_text and item.display_credit_url:
+        # Text and link only -- never the advert body (this line never
+        # carries one to begin with) and never a badge/logo: Telegram's
+        # sendMessage has no image entity, so a licensed source's badge half
+        # is not renderable here (#184, #188).
+        line += f" | {item.display_credit_text}: {item.display_credit_url}"
     if item.hard_blockers:
         line += f" | blockers: {', '.join(item.hard_blockers)}"
     return line

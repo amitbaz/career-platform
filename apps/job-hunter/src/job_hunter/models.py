@@ -549,6 +549,15 @@ class DigestItem:
     market_id: str = ""
     market_note: str = ""
     availability_note: str = ""
+    #: A licensed source's required text credit and link (#184, read by
+    #: #188) -- e.g. "Jobs by Adzuna" / "https://...". Empty means the
+    #: posting's source imposes no obligation, matching
+    #: `job_hunter_posting_display_credit`'s own `null` for that case. Never
+    #: a badge/logo: Telegram's `sendMessage` cannot render one in a
+    #: multi-posting digest, so only the text half of a licensed source's
+    #: obligation is representable here.
+    display_credit_text: str = ""
+    display_credit_url: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -562,6 +571,11 @@ class NavigationCard:
     market_id: str = ""
     market_note: str = ""
     availability_note: str = ""
+    #: See `DigestItem.display_credit_text`/`display_credit_url` (#184,
+    #: #188) -- the navigation-card surface is the digest's other delivery
+    #: path and carries the same obligation.
+    display_credit_text: str = ""
+    display_credit_url: str = ""
 
 
 @dataclass(slots=True, frozen=True)
