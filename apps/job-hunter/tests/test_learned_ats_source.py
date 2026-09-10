@@ -9,7 +9,7 @@ from job_hunter.sources.learned_ats import LearnedAtsSource, LearnedAtsStats
 
 
 @pytest.fixture(autouse=True)
-def _ats_board_salt():
+def _ats_board_salt(monkeypatch):
     """Give each test its own namespace of board identifiers.
 
     `job_hunter_ats_boards` is shared and has no delete policy (#203), so a
@@ -31,7 +31,24 @@ def _ats_board_salt():
     actually changed: that completeness guarantee used to be free because
     per-user state was exclusive, and now it is not.
     """
-    return uuid.uuid4().hex[:8]
+    from job_hunter.postgres_store import PostgresJobStore
+
+    salt = uuid.uuid4().hex[:8]
+    real_list_due = PostgresJobStore.list_due_ats_boards
+
+    def list_due_for_this_test(store, *args, **kwargs):
+        return [
+            entry
+            for entry in real_list_due(store, *args, **kwargs)
+            if salt in entry.board_identifier
+        ]
+
+    monkeypatch.setattr(
+        PostgresJobStore,
+        "list_due_ats_boards",
+        list_due_for_this_test,
+    )
+    return salt
 
 
 class _Response:

@@ -280,7 +280,8 @@ Prefer completing straightforward work in the main agent context. Avoid duplicat
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[test,webhook]'   # webhook extra too: the full suite imports flask
 
-pytest -q                          # run full test suite
+pytest -q                          # run full test suite, serially
+pytest -q -n auto --dist=loadgroup # what `pnpm job-hunter:test` and CI actually run (#236)
 pytest tests/test_pipeline.py -q   # single file
 pytest tests/test_pipeline.py::test_name -q  # single test
 
@@ -292,7 +293,7 @@ Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to
 
 Set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery; truthy values are `1/true/yes` (case-insensitive), anything else is treated as unset/false. The Gemini key and the CV and cover letter text are not env vars: they are saved in Relay's Profile view for `JOB_HUNTER_USER_ID` and read from Postgres at run time.
 
-CI (`.github/workflows/job-hunter-ci.yml`) runs `pytest -q` on Python 3.12 — no lint step configured. It triggers on every pull request, and on pushes to `main` only. The push trigger is deliberately scoped to `main`: without it, a commit on a pull request branch starts both workflows against the same commit and costs twice the Actions minutes, which matters while the repository is private and subject to the monthly cap.
+CI (`.github/workflows/job-hunter-ci.yml`) runs `pytest -q -n auto --dist=loadgroup` on Python 3.12 — no lint step configured. It triggers on every pull request, and on pushes to `main` only. The push trigger is deliberately scoped to `main`: without it, a commit on a pull request branch starts both workflows against the same commit and costs twice the Actions minutes, which matters while the repository is private and subject to the monthly cap.
 
 ## Testing Guidelines
 
@@ -300,18 +301,26 @@ Pytest is the test runner. Run the full suite with `pytest -q`, a single file wi
 
 Follow **red -> green -> refactor**: write a failing test, make it pass minimally, then improve both implementation and test. New behavior and bug fixes should be test-driven whenever practical. Preserve existing behavior with regression tests before changing code that is not already covered.
 
-Before considering a change complete, run the relevant focused tests while iterating and then run the full `pytest -q` suite.
+Before considering a change complete, run the relevant focused tests while iterating and then run the full `pytest -q -n auto --dist=loadgroup` suite.
 
 **Give a store-backed test a fingerprint nobody else uses.** `conftest.py` clears every
-`job_hunter_*` table between tests except `job_hunter_postings`, which it cannot: a posting has
-no owner and there is deliberately no delete policy on it (#174). A posting therefore outlives
-the test that created it, and its identity columns and description are only *improved* by a
-later upsert, never overwritten. Two tests sharing a fingerprint — the same `source_job_id`, or
-the same company/title/location when neither passes a `url` — resolve to one posting, and since
-#177 the readers take their facts from it, so the second test reads the first one's data. The
-same happens across runs and across two suites running at once under different seed users.
-Build the fingerprint from a `uuid.uuid4()` unless the test is specifically about two payloads
-resolving to the same posting.
+`job_hunter_*` table between tests except the ones no delete policy reaches at all —
+`job_hunter_postings` (#174), `job_hunter_companies` and `job_hunter_company_watch_health`
+(#204), and `job_hunter_platform_search_usage`/`_ai_usage`/`_ai_quota_state` (#184): none has a
+`user_id`, so nothing about a row marks it as one test's rather than another's, and it outlives
+the test that wrote it. A posting's identity columns and description are only *improved* by a
+later upsert, never overwritten; an automatic company watch or a usage ledger row is shared
+outright. Two tests sharing an identity — the same `source_job_id`, the same company name passed
+to `upsert_company_watch(..., promotion_source="automatic")`, or the same calendar month passed
+to the Brave search-usage ledger — resolve to one row, and the second test's assertions describe
+whatever the first (or a concurrently running third, under `-n auto`) left there. Build the
+identity from a `uuid.uuid4()` (`_company_name()` in `test_pipeline.py`/`test_watchlist.py` is
+the established helper for a company) unless the test is specifically about two payloads
+resolving to the same row; `test_brave_budget.py`'s `brave_ledger_window` fixture does the
+equivalent for the search-usage ledger, where the identity has to be a whole calendar month
+rather than a random string. Manual company watches (`job_hunter_company_watch`,
+`promotion_source="manual"`) are the one company-shaped exception: they carry `user_id` and are
+already isolated by the seed-user pool, so a literal name there is fine (#236).
 
 ## Source Code Documentation
 

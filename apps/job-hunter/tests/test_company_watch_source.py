@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -374,8 +375,12 @@ def test_generic_watch_accepts_compatible_json_ld_job_types(store, tmp_path, job
 
 
 def test_company_only_watch_is_skipped_without_recording_failure(store, tmp_path, caplog):
+    # Automatic promotion writes the shared job_hunter_company_watch_health
+    # (#204), which has no user_id -- a bare literal here would race a
+    # concurrently running test promoting the same name under xdist (#236).
+    company_name = f"Distribusion Technologies {uuid.uuid4().hex[:12]}"
     placeholder_id = store.upsert_company_watch(
-        company_name="Distribusion Technologies",
+        company_name=company_name,
         careers_url="",
         ats_provider=None,
         ats_identifier=None,
@@ -403,9 +408,9 @@ def test_company_only_watch_is_skipped_without_recording_failure(store, tmp_path
         jobs = list(CompanyWatchSource(store, http, now=lambda: now).discover())
 
     assert [job.source for job in jobs] == ["watch:greenhouse"]
-    assert "Distribusion Technologies" not in caplog.text
+    assert company_name not in caplog.text
 
-    placeholder = store.get_company_watch("Distribusion Technologies")
+    placeholder = store.get_company_watch(company_name)
     assert placeholder["id"] == placeholder_id
     assert placeholder["consecutive_failures"] == 0
     assert placeholder["paused_until"] is None

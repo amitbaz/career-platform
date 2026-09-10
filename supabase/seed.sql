@@ -1,9 +1,11 @@
 -- Local development and test fixtures. Applied by `supabase db reset` and by
 -- the first `supabase start`; never runs against the hosted project.
 --
--- A pool of 8 user pairs. Each store-backed test run claims one pair and
--- uses it as its two seed users, so runs isolate by `user_id` -- which RLS
--- already scopes every query by -- instead of taking turns on one shared pair.
+-- A pool of 16 user pairs. Each xdist worker in a store-backed test run claims
+-- one pair and uses it as its two seed users, so workers and concurrent runs
+-- isolate by `user_id` -- which RLS already scopes every query by -- instead
+-- of taking turns on one shared pair. Sixteen covers this repository's
+-- measured 10-worker `-n auto` run with room for another active worktree.
 -- `apps/job-hunter/tests/seed_pool.py` owns the pool and does the claiming;
 -- `tests/test_seed_pool.py` asserts this file and that module still agree.
 --
@@ -66,6 +68,54 @@ values
    '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    '{}', '{}', now(), now()),
   ('bbbbbbbb-0000-0000-0007-000000000002', 'b7@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-0008-000000000001', 'a8@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-0008-000000000002', 'b8@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-0009-000000000001', 'a9@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-0009-000000000002', 'b9@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-000a-000000000001', 'a10@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-000a-000000000002', 'b10@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-000b-000000000001', 'a11@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-000b-000000000002', 'b11@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-000c-000000000001', 'a12@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-000c-000000000002', 'b12@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-000d-000000000001', 'a13@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-000d-000000000002', 'b13@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-000e-000000000001', 'a14@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-000e-000000000002', 'b14@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('aaaaaaaa-0000-0000-000f-000000000001', 'a15@test.local',
+   '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   '{}', '{}', now(), now()),
+  ('bbbbbbbb-0000-0000-000f-000000000002', 'b15@test.local',
    '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    '{}', '{}', now(), now())
 on conflict (id) do nothing;

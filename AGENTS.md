@@ -333,7 +333,7 @@ directory, for the same reason.
   else's reset. If you need a bare invocation, wrap it:
   `python3 scripts/stack_lock.py --shared <command>` (or without `--shared` if it is destructive).
 - **A wait is not a hang.** `stack_lock: waiting for the local Supabase stack (...)` or
-  `seed_pool: all 8 seed user slots are in use` means someone else holds it; both report progress
+  `seed_pool: all 16 seed user slots are in use` means someone else holds it; both report progress
   every 30s and give up after 30 minutes.
 - **What it looks like when the pool is bypassed:** a scatter of unrelated assertion failures
   (`assert [] == ['acme']`) or a `RuntimeError` about a foreign-key violation while cleaning seed
@@ -358,9 +358,15 @@ directory, for the same reason.
   not confirmed is the right tree.
 
 Raising the pool size means editing both `seed_pool.POOL_SIZE` and `supabase/seed.sql`, then
-running `pnpm db:reset` to create the new users — test writes go through PostgREST with a minted
-JWT, which cannot insert into `auth.users`, so the pool cannot grow itself.
-`tests/test_seed_pool.py` fails if the two ever disagree.
+applying the seed to every stack that already exists — test writes go through PostgREST with a
+minted JWT, which cannot insert into `auth.users`, so the pool cannot grow itself.
+`psql "$SUPABASE_TEST_DB_URL" -f supabase/seed.sql` is enough and is safe on the shared stack (the
+insert is `on conflict do nothing`); `pnpm db:reset` also works but wipes everyone's data.
+Each xdist worker claims its own slot, so the pool is sized for workers, not runs: 16 covers a
+10-core `-n auto` run with room for a second worktree. A stack that missed the reseed fails every
+test on a new slot with `job_hunter_jobs_user_id_fkey` / `Key is not present in table "users"` —
+hundreds of failures that read like a broken store. `tests/test_seed_pool.py` fails if the two
+files ever disagree, but it cannot see what the running stack holds.
 
 ### Never `supabase db push` from a worktree
 

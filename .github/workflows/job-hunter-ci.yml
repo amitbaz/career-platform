@@ -48,7 +48,7 @@ jobs:
           # The keys file is an array; the minter wants the single JWK object.
           export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
           cd apps/job-hunter
-          pytest -q
+          pytest -q -n auto --dist=loadgroup
 
   isolation:
     # Proves a per-user token cannot cross users, against real policies on a

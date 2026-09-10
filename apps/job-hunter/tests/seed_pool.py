@@ -35,10 +35,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 #: Number of user pairs `supabase/seed.sql` creates. This is the cap on
-#: real parallelism: a ninth concurrent run waits for a slot, which is what
-#: every run used to do. Raising it means editing seed.sql too, and then
-#: `supabase db reset` to apply it.
-POOL_SIZE = 8
+#: real parallelism: each xdist worker claims its own slot, so a worker past
+#: the sixteenth waits for one, which is what every run used to do. Raising
+#: it means editing seed.sql too, and then applying it to any stack that
+#: already exists -- `psql "$SUPABASE_TEST_DB_URL" -f supabase/seed.sql` is
+#: enough, since the insert is `on conflict do nothing`. A stack that missed
+#: that step fails every test on a new slot with a `job_hunter_jobs_user_id_
+#: fkey` violation, which reads like a broken store rather than a missing user.
+POOL_SIZE = 16
 
 
 def user_pair(slot: int) -> tuple[str, str]:

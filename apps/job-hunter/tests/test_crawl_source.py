@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from job_hunter.crawl_source import CrawlSourceStage, description_hash
@@ -345,6 +347,7 @@ def test_the_stage_reads_and_writes_the_real_tables(store):
     # the hash is computed inside `job_hunter_upsert_posting`. This test is
     # about the hash short-circuit, so it needs the path that populates it.
 
+    crawl_key = f"remotive:test-{uuid.uuid4()}"
     existing = _job("remotive", "int-1", "unchanged body")
     store.upsert_job(existing)
 
@@ -353,7 +356,7 @@ def test_the_stage_reads_and_writes_the_real_tables(store):
         build_source=lambda key: _StubSource([existing, _job("remotive", "int-2", "new body")]),
         persist=lambda jobs: store.merge_posting_batch(jobs),
     )
-    outcome = stage(_message())
+    outcome = stage(_message(crawl_key))
 
     # The hash short-circuit resolved against a row that is really there.
     assert outcome.unchanged_by_hash == 1
@@ -364,7 +367,7 @@ def test_the_stage_reads_and_writes_the_real_tables(store):
             cursor.execute(
                 "select outcome, fetched, unchanged_by_hash "
                 "from public.job_hunter_source_crawls where source_key = %s",
-                ("remotive",),
+                (crawl_key,),
             )
             rows = cursor.fetchall()
 
@@ -374,19 +377,20 @@ def test_the_stage_reads_and_writes_the_real_tables(store):
 @pytest.mark.integration
 def test_a_crawl_that_produced_nothing_still_leaves_a_row(store):
     """An empty result must carry its reason, in the table and not only in a log."""
+    crawl_key = f"arbeitnow:test-{uuid.uuid4()}"
     stage = CrawlSourceStage(
         store._ingestion,
         build_source=lambda key: _StubSource([], raises=RuntimeError("upstream down")),
         persist=lambda jobs: None,
     )
-    stage(_message("arbeitnow"))
+    stage(_message(crawl_key))
 
     with store._ingestion.connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "select outcome, error from public.job_hunter_source_crawls "
                 "where source_key = %s",
-                ("arbeitnow",),
+                (crawl_key,),
             )
             row = cursor.fetchone()
 
@@ -404,15 +408,16 @@ def test_the_stage_registers_the_target_row_idempotently_against_the_real_table(
         build_source=lambda key: _StubSource([]),
         persist=lambda jobs: None,
     )
-    stage(_message("greenhouse:int-registers"))
-    stage(_message("greenhouse:int-registers"))
+    crawl_key = f"greenhouse:int-registers-{uuid.uuid4()}"
+    stage(_message(crawl_key))
+    stage(_message(crawl_key))
 
     with store._ingestion.connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "select count(*) from public.job_hunter_crawl_targets "
                 "where crawl_key = %s",
-                ("greenhouse:int-registers",),
+                (crawl_key,),
             )
             row = cursor.fetchone()
 

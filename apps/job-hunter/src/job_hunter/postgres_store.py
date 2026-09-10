@@ -19,9 +19,9 @@ import json
 import logging
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
@@ -300,10 +300,15 @@ class PostgresJobStore:
     """
 
     def __init__(
-        self, client: SupabaseClient, ingestion: IngestionDatabase | None = None
+        self,
+        client: SupabaseClient,
+        ingestion: IngestionDatabase | None = None,
+        *,
+        stage_queue_names: Mapping[Stage, str] | None = None,
     ) -> None:
         self._client = client
         self._ingestion = ingestion
+        self._stage_queue_names = stage_queue_names
         #: Postings this store has already asked for facet extraction on, so
         #: one crawl's three persist phases enqueue an advertisement once
         #: rather than three times. See `_enqueue_needing_facets`.
@@ -541,7 +546,7 @@ class PostgresJobStore:
 
         batch_id = str(uuid.uuid4())
         columns = ", ".join(_POSTING_STAGING_COLUMNS)
-        queue = PostgresStageQueue(self._ingestion)
+        queue = PostgresStageQueue(self._ingestion, self._stage_queue_names)
         try:
             with self._ingestion.connection() as connection:
                 with connection.cursor() as cursor:
@@ -651,7 +656,7 @@ class PostgresJobStore:
         )
         if not ids or self._ingestion is None:
             return 0
-        queue = PostgresStageQueue(self._ingestion)
+        queue = PostgresStageQueue(self._ingestion, self._stage_queue_names)
         enqueued = 0
         try:
             with self._ingestion.connection() as connection:
@@ -724,7 +729,7 @@ class PostgresJobStore:
         """
         if self._ingestion is None or limit <= 0:
             return []
-        queue = PostgresStageQueue(self._ingestion)
+        queue = PostgresStageQueue(self._ingestion, self._stage_queue_names)
         runner = StageRunner(queue, visibility_timeout_seconds=5 * 60)
         stage = ExtractFacetsStage(
             self._ingestion, ai, already_attempted=frozenset(self._facet_read_attempts)
