@@ -1373,7 +1373,11 @@ git commit -m "feat(job-hunter): make the search allowance a platform ledger (#1
 
 ---
 
-### Task 8: Point `search_budget.py` at the platform ledger
+### Task 8: Point `search_budget.py` at the platform ledger — ABSORBED INTO TASK 7
+
+> **This task no longer exists as a separate step.** Task 7's implementer did this work in the same commit as the table drop, and that was the right call: splitting a table drop from its only writer leaves the branch holding a commit where the ledger writes a table that does not exist. Same argument as the `conftest.py` cleanup-list edit. The steps below are kept as the record of what was required; do not dispatch them separately.
+>
+> Task 7 also absorbed a consequence neither task anticipated: removing `user_id` removed the test isolation that column was silently providing, because `conftest.py`'s cleanup walk deletes by user id and `SearchUsageLedger.count()` was row-level-security filtered. The general fix — a cleanup path for platform-owned tables with no `user_id` — landed there too.
 
 **Files:**
 - Modify: `apps/job-hunter/src/job_hunter/search_budget.py:34,36–75,231–240`
@@ -2064,6 +2068,12 @@ def test_the_stage_reads_and_writes_the_real_tables(store):
         "the store fixture must supply an ingestion connection; a fake here "
         "would test a configuration nobody runs"
     )
+
+    # Use store.upsert_job rather than the `seed_postings` fixture #179 added.
+    # seed_postings inserts a posting row directly over the privileged
+    # connection, which leaves `description_hash` at its '' default --
+    # the hash is computed inside `job_hunter_upsert_posting`. This test is
+    # about the hash short-circuit, so it needs the path that populates it.
 
     existing = _job("remotive", "int-1", "unchanged body")
     store.upsert_job(existing)
