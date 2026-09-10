@@ -503,6 +503,29 @@ def _clean_platform_tables(database) -> None:
     the same trade-off the pgTAP suite already accepts for shared,
     user-less tables; there is no narrower cut available without adding a
     run-scoping column these tables were deliberately not given.
+
+    **This knowingly breaks the contract of the lock it runs under.**
+    `scripts/stack_lock.py` documents `--shared` as being for work that
+    "only reads and writes its own rows", and `package.json` runs
+    `pnpm job-hunter:test` under `--shared`. An unconditional `delete
+    from` across five shared tables is not that. Before #184 the cleanup
+    walk deleted by user id and the seed-user pool made concurrent suites
+    safe by construction; these tables have no user column, so that
+    property is genuinely weakened rather than merely untested.
+
+    **If you are staring at failures that make no sense, check for a
+    second suite before you debug your diff.** This has already happened
+    once: two overlapping runs produced eleven failures in
+    `test_pipeline.py` that read exactly like a regression, while that
+    file passed 144/144 on its own. Note that `ps aux | grep pytest`
+    reported nothing at the time -- it is a false negative here -- so the
+    reliable check is to re-run the failing file alone. If it passes,
+    you were racing someone.
+
+    The remedy, if this becomes common rather than occasional, is to move
+    `job-hunter:test` to the exclusive lock in `package.json`. That is one
+    line, and it costs every agent on the machine a serialised
+    eight-minute suite, which is why it has not been taken.
     """
     with database.connection() as connection:
         with connection.cursor() as cursor:
