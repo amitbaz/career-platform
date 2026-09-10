@@ -1,7 +1,3 @@
--- PLACEHOLDER filename, not a timestamp (AGENTS.md's migration-numbering rule):
--- renamed to a real YYYYMMDDHHMMSS at PR time, after checking main and every
--- other in-flight worktree for the highest timestamp either carries.
-
 -- job_hunter_match_jobs never excluded a closed posting or a rejected
 -- membership row (issue #188).
 --

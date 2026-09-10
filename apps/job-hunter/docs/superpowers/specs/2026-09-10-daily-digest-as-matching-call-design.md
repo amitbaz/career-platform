@@ -197,7 +197,7 @@ not anticipated here: `job_hunter_match_jobs` (#187) never excluded a closed pos
 the function for delivery — `run_pipeline` built its shortlist from `discovery.eligible`, which
 never contained either. #188 makes this function the one thing deciding what reaches a user over
 the *whole* corpus, so both gaps became reachable and are fixed in
-`29999999000000_job_hunter_match_jobs_excludes_closed_postings.sql` (pgtap-covered).
+`20260910150000_job_hunter_match_jobs_excludes_closed_postings.sql` (pgtap-covered).
 
 ## Deviations from this design, found during implementation
 
