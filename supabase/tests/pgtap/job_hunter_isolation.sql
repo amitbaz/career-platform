@@ -71,7 +71,6 @@ select unnest(array[
   'job_hunter_ai_usage',
   'job_hunter_ai_quota_state',
   'job_hunter_candidate_context_cache',
-  'job_hunter_search_api_usage',
   'job_hunter_gmail_sync_state',
   'job_hunter_gmail_messages',
   'job_hunter_inbound_job_candidates',
@@ -169,9 +168,6 @@ begin
     when 'job_hunter_candidate_context_cache' then
       insert into public.job_hunter_candidate_context_cache (user_id, cache_key, profile_hash, model, schema_version, context_json)
       values (p_owner, gen_random_uuid()::text, 'hash', 'gemini-test', '1', '{}'::jsonb) returning id into v_id;
-    when 'job_hunter_search_api_usage' then
-      insert into public.job_hunter_search_api_usage (user_id, provider, occurred_at)
-      values (p_owner, 'serper', now()) returning id into v_id;
     when 'job_hunter_gmail_sync_state' then
       insert into public.job_hunter_gmail_sync_state (user_id, account_id)
       values (p_owner, gen_random_uuid()::text) returning id into v_id;
@@ -293,7 +289,8 @@ end $$;
 create view pg_temp.job_hunter_platform_tables as
 select unnest(array[
   'job_hunter_platform_ai_usage',
-  'job_hunter_platform_ai_quota_state'
+  'job_hunter_platform_ai_quota_state',
+  'job_hunter_platform_search_usage'
 ]) as table_name;
 
 -- The shared tables, for the same reason in reverse. A posting (issue #174)
@@ -399,8 +396,8 @@ select is(
   'every public.job_hunter_* table is covered by an isolation check');
 
 select is(
-  (select count(*)::int from pg_temp.job_hunter_tables), 21,
-  'twenty-one Job Hunter tables are under test');
+  (select count(*)::int from pg_temp.job_hunter_tables), 20,
+  'twenty Job Hunter tables are under test');
 
 select pg_temp.check_isolation(
   t.table_name,

@@ -136,7 +136,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 # the record.
 #
 # The remaining tables (ats_registry, ai_usage, ai_quota_state,
-# candidate_context_cache, search_api_usage, gmail_sync_state,
+# candidate_context_cache, gmail_sync_state,
 # gmail_messages, inbound_job_candidates, telegram_navigation_sessions)
 # carry no foreign key to another job_hunter_* table, so their position
 # relative to each other is unconstrained; they are listed after the
@@ -162,7 +162,6 @@ _TABLES_CHILD_FIRST = (
     "job_hunter_ai_usage",
     "job_hunter_ai_quota_state",
     "job_hunter_candidate_context_cache",
-    "job_hunter_search_api_usage",
     "job_hunter_gmail_sync_state",
     "job_hunter_gmail_messages",
     "job_hunter_inbound_job_candidates",

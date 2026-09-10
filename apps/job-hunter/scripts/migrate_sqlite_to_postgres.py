@@ -49,7 +49,10 @@ race this port fixes) is handled per table:
   Telegram message and expiry are still meaningful on their own.
 - Tables with no foreign key to another job_hunter table (``ats_registry``,
   ``gmail_sync_state``, ``gmail_messages``, ``inbound_job_candidates``,
-  ``search_api_usage``) migrate unconditionally.
+  ``search_api_usage``) migrate unconditionally. ``search_api_usage`` lands
+  on ``job_hunter_platform_search_usage`` (issue #184): the legacy database
+  was single-user, so its rows collapse onto the provider key with no
+  ``user_id`` and no loss.
 
 Timestamps: legacy SQLite stored naive ISO-8601 TEXT with no UTC offset.
 Postgres columns are ``timestamptz``. The port's standing rule elsewhere
@@ -657,18 +660,24 @@ def _migrate_review_deliveries(
 def _migrate_search_api_usage(
     conn: sqlite3.Connection, client: SupabaseClient, counts: dict[str, int]
 ) -> None:
+    """Carry the legacy per-user ledger onto the platform ledger (issue #184).
+
+    The legacy SQLite database was single-user, so dropping ``user_id`` and
+    keying on ``(provider, occurred_at)`` loses nothing: a row that used to
+    be "this user's call" and a row that is now "a call against the key"
+    name the same event.
+    """
     migrated = 0
     for row in _rows(conn, "search_api_usage"):
         payload = {
-            "user_id": client.user_id,
             "provider": row["provider"],
             "occurred_at": _iso("search_api_usage", "occurred_at", row["occurred_at"]),
         }
         _upsert_one(
             client,
-            "job_hunter_search_api_usage",
+            "job_hunter_platform_search_usage",
             payload,
-            on_conflict="user_id,provider,occurred_at",
+            on_conflict="provider,occurred_at",
         )
         migrated += 1
     counts["search_api_usage"] = migrated

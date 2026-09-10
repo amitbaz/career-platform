@@ -311,3 +311,72 @@ revoke all on function
   from public, anon, authenticated, service_role;
 revoke all on function public.job_hunter_source_schedule_slug(text)
   from public, anon, authenticated, service_role;
+
+-- The external search allowance becomes a platform ledger ------------------
+--
+-- Owner's decision on #184. job_hunter_search_api_usage was per-user, but a
+-- shared crawl runs as the privileged role with no user identity and then
+-- the budget has no user to charge. A per-user ledger has exactly two
+-- possible behaviours and both are wrong: charge one arbitrary user for
+-- everyone's crawl, or fan the crawl out per user and burn the same cap N
+-- times for identical results. The quota belongs to the API key -- Adzuna's
+-- is 2,500 calls a month on the key -- so the budget scales with postings
+-- rather than with subscribers, which is the same shape as shared
+-- extraction.
+--
+-- Keeping both ledgers was explicitly rejected: two ledgers over one key is
+-- a bug already live on the Gemini side, where two of them jointly authorise
+-- about 160% of the key's real quota. Per-user search accounting returns if
+-- and when a user-triggered search exists, and not before.
+--
+-- Shape copied from job_hunter_platform_ai_usage: the runner claim, and no
+-- delete policy, because a ledger that can be rewritten is not a ledger.
+create table public.job_hunter_platform_search_usage (
+  id uuid primary key default gen_random_uuid(),
+  provider text not null,
+  occurred_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  constraint job_hunter_platform_search_usage_provider_at_key
+    unique (provider, occurred_at)
+);
+
+create index job_hunter_platform_search_usage_window_idx
+  on public.job_hunter_platform_search_usage (provider, occurred_at desc);
+
+comment on table public.job_hunter_platform_search_usage is
+  'Consumption of the platform-owned external search keys (issue #184). '
+  'Deliberately not keyed by user_id: the key has one allowance and the '
+  'crawl it pays for belongs to no one user.';
+
+alter table public.job_hunter_platform_search_usage enable row level security;
+
+create policy runner_select on public.job_hunter_platform_search_usage
+  for select to authenticated
+  using (coalesce((select auth.jwt() -> 'job_hunter_runner'), 'false'::jsonb) = 'true'::jsonb);
+create policy runner_insert on public.job_hunter_platform_search_usage
+  for insert to authenticated
+  with check (coalesce((select auth.jwt() -> 'job_hunter_runner'), 'false'::jsonb) = 'true'::jsonb);
+-- Update is what makes the ledger's upsert converge rather than fail on a
+-- duplicate key; it is not an invitation to rewrite history.
+create policy runner_update on public.job_hunter_platform_search_usage
+  for update to authenticated
+  using (coalesce((select auth.jwt() -> 'job_hunter_runner'), 'false'::jsonb) = 'true'::jsonb)
+  with check (coalesce((select auth.jwt() -> 'job_hunter_runner'), 'false'::jsonb) = 'true'::jsonb);
+
+-- Carry this month's spend across.
+--
+-- The owner's call, and the reason: the Brave monthly cap is drawn against
+-- the key, so calls already spent this month are real spend no matter whose
+-- row recorded them. Starting the platform ledger empty would hand the
+-- engine a fresh 1,000-query allowance on a key already drawn down.
+--
+-- Distinct users who happened to record the same occurred_at collapse to one
+-- row, which is correct: the ledger counts calls against the key, and two
+-- rows at one microsecond were one reservation being retried.
+insert into public.job_hunter_platform_search_usage (provider, occurred_at, created_at)
+select provider, occurred_at, min(created_at)
+  from public.job_hunter_search_api_usage
+ group by provider, occurred_at
+on conflict (provider, occurred_at) do nothing;
+
+drop table public.job_hunter_search_api_usage;

@@ -18,8 +18,8 @@ UTC = timezone.utc
 def _distinct_instants(base: datetime):
     """A `now` callable that advances by a microsecond on every call.
 
-    `job_hunter_search_api_usage` carries a `(user_id, provider, occurred_at)`
-    unique constraint (migration 202609060003) so a retried write converges
+    `job_hunter_platform_search_usage` carries a `(provider, occurred_at)`
+    unique constraint (issue #184) so a retried write converges
     instead of duplicating -- necessary for idempotency, but it also means
     two distinct reservations that land on the exact same `occurred_at`
     collapse into one row. In production that never happens: the default
@@ -105,7 +105,7 @@ def test_brave_request_budget_hard_cap_is_shared_across_consumers(supabase_clien
 def test_brave_request_budget_stops_at_limit_with_frozen_clock(supabase_client):
     """Repeated `occurred_at` must not collapse reservations into one row.
 
-    The unique key on `job_hunter_search_api_usage` makes a retried write
+    The unique key on `job_hunter_platform_search_usage` makes a retried write
     converge -- but `BraveRequestBudget.reserve()` guards against a
     genuinely frozen (or non-monotonic) clock by bumping into
     strictly-increasing territory itself. A single instance issuing every

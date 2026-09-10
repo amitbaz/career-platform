@@ -1,5 +1,5 @@
 begin;
-select plan(17);
+select plan(22);
 
 -- Shared knowledge: readable by any authenticated user, written by none ----
 
@@ -103,6 +103,29 @@ select lives_ok(
        (source_key, started_at, finished_at, outcome, fetched, new_to_corpus)
      values ('remotive', now(), now(), 'not_modified', 0, 0) $$,
   'an unchanged board records not_modified rather than an empty fetch');
+
+-- The search allowance is a property of the key, not of a person -----------
+
+select has_table('public', 'job_hunter_platform_search_usage',
+  'the platform search ledger exists');
+select hasnt_table('public', 'job_hunter_search_api_usage',
+  'and the per-user table it replaces is gone');
+
+select col_is_unique(
+  'public', 'job_hunter_platform_search_usage', array['provider', 'occurred_at'],
+  'the platform ledger converges a retried write on (provider, occurred_at)');
+
+select is_empty(
+  $$ select 1 from pg_policy
+      where polrelid = 'public.job_hunter_platform_search_usage'::regclass
+        and polcmd = 'd' $$,
+  'a ledger that can be rewritten is not a ledger: no delete policy');
+
+select is(
+  (select count(*)::int from pg_policy
+    where polrelid = 'public.job_hunter_platform_search_usage'::regclass),
+  3,
+  'select, insert and update only, all on the runner claim');
 
 select * from finish();
 rollback;
