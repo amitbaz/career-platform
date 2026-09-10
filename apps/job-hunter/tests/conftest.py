@@ -289,8 +289,21 @@ def _postings_unique_to_this_test():
     for a user to delete through. They accumulate on the local stack until
     the next `pnpm db:reset`, which is cheap next to a suite that reads
     another run's answers.
+
+    Every module that computes a fingerprint has to be patched here, not
+    just the one a given test happens to exercise: each does
+    `from ...normalize import job_fingerprint`, which binds the name into
+    its own module at import time, long before this fixture runs, so a
+    patch aimed at `normalize` itself would reach neither. `postgres_store`
+    (writes a posting) and `crawl_source` (looks one up by fingerprint,
+    issue #184) are the two today. A test that seeds through one and reads
+    through the other -- exactly what `test_crawl_source.py`'s hash
+    short-circuit test does -- silently compares a salted fingerprint
+    against an unsalted one unless both bindings carry the same salt. A
+    third module computing a fingerprint needs a third line added here, or
+    it will disagree with these two the same way.
     """
-    from job_hunter import postgres_store
+    from job_hunter import crawl_source, postgres_store
 
     salt = uuid.uuid4().hex
     real = postgres_store.job_fingerprint
@@ -300,6 +313,7 @@ def _postings_unique_to_this_test():
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(postgres_store, "job_fingerprint", salted)
+        patch.setattr(crawl_source, "job_fingerprint", salted)
         yield
 
 
