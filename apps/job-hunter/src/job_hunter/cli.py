@@ -66,6 +66,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen_parser.add_argument("--job-id", type=str, required=True)
 
+    recheck_parser = subparsers.add_parser(
+        "recheck-freshness",
+        help="Re-check due postings: close the ones that are gone, refresh the changed",
+    )
+    recheck_parser.add_argument(
+        "--limit",
+        type=int,
+        default=2000,
+        help="Most re-checks to drain in this run",
+    )
+
     return parser
 
 
@@ -79,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
             return _sync_gmail(args)
         if args.command == "generate-cover-letter":
             return _generate_cover_letter(args)
+        if args.command == "recheck-freshness":
+            return _recheck_freshness(args)
         return _run(args)
     except Exception:
         logger.exception("job hunter run failed")
@@ -233,6 +246,42 @@ def _run_with(
             "(errors=%d)",
             summary.evaluation_attempted,
             summary.errors,
+        )
+        return 1
+    return 0
+
+
+def _recheck_freshness(args: argparse.Namespace) -> int:
+    """Drain the recheck_freshness queue (#186).
+
+    User-free end to end: it needs ingestion's direct connection and nothing
+    else -- no user id, no search profile, no provider key -- because whether
+    an advertisement still exists is the same answer for everyone. Without
+    that connection it cannot write a posting at all, so it fails rather than
+    reporting a quiet day.
+    """
+    from job_hunter.recheck_freshness_stage import FAILED, drain_recheck_freshness
+
+    dsn = load_ingestion_dsn()
+    if dsn is None:
+        logger.error(
+            "recheck-freshness needs SUPABASE_DB_URL: re-checks write postings, "
+            "which only ingestion's direct connection may do"
+        )
+        return 1
+    database = IngestionDatabase(dsn)
+    try:
+        drain = drain_recheck_freshness(database, HttpClient(), limit=args.limit)
+    finally:
+        database.close()
+    logger.info("recheck_freshness complete: %s", drain.summary())
+    if drain.claimed and drain.completed == 0 and drain.outcomes[FAILED]:
+        # Isolated failures are the queue's to retry. Every single check
+        # failing is a worker that cannot reach anything -- make it red.
+        logger.error(
+            "recheck_freshness completed no check: %d claimed, %d failed",
+            drain.claimed,
+            drain.outcomes[FAILED],
         )
         return 1
     return 0

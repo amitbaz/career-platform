@@ -497,6 +497,25 @@ def should_run_scheduled(now: datetime, timezone: str, scheduled_hour: int) -> b
     return local_hour == scheduled_hour
 
 
+def _closed_job_ids(store, job_ids: list[str]) -> set[str]:
+    """Which of `job_ids` sit on a posting found gone (#186); empty on failure.
+
+    Failing to read this must not stop a run delivering. The worst case is one
+    run treating a closed posting as open, which is what every run did before
+    freshness existed; the delivery retry path filters closed postings in SQL
+    regardless.
+    """
+    if not job_ids:
+        return set()
+    try:
+        return store.closed_job_ids(job_ids)
+    except Exception:
+        logger.exception(
+            "could not read which candidates' postings are closed; treating all as open"
+        )
+        return set()
+
+
 def _requeue_pending_delivery(
     job_id: str,
     store: PostgresJobStore,
@@ -1596,6 +1615,40 @@ def run_pipeline(
     )
     watch_checks, watch_paused = _watch_check_outcomes(store, due_watches)
     summary.skipped += discovery.stats.prefilter_rejected + discovery.stats.profession_rejected
+
+    pending_evaluation_ids = [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
+    # A posting a freshness re-check found gone (#186) is neither scored nor
+    # delivered. This run can still meet one three ways: its own crawl (an
+    # aggregator is slower to drop an advert than the board it copied, and its
+    # listing deliberately does not reopen it), the deferred-scoring queue,
+    # and the rediscovered set. One read answers for all three, before ranking,
+    # so a closed posting never takes a shortlist place from a live one.
+    closed_job_ids = _closed_job_ids(
+        store,
+        [job_id for job_id, _job in discovery.eligible]
+        + pending_evaluation_ids
+        + list(discovery.rediscovered_job_ids),
+    )
+    eligible = [
+        (job_id, job) for job_id, job in discovery.eligible if job_id not in closed_job_ids
+    ]
+    rediscovered_job_ids = [
+        job_id for job_id in discovery.rediscovered_job_ids if job_id not in closed_job_ids
+    ]
+    for job_id in pending_evaluation_ids:
+        if job_id in closed_job_ids:
+            # Gone, not deferred. If its board lists it again it reopens and
+            # the crawl brings it back as a candidate like any other.
+            store.complete_ai_work("job_evaluation", job_id)
+    pending_evaluation_ids = [
+        job_id for job_id in pending_evaluation_ids if job_id not in closed_job_ids
+    ]
+    if closed_job_ids:
+        logger.info(
+            "closed postings skipped this run: %s (found gone by a freshness re-check)",
+            len(closed_job_ids),
+        )
+
     # What the corpus already knows about the employers behind this run's
     # candidates, read once for the whole run (#198). Ordering consults it
     # before anything is read, so a run pays for nothing to have the company
@@ -1604,14 +1657,14 @@ def run_pipeline(
     # answers reach this run's scoring and the next run's ordering.
     try:
         company_facets = store.get_company_facets_bulk(
-            [job.company for _job_id, job in discovery.eligible]
+            [job.company for _job_id, job in eligible]
         )
     except Exception:
         # Company facts are extra evidence. Failing to read them must never
         # be a reason a run stops ranking or delivering.
         logger.exception("could not read stored company facets for the eligible set")
         company_facets = {}
-    ranked = rank_jobs(discovery.eligible, settings.policy, preferences, company_facets)
+    ranked = rank_jobs(eligible, settings.policy, preferences, company_facets)
     selected = _select_candidates(ranked, settings.policy, preferences)
     eligible_source_counts = _source_counts(ranked)
     selected_source_counts = _source_counts(selected)
@@ -1643,7 +1696,6 @@ def run_pipeline(
     logger.info("eligible sources: %s", _format_source_counts(eligible_source_counts))
     logger.info("selected sources: %s", _format_source_counts(selected_source_counts))
 
-    pending_evaluation_ids = [row["job_id"] for row in store.list_pending_ai_work("job_evaluation")]
     pending_evaluation_id_set = set(pending_evaluation_ids)
 
     # Which of the jobs this run may score have not been read yet, asked once
@@ -1664,7 +1716,7 @@ def run_pipeline(
         | pending_evaluation_id_set
     )
     companies_promoted = 0
-    for job_id in discovery.rediscovered_job_ids:
+    for job_id in rediscovered_job_ids:
         _requeue_pending_delivery(
             job_id,
             store,

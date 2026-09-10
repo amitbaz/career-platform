@@ -417,3 +417,32 @@ def test_the_stage_registers_the_target_row_idempotently_against_the_real_table(
             row = cursor.fetchone()
 
     assert row[0] == 1, "one row, no matter how many times this key is crawled"
+
+
+def test_a_closed_posting_listed_again_is_not_short_circuited(store, ingestion_database):
+    """Issue #186. A crawl is what reopens a posting a re-check closed, so an
+    unchanged re-listing of a closed posting has to reach the merge: dropping
+    it on its unchanged hash would leave it closed while its board lists it."""
+    import uuid
+
+    job = _job("remotive", f"reopen-{uuid.uuid4()}", "same words")
+    job_id, _, _ = store.upsert_job(job)
+    with ingestion_database.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "update public.job_hunter_postings "
+                "   set closed_at = now(), closed_reason = 'http_404' "
+                " where id = (select posting_id from public.job_hunter_jobs where id = %s)",
+                (job_id,),
+            )
+    persisted: list[list[Job]] = []
+
+    stage = CrawlSourceStage(
+        ingestion_database,
+        build_source=lambda key: _StubSource([job]),
+        persist=persisted.append,
+    )
+    outcome = stage(_message())
+
+    assert [listed.source_job_id for listed in persisted[0]] == [job.source_job_id]
+    assert outcome.unchanged_by_hash == 0

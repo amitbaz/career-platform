@@ -4764,3 +4764,57 @@ def test_a_run_without_the_privileged_connection_scores_and_delivers_what_exists
     # earlier run stored and reached the digest.
     assert summary.evaluated == 1
     assert telegram.messages
+
+
+def _close_posting_of(ingestion_database, job_id: str) -> None:
+    """Close the posting behind `job_id`, as a freshness re-check would (#186)."""
+    with ingestion_database.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "update public.job_hunter_postings "
+                "   set closed_at = now(), closed_reason = 'http_404' "
+                " where id = (select posting_id from public.job_hunter_jobs where id = %s)",
+                (job_id,),
+            )
+
+
+def test_a_closed_posting_in_this_runs_crawl_is_not_scored_or_delivered(
+    store, settings, ingestion_database
+):
+    """Issue #186. An aggregator still listing an advertisement its employer
+    took down does not reopen it, so a run can meet a closed posting among
+    its own candidates -- and must neither score nor deliver it."""
+    job = _job(
+        source="remotive",
+        source_job_id=f"closed-{uuid.uuid4()}",
+        content_confidence="aggregator_text",
+    )
+    job_id, _, _ = store.upsert_job(job)
+    _close_posting_of(ingestion_database, job_id)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    run_pipeline(settings, sources=[FakeSource([job])], store=store, ai=gemini, telegram=telegram)
+
+    assert gemini.eval_calls == 0
+    assert not store.has_delivery(job_id)
+
+
+def test_a_deferred_evaluation_for_a_closed_posting_is_dropped_not_scored(
+    store, settings, ingestion_database
+):
+    """Issue #186. A job waiting on scoring quota whose posting closes in the
+    meantime is gone, not deferred: scoring it would spend the user's key on
+    an advertisement nobody can apply to."""
+    job = _job(source_job_id=f"deferred-closed-{uuid.uuid4()}", company="Gone Co")
+    job_id, _, _ = store.upsert_job(job)
+    store.enqueue_ai_work("job_evaluation", job_id)
+    _close_posting_of(ingestion_database, job_id)
+    gemini = FakeGemini()
+    telegram = FakeTelegram()
+
+    run_pipeline(settings, sources=[], store=store, ai=gemini, telegram=telegram)
+
+    assert gemini.eval_calls == 0
+    assert not store.has_delivery(job_id)
+    assert store.list_pending_ai_work("job_evaluation") == []
