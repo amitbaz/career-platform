@@ -577,7 +577,19 @@ class PostgresJobStore:
 
         for outcome in outcomes:
             if outcome.message.message_id == message_id:
-                return outcome.result
+                posting_batch = outcome.result
+                # crawl_source's own persist path never calls
+                # upsert_logical_jobs (that writes job_hunter_jobs, a
+                # per-user table this user-free stage must not touch), so
+                # this is the only place a Render crawl-only deployment
+                # enqueues extraction for what it just merged. Safe to call
+                # unconditionally: _enqueue_needing_facets already filters to
+                # postings actually missing current facets and dedupes
+                # against this store's own _enqueued_postings set, so a
+                # caller that also enqueues via upsert_logical_jobs (the
+                # monolith, today) just no-ops here on the second call.
+                self._enqueue_needing_facets(posting_batch.posting_ids.values())
+                return posting_batch
         logger.warning(
             "resolve_persist batch remains queued; falling back to per-listing "
             "persistence for this run: batch_id=%s",

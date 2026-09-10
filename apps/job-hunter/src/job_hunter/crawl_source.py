@@ -14,12 +14,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from .http import NOT_MODIFIED, NotModifiedSignal, Validators
 from .normalize import job_fingerprint
-from .stage_queue import PermanentStageFailure, QueueMessage, Stage
+from .postgres_stage_queue import PostgresStageQueue
+from .stage_queue import PermanentStageFailure, QueueMessage, QuotaExhausted, Stage, StageRunner
 
 logger = logging.getLogger(__name__)
 
@@ -313,3 +315,100 @@ class CrawlSourceStage:
         if not isinstance(source_key, str) or not source_key:
             raise PermanentStageFailure("crawl_source crawl_key must be a string")
         return source_key
+
+
+# The consumer ---------------------------------------------------------------------
+
+
+@dataclass
+class CrawlDrain:
+    """What one drain of the crawl_source queue did, for its log line.
+
+    `stopped_because` says why an empty drain was empty -- a queue with
+    nothing due, and a drain cut off by its own time budget, both count zero
+    claimed, and AGENTS.md rule 5 is that an empty result must carry its
+    reason.
+    """
+
+    claimed: int = 0
+    outcomes: Counter = field(default_factory=Counter)
+    stopped_because: str = ""
+
+    def summary(self) -> str:
+        counts = " ".join(
+            f"{name}={count}" for name, count in sorted(self.outcomes.items())
+        )
+        return (
+            f"claimed={self.claimed} {counts} stopped_because={self.stopped_because}"
+        )
+
+
+def drain_crawl_source(
+    database: _ConnectionLease,
+    http: Any,
+    *,
+    build_source: Callable[[str], Any],
+    persist: Callable[[list], Any],
+    limit: int,
+    batch_size: int = 10,
+    time_budget_seconds: float = 20 * 60,
+    clock: Callable[[], float] = time.monotonic,
+) -> CrawlDrain:
+    """Drain up to `limit` due crawls, in batches, within a time budget.
+
+    Its own process on its own schedule (`python -m job_hunter crawl-source`),
+    sharing nothing with the daily digest, so a slow or rate-limited source
+    cannot delay it. One `CrawlSourceStage` serves the whole drain, so
+    `build_source`/`persist` and whatever they close over (a `Settings`, a
+    `PostgresJobStore`, a Brave budget) are built once per process and reused
+    across every message it claims -- the same reuse `pipeline.py` already
+    relies on for one run's worth of sources.
+
+    Modeled directly on `recheck_freshness_stage.drain_recheck_freshness`:
+    failures take the queue's common path (`stage_queue.StageRunner`), the
+    budget is checked between batches and never mid-request, and a batch's
+    visibility timeout covers the whole HTTP read budget so a slow batch is
+    not redelivered to a second worker while the first is still on it.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    runner = StageRunner(
+        PostgresStageQueue(database), visibility_timeout_seconds=15 * 60
+    )
+    stage = CrawlSourceStage(database, build_source=build_source, persist=persist, http=http)
+    drain = CrawlDrain()
+    started = clock()
+
+    while True:
+        if drain.claimed >= limit:
+            drain.stopped_because = "limit"
+            break
+        if clock() - started >= time_budget_seconds:
+            drain.stopped_because = "time_budget"
+            break
+        seen = 0
+
+        def handler(message: QueueMessage) -> CrawlOutcome:
+            nonlocal seen
+            seen += 1
+            try:
+                outcome = stage(message)
+            except QuotaExhausted:
+                drain.outcomes["rate_limited"] += 1
+                raise
+            except Exception:
+                drain.outcomes["failed"] += 1
+                raise
+            drain.outcomes[outcome.outcome] += 1
+            return outcome
+
+        runner.run_once(
+            Stage.CRAWL_SOURCE,
+            handler,
+            batch_size=min(batch_size, limit - drain.claimed),
+        )
+        drain.claimed += seen
+        if seen == 0:
+            drain.stopped_because = "queue_empty"
+            break
+    return drain

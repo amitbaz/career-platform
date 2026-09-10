@@ -31,9 +31,11 @@ Failure handling follows the queue's common vocabulary (`stage_queue.py`):
 from __future__ import annotations
 
 import json
+import time
 import uuid
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from job_hunter.ai import (
     AIQuotaPaused,
@@ -43,12 +45,14 @@ from job_hunter.ai import (
 )
 from job_hunter.facets import FacetExtractionError, PostingFacts, extract_facets
 from job_hunter.models import JobFacets
+from job_hunter.postgres_stage_queue import PostgresStageQueue
 from job_hunter.stage_queue import (
     DeferredToALaterRun,
     PermanentStageFailure,
     QueueMessage,
     QuotaExhausted,
     Stage,
+    StageRunner,
     TransientStageFailure,
 )
 
@@ -310,3 +314,98 @@ class ExtractFacetsStage:
 
 def _to_jsonb(value: object) -> str:
     return json.dumps(value)
+
+
+# The consumer ---------------------------------------------------------------------
+
+
+@dataclass
+class ExtractFacetsDrain:
+    """What one drain of the extract_facets queue did, for its log line.
+
+    Distinct from `PostgresJobStore.drain_extract_facets_queue`: that method
+    exists for the monolith's inline pass, which tracks `already_attempted`
+    across the same run's own reads. A standalone drain process never makes
+    an inline read of its own, so that bookkeeping does not apply here -- this
+    is a plain queue consumer, on its own schedule, like
+    `recheck_freshness_stage.drain_recheck_freshness`.
+    """
+
+    claimed: int = 0
+    outcomes: Counter = field(default_factory=Counter)
+    stopped_because: str = ""
+
+    def summary(self) -> str:
+        counts = " ".join(
+            f"{name}={count}" for name, count in sorted(self.outcomes.items())
+        )
+        return (
+            f"claimed={self.claimed} {counts} stopped_because={self.stopped_because}"
+        )
+
+
+def drain_extract_facets(
+    database: Any,
+    ai: "AIProvider",
+    *,
+    limit: int,
+    batch_size: int = 25,
+    time_budget_seconds: float = 20 * 60,
+    clock: Callable[[], float] = time.monotonic,
+) -> ExtractFacetsDrain:
+    """Drain up to `limit` due extractions, in batches, within a time budget.
+
+    Its own process on its own schedule (`python -m job_hunter
+    extract-facets`), sharing nothing with the daily digest or a crawl.
+    `ai` is trusted to already be resolved to the platform key (#128) --
+    this module never sees a user's credential, the same guarantee
+    `ExtractFacetsStage` itself makes.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    runner = StageRunner(
+        PostgresStageQueue(database), visibility_timeout_seconds=5 * 60
+    )
+    stage = ExtractFacetsStage(database, ai)
+    drain = ExtractFacetsDrain()
+    started = clock()
+
+    while True:
+        if drain.claimed >= limit:
+            drain.stopped_because = "limit"
+            break
+        if clock() - started >= time_budget_seconds:
+            drain.stopped_because = "time_budget"
+            break
+        seen = 0
+
+        def handler(message: QueueMessage):
+            nonlocal seen
+            seen += 1
+            try:
+                result = stage(message)
+            except QuotaExhausted:
+                drain.outcomes["quota_exhausted"] += 1
+                raise
+            except DeferredToALaterRun:
+                drain.outcomes["deferred"] += 1
+                raise
+            except Exception:
+                drain.outcomes["failed"] += 1
+                raise
+            if isinstance(result, FacetsAlreadyCurrent):
+                drain.outcomes["already_current"] += 1
+            else:
+                drain.outcomes["extracted"] += 1
+            return result
+
+        runner.run_once(
+            Stage.EXTRACT_FACETS,
+            handler,
+            batch_size=min(batch_size, limit - drain.claimed),
+        )
+        drain.claimed += seen
+        if seen == 0:
+            drain.stopped_because = "queue_empty"
+            break
+    return drain
