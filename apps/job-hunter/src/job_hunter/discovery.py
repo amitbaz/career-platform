@@ -18,7 +18,14 @@ from job_hunter.canonical import (
     parse_supported_ats_url,
 )
 from job_hunter.fetching import enrich_job
-from job_hunter.http import HttpClient
+from job_hunter.http import (
+    ConditionalScope,
+    HttpClient,
+    NotModifiedSignal,
+    Validators,
+)
+from job_hunter.normalize import job_fingerprint
+from job_hunter.sources.base import crawls_one_resource, source_key_for
 from job_hunter.job_identity import job_fallback_identity
 from job_hunter.market_policy import attribute_market, market_by_id
 from job_hunter.models import CandidatePreferences, Job, SearchPolicy
@@ -54,6 +61,11 @@ _UNATTRIBUTED = "unattributed"
 SOURCE_COMPLETED = "completed"
 SOURCE_CUT_OFF = "cut_off"
 SOURCE_FAILED = "failed"
+# The board answered 304: nothing to fetch, nothing to parse, nothing to
+# persist. Distinct from `completed` with zero jobs, which means the board was
+# read and is genuinely empty -- an absence that carries its reason rather
+# than presenting as a quiet day (issue #184).
+SOURCE_NOT_MODIFIED = "not_modified"
 
 # The phases of `collect_candidates`, in the order they run. Each one can
 # independently dominate a run, and the per-source figures above measure only
@@ -126,6 +138,24 @@ class DiscoveryStats:
     # new, which is why the `discovery source contribution` line reports it
     # rather than any code branching on it.
     postings_discovered: int = 0
+    # Raw listings and corpus-novel postings per *bounded source label*, the
+    # same key space as the cost figures -- deliberately not `per_source`,
+    # which is keyed by `Job.source` and so collapses every ATS board a
+    # delegating adapter visits onto one provider name (issue #184). These
+    # are what a crawl row is written from, and what the cadence bands on.
+    raw_by_label: dict[str, int] = field(default_factory=dict)
+    new_to_corpus_by_label: dict[str, int] = field(default_factory=dict)
+    # The durable source key behind each bounded label. Recorded here because
+    # this is the only place both are in hand: `_distinct_label` de-duplicates
+    # against the labels already taken this run, so the mapping cannot be
+    # reconstructed afterwards by calling it again.
+    keys_by_label: dict[str, str] = field(default_factory=dict)
+    # Whether the staged merge actually ran this run. False when
+    # `merge_posting_batch` fell back -- a queue hiccup, or no privileged
+    # connection -- in which case `new_to_corpus_by_label` is empty because
+    # nothing was counted, not because nothing was new. The two must not be
+    # allowed to look alike to the scheduler.
+    novelty_measured: bool = False
     canonical_resolved: int = 0
     # Of the resolved jobs, how many resolved to exactly what they already
     # were and so cost no store write. The gap between this and
@@ -164,8 +194,8 @@ class DiscoveryStats:
     # what the source did rather than declared per adapter, so it stays true
     # for an adapter nobody annotated.
     longest_step_by_source: dict[str, float] = field(default_factory=dict)
-    # How each source's run ended: SOURCE_COMPLETED, SOURCE_CUT_OFF or
-    # SOURCE_FAILED, keyed like the cost figures above.
+    # How each source's run ended: SOURCE_COMPLETED, SOURCE_CUT_OFF,
+    # SOURCE_FAILED or SOURCE_NOT_MODIFIED, keyed like the cost figures above.
     source_outcomes: dict[str, str] = field(default_factory=dict)
     # Wall-clock time inside `collect_candidates`. Deliberately not derived
     # from `elapsed_by_source`: the difference between the two is the work
@@ -367,6 +397,24 @@ def _client_request_count(http) -> int:
     """
     count = getattr(http, "request_count", 0)
     return count if isinstance(count, int) else 0
+
+
+@contextmanager
+def _conditional_scope(http, validators: Validators, url: str, enabled: bool = True):
+    """Open `http`'s conditional-request scope, or a inert stand-in.
+
+    Same contract as `_client_request_count` above and for the same reason: a
+    client that does not implement conditional requests is crawled in full
+    rather than crashing the run. The stand-in reports no observed URL, so
+    nothing is written back and no cursor is invented for a client that never
+    issued a conditional request.
+    """
+    opener = getattr(http, "conditional", None) if enabled else None
+    if opener is None:
+        yield ConditionalScope()
+        return
+    with opener(validators, url=url) as scope:
+        yield scope
 
 
 def metric_source_label(source: str) -> str:
@@ -605,6 +653,7 @@ def _iter_source_jobs(
     label: str,
     clock: Callable[[], float],
     budget_seconds: float | None = None,
+    cursors=None,
 ) -> Iterator[Job]:
     """Yield one source's jobs, bounding it, costing it and isolating failures.
 
@@ -654,6 +703,22 @@ def _iter_source_jobs(
     requests = 0
     longest_step = 0.0
 
+    # The conditional-request scope wraps this whole drain, which is the only
+    # place that can hold it: the adapters below issue the requests and know
+    # nothing about cursors, and the caller above has already moved on to the
+    # next source by the time this one finishes. `source_key_for` rather than
+    # `label` because `label` is de-duplicated for the cost table and a cursor
+    # must key on the source's durable identity, not on its display name.
+    key = source_key_for(source)
+    cursor_url, stored = ("", Validators())
+    # A source that walks many independent resources in one crawl is never
+    # crawled conditionally: a 304 unwinds out of `discover()` and there is no
+    # way back in, so one unchanged board would silently cancel every board
+    # after it. See `JobSource.crawl_is_one_resource`.
+    conditional = cursors is not None and crawls_one_resource(source)
+    if conditional:
+        cursor_url, stored = cursors.read(key)
+
     def bracket(step):
         """Run one step of the source's own work, charging it to `label`."""
         nonlocal elapsed, requests, longest_step
@@ -681,53 +746,86 @@ def _iter_source_jobs(
             return False
         return elapsed >= budget_seconds
 
-    try:
-        jobs = bracket(lambda: iter(source.discover()))
-    except Exception:
-        # Failure isolation is unchanged -- the run continues with the next
-        # source -- but what this one spent before failing is still reported,
-        # since a source that burns the run and then raises is exactly what
-        # the cost figures exist to expose.
-        logger.exception("source discovery failed: %r", source)
-        stats.source_outcomes[label] = SOURCE_FAILED
-        return
-
-    try:
-        while True:
-            if over_budget():
-                stats.source_outcomes[label] = SOURCE_CUT_OFF
-                logger.warning(
-                    "source cut off by its time budget: source=%s "
-                    "elapsed=%s budget=%s longest_step=%s budget_applied=%s",
-                    label,
-                    _format_seconds(elapsed),
-                    _format_seconds(budget_seconds),
-                    _format_seconds(longest_step),
-                    budget_applied(stats, label, budget_seconds),
-                )
-                return
+    with _conditional_scope(http, stored, cursor_url, conditional) as scope:
+        try:
             try:
-                job = bracket(lambda: next(jobs))
-            except StopIteration:
-                stats.source_outcomes[label] = SOURCE_COMPLETED
+                jobs = bracket(lambda: iter(source.discover()))
+            except NotModifiedSignal:
+                stats.source_outcomes[label] = SOURCE_NOT_MODIFIED
+                logger.info("source unchanged since last crawl: source=%s", label)
                 return
             except Exception:
+                # Failure isolation is unchanged -- the run continues with the next
+                # source -- but what this one spent before failing is still reported,
+                # since a source that burns the run and then raises is exactly what
+                # the cost figures exist to expose.
                 logger.exception("source discovery failed: %r", source)
                 stats.source_outcomes[label] = SOURCE_FAILED
                 return
-            yield job
-    finally:
-        # Closing a generator raises GeneratorExit at whichever `yield` it is
-        # parked on, which is by definition a boundary between its units of
-        # work -- so a cut-off source unwinds its own `finally` blocks rather
-        # than being abandoned mid-iteration. Sources that hand back a plain
-        # iterator have nothing to close.
-        close = getattr(jobs, "close", None)
-        if callable(close):
+
             try:
-                bracket(close)
-            except Exception:
-                logger.exception("closing source iterator failed: %r", source)
+                while True:
+                    if over_budget():
+                        stats.source_outcomes[label] = SOURCE_CUT_OFF
+                        logger.warning(
+                            "source cut off by its time budget: source=%s "
+                            "elapsed=%s budget=%s longest_step=%s budget_applied=%s",
+                            label,
+                            _format_seconds(elapsed),
+                            _format_seconds(budget_seconds),
+                            _format_seconds(longest_step),
+                            budget_applied(stats, label, budget_seconds),
+                        )
+                        return
+                    try:
+                        job = bracket(lambda: next(jobs))
+                    except NotModifiedSignal:
+                        stats.source_outcomes[label] = SOURCE_NOT_MODIFIED
+                        logger.info(
+                            "source unchanged since last crawl: source=%s", label
+                        )
+                        return
+                    except StopIteration:
+                        stats.source_outcomes[label] = SOURCE_COMPLETED
+                        return
+                    except Exception:
+                        logger.exception("source discovery failed: %r", source)
+                        stats.source_outcomes[label] = SOURCE_FAILED
+                        return
+                    yield job
+            finally:
+                # Closing a generator raises GeneratorExit at whichever `yield` it is
+                # parked on, which is by definition a boundary between its units of
+                # work -- so a cut-off source unwinds its own `finally` blocks rather
+                # than being abandoned mid-iteration. Sources that hand back a plain
+                # iterator have nothing to close.
+                close = getattr(jobs, "close", None)
+                if callable(close):
+                    try:
+                        bracket(close)
+                    except Exception:
+                        logger.exception("closing source iterator failed: %r", source)
+        finally:
+            # Advance the cursor even when the source failed or was cut off.
+            # The validators describe what the board answered, not whether we
+            # finished reading it, and a source cut off by its time budget has
+            # still seen the board's current ETag. Withholding the write here
+            # would mean a source that always overruns never gets a cursor at
+            # all -- the sources most worth making conditional would be the
+            # only ones that never are.
+            # Not on SOURCE_FAILED. A source that read its first page and
+            # then broke would store that page's validator, and the next
+            # crawl would 304 on it and stop -- turning a hard failure into a
+            # permanent "unchanged", the absence-without-a-reason this ticket
+            # exists to remove. A cut-off source is different: it is working,
+            # just large, and withholding its cursor would mean the sources
+            # most worth making conditional are the only ones that never are.
+            if (
+                conditional
+                and scope.observed_url
+                and stats.source_outcomes.get(label) != SOURCE_FAILED
+            ):
+                cursors.write(key, scope.observed_url, scope.observed)
 
 
 def collect_candidates(
@@ -738,6 +836,7 @@ def collect_candidates(
     resolver: CanonicalResolver | None = None,
     preferences: CandidatePreferences | None = None,
     clock: Callable[[], float] = time.monotonic,
+    cursors=None,
 ) -> DiscoveryResult:
     """Discover, canonicalize, deduplicate, persist, and prefilter jobs.
 
@@ -764,16 +863,20 @@ def collect_candidates(
     raw_jobs: list[Job] = []
     denylist = frozenset(policy.learned_ats_denylist)
     taken_labels: set[str] = set()
+    jobs_by_label: dict[str, list[Job]] = {}
 
     budget_seconds = policy.source_time_budget_seconds
 
     with ledger.phase(PHASE_SOURCES):
         for source in sources:
             label = _distinct_label(source, taken_labels)
+            stats.keys_by_label[label] = source_key_for(source)
             for job in _iter_source_jobs(
-                source, http, stats, label, clock, budget_seconds
+                source, http, stats, label, clock, budget_seconds, cursors
             ):
                 stats.raw += 1
+                stats.raw_by_label[label] = stats.raw_by_label.get(label, 0) + 1
+                jobs_by_label.setdefault(label, []).append(job)
                 stats.per_source[job.source] = stats.per_source.get(job.source, 0) + 1
                 if job.url:
                     job.original_url = job.original_url or job.url
@@ -809,6 +912,28 @@ def collect_candidates(
         # before.
         raw_batch = store.merge_posting_batch(raw_jobs)
         stats.postings_discovered += raw_batch.newly_discovered
+        # Attribute the novel postings back to the source that produced them.
+        # The merge answers per fingerprint, and a label's jobs are the only
+        # place the mapping from fingerprint to source survives -- the batch
+        # itself is a flat set. A source contributing a listing another source
+        # already contributed this run counts zero here, which is right: the
+        # corpus gained nothing from the second one.
+        stats.novelty_measured = bool(raw_batch.posting_ids)
+        if raw_batch.new_fingerprints:
+            for source_label, source_jobs in jobs_by_label.items():
+                # Distinct fingerprints, not jobs: a source re-advertising one
+                # listing twice in a single crawl added one posting to the
+                # corpus, not two, and counting jobs would band it as more
+                # productive than it is. Two *different* sources that both
+                # produced a novel fingerprint are still both credited -- the
+                # corpus genuinely gained it from whichever arrived first, and
+                # there is no fair way to pick between them here.
+                novel = len(
+                    {job_fingerprint(job) for job in source_jobs}
+                    & raw_batch.new_fingerprints
+                )
+                if novel:
+                    stats.new_to_corpus_by_label[source_label] = novel
         # The upsert already decides per row whether it inserted; keeping the
         # answer here is what turns the newly-discovered rate from an estimate
         # into a measurement.

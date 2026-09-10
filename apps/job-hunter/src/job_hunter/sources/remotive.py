@@ -10,6 +10,10 @@ _URL = "https://remotive.com/api/remote-jobs"
 
 
 class RemotiveSource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
     source_label = "remotive"
 
     def __init__(self, http, query: str | None = None) -> None:

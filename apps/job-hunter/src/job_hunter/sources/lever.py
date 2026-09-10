@@ -15,6 +15,10 @@ _ONSITE_WORKPLACE_TYPES = {"on-site", "onsite"}
 
 
 class LeverSource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
     def __init__(self, site: str, http) -> None:
         self._site = site
         self._http = http

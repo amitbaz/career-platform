@@ -4,6 +4,10 @@ from .base import strip_html
 from job_hunter.models import Job
 
 class RemoteOKSource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
     source_label = "remoteok"
 
     def __init__(self, http): self._http = http

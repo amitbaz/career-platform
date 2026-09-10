@@ -411,7 +411,7 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 
 -- The inventory, so a definer function added later and granted to
 -- `authenticated` is a decision somebody made rather than an accident nobody
--- saw. Two remain, and neither can write anything:
+-- saw. Three remain, and none can write anything:
 --
 --   * job_hunter_get_provider_credentials reads the caller's own provider
 --     credentials.
@@ -421,6 +421,10 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 --     its user argument would let one user search another's corpus; this one
 --     takes no user argument and reads auth.uid(), which inside a definer is
 --     still the caller's.
+--   * job_hunter_posting_display_credit (issue #184) reads a source's display
+--     obligation for a posting. It is definer only because job_hunter_sources'
+--     select policy is open to authenticated but the join runs from a
+--     posting, not a session; it takes no user argument either.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -429,7 +433,8 @@ select is(
       and p.prosecdef
       and p.proname like 'job\_hunter\_%'
       and has_function_privilege('authenticated', p.oid, 'execute')),
-  array['job_hunter_find_job_by_identity', 'job_hunter_get_provider_credentials'],
+  array['job_hunter_find_job_by_identity', 'job_hunter_get_provider_credentials',
+        'job_hunter_posting_display_credit'],
   'only read-only security definers are reachable by authenticated');
 
 -- And the one they must not reach: the posting lookup that names whose corpus

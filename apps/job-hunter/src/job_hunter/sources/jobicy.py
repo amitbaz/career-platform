@@ -11,6 +11,10 @@ _URL = "https://jobicy.com/api/v2/remote-jobs"
 
 
 class JobicySource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
     source_label = "jobicy"
 
     def __init__(self, http, max_pages: int = 1) -> None:

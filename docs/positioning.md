@@ -134,11 +134,10 @@ it wrong:
 - **Extraction is shared, and that is built.** A posting's objective facts are read once and
   reused by every user, at a measured €0.00137 per posting. AI cost is bounded by postings
   rather than by users. This was #175's achievement and it holds.
-- **Discovery is still per-user, and that is not built.** All four discovery tables —
-  `job_hunter_ats_registry`, `job_hunter_company_watch`, `job_hunter_search_api_usage` and
-  `job_hunter_gmail_sync_state` — carry `user_id`, and the pipeline builds its source list from
-  that per-user state under row-level security. **N users means N crawls of substantially the
-  same market.** What N users no longer means is N copies of each advertisement: since #178 a
+- **Discovery is still per-user, and that is not built.** All three discovery tables —
+  `job_hunter_ats_registry`, `job_hunter_company_watch` and `job_hunter_gmail_sync_state` —
+  carry `user_id`, and the pipeline builds its source list from that per-user state under
+  row-level security. **N users means N crawls of substantially the same market.** What N users no longer means is N copies of each advertisement: since #178 a
   job row is one user's membership of a shared posting, so the Nth user costs a narrow row
   rather than the description, the identity columns and the fetch metadata again. The crawl
   is what still duplicates.

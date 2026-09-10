@@ -1,6 +1,8 @@
 import itertools
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import job_hunter.search_budget as search_budget
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.models import Job, SearchQuery
@@ -11,6 +13,15 @@ from job_hunter.search_budget import (
     split_queries_for_brave,
 )
 
+# job_hunter_platform_search_usage has no user_id (issue #184), so nothing
+# about a row here marks it as this test's. Every test in this file shares
+# provider="brave" and dates within September 2026, so without this an
+# earlier test's writes are a later test's already-blown cap -- see
+# `clean_platform_tables` in conftest.py for the full story. Applied to the
+# whole module rather than per-test: the two tests that do not touch the
+# ledger (`test_brave_query_selection_round_robins_across_markets`, and the
+# `_Http`/`_Response` helpers) still take the fixture harmlessly.
+pytestmark = pytest.mark.usefixtures("clean_platform_tables")
 
 UTC = timezone.utc
 
@@ -18,8 +29,8 @@ UTC = timezone.utc
 def _distinct_instants(base: datetime):
     """A `now` callable that advances by a microsecond on every call.
 
-    `job_hunter_search_api_usage` carries a `(user_id, provider, occurred_at)`
-    unique constraint (migration 202609060003) so a retried write converges
+    `job_hunter_platform_search_usage` carries a `(provider, occurred_at)`
+    unique constraint (issue #184) so a retried write converges
     instead of duplicating -- necessary for idempotency, but it also means
     two distinct reservations that land on the exact same `occurred_at`
     collapse into one row. In production that never happens: the default
@@ -105,7 +116,7 @@ def test_brave_request_budget_hard_cap_is_shared_across_consumers(supabase_clien
 def test_brave_request_budget_stops_at_limit_with_frozen_clock(supabase_client):
     """Repeated `occurred_at` must not collapse reservations into one row.
 
-    The unique key on `job_hunter_search_api_usage` makes a retried write
+    The unique key on `job_hunter_platform_search_usage` makes a retried write
     converge -- but `BraveRequestBudget.reserve()` guards against a
     genuinely frozen (or non-monotonic) clock by bumping into
     strictly-increasing territory itself. A single instance issuing every

@@ -19,8 +19,9 @@ select has_index(
   'ai_usage has a user-scoped natural key'
 );
 select has_index(
-  'public', 'job_hunter_search_api_usage', 'job_hunter_search_api_usage_user_provider_at_key',
-  'search_api_usage has a user-scoped natural key'
+  'public', 'job_hunter_platform_search_usage',
+  'job_hunter_platform_search_usage_provider_at_key',
+  'platform_search_usage has a provider-scoped natural key, not a user-scoped one'
 );
 
 -- run_id is nullable; nulls do not collide in a unique index, so the
@@ -48,8 +49,8 @@ select col_is_unique(
   'ai_usage enforces unique (user_id, run_id, model, purpose, occurred_at)'
 );
 select col_is_unique(
-  'public', 'job_hunter_search_api_usage', array['user_id', 'provider', 'occurred_at'],
-  'search_api_usage enforces unique (user_id, provider, occurred_at)'
+  'public', 'job_hunter_platform_search_usage', array['provider', 'occurred_at'],
+  'platform_search_usage enforces unique (provider, occurred_at)'
 );
 
 -- Seed test user and helper functions for behavioral tests

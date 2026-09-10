@@ -63,6 +63,7 @@ __all__ = [
     "WellfoundSource",
     "build_brave_budget",
     "build_sources",
+    "build_source",
 ]
 
 
@@ -240,3 +241,25 @@ def build_sources(
         )
 
     return sources
+
+
+def build_source(
+    settings: Settings,
+    http,
+    source_key: str,
+    **kwargs,
+) -> JobSource:
+    """Build the one source `source_key` names.
+
+    The `crawl_source` stage handles one source per message, so constructing
+    the whole portfolio to reach one of them would make every crawl pay for
+    every other source's setup -- including the Brave budget read that
+    `build_sources` performs before it can decide whether to add a targeted
+    search source at all.
+    """
+    from .base import source_key_for
+
+    for source in build_sources(settings, http, **kwargs):
+        if source_key_for(source) == source_key:
+            return source
+    raise KeyError(f"no source is configured for key {source_key!r}")

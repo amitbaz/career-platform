@@ -71,7 +71,6 @@ select unnest(array[
   'job_hunter_ai_usage',
   'job_hunter_ai_quota_state',
   'job_hunter_candidate_context_cache',
-  'job_hunter_search_api_usage',
   'job_hunter_gmail_sync_state',
   'job_hunter_gmail_messages',
   'job_hunter_inbound_job_candidates',
@@ -169,9 +168,6 @@ begin
     when 'job_hunter_candidate_context_cache' then
       insert into public.job_hunter_candidate_context_cache (user_id, cache_key, profile_hash, model, schema_version, context_json)
       values (p_owner, gen_random_uuid()::text, 'hash', 'gemini-test', '1', '{}'::jsonb) returning id into v_id;
-    when 'job_hunter_search_api_usage' then
-      insert into public.job_hunter_search_api_usage (user_id, provider, occurred_at)
-      values (p_owner, 'serper', now()) returning id into v_id;
     when 'job_hunter_gmail_sync_state' then
       insert into public.job_hunter_gmail_sync_state (user_id, account_id)
       values (p_owner, gen_random_uuid()::text) returning id into v_id;
@@ -293,7 +289,8 @@ end $$;
 create view pg_temp.job_hunter_platform_tables as
 select unnest(array[
   'job_hunter_platform_ai_usage',
-  'job_hunter_platform_ai_quota_state'
+  'job_hunter_platform_ai_quota_state',
+  'job_hunter_platform_search_usage'
 ]) as table_name;
 
 -- The shared tables, for the same reason in reverse. A posting (issue #174)
@@ -326,13 +323,18 @@ select unnest(array[
 -- fails until it is. Update the AGENTS.md paragraph in the same commit, by
 -- hand, and do not trust a clean merge to have kept it true. #215 is filed
 -- to derive that inventory rather than write it twice.
+--
+-- job_hunter_sources (issue #184) joins this list for the same reason as
+-- the others: a source's kind and display obligation are true for every
+-- user, not one user's private note about it.
 create view pg_temp.job_hunter_shared_tables as
 select unnest(array[
   'job_hunter_postings',
   'job_hunter_job_facets',
   'job_hunter_companies',
   'job_hunter_posting_merges',
-  'job_hunter_ats_boards'
+  'job_hunter_ats_boards',
+  'job_hunter_sources'
 ]) as table_name;
 
 -- What being on that list obliges (#179): reads open to authenticated, writes
@@ -363,11 +365,20 @@ select is(
 -- Ingestion's own scratch and operational state (issues #182 and #183), which
 -- is neither per-user nor user-readable. No role a user can hold reaches it;
 -- the batch and queue suites assert the useful properties each table has.
+--
+-- job_hunter_source_crawls and job_hunter_source_cursors (issue #184) belong
+-- here rather than on the shared-tables list above: they are the scheduler's
+-- own operational state, RLS is on with no policy at all, and every grant is
+-- revoked -- nobody holding a user's session reaches them, same as the rest
+-- of this list.
 create view pg_temp.job_hunter_ingestion_tables as
 select unnest(array[
   'job_hunter_posting_staging',
   'job_hunter_stage_attempts',
-  'job_hunter_stage_dead_letters'
+  'job_hunter_stage_dead_letters',
+  'job_hunter_source_crawls',
+  'job_hunter_source_cursors',
+  'job_hunter_crawl_targets'
 ]) as table_name;
 
 -- Guard: every job_hunter_ table in the schema is in the list under test,
@@ -386,8 +397,8 @@ select is(
   'every public.job_hunter_* table is covered by an isolation check');
 
 select is(
-  (select count(*)::int from pg_temp.job_hunter_tables), 21,
-  'twenty-one Job Hunter tables are under test');
+  (select count(*)::int from pg_temp.job_hunter_tables), 20,
+  'twenty Job Hunter tables are under test');
 
 select pg_temp.check_isolation(
   t.table_name,

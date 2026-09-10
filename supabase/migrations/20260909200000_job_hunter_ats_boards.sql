@@ -27,9 +27,15 @@
 -- Stays on `job_hunter_ats_registry`, per-user: eligible_jobs_seen and
 -- last_eligible_at. Eligibility is judged against a user's own search
 -- profile (`record_ats_eligible_jobs`), so it is per-user *yield*, not
--- board health -- #184 (yield-driven per-source crawl) is built on it. A
--- shared board carrying one user's yield would mislead budgeting for
--- every other user.
+-- board health. A shared board carrying one user's yield would mislead
+-- budgeting for every other user.
+--
+-- Corrected by #184: that ticket does NOT build on this column. Its
+-- scheduler runs as the privileged role with no auth.uid() and cannot read
+-- a per-user column at all, and with one user an aggregate of this column
+-- is that user's search profile -- the engine would learn to visit only the
+-- boards matching the current job hunt. #184 records corpus novelty in
+-- job_hunter_source_crawls instead, which is shared by construction.
 --
 -- `market_hint` is shared in principle but is populated from whichever
 -- user's crawl discovered the board first, and there is no stronger

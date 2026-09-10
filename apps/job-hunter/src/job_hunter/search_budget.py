@@ -1,4 +1,4 @@
-"""Metered external search API budget, backed by `job_hunter_search_api_usage`.
+"""Metered external search API budget, backed by `job_hunter_platform_search_usage`.
 
 **The one weakening this port accepts:** the SQLite original serialized its
 read-check-insert reservation inside `BEGIN IMMEDIATE`, so two overlapping
@@ -11,7 +11,7 @@ callers. What protects this in practice is not application logic but
 deployment shape: every workflow that can call `try_record`
 (`job-hunter-daily.yml`, `job-hunter-generate-cover-letter.yml`) shares
 `concurrency: group: job-hunter-state` with `cancel-in-progress: false`, so
-at most one writer is ever *running* against a given user's rows at a time
+at most one writer is ever *running* against the ledger at a time
 -- a second run in that group, including a manually-triggered
 `workflow_dispatch` of either workflow, queues behind the first rather than
 overlapping it. The real escape hatch is anything outside GitHub Actions
@@ -31,17 +31,18 @@ from job_hunter.models import SearchQuery
 from job_hunter.store_mapping import to_iso
 from job_hunter.supabase_client import SupabaseClient
 
-_TABLE = "job_hunter_search_api_usage"
+_TABLE = "job_hunter_platform_search_usage"
 
 
 class SearchUsageLedger:
     """Metered ledger for external search API requests, one row per request.
 
     Translates `search_budget.py`'s original SQLite-backed ledger (deleted)
-    onto `job_hunter_search_api_usage` (migration 202609060002). The table's
-    `(user_id, provider, occurred_at)` unique constraint (migration
-    202609060003) is what makes `record`'s upsert converge instead of
-    duplicating a retried write.
+    onto `job_hunter_platform_search_usage` (issue #184). The quota belongs
+    to the API key, not to a person: a shared crawl runs as the privileged
+    role with no user identity, so the ledger carries no `user_id`. The
+    table's `(provider, occurred_at)` unique constraint is what makes
+    `record`'s upsert converge instead of duplicating a retried write.
     """
 
     def __init__(self, client: SupabaseClient) -> None:
@@ -53,12 +54,11 @@ class SearchUsageLedger:
             _TABLE,
             [
                 {
-                    "user_id": self._client.user_id,
                     "provider": provider,
                     "occurred_at": to_iso(occurred_at),
                 }
             ],
-            on_conflict="user_id,provider,occurred_at",
+            on_conflict="provider,occurred_at",
         )
 
     def count(self, *, provider: str, start_at: datetime, end_at: datetime) -> int:
@@ -227,9 +227,9 @@ class BraveRequestBudget:
     def reserve(self) -> bool:
         """Reserve one Brave attempt before HTTP; false means make no request.
 
-        The `(user_id, provider, occurred_at)` unique key on
-        `job_hunter_search_api_usage` makes a retried write converge instead
-        of double-counting -- but it does so by treating a repeated
+        The `(provider, occurred_at)` unique key on
+        `job_hunter_platform_search_usage` makes a retried write converge
+        instead of double-counting -- but it does so by treating a repeated
         `occurred_at` as *the same* reservation. If this instance's clock
         ever returns a value it has already issued (or an earlier one), the
         upsert in `record` overwrites the prior row instead of adding a new

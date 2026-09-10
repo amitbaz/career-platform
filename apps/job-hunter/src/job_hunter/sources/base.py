@@ -20,6 +20,25 @@ class JobSource(Protocol):
     # still measured, under its class name -- see `discovery.source_cost_label`.
     source_label: str
 
+    # The durable name this source is keyed by in `job_hunter_sources`,
+    # in `job_hunter_source_crawls` and in its own pg_cron entry. It
+    # defaults to `source_label` because the two have always been the
+    # same string; it is separate because `source_label` is documented
+    # as a metrics label and a registry key must not drift with it.
+    source_key: str
+
+    # Whether one crawl of this source reads one resource, so that a 304
+    # answers for the whole source. True for a board fetched from a single
+    # URL, paginated or not. False -- the default -- for a source that walks
+    # many independent resources in one crawl: `learned_ats` visits a board
+    # per company, and a 304 from one of them says nothing about the others,
+    # so ending the crawl there would silently skip every board after it.
+    #
+    # Opt-in rather than opt-out because the failure it prevents is invisible:
+    # a source that quietly stops visiting most of its boards still reports a
+    # successful, unchanged crawl.
+    crawl_is_one_resource: bool
+
     def discover(self) -> Iterator[Job]:
         """Yield jobs as they are found, not as one fully built list.
 
@@ -43,6 +62,35 @@ class JobSource(Protocol):
         `discovery._iter_source_jobs`.
         """
         ...
+
+
+def source_key_for(source) -> str:
+    """Return `source`'s registry key, falling back to its metrics label.
+
+    `source_key` is declared on the Protocol but is not required of an
+    adapter: every existing one predates it, and none of them needs
+    changing for the key to be correct.
+
+    A source with neither falls back to its class name, matching
+    `discovery.source_cost_label` -- a test double or a source added without
+    a label is keyed and measured rather than crashing the crawl over its
+    own bookkeeping.
+    """
+    return (
+        getattr(source, "source_key", None)
+        or getattr(source, "source_label", None)
+        or type(source).__name__
+    )
+
+
+def crawls_one_resource(source) -> bool:
+    """Whether `source` may be crawled conditionally.
+
+    Defaults to False for anything that has not declared itself, so a source
+    added without the attribute is crawled in full rather than risking the
+    silent skip described on the Protocol.
+    """
+    return bool(getattr(source, "crawl_is_one_resource", False))
 
 
 def strip_html(text: str) -> str:
