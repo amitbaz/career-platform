@@ -2349,6 +2349,20 @@ def test_pipeline_spends_the_cap_on_offers_rather_than_evaluations(store, settin
     """
     settings.policy.daily_offer_limit = 5
     jobs = _jobs_for_source("ashby", 20)
+    # Every company already known, so company enrichment (#198) makes zero
+    # calls of its own this run -- AlternatingDecisionGemini's `eval_calls`
+    # counts any non-candidate/facet call, company extraction included, and
+    # `job_hunter_companies` is a shared table this test's fixed "Ashby NNN"
+    # names would otherwise leave in an unknown state that depends on
+    # whatever another test run already wrote for the same names.
+    for job in jobs:
+        store.save_company_facets(
+            CompanyFacets(
+                identity=normalize_company_name(job.company),
+                display_name=job.company,
+                business_model="b2b_saas",
+            )
+        )
     gemini = AlternatingDecisionGemini()
     telegram = FakeTelegram()
 
