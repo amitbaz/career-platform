@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -619,13 +620,22 @@ def test_evaluation_row_is_dropped_when_its_job_did_not_migrate(
 def test_company_watch_nulls_dangling_discovered_from_job_id(
     tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
+    """An automatic row's dangling provenance is nulled, not left wrong.
+
+    Since #204 an automatic row migrates onto the shared
+    ``job_hunter_company_watch_health`` (keyed on the company entity)
+    rather than the per-user ``job_hunter_company_watch``, so this reads
+    the shared table -- which has no delete policy and is not cleaned
+    between tests, hence the unique identity per run.
+    """
+    identity = f"acme{uuid.uuid4().hex[:12]}"
     sqlite_path = build_legacy_db(
         tmp_path,
         jobs=[],
         company_watch=[
             {
-                "company_name": "Acme",
-                "normalized_company_name": "acme",
+                "company_name": identity,
+                "normalized_company_name": identity,
                 "discovered_from_job_id": 999,
                 "promotion_source": "automatic",
                 "confidence": 0.9,
@@ -637,7 +647,11 @@ def test_company_watch_nulls_dangling_discovered_from_job_id(
 
     assert counts["company_watch"] == 1
     row = supabase_client.select(
-        "job_hunter_company_watch", params={"normalized_company_name": "eq.acme"}
+        "job_hunter_company_watch_health",
+        params={
+            "select": "discovered_from_job_id,company:job_hunter_companies!inner(identity)",
+            "company.identity": f"eq.{identity}",
+        },
     )[0]
     assert row["discovered_from_job_id"] is None
 

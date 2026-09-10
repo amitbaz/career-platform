@@ -1931,6 +1931,19 @@ class PostgresJobStore:
 
     # ------------------------------------------------------------------
     # Company watch
+    #
+    # Since #204 a watch lives in one of two places. A manual watch --
+    # `promotion_source == "manual"` -- is one user's own intent and stays
+    # on the per-user `job_hunter_company_watch`, exactly as before. An
+    # automatic promotion writes the shared `job_hunter_company_watch_health`
+    # instead, keyed on #198's company entity rather than a normalized name
+    # of its own, so a second user's promotion of the same employer
+    # converges on one row rather than duplicating it. The two pools are
+    # never merged: a company that is both manually watched by one user and
+    # automatically discovered is checked from both, which is an accepted,
+    # rare duplicate rather than a reason to let one user's manual intent be
+    # silently upgraded by another user's automatic discovery. See the
+    # migration's note for the full reasoning.
     # ------------------------------------------------------------------
 
     def upsert_company_watch(
@@ -1943,13 +1956,73 @@ class PostgresJobStore:
         discovered_from_job_id: str | None,
         promotion_source: str,
         confidence: float,
-    ) -> str:
-        """Insert or safely upgrade one normalized company watch target.
+    ) -> str | None:
+        """Insert or safely upgrade one company watch target.
 
-        Translates store.py:1235-1329. Supported ATS targets outrank generic
-        URLs, which outrank company-only entries. Equal-strength
-        replacements require greater confidence, and a manual promotion
-        source is never downgraded to automatic.
+        Dispatches on `promotion_source`, the only thing that decides which
+        of the two pools above this call belongs to. The signature is
+        unchanged since before #204 -- `watchlist.py`'s two callers,
+        `sync_manual_watch_seeds` and `promote_company`, need no change.
+        `promote_company` already returns `str | None` (None for a
+        non-promotable evaluation), so a skipped automatic promotion
+        returning None costs neither caller a change.
+
+        An automatic promotion returns None, skipping the write entirely,
+        when `can_write_shared_rows` is False. Before #204 this call wrote
+        the per-user `job_hunter_company_watch` over PostgREST, which needs
+        no privileged connection and so kept working in the degraded,
+        no-`SUPABASE_DB_URL` mode `run_pipeline` otherwise still scores and
+        delivers in. Since the automatic pool is now the shared,
+        privileged-connection-only `job_hunter_company_watch_health`,
+        attempting it there would raise `SharedWriteUnavailable` on every
+        promotable evaluation -- caught by `pipeline.py`'s broad `except
+        Exception` around this call, but counted as a run error on every
+        one, which is a regression from a silent, working write. A manual
+        promotion is unaffected: it never touches the privileged
+        connection.
+        """
+        if promotion_source == "manual":
+            return self._upsert_manual_company_watch(
+                company_name=company_name,
+                careers_url=careers_url,
+                ats_provider=ats_provider,
+                ats_identifier=ats_identifier,
+                confidence=confidence,
+            )
+        if promotion_source == "automatic":
+            if not self.can_write_shared_rows:
+                logger.info(
+                    "company watch promotion for %r skipped: no privileged "
+                    "connection to write the shared endpoint",
+                    company_name,
+                )
+                return None
+            return self._promote_shared_company_watch(
+                company_name=company_name,
+                careers_url=careers_url,
+                ats_provider=ats_provider,
+                ats_identifier=ats_identifier,
+                discovered_from_job_id=discovered_from_job_id,
+                confidence=confidence,
+            )
+        raise ValueError(f"unsupported promotion_source: {promotion_source!r}")
+
+    def _upsert_manual_company_watch(
+        self,
+        *,
+        company_name: str,
+        careers_url: str,
+        ats_provider: str | None,
+        ats_identifier: str | None,
+        confidence: float,
+    ) -> str:
+        """Insert or upgrade one user's manual company watch.
+
+        Translates store.py:1235-1329, minus the cross-source merge that
+        used to live here: since #204 this table holds manual watches only,
+        so the strength/confidence ranking below only ever compares a
+        manual watch against a later manual watch for the same company --
+        the one case left that can actually happen on this table.
 
         The SQLite original did INSERT-OR-NOTHING, then re-read and UPDATEd
         the losing row. That is two statements in one transaction; over
@@ -1978,7 +2051,7 @@ class PostgresJobStore:
                 "normalized_company_name": f"eq.{normalized_name}",
                 "select": (
                     "company_name,careers_url,ats_provider,ats_identifier,"
-                    "discovered_from_job_id,promotion_source,confidence,first_seen_at"
+                    "confidence,first_seen_at"
                 ),
                 "limit": "1",
             },
@@ -1999,16 +2072,6 @@ class PostgresJobStore:
                 "ats_identifier": (
                     identifier if replace_target else row["ats_identifier"]
                 ),
-                "discovered_from_job_id": (
-                    discovered_from_job_id
-                    if discovered_from_job_id is not None
-                    else row["discovered_from_job_id"]
-                ),
-                "promotion_source": (
-                    "manual"
-                    if "manual" in (row["promotion_source"], promotion_source)
-                    else "automatic"
-                ),
                 "confidence": confidence if replace_target else row["confidence"],
                 "first_seen_at": row["first_seen_at"],
             }
@@ -2018,8 +2081,6 @@ class PostgresJobStore:
                 "careers_url": careers_url,
                 "ats_provider": provider,
                 "ats_identifier": identifier,
-                "discovered_from_job_id": discovered_from_job_id,
-                "promotion_source": promotion_source,
                 "confidence": confidence,
                 "first_seen_at": now,
             }
@@ -2032,6 +2093,141 @@ class PostgresJobStore:
             on_conflict="user_id,normalized_company_name",
         )
         return written[0]["id"]
+
+    def _promote_shared_company_watch(
+        self,
+        *,
+        company_name: str,
+        careers_url: str,
+        ats_provider: str | None,
+        ats_identifier: str | None,
+        discovered_from_job_id: str | None,
+        confidence: float,
+    ) -> str:
+        """Promote a discovered endpoint onto the shared watch-health row.
+
+        Since #204 every automatic promotion writes here instead of the
+        per-user table: the endpoint and its health are properties of the
+        company, not of whichever user's evaluation triggered the
+        promotion. The same strength/confidence ranking
+        `_upsert_manual_company_watch` applies decides whether this
+        candidate replaces what is already known -- applied here across
+        every automatic promotion for the company, from any user, rather
+        than one user's own repeated writes.
+
+        Requires the privileged connection (#179): the shared row is not
+        reachable over PostgREST at all. Read-then-write, same
+        single-writer reasoning as the manual path -- both are called only
+        from within one pipeline run under `concurrency: group:
+        job-hunter-state`.
+        """
+        company_id = self._ensure_company_id(company_name)
+        if company_id is None:
+            raise ValueError("company_name must normalize to a non-empty value")
+
+        provider = (ats_provider or "").strip().lower() or None
+        identifier = (ats_identifier or "").strip() or None
+        careers_url = (careers_url or "").strip()
+        now = to_iso(datetime.now(timezone.utc))
+
+        existing = self._shared_write(
+            "select careers_url, ats_provider, ats_identifier, confidence, first_seen_at "
+            "  from public.job_hunter_company_watch_health where company_id = %s::uuid",
+            (company_id,),
+        )
+
+        if existing:
+            existing_url, existing_provider, existing_identifier, existing_confidence, first_seen_at = existing[0]
+            replace_target = self._replaces_watch_target(
+                {
+                    "careers_url": existing_url,
+                    "ats_provider": existing_provider,
+                    "ats_identifier": existing_identifier,
+                    "confidence": existing_confidence,
+                },
+                careers_url,
+                provider,
+                identifier,
+                confidence,
+            )
+            write_url = careers_url if replace_target else existing_url
+            write_provider = provider if replace_target else existing_provider
+            write_identifier = identifier if replace_target else existing_identifier
+            write_confidence = confidence if replace_target else existing_confidence
+        else:
+            first_seen_at = now
+            write_url, write_provider, write_identifier, write_confidence = (
+                careers_url,
+                provider,
+                identifier,
+                confidence,
+            )
+
+        rows = self._shared_write(
+            """
+            insert into public.job_hunter_company_watch_health
+              (company_id, careers_url, ats_provider, ats_identifier, confidence,
+               discovered_from_job_id, first_seen_at, updated_at)
+            values (%s::uuid, %s, %s, %s, %s, %s::uuid, %s::timestamptz, %s::timestamptz)
+            on conflict (company_id) do update set
+              careers_url = excluded.careers_url,
+              ats_provider = excluded.ats_provider,
+              ats_identifier = excluded.ats_identifier,
+              confidence = excluded.confidence,
+              discovered_from_job_id = coalesce(
+                excluded.discovered_from_job_id,
+                public.job_hunter_company_watch_health.discovered_from_job_id),
+              updated_at = excluded.updated_at
+            returning id
+            """,
+            (
+                company_id,
+                write_url,
+                write_provider,
+                write_identifier,
+                write_confidence,
+                discovered_from_job_id,
+                first_seen_at,
+                now,
+            ),
+        )
+        return str(rows[0][0])
+
+    def _ensure_company_id(self, company_name: str) -> str | None:
+        """Return company_name's entity id, creating a bare stub if needed.
+
+        An automatic watch can be discovered before #198's facet extraction
+        has ever read this employer, so this cannot assume a row already
+        exists. `on conflict (identity) do update set identity =
+        excluded.identity` is a no-op write on an existing row -- it exists
+        only to make `returning id` fire on a conflict too, so an existing
+        company's real facets (industry, business model, ...) are never
+        touched or replaced by this.
+
+        A freshly-inserted stub must not look already read: the column
+        defaults `extracted_at` to `now()`, which is right for
+        `save_company_facets` (a real read just happened) and wrong here --
+        a stub has no facets at all, and `companies_needing_facets` decides
+        staleness from this column. Left at the default, the epoch this
+        watch was promoted at would make `companies_needing_facets` believe
+        the company's facts were already established and skip it forever.
+        The epoch below is always older than any refresh interval, so the
+        stub reads as never-extracted until a real extraction overwrites it.
+        """
+        identity = normalize_company_name(company_name)
+        if not identity:
+            return None
+        rows = self._shared_write(
+            """
+            insert into public.job_hunter_companies
+              (identity, display_name, extracted_at)
+            values (%s, %s, to_timestamp(0))
+            on conflict (identity) do update set identity = excluded.identity
+            returning id
+            """,
+            (identity, company_name),
+        )
+        return str(rows[0][0])
 
     @staticmethod
     def _replaces_watch_target(
@@ -2051,53 +2247,113 @@ class PostgresJobStore:
         )
 
     def get_company_watch(self, company_name: str) -> dict[str, Any] | None:
-        """Return the normalized company watch row, if one exists.
+        """Return the effective company watch row, manual first then shared.
 
-        Translates store.py:1334-1342. Callers index the result by column
-        name (`watch["id"]` in `sources/company_watch.py`), which a dict
-        supports exactly as the original `sqlite3.Row` did.
+        A manual row wins when both exist: it is this user's stated
+        intent, and callers such as `_persisted_watch_target` want that
+        over an automatically-guessed endpoint. Neither table stores
+        `promotion_source` any more, so it is synthesized on both paths --
+        'manual' or 'automatic' -- for callers that still read it (e.g.
+        `pipeline._watch_promotion_state`). `company_name` on the shared
+        path comes from the joined company entity's `display_name`.
         """
         normalized_name = normalize_company_name(company_name)
         if not normalized_name:
             return None
-        rows = self._client.select(
+
+        manual_rows = self._client.select(
             "job_hunter_company_watch",
             params={
                 "normalized_company_name": f"eq.{normalized_name}",
                 "limit": "1",
             },
         )
-        return rows[0] if rows else None
+        if manual_rows:
+            row = dict(manual_rows[0])
+            row["promotion_source"] = "manual"
+            return row
+
+        shared_rows = self._client.select(
+            "job_hunter_company_watch_health",
+            params={
+                "select": "*,company:job_hunter_companies!inner(display_name)",
+                "company.identity": f"eq.{normalized_name}",
+                "limit": "1",
+            },
+        )
+        if not shared_rows:
+            return None
+        return self._shared_watch_row(shared_rows[0])
+
+    @staticmethod
+    def _shared_watch_row(row: dict[str, Any]) -> dict[str, Any]:
+        """Flatten one embedded `job_hunter_company_watch_health` row.
+
+        The joined company entity arrives nested under its `company` alias;
+        every caller of `get_company_watch`/`list_due_company_watches`
+        wants `company_name` alongside the endpoint columns, the same flat
+        shape the per-user manual row already has.
+        """
+        row = dict(row)
+        company = row.pop("company", None) or {}
+        row["company_name"] = company.get("display_name", "")
+        row["promotion_source"] = "automatic"
+        return row
 
     def list_due_company_watches(self, now: datetime) -> list[dict[str, Any]]:
-        """Return active watch targets whose health pause has expired.
+        """Return every active watch target whose health pause has expired.
 
-        Translates store.py:1344-1358. SQLite compared
-        `julianday(paused_until) <= julianday(?)`, which normalised both
-        sides to an instant; `paused_until` is `timestamptz` here, so
-        PostgREST's `lte` comparison already is one -- a pause stored at
-        `+02:00` and a `now` given at `-04:00` compare as the instants they
-        name, not as the strings they were written as. Ids are random uuids,
-        so `created_at` (with `select`'s `id.asc` tie-breaker) replaces
-        `ORDER BY id` as the insertion-order proxy.
+        Since #204 this unions two pools: this user's own manual watches
+        and every user's automatically-promoted endpoints, shared on
+        `job_hunter_company_watch_health`. A company watched both ways is
+        checked from both -- see the migration's note on why that is
+        accepted rather than merged. `paused_until` is `timestamptz` in
+        both tables, so PostgREST's `lte` comparison is already an instant
+        comparison -- a pause stored at `+02:00` and a `now` given at
+        `-04:00` compare as the instants they name. The combined list is
+        sorted by `created_at`, which sorts correctly as a string because
+        `to_iso` always renders a UTC-normalised offset.
         """
         timestamp = to_iso(_require_aware(now))
-        return self._client.select(
+        due_filter = {
+            "active": "eq.true",
+            "or": f"(paused_until.is.null,paused_until.lte.{timestamp})",
+        }
+
+        manual_rows = self._client.select(
             "job_hunter_company_watch",
+            params={**due_filter, "order": "created_at.asc"},
+        )
+        for row in manual_rows:
+            row["promotion_source"] = "manual"
+
+        shared_rows = self._client.select(
+            "job_hunter_company_watch_health",
             params={
-                "active": "eq.true",
-                "or": f"(paused_until.is.null,paused_until.lte.{timestamp})",
+                **due_filter,
+                "select": "*,company:job_hunter_companies!inner(display_name)",
                 "order": "created_at.asc",
             },
+        )
+        normalized_shared = [self._shared_watch_row(row) for row in shared_rows]
+
+        return sorted(
+            [*manual_rows, *normalized_shared], key=lambda row: row["created_at"]
         )
 
     def record_watch_success(self, watch_id: str, now: datetime) -> None:
         """Record a verified endpoint check and clear its failure backoff.
 
-        Translates store.py:1360-1375.
+        Translates store.py:1360-1375. Tries this user's own manual watch
+        first; an id that matches nothing there is either unknown or names
+        a shared automatic watch, which lives on
+        `job_hunter_company_watch_health` and is written over the
+        privileged connection (#179) since it has no per-user owner to
+        write it as. A watch id that matches neither is a no-op, as the
+        original's UPDATE always was for an unknown id.
         """
         timestamp = to_iso(_require_aware(now))
-        self._client.update(
+        updated = self._client.update(
             "job_hunter_company_watch",
             touch(
                 {
@@ -2109,6 +2365,20 @@ class PostgresJobStore:
             ),
             params={"id": f"eq.{watch_id}"},
         )
+        if updated:
+            return
+        self._shared_write(
+            """
+            update public.job_hunter_company_watch_health set
+              last_successful_check_at = %s::timestamptz,
+              last_verified_at = %s::timestamptz,
+              consecutive_failures = 0,
+              paused_until = null,
+              updated_at = %s::timestamptz
+            where id = %s::uuid
+            """,
+            (timestamp, timestamp, timestamp, watch_id),
+        )
 
     def record_watch_failure(self, watch_id: str, now: datetime) -> None:
         """Increment endpoint failures and apply the deterministic 24h pause.
@@ -2117,11 +2387,12 @@ class PostgresJobStore:
         the counter inside one `UPDATE ... CASE WHEN`; PostgREST cannot
         express a self-referential update, so the counter is read first and
         the new value written back. Same single-writer reasoning as
-        `upsert_company_watch`. A watch id that matches nothing is a no-op,
-        as the original's UPDATE was.
+        `_upsert_manual_company_watch`. Tries the manual watch first, same
+        as `record_watch_success`, and falls back to the shared table over
+        the privileged connection when the id names one of those instead.
         """
         normalized_now = _require_aware(now)
-        rows = self._client.select(
+        manual_rows = self._client.select(
             "job_hunter_company_watch",
             params={
                 "id": f"eq.{watch_id}",
@@ -2129,18 +2400,41 @@ class PostgresJobStore:
                 "limit": "1",
             },
         )
-        if not rows:
+        if manual_rows:
+            failures = manual_rows[0]["consecutive_failures"] + 1
+            paused_until = (
+                to_iso(normalized_now + _HEALTH_PAUSE)
+                if failures >= _WATCH_PAUSE_THRESHOLD
+                else None
+            )
+            self._client.update(
+                "job_hunter_company_watch",
+                touch({"consecutive_failures": failures, "paused_until": paused_until}),
+                params={"id": f"eq.{watch_id}"},
+            )
             return
-        failures = rows[0]["consecutive_failures"] + 1
+
+        shared_rows = self._shared_write(
+            "select consecutive_failures from public.job_hunter_company_watch_health "
+            "where id = %s::uuid",
+            (watch_id,),
+        )
+        if not shared_rows:
+            return
+        failures = shared_rows[0][0] + 1
         paused_until = (
             to_iso(normalized_now + _HEALTH_PAUSE)
             if failures >= _WATCH_PAUSE_THRESHOLD
             else None
         )
-        self._client.update(
-            "job_hunter_company_watch",
-            touch({"consecutive_failures": failures, "paused_until": paused_until}),
-            params={"id": f"eq.{watch_id}"},
+        self._shared_write(
+            """
+            update public.job_hunter_company_watch_health set
+              consecutive_failures = %s, paused_until = %s::timestamptz,
+              updated_at = %s::timestamptz
+            where id = %s::uuid
+            """,
+            (failures, paused_until, to_iso(datetime.now(timezone.utc)), watch_id),
         )
 
     # ------------------------------------------------------------------
@@ -3462,19 +3756,25 @@ class PostgresJobStore:
         """Translates `gmail_linkedin_cleanup.py`'s (deleted) `_job_has_dependencies`.
 
         One `select ... limit 1` per dependent table replaces the original's
-        single-connection loop over the same four tables, plus
-        `job_hunter_company_watch.discovered_from_job_id`: that foreign key
-        (migration 202609060002:128) has no `on delete cascade`, so a job
-        that seeded a watch row would otherwise pass every check here and
-        then fail the DELETE with a 409 mid-loop, after that message's other
-        candidate rows were already deleted.
+        single-connection loop over the same four tables.
+
+        `job_hunter_company_watch.discovered_from_job_id` used to belong on
+        this list: that foreign key (migration 202609060002:128) had no `on
+        delete cascade`, so a job that seeded a watch row would otherwise
+        pass every check here and then fail the DELETE with a 409 mid-loop,
+        after that message's other candidate rows were already deleted.
+        Since #204 there is nothing left to protect against: the column is
+        dropped from the per-user table entirely (only manual watches live
+        there now, and a manual watch never carries a discovered-from job),
+        and the shared `job_hunter_company_watch_health` keeps the column
+        only as unenforced provenance -- no foreign key at all -- so a job
+        delete can never fail on it.
         """
         for table, column in (
             ("job_hunter_evaluations", "job_id"),
             ("job_hunter_materials", "job_id"),
             ("job_hunter_deliveries", "job_id"),
             ("job_hunter_application_events", "job_id"),
-            ("job_hunter_company_watch", "discovered_from_job_id"),
         ):
             rows = self._client.select(
                 table, params={column: f"eq.{job_id}", "select": "id", "limit": "1"}

@@ -133,8 +133,10 @@ begin
       insert into public.job_hunter_job_sources (user_id, job_id, source, identity_key, first_seen_at, last_seen_at)
       values (p_owner, v_job, 'test', gen_random_uuid()::text, now(), now()) returning id into v_id;
     when 'job_hunter_company_watch' then
-      insert into public.job_hunter_company_watch (user_id, company_name, normalized_company_name, promotion_source, first_seen_at)
-      values (p_owner, 'Acme', gen_random_uuid()::text, 'manual', now()) returning id into v_id;
+      -- Manual watches only since #204: promotion_source and
+      -- discovered_from_job_id moved off this table entirely.
+      insert into public.job_hunter_company_watch (user_id, company_name, normalized_company_name, first_seen_at)
+      values (p_owner, 'Acme', gen_random_uuid()::text, now()) returning id into v_id;
     when 'job_hunter_ats_registry' then
       declare
         v_board_identifier text := gen_random_uuid()::text;
@@ -327,6 +329,12 @@ select unnest(array[
 -- job_hunter_sources (issue #184) joins this list for the same reason as
 -- the others: a source's kind and display obligation are true for every
 -- user, not one user's private note about it.
+--
+-- job_hunter_company_watch_health (issue #204) joins for the same reason: a
+-- company's careers-page endpoint and whether it is reachable is true for
+-- everyone who might watch that company, not one user's private discovery.
+-- Unlike the others above it never opened writes to authenticated at all --
+-- it adopts the #179 privileged-writer pattern from the day it was created.
 create view pg_temp.job_hunter_shared_tables as
 select unnest(array[
   'job_hunter_postings',
@@ -334,7 +342,8 @@ select unnest(array[
   'job_hunter_companies',
   'job_hunter_posting_merges',
   'job_hunter_ats_boards',
-  'job_hunter_sources'
+  'job_hunter_sources',
+  'job_hunter_company_watch_health'
 ]) as table_name;
 
 -- What being on that list obliges (#179): reads open to authenticated, writes

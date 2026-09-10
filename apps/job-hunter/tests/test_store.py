@@ -270,6 +270,23 @@ def _watch_rows(client):
     return client.select("job_hunter_company_watch", params={"select": "id"})
 
 
+def _shared_watch_health(client, identity: str):
+    """The shared watch-health row for a normalized company identity, if any.
+
+    Reads are open to any authenticated user (#204), so this is a plain
+    select regardless of which store promoted the row.
+    """
+    rows = client.select(
+        "job_hunter_company_watch_health",
+        params={
+            "select": "*,company:job_hunter_companies!inner(display_name)",
+            "company.identity": f"eq.{identity}",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
 def test_company_watch_upsert_deduplicates_normalized_company_name(
     store, supabase_client
 ):
@@ -309,7 +326,6 @@ def test_company_watch_upsert_converges_when_another_writer_inserts_first(
                         "company_name": "Acme GmbH",
                         "normalized_company_name": normalized,
                         "careers_url": "https://acme.test/careers",
-                        "promotion_source": "automatic",
                         "confidence": 0.1,
                         "first_seen_at": "2026-09-06T00:00:00+00:00",
                         "updated_at": "2026-09-06T00:00:00+00:00",
@@ -329,87 +345,127 @@ def test_company_watch_upsert_converges_when_another_writer_inserts_first(
     assert len(_watch_rows(supabase_client)) == 1
 
 
-def test_automatic_generic_url_cannot_replace_manual_greenhouse_target(store):
-    _watch(store, company_name="Acme", promotion_source="manual", confidence=1.0)
-
-    _watch(
-        store,
-        company_name="Acme GmbH",
-        careers_url="https://acme.test/careers",
-        ats_provider=None,
-        ats_identifier=None,
-        promotion_source="automatic",
-        confidence=1.0,
-    )
-
-    row = store.get_company_watch("ACME")
-    assert row["ats_provider"] == "greenhouse"
-    assert row["ats_identifier"] == "acme"
-    assert row["careers_url"] == ""
-    assert row["promotion_source"] == "manual"
+# Since #204 automatic promotion no longer shares a row with a manual watch
+# -- it writes the shared job_hunter_company_watch_health instead. The
+# strength/confidence ranking (supported ATS beats generic URL beats
+# company-only; equal strength requires greater confidence to replace) is
+# unchanged, but it now only ever compares two writes within the *same*
+# pool. The three tests below replace the old cross-source ones: one proves
+# the ranking still upgrades a repeated manual watch, one proves it still
+# upgrades a repeated automatic promotion (now shared), and one proves the
+# two pools no longer interact at all.
 
 
-def test_supported_ats_target_upgrades_automatic_generic_entry(store):
+def test_manual_watch_ranking_upgrades_on_stronger_repeat_upsert(store):
+    """A later manual upsert for the same company can still upgrade the first."""
     _watch(
         store,
         company_name="Acme",
         careers_url="https://acme.test/careers",
         ats_provider=None,
         ats_identifier=None,
-        promotion_source="automatic",
         confidence=0.4,
     )
 
-    _watch(
-        store,
-        company_name="Acme GmbH",
-        promotion_source="automatic",
-        confidence=0.9,
-    )
+    _watch(store, company_name="Acme GmbH", confidence=0.9)
 
     row = store.get_company_watch("Acme")
     assert row["ats_provider"] == "greenhouse"
     assert row["ats_identifier"] == "acme"
     assert row["careers_url"] == ""
     assert row["confidence"] == 0.9
+    assert row["promotion_source"] == "manual"
 
 
-def test_equal_strength_target_replaces_only_at_higher_confidence(store):
-    _watch(
-        store,
-        company_name="Beta",
-        careers_url="https://beta.test/careers",
-        ats_provider=None,
-        ats_identifier=None,
-        promotion_source="manual",
-        confidence=0.8,
-    )
+def test_automatic_promotion_shares_one_row_per_company(store, supabase_client):
+    """Two automatic promotions for the same employer converge on one shared row.
 
-    _watch(
-        store,
-        company_name="Beta",
-        careers_url="https://beta.test/jobs",
-        ats_provider=None,
-        ats_identifier=None,
-        promotion_source="automatic",
-        confidence=0.8,
-    )
-    assert store.get_company_watch("Beta")["careers_url"] == "https://beta.test/careers"
+    Nothing lands on the per-user table at all: automatic promotion writes
+    `job_hunter_company_watch_health` exclusively.
+    """
+    company = f"Acme Shared {uuid.uuid4().hex}"
+    identity = normalize_company_name(company)
 
     _watch(
         store,
-        company_name="Beta",
-        careers_url="https://beta.test/jobs",
+        company_name=company,
+        careers_url="https://acme-shared.test/careers",
         ats_provider=None,
         ats_identifier=None,
         promotion_source="automatic",
         confidence=0.9,
     )
+    _watch(store, company_name=company, promotion_source="automatic", confidence=0.1)
 
-    row = store.get_company_watch("Beta")
-    assert row["careers_url"] == "https://beta.test/jobs"
-    assert row["confidence"] == 0.9
-    assert row["promotion_source"] == "manual"
+    row = _shared_watch_health(supabase_client, identity)
+    assert row is not None
+    assert row["ats_provider"] == "greenhouse"
+    assert row["ats_identifier"] == "acme"
+    assert row["confidence"] == 0.1
+    assert _watch_rows(supabase_client) == []
+
+
+def test_manual_and_automatic_watches_for_same_company_stay_separate(
+    store, supabase_client
+):
+    """Manual watches stay the user's own and are unaffected by automatic discovery.
+
+    A company that is both manually watched and automatically promoted is
+    checked from both places -- see the migration's note -- rather than
+    merged into one row: a stronger automatic endpoint must never silently
+    upgrade a user's manual watch.
+    """
+    company = f"Acme Both {uuid.uuid4().hex}"
+    identity = normalize_company_name(company)
+
+    manual_id = _watch(
+        store,
+        company_name=company,
+        careers_url="",
+        ats_provider=None,
+        ats_identifier=None,
+        promotion_source="manual",
+        confidence=1.0,
+    )
+    _watch(store, company_name=company, promotion_source="automatic", confidence=1.0)
+
+    manual_row = store.get_company_watch(company)
+    assert manual_row["id"] == manual_id
+    assert manual_row["promotion_source"] == "manual"
+    assert manual_row["ats_provider"] is None
+    assert manual_row["careers_url"] == ""
+
+    shared_row = _shared_watch_health(supabase_client, identity)
+    assert shared_row is not None
+    assert shared_row["ats_provider"] == "greenhouse"
+
+    due_ids = {
+        row["id"] for row in store.list_due_company_watches(datetime.now(timezone.utc))
+    }
+    assert manual_id in due_ids
+    assert shared_row["id"] in due_ids
+
+
+def test_second_user_inherits_shared_watch_without_reverifying(
+    store, other_store, supabase_client
+):
+    """A second user's run sees an automatic promotion it never paid for.
+
+    `other_store` shares the same ingestion connection but a different
+    per-user client (#204's whole point): it never calls
+    `upsert_company_watch` itself and still finds the watch due, and its
+    `get_company_watch` reads the same shared endpoint.
+    """
+    company = f"Acme Inherited {uuid.uuid4().hex}"
+
+    watch_id = _watch(store, company_name=company, promotion_source="automatic")
+
+    due_ids = {
+        row["id"]
+        for row in other_store.list_due_company_watches(datetime.now(timezone.utc))
+    }
+    assert watch_id in due_ids
+    assert other_store.get_company_watch(company)["ats_provider"] == "greenhouse"
 
 
 def test_get_company_watch_is_none_for_unknown_and_unnormalizable_names(store):
@@ -462,10 +518,18 @@ def test_list_due_company_watches_excludes_paused_and_inactive_targets(
 
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
-    assert [row["id"] for row in store.list_due_company_watches(now)] == [
-        unpaused_id,
-        expired_id,
+    # Filtered to this test's own ids rather than asserted as the whole
+    # list: since #204 the due list also unions the shared automatic pool,
+    # which other tests in this session may have left active, due rows in.
+    # Filtering (rather than dropping the check) still proves the pause/
+    # active filtering *and* the insertion-order tie-break among these four.
+    seeded_ids = {unpaused_id, expired_id, paused_id, inactive_id}
+    due_ids = [
+        row["id"]
+        for row in store.list_due_company_watches(now)
+        if row["id"] in seeded_ids
     ]
+    assert due_ids == [unpaused_id, expired_id]
 
 
 def test_due_watch_compares_equivalent_offset_instants(store, supabase_client):
@@ -484,9 +548,8 @@ def test_due_watch_compares_equivalent_offset_instants(store, supabase_client):
     )
     same_instant = datetime(2026, 8, 31, 8, 0, tzinfo=timezone(timedelta(hours=-4)))
 
-    assert [row["id"] for row in store.list_due_company_watches(same_instant)] == [
-        watch_id
-    ]
+    due_ids = [row["id"] for row in store.list_due_company_watches(same_instant)]
+    assert watch_id in due_ids
 
 
 def test_record_watch_success_advances_updated_at(store, supabase_client):
@@ -514,7 +577,8 @@ def test_first_two_watch_failures_remain_due(store):
     row = store.get_company_watch("Acme")
     assert row["consecutive_failures"] == 2
     assert row["paused_until"] is None
-    assert [due["id"] for due in store.list_due_company_watches(now)] == [watch_id]
+    due_ids = [due["id"] for due in store.list_due_company_watches(now)]
+    assert watch_id in due_ids
 
 
 def test_third_watch_failure_pauses_for_24_hours(store):
@@ -529,7 +593,11 @@ def test_third_watch_failure_pauses_for_24_hours(store):
     assert from_iso(row["paused_until"]) == datetime(
         2026, 9, 1, 12, 0, tzinfo=timezone.utc
     )
-    assert store.list_due_company_watches(now) == []
+    # Not asserted empty: since #204 the due list also unions the shared
+    # automatic pool, which other tests in this session may have left due
+    # rows in. This watch's own absence is still the property under test.
+    due_ids = [due["id"] for due in store.list_due_company_watches(now)]
+    assert watch_id not in due_ids
 
 
 def test_watch_failure_pause_is_24_elapsed_hours_across_dst(store):
