@@ -39,7 +39,9 @@ Both are learning from what the user *does*. Neither learns from what *employers
 Past 100 users it requires restricted-scope verification and an annual security assessment
 (CASA) by a Google-approved assessor. That is weeks of lead time and real money every year
 ([Google: restricted scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification)).
-It belongs on the launch prerequisites (#201). A forwarding address and an Outlook connector
+**Parked by the founder on 2026-09-10:** not yet. Revisit it once the engine is strong enough
+that inbox-driven outcomes are about to reach users beyond the 100-user test cap, and add it to
+the launch prerequisites (#201) then, not before. A forwarding address and an Outlook connector
 are the fallbacks.
 
 ### 2. The interview invitation is the most valuable moment, and both miss it
@@ -180,7 +182,7 @@ against positioning.md's five scored matches a day.
 | --- | --- |
 | #80 (record applied jobs in the shared opportunities lifecycle) | **Becomes the strategic ticket.** It is the join between inbox outcomes and opportunities, and insights 1, 2 and 5 all rest on it |
 | #189 | Its latency measure should run to *application ready*, not just delivered |
-| #201 launch prerequisites | **Add Gmail restricted-scope verification and CASA** as a lead-time item |
+| #201 launch prerequisites | **Parked (founder, 2026-09-10).** Gmail restricted-scope verification and CASA go on #201 once the engine is strong enough, not now |
 | Coach rebuild ([product-shape.md](../product-shape.md), step 6) | The first feature is the interview-invitation trigger |
 | [positioning.md](../positioning.md), pricing | Reopen against the €29 bundle anchor (founder's call); correct the stale Caddie figures regardless |
 | Matching | Adopt Caddie's disagreement signal and drop the title prefilter (Caddie teardown, "What to take", item 1) |
@@ -189,6 +191,6 @@ against positioning.md's five scored matches a day.
 
 1. Pricing: the combined anchor, or reprice weekly.
 2. Whether to accept the CASA cost and timeline for inbox access, or launch with forwarding.
+   **Deferred (2026-09-10)** until the engine is strong enough; see insight 1.
 3. Whether to open free accounts on both competitors to test their output quality with a real
    CV. This means accepting their terms.
-4. Whether this document goes to the strategy session, which owns product direction.
