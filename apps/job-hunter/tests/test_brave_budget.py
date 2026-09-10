@@ -1,8 +1,6 @@
 import itertools
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 import job_hunter.search_budget as search_budget
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.models import Job, SearchQuery
@@ -14,14 +12,13 @@ from job_hunter.search_budget import (
 )
 
 # job_hunter_platform_search_usage has no user_id (issue #184), so nothing
-# about a row here marks it as this test's. Every test in this file shares
-# provider="brave" and dates within September 2026, so without this an
-# earlier test's writes are a later test's already-blown cap -- see
-# `clean_platform_tables` in conftest.py for the full story. Applied to the
-# whole module rather than per-test: the two tests that do not touch the
-# ledger (`test_brave_query_selection_round_robins_across_markets`, and the
-# `_Http`/`_Response` helpers) still take the fixture harmlessly.
-pytestmark = pytest.mark.usefixtures("clean_platform_tables")
+# about a row here marks it as this test's -- two tests sharing provider=
+# "brave" and a calendar month would have an earlier test's writes count
+# against a later test's cap. Issue #236: each ledger-touching test below
+# takes `brave_ledger_window`, which hands it a (year, month) no other test
+# in the suite is using (see `_thirty_day_month_for` in conftest.py), so
+# nothing about running concurrently under xdist can make two tests share
+# rows in the first place.
 
 UTC = timezone.utc
 
@@ -45,11 +42,15 @@ def _distinct_instants(base: datetime):
     return lambda: base + timedelta(microseconds=next(counter))
 
 
-def test_brave_budget_spreads_250_monthly_queries_and_blocks_same_day_reruns(supabase_client):
+def test_brave_budget_spreads_250_monthly_queries_and_blocks_same_day_reruns(
+    supabase_client, brave_ledger_window
+):
+    year, month, _, _ = brave_ledger_window
     ledger = SearchUsageLedger(supabase_client)
-    now = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+    now = datetime(year, month, 2, 12, 0, tzinfo=UTC)
 
-    # 250 remaining across Sep 2-30 => ceil(250 / 29) = 9 for today.
+    # 250 remaining across day 2-30 of a 30-day month => ceil(250 / 29) = 9
+    # for today.
     assert brave_queries_available_today(ledger, monthly_limit=250, now=now) == 9
 
     for minute in range(9):
@@ -62,13 +63,16 @@ def test_brave_budget_spreads_250_monthly_queries_and_blocks_same_day_reruns(sup
     assert brave_queries_available_today(ledger, monthly_limit=250, now=now) == 0
 
     # The next day gets a fresh share of the remaining monthly allowance.
-    tomorrow = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    tomorrow = datetime(year, month, 3, 12, 0, tzinfo=UTC)
     assert brave_queries_available_today(ledger, monthly_limit=250, now=tomorrow) == 9
 
 
-def test_brave_budget_daily_target_does_not_shrink_as_today_is_consumed(supabase_client):
+def test_brave_budget_daily_target_does_not_shrink_as_today_is_consumed(
+    supabase_client, brave_ledger_window
+):
+    year, month, _, _ = brave_ledger_window
     ledger = SearchUsageLedger(supabase_client)
-    now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    now = datetime(year, month, 1, 12, 0, tzinfo=UTC)
 
     assert brave_queries_available_today(ledger, monthly_limit=1000, now=now) == 34
 
@@ -80,21 +84,25 @@ def test_brave_budget_daily_target_does_not_shrink_as_today_is_consumed(supabase
     assert brave_queries_available_today(ledger, monthly_limit=1000, now=now) == 24
 
 
-def test_brave_budget_never_exceeds_monthly_limit(supabase_client):
+def test_brave_budget_never_exceeds_monthly_limit(supabase_client, brave_ledger_window):
+    year, month, _, _ = brave_ledger_window
     ledger = SearchUsageLedger(supabase_client)
-    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    now = datetime(year, month, 30, 12, 0, tzinfo=UTC)
 
     for index in range(250):
         ledger.record(
             provider="brave",
-            occurred_at=datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=index),
+            occurred_at=datetime(year, month, 1, tzinfo=UTC) + timedelta(minutes=index),
         )
 
     assert brave_queries_available_today(ledger, monthly_limit=250, now=now) == 0
 
 
-def test_brave_request_budget_hard_cap_is_shared_across_consumers(supabase_client):
-    now = _distinct_instants(datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
+def test_brave_request_budget_hard_cap_is_shared_across_consumers(
+    supabase_client, brave_ledger_window
+):
+    year, month, month_start, next_month = brave_ledger_window
+    now = _distinct_instants(datetime(year, month, 30, 12, 0, tzinfo=UTC))
     discovery_budget = search_budget.BraveRequestBudget(
         SearchUsageLedger(supabase_client), monthly_limit=3, now=now
     )
@@ -108,12 +116,12 @@ def test_brave_request_budget_hard_cap_is_shared_across_consumers(supabase_clien
     assert canonical_budget.reserve() is False
 
     ledger = SearchUsageLedger(supabase_client)
-    month_start = datetime(2026, 9, 1, tzinfo=UTC)
-    next_month = datetime(2026, 10, 1, tzinfo=UTC)
     assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 3
 
 
-def test_brave_request_budget_stops_at_limit_with_frozen_clock(supabase_client):
+def test_brave_request_budget_stops_at_limit_with_frozen_clock(
+    supabase_client, brave_ledger_window
+):
     """Repeated `occurred_at` must not collapse reservations into one row.
 
     The unique key on `job_hunter_platform_search_usage` makes a retried write
@@ -123,7 +131,8 @@ def test_brave_request_budget_stops_at_limit_with_frozen_clock(supabase_client):
     reservation at the exact same instant must still stop at the limit,
     exactly like the old SQLite autoincrement ledger did.
     """
-    frozen = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    year, month, month_start, next_month = brave_ledger_window
+    frozen = datetime(year, month, 30, 12, 0, tzinfo=UTC)
     budget = search_budget.BraveRequestBudget(
         SearchUsageLedger(supabase_client), monthly_limit=3, now=lambda: frozen
     )
@@ -134,13 +143,14 @@ def test_brave_request_budget_stops_at_limit_with_frozen_clock(supabase_client):
     assert budget.reserve() is False
 
     ledger = SearchUsageLedger(supabase_client)
-    month_start = datetime(2026, 9, 1, tzinfo=UTC)
-    next_month = datetime(2026, 10, 1, tzinfo=UTC)
     assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 3
 
 
-def test_brave_discovery_priority_is_soft_within_shared_daily_allowance(supabase_client):
-    now = _distinct_instants(datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
+def test_brave_discovery_priority_is_soft_within_shared_daily_allowance(
+    supabase_client, brave_ledger_window
+):
+    year, month, _, _ = brave_ledger_window
+    now = _distinct_instants(datetime(year, month, 30, 12, 0, tzinfo=UTC))
     budget = search_budget.BraveRequestBudget(
         SearchUsageLedger(supabase_client),
         monthly_limit=10,
@@ -227,9 +237,10 @@ class _Http:
 
 
 def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
-    supabase_client,
+    supabase_client, brave_ledger_window
 ):
-    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    year, month, month_start, next_month = brave_ledger_window
+    now = datetime(year, month, 30, 12, 0, tzinfo=UTC)
     ledger = SearchUsageLedger(supabase_client)
     budget = search_budget.BraveRequestBudget(
         ledger, monthly_limit=1, now=lambda: now
@@ -254,6 +265,4 @@ def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
     assert len(brave_calls) == 1
     assert len(ddg_calls) == 1
 
-    month_start = datetime(2026, 9, 1, tzinfo=UTC)
-    next_month = datetime(2026, 10, 1, tzinfo=UTC)
     assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 1

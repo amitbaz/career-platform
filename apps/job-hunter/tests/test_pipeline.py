@@ -893,10 +893,17 @@ def test_pipeline_aggregates_untrusted_gmail_source_labels_in_logs(store, settin
 
 def test_pipeline_counts_only_meaningful_company_watch_promotions(store, settings, caplog):
     settings.dry_run = True
+    # "automatic" watches land on the shared job_hunter_company_watch_health
+    # (#204), so a bare literal like "Repeat" or "Upgrade" would race a
+    # concurrently running test using the same name under xdist (#236);
+    # `_company_name()` gives each seed an identity no other test shares.
+    repeat = _company_name("Repeat")
+    manual = _company_name("Manual")
+    upgrade = _company_name("Upgrade")
     watch_seeds = (
-        ("Repeat", "automatic"),
-        ("Manual", "manual"),
-        ("Upgrade", "automatic"),
+        (repeat, "automatic"),
+        (manual, "manual"),
+        (upgrade, "automatic"),
     )
     for company_name, promotion_source in watch_seeds:
         store.upsert_company_watch(
@@ -909,11 +916,11 @@ def test_pipeline_counts_only_meaningful_company_watch_promotions(store, setting
             confidence=1.0,
         )
     jobs = [
-        _job(company="Repeat", source_job_id="repeat"),
-        _job(company="Manual", source_job_id="manual"),
-        _job(company="New", source_job_id="new"),
+        _job(company=repeat, source_job_id="repeat"),
+        _job(company=manual, source_job_id="manual"),
+        _job(company=_company_name("New"), source_job_id="new"),
         _job(
-            company="Upgrade",
+            company=upgrade,
             source_job_id="upgrade",
             canonical_url="https://upgrade.test/careers",
         ),
@@ -929,9 +936,9 @@ def test_pipeline_counts_only_meaningful_company_watch_promotions(store, setting
         )
 
     assert summary.ready_to_apply == 4
-    assert store.get_company_watch("Repeat")["promotion_source"] == "automatic"
-    assert store.get_company_watch("Manual")["promotion_source"] == "manual"
-    assert store.get_company_watch("Upgrade")["careers_url"] == "https://upgrade.test/careers"
+    assert store.get_company_watch(repeat)["promotion_source"] == "automatic"
+    assert store.get_company_watch(manual)["promotion_source"] == "manual"
+    assert store.get_company_watch(upgrade)["careers_url"] == "https://upgrade.test/careers"
     assert "companies_promoted=2" in caplog.text
 
 

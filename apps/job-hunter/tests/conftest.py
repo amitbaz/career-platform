@@ -32,6 +32,7 @@ import logging
 import os
 import uuid
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timezone
 
 import pytest
 
@@ -463,17 +464,21 @@ def _purge_stage_queues(database) -> None:
         )
 
 
-#: Tables that meter or track a platform-owned resource rather than a user's
-#: own data: no `user_id`, so `_TABLES_CHILD_FIRST` (which deletes by user
-#: id) cannot reach them, and no run-scoping column of any kind, so nothing
-#: distinguishes one test's rows from another's. `job_hunter_source_crawls`
-#: and `job_hunter_source_cursors` do not have a ledger-style cap any test
-#: asserts on yet, but they are the same shape and issue #184's crawl work
-#: will grow tests that do; they are cleaned here from the start rather than
-#: added the day something breaks. None references another table in this
-#: tuple or outside it, so deletion order does not matter.
+#: Platform-owned tables with no user_id and no run-scoping column, cleaned
+#: unconditionally before every store-backed test. `job_hunter_platform_
+#: search_usage` used to be in this tuple too (issue #184); it is carved out
+#: for #236, because `tests/test_brave_budget.py` now gives every test its
+#: own calendar month (`brave_ledger_window`) and a blanket wipe of the
+#: whole table would erase a concurrently running test's window under
+#: xdist -- exactly the race that fixture exists to prevent. The other five
+#: tables have no such per-test isolation yet: removing their wipe was
+#: tried and reverted, because dozens of tests across `test_pipeline.py`,
+#: `test_company_watch_source.py` and `test_learned_ats_source.py` turned
+#: out to depend on starting from an empty table, not merely on their own
+#: rows. Keeping the wipe for them is a known, pre-existing concurrency
+#: trade-off (see `_clean_platform_tables`'s docstring) rather than a new
+#: one introduced here.
 _PLATFORM_TABLES = (
-    "job_hunter_platform_search_usage",
     "job_hunter_platform_ai_usage",
     "job_hunter_platform_ai_quota_state",
     "job_hunter_source_crawls",
@@ -483,36 +488,16 @@ _PLATFORM_TABLES = (
 
 
 def _clean_platform_tables(database) -> None:
-    """Empty every platform-owned table with no user or run column.
-
-    Issue #184: `job_hunter_platform_search_usage` broke
-    `tests/test_brave_budget.py` this way first -- an early test wrote 250
-    rows toward a shared monthly cap, and a later test asserting a fresh
-    3-call cap found it already blown, because nothing about a usage row
-    marks it as belonging to one test rather than another. Every table in
-    `_PLATFORM_TABLES` has exactly the same exposure: `_cleanup_seed_users`
-    walks `_TABLES_CHILD_FIRST` by user id and cannot reach any of them.
+    """Empty every table in `_PLATFORM_TABLES`.
 
     Deleted with ingestion's privileged connection, the same shape as
     `_purge_stage_queues`, because no RLS-scoped client can see a row it
     does not own and these tables have no ownership column at all. Unlike
     `_purge_stage_queues` this delete is unconditional rather than
-    orphan-scoped -- there is nothing about a usage row that marks it as
-    this test's versus a concurrently running suite's -- so a worktree
-    running the same tests at the same moment as this one can lose the
-    race and see (or lose) a budget the other suite just spent. That is
-    the same trade-off the pgTAP suite already accepts for shared,
-    user-less tables; there is no narrower cut available without adding a
-    run-scoping column these tables were deliberately not given.
-
-    **This knowingly breaks the contract of the lock it runs under.**
-    `scripts/stack_lock.py` documents `--shared` as being for work that
-    "only reads and writes its own rows", and `package.json` runs
-    `pnpm job-hunter:test` under `--shared`. An unconditional `delete
-    from` across five shared tables is not that. Before #184 the cleanup
-    walk deleted by user id and the seed-user pool made concurrent suites
-    safe by construction; these tables have no user column, so that
-    property is genuinely weakened rather than merely untested.
+    orphan-scoped: there is nothing about a row in one of these tables that
+    marks it as this test's versus a concurrently running test's (in this
+    suite, another worktree's suite, or -- since #236 turned on `-n auto`
+    -- another xdist worker in the very same run).
 
     **If you are staring at failures that make no sense, check for a
     second suite before you debug your diff.** This has already happened
@@ -523,10 +508,11 @@ def _clean_platform_tables(database) -> None:
     reliable check is to re-run the failing file alone. If it passes,
     you were racing someone.
 
-    The remedy, if this becomes common rather than occasional, is to move
-    `job-hunter:test` to the exclusive lock in `package.json`. That is one
-    line, and it costs every agent on the machine a serialised
-    eight-minute suite, which is why it has not been taken.
+    The remedy, if this becomes common rather than occasional, is real
+    per-test isolation for these five tables too -- unique crawl/board
+    identities the way the #204 shared-table tests now use unique company
+    names, and a scoped window the way `brave_ledger_window` does for the
+    Brave ledger -- rather than a wipe every store-backed test pays for.
     """
     with database.connection() as connection:
         with connection.cursor() as cursor:
@@ -535,19 +521,69 @@ def _clean_platform_tables(database) -> None:
                 cursor.execute(f"delete from public.{table}")
 
 
-@pytest.fixture
-def clean_platform_tables(ingestion_database):
-    """Empty every table in `_PLATFORM_TABLES` before and after a test.
+#: Calendar months with exactly 30 days. `brave_ledger_window` picks one of
+#: these per test rather than any month, so the day-of-month arithmetic
+#: `tests/test_brave_budget.py` asserts on (days remaining in the month,
+#: "the last day", "the next day") stays valid no matter which one a given
+#: test lands on.
+_THIRTY_DAY_MONTHS = tuple(
+    (year, month) for year in range(2020, 2120) for month in (4, 6, 9, 11)
+)
 
-    For a test that needs the guarantee `ingestion_database` gives every
-    store-backed test for free (see `_clean_platform_tables`'s call there)
-    but has no other reason to depend on `ingestion_database` itself --
-    `tests/test_brave_budget.py`'s tests build a bare `SearchUsageLedger`
-    over `supabase_client` and never touch a store.
+
+def _thirty_day_month_for(nodeid: str) -> tuple[int, int]:
+    """A (year, month) with exactly 30 days, unique per test node id.
+
+    Deterministic from the node id rather than counted, because xdist runs
+    each worker as its own process: a per-process counter would hand out
+    the same index 0 in two different workers at once, while a hash of the
+    node id needs no cross-process coordination and reproduces the same
+    window on every run -- which is what lets `brave_ledger_window` clean
+    only its own window and still be correct the second time someone runs
+    the suite locally without a fresh database.
+
+    Issue #236: replaces the blanket `_clean_platform_tables` wipe that
+    used to run before/after every `tests/test_brave_budget.py` test. That
+    wipe cleared the whole `job_hunter_platform_search_usage` table, which
+    is exactly the "own the whole table" pattern that breaks under real
+    xdist concurrency. Distinct months mean distinct rows: two tests can
+    never collide, whichever workers they land on, so nothing needs
+    wiping out from under a concurrently running test in the first place.
     """
-    _clean_platform_tables(ingestion_database)
-    yield
-    _clean_platform_tables(ingestion_database)
+    digest = hashlib.sha256(nodeid.encode()).digest()
+    index = int.from_bytes(digest[:8], "big") % len(_THIRTY_DAY_MONTHS)
+    return _THIRTY_DAY_MONTHS[index]
+
+
+@pytest.fixture
+def brave_ledger_window(request, ingestion_database):
+    """A (year, month) window this test owns exclusively in the Brave ledger.
+
+    Cleaned before and after, but only the rows inside this test's own
+    window -- never the whole `job_hunter_platform_search_usage` table --
+    so a concurrently running test in another worker, necessarily in a
+    different window (see `_thirty_day_month_for`), is never touched.
+    """
+    year, month = _thirty_day_month_for(request.node.nodeid)
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+
+    def _clean() -> None:
+        with ingestion_database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("set local lock_timeout = '5s'")
+                cursor.execute(
+                    "delete from public.job_hunter_platform_search_usage "
+                    "where provider = 'brave' "
+                    "and occurred_at >= %s and occurred_at < %s",
+                    (start, end),
+                )
+
+    _clean()
+    try:
+        yield year, month, start, end
+    finally:
+        _clean()
 
 
 @pytest.fixture

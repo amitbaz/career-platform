@@ -2077,6 +2077,11 @@ def test_same_title_at_different_companies_does_not_merge(store):
 
 
 def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
+    # This test promotes an automatic company watch below, which writes the
+    # shared job_hunter_company_watch_health (#204, no user_id) -- a bare
+    # "Acme" would race a concurrently running test promoting the same
+    # literal name under xdist (#236).
+    company = f"Acme {uuid.uuid4().hex[:12]}"
     plain_id, _, _ = store.upsert_job(
         Job(source="gmail:linkedin", source_job_id="1", title="Frontend Engineer")
     )
@@ -2085,7 +2090,7 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
             source="yc",
             source_job_id="2",
             title="Frontend Engineer",
-            company="Acme",
+            company=company,
             description="A detailed React role description",
             canonical_url="https://jobs.lever.co/acme/abc",
             ats_provider="lever",
@@ -2123,7 +2128,7 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
     )
     store.mark_delivered(history_id, "telegram_message", "delivery-1")
     store.upsert_company_watch(
-        company_name="Acme",
+        company_name=company,
         careers_url="",
         ats_provider=None,
         ats_identifier=None,
@@ -2147,7 +2152,7 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
             ),
         },
     )[0]["posting"]
-    assert merged["company"] == "Acme"
+    assert merged["company"] == company
     assert merged["description"] == "A detailed React role description"
     assert merged["url"] == "https://jobs.lever.co/acme/abc"
     assert merged["ats_provider"] == "lever"
@@ -2160,7 +2165,7 @@ def test_merge_jobs_preserves_associations_provenance_and_richer_fields(store):
     assert store.get_evaluation(history_id) is not None
     assert store.get_material(history_id) is not None
     assert store.has_delivery(history_id, "telegram_message")
-    watch = store.get_company_watch("Acme")
+    watch = store.get_company_watch(company)
     assert watch["discovered_from_job_id"] == history_id
 
 

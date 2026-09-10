@@ -8,6 +8,8 @@ method against the local Supabase stack.
 
 from __future__ import annotations
 
+import uuid
+
 from job_hunter.gmail_models import ExtractedJob
 from job_hunter.models import Evaluation, Job
 
@@ -145,8 +147,12 @@ def test_a_job_that_seeded_a_company_watch_no_longer_blocks_release(store):
     _record_job_alert(store, "m1")
     _stage_linkedin_candidate(store, "m1", "cand1")
     job_id = _blank_linkedin_job(store, "cand1")
+    # Automatic promotion writes the shared job_hunter_company_watch_health
+    # (#204), which has no user_id -- a bare "Acme" here would race a
+    # concurrently running test promoting the same literal name under
+    # xdist (#236).
     store.upsert_company_watch(
-        company_name="Acme",
+        company_name=f"Acme {uuid.uuid4().hex[:12]}",
         careers_url="https://acme.example/careers",
         ats_provider=None,
         ats_identifier=None,
