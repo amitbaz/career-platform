@@ -229,6 +229,7 @@ select is(
     'job_hunter_posting_display_credit',
     'job_hunter_preferred_description',
     'job_hunter_record_ats_eligible_jobs',
+    'job_hunter_regexp_escape',
     'job_hunter_reschedule_sources',
     'job_hunter_resolve_posting',
     'job_hunter_role_seniority_fit',
@@ -244,7 +245,7 @@ select is(
     'job_hunter_upsert_jobs',
     'job_hunter_upsert_posting',
     'job_hunter_words'],
-  'exactly the forty-six expected public.job_hunter_* functions exist (#187 adds fourteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, and the job_hunter_match_jobs entry point), so the two checks above are not asserting over an empty set');
+  'exactly the forty-seven expected public.job_hunter_* functions exist (#187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses), so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

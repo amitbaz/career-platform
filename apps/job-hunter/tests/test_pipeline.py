@@ -3857,6 +3857,49 @@ def test_pay_below_the_users_floor_blocks_via_sql_ranking_when_a_profile_exists(
     assert summary.blocked_by_facets == 1
 
 
+def test_a_job_first_read_this_run_blocks_on_the_facets_just_read_not_a_stale_sql_snapshot(
+    store, settings, policy, supabase_client, monkeypatch
+):
+    """A posting nobody has read before this run cannot yet be in the SQL
+    ranking's own snapshot of facets (#187): `sql_match_by_job_id` is built
+    before this pass extracts its facets, so its row necessarily still shows
+    `has_facets=False` and an empty `hard_blockers`. Reusing that snapshot
+    for such a job would let a below-floor posting slip past the blocker and
+    into a paid scoring call the very run it is first read -- exactly what
+    `_facet_decided_blockers`'s fallback in `_evaluate_and_deliver_one_job`
+    exists to prevent.
+    """
+    _insert_search_profile(
+        supabase_client, supabase_client.user_id, salary_floor_eur=policy.salary_floor_eur
+    )
+
+    def _fail_rank_jobs(*args, **kwargs):
+        raise AssertionError("rank_jobs was called; the SQL ranking should have run instead")
+
+    monkeypatch.setattr("job_hunter.pipeline.rank_jobs", _fail_rank_jobs)
+
+    job = _job(source="remotive", source_job_id="fresh-read-1")
+    gemini = FakeGemini(
+        facet_payload={
+            **FACET_PAYLOAD,
+            "compensation": {
+                "disclosed": True, "currency": "EUR", "minimum": 50000, "maximum": 60000, "period": "year",
+            },
+        }
+    )
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           ai=gemini, telegram=FakeTelegram())
+
+    assert gemini.facet_calls == 1
+    assert gemini.eval_calls == 0
+    job_id, _, _ = store.upsert_job(job)
+    evaluation = store.get_evaluation(job_id)
+    assert evaluation.decision == "blocked"
+    assert "60000" in evaluation.hard_blockers[0]
+    assert summary.blocked_by_facets == 1
+
+
 def test_a_role_that_is_not_remote_blocks_without_a_scoring_call(store, settings):
     job = _job()
     job_id = _seed_facets(store, job, remote_policy="onsite")

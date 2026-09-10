@@ -404,8 +404,9 @@ def test_match_jobs_agrees_with_hard_blockers_from_facets_on_salary(
         facets, BlockingThresholds.for_job(python_job, _policy(salary_floor_eur=90000), None)
     )
 
-    assert bool(sql_row["hard_blockers"]) == bool(python_blockers)
-    assert len(sql_row["hard_blockers"] or []) == len(python_blockers)
+    # Content, not just count: the two must agree on the blocker's own
+    # wording (currency, amount, floor), not merely on how many there are.
+    assert (sql_row["hard_blockers"] or []) == python_blockers
 
 
 def test_match_jobs_agrees_with_hard_blockers_from_facets_under_a_market(
@@ -476,5 +477,5 @@ def test_match_jobs_agrees_with_hard_blockers_from_facets_under_a_market(
         facets, BlockingThresholds.for_job(python_job, _policy(salary_floor_eur=90000), market)
     )
 
-    assert bool(sql_row["hard_blockers"]) == bool(python_blockers)
-    assert len(sql_row["hard_blockers"] or []) == len(python_blockers)
+    # Content, not just count: see the salary-only equivalence test above.
+    assert (sql_row["hard_blockers"] or []) == python_blockers

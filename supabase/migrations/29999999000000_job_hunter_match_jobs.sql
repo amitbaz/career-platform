@@ -110,7 +110,11 @@ begin
       v_best := 1;
       exit;
     end if;
-    v_role_words := public.job_hunter_words(v_role);
+    -- Deduplicated, like Python's `set(role.split())`: a repeated word in the
+    -- role phrase must not inflate the ratio's denominator (or, could it
+    -- overlap the title, its numerator) beyond what the set-based original
+    -- computes.
+    select array_agg(distinct w) into v_role_words from unnest(public.job_hunter_words(v_role)) w;
     if array_length(v_role_words, 1) is null then
       continue;
     end if;
@@ -340,6 +344,24 @@ as $$
   end;
 $$;
 
+-- market_policy._phrase_in_text's `re.escape` ------------------------------------
+--
+-- A `location_floors` key goes into a `\m...\M` regex below; unescaped, a key
+-- containing a regex metacharacter (a period, parentheses, ...) would match
+-- more than the literal phrase, or -- unbalanced parentheses or brackets --
+-- fail the query outright. `re.escape` is what market_policy.py does before
+-- building the same regex in Python; this is its SQL twin.
+
+create or replace function public.job_hunter_regexp_escape(p_text text)
+returns text
+language sql
+immutable
+security invoker
+set search_path = ''
+as $$
+  select regexp_replace(coalesce(p_text, ''), '([.^$*+?()\[\]{}|\\])', '\\\1', 'g');
+$$;
+
 -- market_policy.salary_floor_for_job ---------------------------------------------
 --
 -- A city-specific floor wins when the job's normalized location names that
@@ -363,7 +385,7 @@ as $$
        from jsonb_each_text(coalesce(p_location_floors, '{}'::jsonb))
       where public.job_hunter_normalize_text(key) <> ''
         and public.job_hunter_normalize_text(coalesce(p_location, ''))
-              ~ ('\m' || public.job_hunter_normalize_text(key) || '\M')
+              ~ ('\m' || public.job_hunter_regexp_escape(public.job_hunter_normalize_text(key)) || '\M')
       limit 1),
     p_gross_base_floor
   );

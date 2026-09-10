@@ -90,10 +90,30 @@ first `limit` **non-blocked** rows calls `evaluate_job` exactly as
 outside the limit) builds `hard_blockers.blocked_evaluation` — no provider call, matching
 AC3 ("a blocked posting costs nothing"). `ai` is the caller's own `AIProvider`, built from
 that user's credentials exactly as it is built today; nothing about credential/ledger
-selection changes (`ai/usage.py` is untouched). This is the one operation AC1 requires:
-`pipeline.py`'s evaluation loop is rewired to call it instead of
-`rank_jobs`/`select_diverse_candidates`/`hard_blockers_from_facets` directly, so there is
-no second ranking implementation left running.
+selection changes (`ai/usage.py` is untouched). This is the one operation an on-demand
+caller (a future dashboard or search endpoint) uses directly.
+
+**`pipeline.py`'s ranking and hard-blocker call sites are rewired onto the same SQL
+function, `store.match_jobs`** — not onto `matching.match_jobs` itself. The wrapper's
+contract (rank, then score up to `limit`) does not fit the daily run's orchestration:
+offer-limit tracking, the deferred-evaluation queue, `select_diverse_candidates`'s
+per-source diversity cap, and on-demand facet extraction for a posting nobody has read
+(`_facets_for_scoring`) all have to interleave with scoring in ways the wrapper does not
+express. Duplicating that orchestration inside `matching.match_jobs` to make the pipeline
+call it, or stripping it out of the pipeline to fit the wrapper, was judged a larger and
+riskier change than reusing the ranking/blocking primitive both callers actually share.
+`rank_jobs`/`_facet_decided_blockers` (the Python originals) remain as pipeline.py's
+fallback for exactly two cases: a user with no search profile yet (`store.match_jobs`
+has nothing to rank against), and the SQL call failing outright — both already the
+run's existing resilience pattern (compare the `company_facets` bulk-read fallback a few
+lines above the same call site). One further wrinkle the wrinkle above does not cover: a
+posting first read (or re-read) *during* this run cannot yet be in the SQL ranking's own
+snapshot (`sql_match_by_job_id` is built before the evaluation loop extracts facets), so
+`_evaluate_and_deliver_one_job` also falls back to `_facet_decided_blockers` for any job
+that needed a fresh facets read this run, using the facets that read just produced rather
+than the stale (or absent) snapshot. This is what AC1 asks for in the shape the daily run
+can actually take: one ranking/blocking implementation, with the pre-#187 Python path kept
+only as the fallback for what the SQL call cannot yet see.
 
 ## What is deliberately out of scope
 

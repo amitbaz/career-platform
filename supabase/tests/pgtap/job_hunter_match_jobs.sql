@@ -9,7 +9,7 @@
 -- RLS still scopes everything to the caller.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(14);
+select plan(17);
 
 -- Seed users ------------------------------------------------------------------
 
@@ -207,8 +207,16 @@ select score as before_score from public.job_hunter_match_jobs()
 
 select pg_temp.become_postgres();
 
+-- `job_hunter_companies` is shared and never cleaned between runs (like
+-- `job_hunter_postings`), and the pytest suite's own fixtures write this
+-- same identity for real -- upsert rather than insert, so this file stays
+-- runnable on a stack that already has an 'acme' row.
 insert into public.job_hunter_companies (identity, display_name, industry, business_model)
-values ('acme', 'Acme', 'fintech', 'b2b_saas');
+values ('acme', 'Acme', 'fintech', 'b2b_saas')
+on conflict (identity) do update
+  set display_name = excluded.display_name,
+      industry = excluded.industry,
+      business_model = excluded.business_model;
 
 select pg_temp.authenticate_as('aaaaaaaa-1111-0000-0000-000000000001'::uuid);
 
@@ -269,6 +277,45 @@ values
 select is_empty(
   $$ select * from public.job_hunter_match_jobs() $$,
   'match_jobs: B has a profile but no membership rows, so still nothing -- never A''s postings'
+);
+
+-- Helper-level regression cases ----------------------------------------------
+--
+-- Both below exercise a helper directly rather than the whole `rows` join,
+-- because the bug each guards against is internal to that one helper and a
+-- full-corpus fixture would not make either failure mode legible.
+
+-- `job_hunter_role_seniority_fit` must intersect deduplicated word sets, like
+-- Python's `set(title_words) & set(role_words)`: a role phrase with a
+-- repeated word must not inflate the ratio's denominator. Undeduplicated,
+-- this call returns 8 (overlap 1 of 3 undeduplicated role words); the
+-- Python-equivalent answer, deduplicating both sides, is 12 (overlap 1 of 2).
+select is(
+  public.job_hunter_role_seniority_fit(
+    'Senior Product Engineer', array['Backend Backend Engineer'], array[]::text[]
+  ),
+  12,
+  'role_seniority_fit: a repeated word in the role phrase does not change the ratio'
+);
+
+-- `job_hunter_salary_floor_for_job` must escape a `location_floors` key
+-- before building a regex from it, like Python's `re.escape`: unescaped, a
+-- key with a regex metacharacter either matches more than the literal
+-- phrase, or -- an unbalanced paren or bracket -- raises instead of
+-- returning. Both assertions would error out entirely on the unescaped port.
+select is(
+  public.job_hunter_salary_floor_for_job(
+    'St.Louis, MO (Remote)', '{"st.louis": 120000}'::jsonb, 90000
+  ),
+  120000::bigint,
+  'salary_floor_for_job: a location_floors key with a literal period matches only that phrase'
+);
+select is(
+  public.job_hunter_salary_floor_for_job(
+    'Berlin, DE', '{"st.louis": 120000}'::jsonb, 90000
+  ),
+  90000::bigint,
+  'salary_floor_for_job: a location that does not name the configured city falls back to the global floor'
 );
 
 select * from finish();

@@ -1249,6 +1249,11 @@ def _evaluate_and_deliver_one_job(
 
     # Scoring is handed the posting's facets, not its description (#126), so
     # a posting nobody has read yet is read here, once, before it is scored.
+    # Captured before the call: `_facets_for_scoring` discards `job_id` from
+    # `needs_facets` the moment it reads it (line 783), so checking
+    # membership afterward would always say "did not need reading" for the
+    # very job that just did.
+    needed_fresh_facets = job_id in needs_facets
     try:
         facets = _facets_for_scoring(job_id, job, store, ai, summary, needs_facets)
     except PlatformAllowanceExhausted as exc:
@@ -1284,11 +1289,17 @@ def _evaluate_and_deliver_one_job(
     # resulting evaluation exactly as it handles the model's. When this run
     # ranked in SQL (#187), that same call already decided this job's
     # blockers -- reusing it here is what keeps blocking a single
-    # implementation rather than a second one recomputed from facets; only a
-    # job the SQL ranking never saw (no profile this run, or the call failed)
-    # falls back to computing it in Python.
+    # implementation rather than a second one recomputed from facets. Except
+    # when this job needed a fresh facets read (`needed_fresh_facets`):
+    # `sql_match_by_job_id` was built before this pass read (or re-read) its
+    # facets, so its row still reflects what was on file *before* this run --
+    # missing entirely for a first-read job, stale for a re-extracted one.
+    # Only a job whose facets were already current when the SQL ranking ran
+    # can trust its answer; every other job -- that one, and any the SQL
+    # ranking never saw at all -- falls back to computing it from the facets
+    # just read.
     sql_row = sql_match_by_job_id.get(job_id)
-    if sql_row is not None:
+    if sql_row is not None and not needed_fresh_facets:
         facet_blockers = sql_row["hard_blockers"] or []
     else:
         facet_blockers = _facet_decided_blockers(job, facets, settings)
