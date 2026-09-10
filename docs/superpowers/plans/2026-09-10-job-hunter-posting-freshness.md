@@ -3,9 +3,10 @@
 Design: `docs/superpowers/specs/2026-09-10-job-hunter-posting-freshness-design.md`.
 
 Test-first, one vertical slice at a time, at the two agreed seams (the stage
-against the local stack; pgTAP). Migration placeholder:
-`29999999000000_job_hunter_posting_freshness.sql` — numeric, so
-`supabase db reset` applies it; the real timestamp is requested at PR-open.
+against the local stack; pgTAP). Migration: developed under the numeric
+placeholder `29999999000000` (so `supabase db reset` applies it), then
+assigned `20260910120000_job_hunter_posting_freshness.sql` before PR, after
+the latest on `main` (`20260910080000`) with no other migration in flight.
 Verify SQL only after `pnpm db:reset`.
 
 1. **pgTAP — schedule.** Columns; `job_hunter_freshness_interval` widens with
