@@ -18,7 +18,13 @@ from __future__ import annotations
 import pytest
 
 from job_hunter.supabase_client import SupabaseAuthError, SupabaseRequestError
-from tests.conftest import _TABLES_CHILD_FIRST, _truncate
+from job_hunter.stage_queue import Stage
+from tests.conftest import (
+    _TABLES_CHILD_FIRST,
+    _test_stage_queue_names,
+    _test_stage_queue_sequence_start,
+    _truncate,
+)
 
 
 class _FakeClient:
@@ -123,3 +129,26 @@ def test_cleanup_stops_at_the_failing_table():
 
     assert client.deleted[-1] == "job_hunter_evaluations"
     assert "job_hunter_jobs" not in client.deleted
+
+
+def test_stage_queue_names_are_unique_to_the_test_run_and_worker():
+    first = _test_stage_queue_names("run-a", "gw0")
+    other_worker = _test_stage_queue_names("run-a", "gw1")
+    other_run = _test_stage_queue_names("run-b", "gw0")
+
+    assert set(first) == set(Stage)
+    assert set(first.values()).isdisjoint(other_worker.values())
+    assert set(first.values()).isdisjoint(other_run.values())
+    assert all(name.startswith("jh_test_") for name in first.values())
+    assert all(len(name) <= 48 for name in first.values())
+
+
+def test_stage_queue_message_id_ranges_do_not_overlap_between_workers_or_runs():
+    starts = {
+        _test_stage_queue_sequence_start("run-a", "gw0"),
+        _test_stage_queue_sequence_start("run-a", "gw1"),
+        _test_stage_queue_sequence_start("run-b", "gw0"),
+    }
+
+    assert len(starts) == 3
+    assert all(start % 1_000_000 == 0 for start in starts)

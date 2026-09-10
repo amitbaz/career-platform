@@ -318,6 +318,50 @@ def _postings_unique_to_this_test():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _company_watches_owned_by_this_test(monkeypatch):
+    """Keep company-watch discovery on the watches this test created.
+
+    Automatic watches live in the shared `job_hunter_company_watch_health`
+    (#204), which has no user_id and no delete policy, so every test that
+    promotes one leaves it behind -- due, and pointing at a made-up careers
+    host. Unfiltered, the next `run_pipeline` anywhere in the suite (this
+    run, a later one, or another xdist worker right now) scans that backlog
+    for real: DNS failures, HTTP retry backoff through the same
+    `time.sleep` a test may be counting, and failure counters another test
+    asserts on.
+
+    Filtering by id rather than by name covers every way a test creates a
+    watch -- directly, through `watchlist.promote_company`, or inside a
+    pipeline run -- since they all go through `upsert_company_watch`. A
+    manual watch is per-user and already cleaned between tests; tracking it
+    too costs nothing and keeps the rule to one line.
+    """
+    from job_hunter.postgres_store import PostgresJobStore
+
+    watch_ids: set[str] = set()
+    real_upsert = PostgresJobStore.upsert_company_watch
+    real_list_due = PostgresJobStore.list_due_company_watches
+
+    def upsert_for_this_test(store, **kwargs):
+        watch_id = real_upsert(store, **kwargs)
+        if watch_id is not None:
+            watch_ids.add(watch_id)
+        return watch_id
+
+    def list_due_for_this_test(store, *args, **kwargs):
+        return [
+            row
+            for row in real_list_due(store, *args, **kwargs)
+            if row["id"] in watch_ids
+        ]
+
+    monkeypatch.setattr(PostgresJobStore, "upsert_company_watch", upsert_for_this_test)
+    monkeypatch.setattr(
+        PostgresJobStore, "list_due_company_watches", list_due_for_this_test
+    )
+
+
 @pytest.fixture(scope="session")
 def _stack_env(pytestconfig: pytest.Config) -> None:
     missing = _missing_stack_environment()
@@ -401,29 +445,83 @@ def ingestion_database():
 
     database = IngestionDatabase(os.environ["SUPABASE_TEST_DB_URL"])
     try:
-        # Purged on the way in rather than on the way out. A test is entitled
-        # to close the store it was given -- some assert exactly that -- and a
-        # psycopg pool cannot be reopened, so a teardown purge would fail for
-        # a reason that has nothing to do with the test. Cleaning before each
-        # test protects every test that runs after this one, which is the
-        # whole point; the last test of a session leaves its messages for the
-        # first test of the next.
-        _purge_stage_queues(database)
-        _clean_platform_tables(database)
         yield database
     finally:
         database.close()
 
 
-#: The one stage queue a leftover message can make a test lie about, named as
-#: `postgres_stage_queue._QUEUE_NAMES` names it. Duplicated rather than
-#: imported so a rename there fails this cleanup loudly instead of silently
-#: cleaning nothing.
-_EXTRACT_FACETS_QUEUE_TABLE = "pgmq.q_job_hunter_extract_facets"
+#: Each worker's queue sequences start inside a distinct block this wide.
+#: Retry/dead-letter rows key on ``(stage, message_id)`` rather than queue
+#: name, so disjoint message ids are as load-bearing as disjoint pgmq tables.
+_STAGE_QUEUE_MESSAGE_ID_BLOCK = 1_000_000
 
 
-def _purge_stage_queues(database) -> None:
-    """Drop orphaned extract_facets messages before every store-backed test.
+def _test_stage_queue_names(testrun_uid: str, worker_id: str):
+    """Return pgmq names owned by one test run's worker process."""
+    from job_hunter.postgres_stage_queue import _QUEUE_NAMES
+
+    namespace = hashlib.sha256(
+        f"{testrun_uid}:{worker_id}".encode()
+    ).hexdigest()[:12]
+    return {
+        stage: f"jh_test_{namespace}_{stage.value}"
+        for stage in _QUEUE_NAMES
+    }
+
+
+def _test_stage_queue_sequence_start(testrun_uid: str, worker_id: str) -> int:
+    """Reserve a disjoint message-id block for stage bookkeeping rows."""
+    digest = hashlib.sha256(f"{testrun_uid}:{worker_id}".encode()).digest()
+    block = int.from_bytes(digest[:7], "big") % 8_999_999_999_999 + 1
+    return block * _STAGE_QUEUE_MESSAGE_ID_BLOCK
+
+
+@pytest.fixture(scope="session")
+def _isolated_stage_queue_names(testrun_uid, worker_id):
+    """Create real pgmq queues private to one xdist worker for this run."""
+    from job_hunter.pg import IngestionDatabase
+
+    names = _test_stage_queue_names(testrun_uid, worker_id)
+    sequence_start = _test_stage_queue_sequence_start(testrun_uid, worker_id)
+    database = IngestionDatabase(os.environ["SUPABASE_TEST_DB_URL"])
+    try:
+        with database.connection() as connection:
+            with connection.cursor() as cursor:
+                for name in names.values():
+                    cursor.execute("select pgmq.create(%s)", (name,))
+                    cursor.execute(
+                        "select setval(%s::regclass, %s, false)",
+                        (f"pgmq.q_{name}_msg_id_seq", sequence_start),
+                    )
+        yield names
+    finally:
+        try:
+            with database.connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "delete from public.job_hunter_stage_attempts "
+                        "where message_id >= %s and message_id < %s",
+                        (
+                            sequence_start,
+                            sequence_start + _STAGE_QUEUE_MESSAGE_ID_BLOCK,
+                        ),
+                    )
+                    cursor.execute(
+                        "delete from public.job_hunter_stage_dead_letters "
+                        "where message_id >= %s and message_id < %s",
+                        (
+                            sequence_start,
+                            sequence_start + _STAGE_QUEUE_MESSAGE_ID_BLOCK,
+                        ),
+                    )
+                    for name in names.values():
+                        cursor.execute("select pgmq.drop_queue(%s)", (name,))
+        finally:
+            database.close()
+
+
+def _purge_stage_queues(database, queue_names) -> None:
+    """Empty this worker's private queues before every store-backed test.
 
     The queues are shared engine machinery with no user dimension, so the
     seed-user partitioning that keeps two concurrent runs apart does not reach
@@ -432,139 +530,85 @@ def _purge_stage_queues(database) -> None:
     turns "this run read one posting" into "this run read one posting and four
     of somebody else's", which is both a false assertion and a real cost.
 
-    Orphaned, not all, and that distinction is what makes this safe to do on a
-    stack another suite is using. A message names a posting; this run's own
-    leftovers name postings whose membership rows `_clean_seed_users` has
-    already deleted, so nothing holds them any more. A concurrently running
-    suite's in-flight messages name postings it still holds a row on, and are
-    left alone. The rule reads the same way outside the tests: a queued read
-    for an advertisement nobody is a member of is work nobody asked for.
-
-    Bounded wait and best-effort. Losing the race costs a test that may see
-    another suite's messages; raising would fail a suite that did nothing
-    wrong.
+    The queues are namespaced by xdist's run and worker identities. Tests on
+    one worker execute serially, so clearing that worker's queues cannot touch
+    another running test, another worker, or another worktree's suite.
     """
     try:
         with database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("set local lock_timeout = '5s'")
-                cursor.execute(
-                    f"delete from {_EXTRACT_FACETS_QUEUE_TABLE} q "
-                    " where q.message ? 'posting_id' "
-                    "   and not exists ("
-                    "         select 1 from public.job_hunter_jobs j "
-                    "          where j.posting_id = (q.message->>'posting_id')::uuid)"
-                )
+                for name in queue_names.values():
+                    cursor.execute("select pgmq.purge_queue(%s)", (name,))
     except Exception:
         logging.getLogger(__name__).warning(
-            "could not clear orphaned messages from %s before this test; a "
-            "concurrent suite is using it, so a facet-read count here may "
-            "include its messages",
-            _EXTRACT_FACETS_QUEUE_TABLE,
+            "could not clear this worker's private stage queues before the test"
         )
 
 
-#: Platform-owned tables with no user_id and no run-scoping column, cleaned
-#: unconditionally before every store-backed test. `job_hunter_platform_
-#: search_usage` used to be in this tuple too (issue #184); it is carved out
-#: for #236, because `tests/test_brave_budget.py` now gives every test its
-#: own calendar month (`brave_ledger_window`) and a blanket wipe of the
-#: whole table would erase a concurrently running test's window under
-#: xdist -- exactly the race that fixture exists to prevent. The other five
-#: tables have no such per-test isolation yet: removing their wipe was
-#: tried and reverted, because dozens of tests across `test_pipeline.py`,
-#: `test_company_watch_source.py` and `test_learned_ats_source.py` turned
-#: out to depend on starting from an empty table, not merely on their own
-#: rows. Keeping the wipe for them is a known, pre-existing concurrency
-#: trade-off (see `_clean_platform_tables`'s docstring) rather than a new
-#: one introduced here.
-_PLATFORM_TABLES = (
-    "job_hunter_platform_ai_usage",
-    "job_hunter_platform_ai_quota_state",
-    "job_hunter_source_crawls",
-    "job_hunter_source_cursors",
-    "job_hunter_crawl_targets",
-)
+@pytest.fixture
+def _clean_isolated_stage_queues(ingestion_database, _isolated_stage_queue_names):
+    _purge_stage_queues(ingestion_database, _isolated_stage_queue_names)
+    return _isolated_stage_queue_names
 
 
-def _clean_platform_tables(database) -> None:
-    """Empty every table in `_PLATFORM_TABLES`.
-
-    Deleted with ingestion's privileged connection, the same shape as
-    `_purge_stage_queues`, because no RLS-scoped client can see a row it
-    does not own and these tables have no ownership column at all. Unlike
-    `_purge_stage_queues` this delete is unconditional rather than
-    orphan-scoped: there is nothing about a row in one of these tables that
-    marks it as this test's versus a concurrently running test's (in this
-    suite, another worktree's suite, or -- since #236 turned on `-n auto`
-    -- another xdist worker in the very same run).
-
-    **If you are staring at failures that make no sense, check for a
-    second suite before you debug your diff.** This has already happened
-    once: two overlapping runs produced eleven failures in
-    `test_pipeline.py` that read exactly like a regression, while that
-    file passed 144/144 on its own. Note that `ps aux | grep pytest`
-    reported nothing at the time -- it is a false negative here -- so the
-    reliable check is to re-run the failing file alone. If it passes,
-    you were racing someone.
-
-    The remedy, if this becomes common rather than occasional, is real
-    per-test isolation for these five tables too -- unique crawl/board
-    identities the way the #204 shared-table tests now use unique company
-    names, and a scoped window the way `brave_ledger_window` does for the
-    Brave ledger -- rather than a wipe every store-backed test pays for.
-    """
-    with database.connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("set local lock_timeout = '5s'")
-            for table in _PLATFORM_TABLES:
-                cursor.execute(f"delete from public.{table}")
-
-
-#: Calendar months with exactly 30 days. `brave_ledger_window` picks one of
-#: these per test rather than any month, so the day-of-month arithmetic
-#: `tests/test_brave_budget.py` asserts on (days remaining in the month,
-#: "the last day", "the next day") stays valid no matter which one a given
-#: test lands on.
+#: Calendar months with exactly 30 days, centuries past any real clock.
+#: `brave_ledger_window` hands out one of these per test rather than any
+#: month, so the day-of-month arithmetic `tests/test_brave_budget.py`
+#: asserts on (days remaining in the month, "the last day", "the next day")
+#: stays valid whichever one a test lands on. The range is wide so that two
+#: concurrent runs, each starting at their own offset, almost never overlap.
 _THIRTY_DAY_MONTHS = tuple(
-    (year, month) for year in range(2020, 2120) for month in (4, 6, 9, 11)
+    (year, month) for year in range(2200, 9999) for month in (4, 6, 9, 11)
 )
 
 
-def _thirty_day_month_for(nodeid: str) -> tuple[int, int]:
-    """A (year, month) with exactly 30 days, unique per test node id.
+@pytest.fixture(scope="session")
+def _brave_ledger_windows(request, testrun_uid) -> dict[str, tuple[int, int]]:
+    """Every Brave-ledger test in this run, mapped to a window of its own.
 
-    Deterministic from the node id rather than counted, because xdist runs
-    each worker as its own process: a per-process counter would hand out
-    the same index 0 in two different workers at once, while a hash of the
-    node id needs no cross-process coordination and reproduces the same
-    window on every run -- which is what lets `brave_ledger_window` clean
-    only its own window and still be correct the second time someone runs
-    the suite locally without a fresh database.
+    Issue #236: replaces the blanket platform-table wipe that used to run
+    before/after every `tests/test_brave_budget.py` test. That wipe cleared
+    the whole `job_hunter_platform_search_usage` table, which is exactly the
+    "own the whole table" pattern that breaks under xdist. Distinct months
+    mean distinct rows, so nothing is wiped from under a running test.
 
-    Issue #236: replaces the blanket `_clean_platform_tables` wipe that
-    used to run before/after every `tests/test_brave_budget.py` test. That
-    wipe cleared the whole `job_hunter_platform_search_usage` table, which
-    is exactly the "own the whole table" pattern that breaks under real
-    xdist concurrency. Distinct months mean distinct rows: two tests can
-    never collide, whichever workers they land on, so nothing needs
-    wiping out from under a concurrently running test in the first place.
+    Counted, not hashed. The first version hashed each node id into a window,
+    and eight tests in 400 windows already had two sharing one: whenever xdist
+    put that pair on different workers, one test's cleanup deleted the
+    other's rows mid-assertion. Every xdist worker collects the full item list
+    and shares one `testrun_uid`, so each computes this same map with no
+    coordination and no two tests in the run can collide.
+
+    Offset by `testrun_uid` rather than fixed, because a fixed mapping gives
+    a second suite running at the same moment -- another worktree on this
+    shared stack -- the identical window for every test, and the same
+    cross-run deletion. Nothing needs the window to repeat across runs: each
+    test cleans its own window before it starts.
     """
-    digest = hashlib.sha256(nodeid.encode()).digest()
-    index = int.from_bytes(digest[:8], "big") % len(_THIRTY_DAY_MONTHS)
-    return _THIRTY_DAY_MONTHS[index]
+    nodeids = sorted(
+        item.nodeid
+        for item in request.session.items
+        if "brave_ledger_window" in getattr(item, "fixturenames", ())
+    )
+    digest = hashlib.sha256(testrun_uid.encode()).digest()
+    base = int.from_bytes(digest[:8], "big")
+    return {
+        nodeid: _THIRTY_DAY_MONTHS[(base + index) % len(_THIRTY_DAY_MONTHS)]
+        for index, nodeid in enumerate(nodeids)
+    }
 
 
 @pytest.fixture
-def brave_ledger_window(request, ingestion_database):
+def brave_ledger_window(request, ingestion_database, _brave_ledger_windows):
     """A (year, month) window this test owns exclusively in the Brave ledger.
 
     Cleaned before and after, but only the rows inside this test's own
     window -- never the whole `job_hunter_platform_search_usage` table --
     so a concurrently running test in another worker, necessarily in a
-    different window (see `_thirty_day_month_for`), is never touched.
+    different window (see `_brave_ledger_windows`), is never touched.
     """
-    year, month = _thirty_day_month_for(request.node.nodeid)
+    year, month = _brave_ledger_windows[request.node.nodeid]
     start = datetime(year, month, 1, tzinfo=timezone.utc)
     end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
 
@@ -621,14 +665,26 @@ def seed_postings(ingestion_database):
 
 
 @pytest.fixture
-def store(supabase_client: SupabaseClient, ingestion_database):
+def store(
+    supabase_client: SupabaseClient,
+    ingestion_database,
+    _clean_isolated_stage_queues,
+):
     from job_hunter.postgres_store import PostgresJobStore
 
-    return PostgresJobStore(supabase_client, ingestion_database)
+    return PostgresJobStore(
+        supabase_client,
+        ingestion_database,
+        stage_queue_names=_clean_isolated_stage_queues,
+    )
 
 
 @pytest.fixture
-def other_store(other_supabase_client: SupabaseClient, ingestion_database):
+def other_store(
+    other_supabase_client: SupabaseClient,
+    ingestion_database,
+    _clean_isolated_stage_queues,
+):
     """A second user's store, on the same stack and the same postings.
 
     What the two users share is exactly what #175 makes shared: the posting
@@ -643,4 +699,8 @@ def other_store(other_supabase_client: SupabaseClient, ingestion_database):
     """
     from job_hunter.postgres_store import PostgresJobStore
 
-    return PostgresJobStore(other_supabase_client, ingestion_database)
+    return PostgresJobStore(
+        other_supabase_client,
+        ingestion_database,
+        stage_queue_names=_clean_isolated_stage_queues,
+    )

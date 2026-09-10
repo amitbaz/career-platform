@@ -348,7 +348,7 @@ def test_resolve_persist_is_reached_as_a_queue_consumer():
 
 
 @pytest.fixture
-def ingestion_store(supabase_client):
+def ingestion_store(supabase_client, _clean_isolated_stage_queues):
     """A store holding both transports: PostgREST and a direct connection.
 
     Skips rather than fails without `SUPABASE_TEST_DB_URL`, like every other
@@ -359,7 +359,11 @@ def ingestion_store(supabase_client):
     dsn = os.environ.get("SUPABASE_TEST_DB_URL")
     if not dsn:
         pytest.skip("no SUPABASE_TEST_DB_URL; ingestion has no direct connection")
-    store = PostgresJobStore(supabase_client, IngestionDatabase(dsn))
+    store = PostgresJobStore(
+        supabase_client,
+        IngestionDatabase(dsn),
+        stage_queue_names=_clean_isolated_stage_queues,
+    )
     try:
         yield store
     finally:

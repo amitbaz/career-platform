@@ -16,7 +16,7 @@ from job_hunter.search_budget import (
 # "brave" and a calendar month would have an earlier test's writes count
 # against a later test's cap. Issue #236: each ledger-touching test below
 # takes `brave_ledger_window`, which hands it a (year, month) no other test
-# in the suite is using (see `_thirty_day_month_for` in conftest.py), so
+# in the run is using (see `_brave_ledger_windows` in conftest.py), so
 # nothing about running concurrently under xdist can make two tests share
 # rows in the first place.
 

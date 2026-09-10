@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import os
 import re
+import selectors
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -198,14 +200,17 @@ def test_a_full_pool_says_so_while_it_waits(tmp_path):
         "    for _ in range(POOL_SIZE):\n"
         f"        stack.enter_context(claim_slot(directory={str(tmp_path)!r}))\n"
         "    print('all held', flush=True)\n"
-        "    time.sleep(8)\n"
+        "    time.sleep(300)\n"
     )
     holder = subprocess.Popen(
         [sys.executable, str(hog)], stdout=subprocess.PIPE, text=True
     )
+    waiter = None
+    output_parts: list[str] = []
+    marker = "seed user slots are in use"
     try:
         assert holder.stdout.readline().strip() == "all held"
-        waited = subprocess.run(
+        waiter = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
@@ -215,17 +220,32 @@ def test_a_full_pool_says_so_while_it_waits(tmp_path):
             ],
             cwd=_TESTS_PARENT,
             env={**os.environ, "CAREER_PLATFORM_SEED_SLOT_DIR": str(tmp_path)},
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=180,
         )
+        with selectors.DefaultSelector() as selector:
+            selector.register(waiter.stdout, selectors.EVENT_READ)
+            deadline = time.monotonic() + 30
+            while marker not in "".join(output_parts) and time.monotonic() < deadline:
+                if not selector.select(timeout=1):
+                    if waiter.poll() is not None:
+                        break
+                    continue
+                line = waiter.stdout.readline()
+                if not line:
+                    break
+                output_parts.append(line)
     finally:
-        holder.kill()
+        if holder.poll() is None:
+            holder.kill()
         holder.wait()
 
-    output = waited.stdout + waited.stderr
-    assert waited.returncode == 0, output
-    assert "seed user slots are in use" in output, (
+    assert waiter is not None
+    remainder, _ = waiter.communicate(timeout=180)
+    output = "".join(output_parts) + remainder
+    assert waiter.returncode == 0, output
+    assert marker in output, (
         "a run waiting on a full pool must say so while it waits, not only "
         "when the wait ends badly"
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from .stage_queue import QueueDepth, QueueMessage, Stage
@@ -18,8 +19,13 @@ _QUEUE_NAMES = {
 class PostgresStageQueue:
     """Run short queue-state transactions over ingestion's connection pool."""
 
-    def __init__(self, database) -> None:
+    def __init__(
+        self,
+        database,
+        queue_names: Mapping[Stage, str] | None = None,
+    ) -> None:
         self._database = database
+        self._queue_names = dict(queue_names or _QUEUE_NAMES)
 
     def enqueue(
         self,
@@ -36,12 +42,11 @@ class PostgresStageQueue:
         with self._database.connection() as leased:
             return self._enqueue(leased, stage, payload, delay_seconds)
 
-    @staticmethod
-    def _enqueue(connection, stage, payload, delay_seconds) -> int:
+    def _enqueue(self, connection, stage, payload, delay_seconds) -> int:
         with connection.cursor() as cursor:
             cursor.execute(
                 "select * from pgmq.send(%s, %s::jsonb, %s)",
-                (_QUEUE_NAMES[stage], json.dumps(payload), delay_seconds),
+                (self._queue_names[stage], json.dumps(payload), delay_seconds),
             )
             row = cursor.fetchone()
         if row is None:
@@ -64,7 +69,7 @@ class PostgresStageQueue:
                     "on a.stage = %s and a.message_id = q.msg_id "
                     "order by q.msg_id",
                     (
-                        _QUEUE_NAMES[stage],
+                        self._queue_names[stage],
                         visibility_timeout_seconds,
                         batch_size,
                         stage.value,
@@ -90,7 +95,7 @@ class PostgresStageQueue:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "select pgmq.delete(%s, %s)",
-                    (_QUEUE_NAMES[message.stage], message.message_id),
+                    (self._queue_names[message.stage], message.message_id),
                 )
                 cursor.execute(
                     "delete from public.job_hunter_stage_attempts "
@@ -118,7 +123,7 @@ class PostgresStageQueue:
                 cursor.execute(
                     "select * from pgmq.set_vt(%s, %s, %s)",
                     (
-                        _QUEUE_NAMES[message.stage],
+                        self._queue_names[message.stage],
                         message.message_id,
                         delay_seconds,
                     ),
@@ -130,7 +135,7 @@ class PostgresStageQueue:
                 cursor.execute(
                     "select * from pgmq.set_vt(%s, %s, %s)",
                     (
-                        _QUEUE_NAMES[message.stage],
+                        self._queue_names[message.stage],
                         message.message_id,
                         delay_seconds,
                     ),
@@ -162,7 +167,7 @@ class PostgresStageQueue:
                 )
                 cursor.execute(
                     "select pgmq.delete(%s, %s)",
-                    (_QUEUE_NAMES[message.stage], message.message_id),
+                    (self._queue_names[message.stage], message.message_id),
                 )
                 cursor.execute(
                     "delete from public.job_hunter_stage_attempts "
