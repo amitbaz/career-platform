@@ -56,17 +56,22 @@ begin
   perform set_config('request.jwt.claims', '', true);
 end $$;
 
--- The five shared tables, named once. Every grant assertion below is driven
+-- The shared tables, named once. Every grant assertion below is driven
 -- from this list rather than repeated per table, so a table added to the
 -- schema's shared set and not to this file shows up as a missing row rather
 -- than as silence.
+--
+-- job_hunter_company_watch_health (#204) joins the set: a company's
+-- careers-page endpoint and its health, shared by every user who might
+-- watch that company.
 create view pg_temp.shared_tables as
 select unnest(array[
   'job_hunter_postings',
   'job_hunter_job_facets',
   'job_hunter_companies',
   'job_hunter_posting_merges',
-  'job_hunter_ats_boards'
+  'job_hunter_ats_boards',
+  'job_hunter_company_watch_health'
 ]) as table_name;
 
 -- Seed one row in each shared table, as the owner. These are what the refusal
@@ -98,6 +103,11 @@ values ('eeee0001-0000-0000-0000-000000000002',
 insert into public.job_hunter_ats_boards
   (provider, board_identifier, first_seen_at, last_seen_at)
 values ('greenhouse', 'pgtap-shared-writes-board', now(), now());
+
+insert into public.job_hunter_company_watch_health
+  (company_id, careers_url, first_seen_at)
+select id, 'https://pgtap-shared-writes.test/careers', now()
+  from public.job_hunter_companies where identity = 'pgtapsharedwrites';
 
 
 -- 1. The grants ----------------------------------------------------------------
@@ -157,6 +167,12 @@ select is(
      from pg_policy where polrelid = 'public.job_hunter_posting_merges'::regclass),
   array['select_authenticated'],
   'job_hunter_posting_merges still has no insert, update or delete policy');
+
+select is(
+  (select array_agg(polname::text order by polname)
+     from pg_policy where polrelid = 'public.job_hunter_company_watch_health'::regclass),
+  array['select_authenticated'],
+  'job_hunter_company_watch_health has a read policy and nothing else');
 
 
 -- 3. What actually happens, as authenticated -----------------------------------
@@ -249,7 +265,26 @@ select throws_ok(
   '42501', null,
   'an authenticated user cannot delete a board');
 
--- And reading all five is untouched. This is the half of the ticket that must
+select throws_ok(
+  $$ insert into public.job_hunter_company_watch_health
+       (company_id, careers_url, first_seen_at)
+     select id, 'https://forged.test', now() from public.job_hunter_companies
+      where identity = 'pgtapsharedwrites' $$,
+  '42501', null,
+  'an authenticated user cannot insert a company watch health row');
+select throws_ok(
+  $$ update public.job_hunter_company_watch_health
+        set consecutive_failures = 99
+      where careers_url = 'https://pgtap-shared-writes.test/careers' $$,
+  '42501', null,
+  'an authenticated user cannot forge another company''s watch health');
+select throws_ok(
+  $$ delete from public.job_hunter_company_watch_health
+      where careers_url = 'https://pgtap-shared-writes.test/careers' $$,
+  '42501', null,
+  'an authenticated user cannot delete a company watch health row');
+
+-- And reading all six is untouched. This is the half of the ticket that must
 -- NOT change: the whole value of a shared row is that everyone can read it.
 select is(
   (select count(*)::int from public.job_hunter_postings
@@ -271,6 +306,10 @@ select is(
   (select count(*)::int from public.job_hunter_ats_boards
     where board_identifier = 'pgtap-shared-writes-board'),
   1, 'an authenticated user still reads a board another user learned');
+select is(
+  (select count(*)::int from public.job_hunter_company_watch_health
+    where careers_url = 'https://pgtap-shared-writes.test/careers'),
+  1, 'an authenticated user still reads a company watch health row another user learned');
 
 
 -- 4. The same, as anon ---------------------------------------------------------
@@ -338,6 +377,19 @@ select throws_ok(
 select throws_ok(
   $$ delete from public.job_hunter_ats_boards $$,
   '42501', null, 'anon cannot delete an ATS board');
+
+select throws_ok(
+  $$ insert into public.job_hunter_company_watch_health
+       (company_id, careers_url, first_seen_at)
+     select id, 'https://anon-forged.test', now() from public.job_hunter_companies
+      where identity = 'pgtapsharedwrites' $$,
+  '42501', null, 'anon cannot insert a company watch health row');
+select throws_ok(
+  $$ update public.job_hunter_company_watch_health set consecutive_failures = 99 $$,
+  '42501', null, 'anon cannot update a company watch health row');
+select throws_ok(
+  $$ delete from public.job_hunter_company_watch_health $$,
+  '42501', null, 'anon cannot delete a company watch health row');
 
 
 -- 5. The other door: SECURITY DEFINER functions --------------------------------
@@ -467,6 +519,10 @@ select lives_ok(
   $$ update public.job_hunter_ats_boards set last_checked_at = now()
       where board_identifier = 'pgtap-shared-writes-board' $$,
   'the privileged role still writes board health');
+select lives_ok(
+  $$ update public.job_hunter_company_watch_health set consecutive_failures = 1
+      where careers_url = 'https://pgtap-shared-writes.test/careers' $$,
+  'the privileged role still writes company watch health');
 
 -- The job-upsert path end to end, over the transport it now lives on: a
 -- posting is written, a membership row appears, and the merge the identity

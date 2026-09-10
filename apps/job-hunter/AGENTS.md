@@ -53,11 +53,12 @@ Migration rules:
    `20260909100000_job_hunter_postings.sql` adds `job_hunter_postings` — one row per job
    advertisement, keyed by fingerprint and shared by every user who discovers it, which
    `job_hunter_jobs.posting_id` points at. It, `job_hunter_job_facets`,
-   `job_hunter_companies` (#198), `job_hunter_posting_merges` (#176) and `job_hunter_ats_boards`
-   (#203) are the five Job Hunter tables shared between users: none has a `user_id`, and any
+   `job_hunter_companies` (#198), `job_hunter_posting_merges` (#176), `job_hunter_ats_boards`
+   (#203), `job_hunter_sources` (#184) and `job_hunter_company_watch_health` (#204) are the
+   seven Job Hunter tables shared between users: none has a `user_id`, and any
    authenticated user may read any row of any of them. **None may be written by any user**
    (#179): `insert`, `update` and `delete` are revoked from `anon`, `authenticated` and
-   `service_role` on all five, the write policies are dropped, and every write arrives over
+   `service_role` on all seven, the write policies are dropped (where any ever existed), and every write arrives over
    ingestion's direct Postgres connection as the privileged role. That is the pattern of
    record for any table shared between users, and
    `supabase/tests/pgtap/job_hunter_shared_writes.sql` is what fails when it stops holding —
@@ -139,7 +140,20 @@ Migration rules:
    left as the per-user entry point and does nothing but merge the postings behind two of a
    caller's rows, and the new internal `job_hunter_collapse_job_rows` folds the membership
    rows a posting merge would otherwise duplicate — for every affected user, not only the
-   caller. An additional user now costs one narrow row per posting.) Job Hunter's runtime reads and writes these tables through
+   caller. An additional user now costs one narrow row per posting.)
+   `20260910130000_job_hunter_company_watch_health.sql` shares a company's careers-page
+   endpoint and its health between users (#204): `job_hunter_company_watch` held a careers URL,
+   an ATS reference and consecutive-failure health once per user, for both a user's manual
+   watches and the engine's own automatic promotions merged onto one row. It adds
+   `job_hunter_company_watch_health` — a seventh shared table, keyed on `company_id`
+   referencing #198's `job_hunter_companies` rather than a normalized name of its own — and
+   moves automatic promotions onto it entirely; `job_hunter_company_watch` keeps only manual
+   watches, `promotion_source` and `discovered_from_job_id` dropped since every remaining and
+   future row is one. It adopts the #179 privileged-writer pattern from creation rather than
+   opening writes first and narrowing them later, since #179 already exists to cite. Manual and
+   automatic watches for the same company are never merged into one row after this — a rare,
+   accepted duplicate check rather than one user's manual intent being upgradeable by another
+   user's automatic discovery. Job Hunter's runtime reads and writes these tables through
    `PostgresJobStore` (`src/job_hunter/postgres_store.py`), reaching PostgREST with a
    short-lived, per-user ES256 token; row-level security decides which rows are visible.
 

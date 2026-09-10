@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,20 @@ from job_hunter.watchlist import (
     should_auto_promote,
     sync_manual_watch_seeds,
 )
+
+
+def _company_name(label: str = "Acme") -> str:
+    """A company name no other test or concurrent run shares.
+
+    Since #204 an automatic promotion writes the shared
+    `job_hunter_company_watch_health`, keyed on the company entity
+    (`job_hunter_companies`, #198) -- neither table is cleaned between
+    tests or scoped to a user, so a test asserting an exact endpoint,
+    confidence or strength for a bare "Acme" watch can otherwise read
+    whatever an unrelated earlier test (in this file or any other) already
+    promoted it to.
+    """
+    return f"{label} {uuid.uuid4().hex[:12]}"
 
 
 def _evaluation(decision, **overrides):
@@ -89,10 +104,11 @@ def test_syncing_manual_generic_careers_seed(store, tmp_path):
 
 
 def test_automatic_promotion_prefers_supported_ats_metadata(store, tmp_path):
+    company = _company_name()
     job = Job(
         source="greenhouse",
         title="Frontend Engineer",
-        company="Acme",
+        company=company,
         canonical_url="https://boards.greenhouse.io/acme/jobs/123",
         ats_provider="greenhouse",
         ats_board="acme",
@@ -109,7 +125,7 @@ def test_automatic_promotion_prefers_supported_ats_metadata(store, tmp_path):
     )
 
     assert watch_id is not None
-    row = store.get_company_watch("Acme")
+    row = store.get_company_watch(company)
     assert row["ats_provider"] == "greenhouse"
     assert row["ats_identifier"] == "acme"
     assert row["careers_url"] == ""
@@ -117,10 +133,11 @@ def test_automatic_promotion_prefers_supported_ats_metadata(store, tmp_path):
 
 
 def test_automatic_promotion_uses_canonical_url_without_supported_ats(store, tmp_path):
+    company = _company_name("Beta")
     job = Job(
         source="public",
         title="Frontend Engineer",
-        company="Beta",
+        company=company,
         canonical_url="https://beta.test/careers/frontend-engineer",
     )
     job_id, _, _ = store.upsert_job(job)
@@ -132,17 +149,18 @@ def test_automatic_promotion_uses_canonical_url_without_supported_ats(store, tmp
         evaluation=_evaluation("high_priority"),
     )
 
-    row = store.get_company_watch("Beta")
+    row = store.get_company_watch(company)
     assert row["careers_url"] == "https://beta.test/careers/frontend-engineer"
     assert row["ats_provider"] is None
     assert row["ats_identifier"] is None
 
 
 def test_automatic_promotion_uses_canonical_url_for_whitespace_ats_board(store, tmp_path):
+    company = _company_name("Beta")
     job = Job(
         source="greenhouse",
         title="Frontend Engineer",
-        company="Beta",
+        company=company,
         canonical_url="https://beta.test/careers/frontend-engineer",
         ats_provider="greenhouse",
         ats_board="   ",
@@ -156,14 +174,15 @@ def test_automatic_promotion_uses_canonical_url_for_whitespace_ats_board(store, 
         evaluation=_evaluation("high_priority"),
     )
 
-    row = store.get_company_watch("Beta")
+    row = store.get_company_watch(company)
     assert row["careers_url"] == "https://beta.test/careers/frontend-engineer"
     assert row["ats_provider"] is None
     assert row["ats_identifier"] is None
 
 
 def test_automatic_promotion_stores_company_only_without_usable_endpoint(store, tmp_path):
-    job = Job(source="public", title="Frontend Engineer", company="No Endpoint GmbH")
+    company = _company_name("No Endpoint")
+    job = Job(source="public", title="Frontend Engineer", company=f"{company} GmbH")
     job_id, _, _ = store.upsert_job(job)
 
     promote_company(
@@ -173,7 +192,7 @@ def test_automatic_promotion_stores_company_only_without_usable_endpoint(store, 
         evaluation=_evaluation("high_priority"),
     )
 
-    row = store.get_company_watch("No Endpoint")
+    row = store.get_company_watch(company)
     assert row is not None
     assert row["careers_url"] == ""
     assert row["ats_provider"] is None
@@ -199,7 +218,8 @@ def test_automatic_promotion_rejects_inconsistent_score_below_configured_thresho
     store,
     tmp_path,
 ):
-    job = Job(source="public", title="Frontend Engineer", company="Acme")
+    company = _company_name()
+    job = Job(source="public", title="Frontend Engineer", company=company)
     job_id, _, _ = store.upsert_job(job)
 
     watch_id = promote_company(
@@ -211,11 +231,12 @@ def test_automatic_promotion_rejects_inconsistent_score_below_configured_thresho
     )
 
     assert watch_id is None
-    assert store.get_company_watch("Acme") is None
+    assert store.get_company_watch(company) is None
 
 
 def test_automatic_promotion_rejects_non_promotable_decision(store, tmp_path):
-    job = Job(source="public", title="Frontend Engineer", company="Acme")
+    company = _company_name()
+    job = Job(source="public", title="Frontend Engineer", company=company)
     job_id, _, _ = store.upsert_job(job)
 
     watch_id = promote_company(
@@ -227,7 +248,7 @@ def test_automatic_promotion_rejects_non_promotable_decision(store, tmp_path):
     )
 
     assert watch_id is None
-    assert store.get_company_watch("Acme") is None
+    assert store.get_company_watch(company) is None
 
 
 def _manual_watch(store, company_name="Acme"):
@@ -265,10 +286,16 @@ def test_due_watches_include_unpaused_and_expired_active_rows(store, tmp_path):
 
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
-    assert [row["id"] for row in store.list_due_company_watches(now)] == [
-        unpaused_id,
-        expired_id,
+    # Filtered to this test's own ids rather than asserted as the whole
+    # list: since #204 the due list also unions the shared automatic pool,
+    # which other tests in this session may have left active, due rows in.
+    seeded_ids = {unpaused_id, expired_id, paused_id, inactive_id}
+    due_ids = [
+        row["id"]
+        for row in store.list_due_company_watches(now)
+        if row["id"] in seeded_ids
     ]
+    assert due_ids == [unpaused_id, expired_id]
 
 
 def test_first_two_failures_remain_due(store, tmp_path):
@@ -281,7 +308,8 @@ def test_first_two_failures_remain_due(store, tmp_path):
     row = store.get_company_watch("Acme")
     assert row["consecutive_failures"] == 2
     assert row["paused_until"] is None
-    assert [row["id"] for row in store.list_due_company_watches(now)] == [watch_id]
+    due_ids = [row["id"] for row in store.list_due_company_watches(now)]
+    assert watch_id in due_ids
 
 
 def test_third_failure_pauses_for_24_hours(store, tmp_path):
@@ -295,7 +323,11 @@ def test_third_failure_pauses_for_24_hours(store, tmp_path):
     row = store.get_company_watch("Acme")
     assert row["consecutive_failures"] == 3
     assert row["paused_until"] == "2026-09-01T12:00:00+00:00"
-    assert store.list_due_company_watches(now) == []
+    # Not asserted empty: since #204 the due list also unions the shared
+    # automatic pool, which other tests in this session may have left due
+    # rows in. This watch's own absence is still the property under test.
+    due_ids = [row["id"] for row in store.list_due_company_watches(now)]
+    assert watch_id not in due_ids
 
 
 def test_failed_retry_after_pause_expiry_pauses_for_another_24_hours(store, tmp_path):
@@ -305,7 +337,8 @@ def test_failed_retry_after_pause_expiry_pauses_for_another_24_hours(store, tmp_
     for _ in range(3):
         store.record_watch_failure(watch_id, first_check)
 
-    assert [row["id"] for row in store.list_due_company_watches(retry)] == [watch_id]
+    due_ids = [row["id"] for row in store.list_due_company_watches(retry)]
+    assert watch_id in due_ids
 
     store.record_watch_failure(watch_id, retry)
 
@@ -365,9 +398,8 @@ def test_due_watch_compares_equivalent_offset_instants(store, tmp_path):
         tzinfo=timezone(timedelta(hours=-4)),
     )
 
-    assert [row["id"] for row in store.list_due_company_watches(same_instant)] == [
-        watch_id
-    ]
+    due_ids = [row["id"] for row in store.list_due_company_watches(same_instant)]
+    assert watch_id in due_ids
 
 
 def test_failure_pause_is_24_elapsed_hours_across_dst(store, tmp_path):

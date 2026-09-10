@@ -130,15 +130,17 @@ def test_a_dependent_evaluation_blocks_release(store):
     assert store.get_job(job_id) is not None
 
 
-def test_a_job_referenced_by_company_watch_blocks_release(store):
-    """A job that seeded a `company_watch` row is never safe to delete.
+def test_a_job_that_seeded_a_company_watch_no_longer_blocks_release(store):
+    """A job that promoted a company watch is safe to delete since #204.
 
-    `job_hunter_company_watch.discovered_from_job_id` references
-    `job_hunter_jobs (id, user_id)` with no `on delete cascade` (migration
-    202609060002:128). Without this check, `release_legacy_blank_linkedin_jobs`
-    would pass every other dependency check, then have its DELETE on
-    `job_hunter_jobs` fail with a 409 -- after this message's candidate rows
-    were already deleted.
+    Before #204, `job_hunter_company_watch.discovered_from_job_id`
+    referenced `job_hunter_jobs (id, user_id)` with no `on delete cascade`
+    (migration 202609060002:128), so `_job_has_dependencies` had to check it
+    to avoid a 409 mid-loop. Automatic promotion now writes the shared
+    `job_hunter_company_watch_health` instead, whose `discovered_from_job_id`
+    is unenforced provenance with no foreign key at all -- so there is
+    nothing left that can block this delete, and `_job_has_dependencies`
+    no longer checks it.
     """
     _record_job_alert(store, "m1")
     _stage_linkedin_candidate(store, "m1", "cand1")
@@ -153,8 +155,8 @@ def test_a_job_referenced_by_company_watch_blocks_release(store):
         confidence=0.9,
     )
 
-    assert store.release_legacy_blank_linkedin_jobs() == 0
-    assert store.get_job(job_id) is not None
+    assert store.release_legacy_blank_linkedin_jobs() == 1
+    assert store.get_job(job_id) is None
 
 
 def test_non_poisoned_populated_job_is_left_alone(store):

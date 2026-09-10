@@ -705,7 +705,14 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
     )
 
     settings.candidate_profile = "PRIVATE_CV_TEXT"
-    job = _job(description="PRIVATE_GMAIL_BODY React TypeScript")
+    # A company no other test shares (#204): job_hunter_companies and the
+    # shared job_hunter_company_watch_health are neither cleaned between
+    # tests nor per-user, so a run using the default "Acme" could find it
+    # already promoted -- identically -- by an earlier test, which would
+    # make this promotion correctly not "meaningful" and break the count
+    # assertions below for a reason unrelated to what they test.
+    company = _company_name()
+    job = _job(company=company, description="PRIVATE_GMAIL_BODY React TypeScript")
     store.upsert_company_watch(
         company_name="Healthy Watch",
         careers_url="https://healthy.test/careers",
@@ -752,7 +759,7 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
             http=WatchHttp(),
         )
 
-    row = store.get_company_watch("Acme")
+    row = store.get_company_watch(company)
     assert row is not None
     assert row["promotion_source"] == "automatic"
     assert len(promotion_calls) == 1
@@ -765,8 +772,11 @@ def test_pipeline_promotes_package_match_only_after_evaluation_is_persisted(
     assert failing_watch["consecutive_failures"] == 3
     assert failing_watch["paused_until"] is not None
     assert "companies_promoted=1" in caplog.text
-    assert "watch_checks=2" in caplog.text
-    assert "watch_paused=1" in caplog.text
+    # Not asserted against the aggregate watch_checks/watch_paused counts:
+    # since #204 those count every due watch this run attempted, which can
+    # include an unrelated shared automatic watch another test left active
+    # and due. Healthy Watch's and Failing Watch's own health, asserted
+    # above, is the precise, order-independent proof.
     assert "PRIVATE_CV_TEXT" not in caplog.text
     assert "PRIVATE_GMAIL_BODY" not in caplog.text
 
@@ -958,8 +968,11 @@ def test_pipeline_counts_a_failed_expired_watch_retry_as_a_new_pause(store, sett
     watch = store.get_company_watch("Retry Watch")
     assert watch["consecutive_failures"] == 4
     assert watch["paused_until"] != previous_pause
-    assert "watch_checks=1" in caplog.text
-    assert "watch_paused=1" in caplog.text
+    # Not asserted against the aggregate watch_checks/watch_paused counts:
+    # since #204 those count every due watch this run attempted, which can
+    # include an unrelated shared automatic watch another test left active
+    # and due -- this watch's own failure count and pause are the precise,
+    # order-independent proof of the retry-as-new-pause behavior under test.
 
 
 def test_pipeline_does_not_promote_possible_match(store, settings, monkeypatch):
@@ -997,19 +1010,26 @@ def test_pipeline_does_not_promote_possible_match(store, settings, monkeypatch):
         raising=False,
     )
 
+    # A company no other test shares (#204): job_hunter_company_watch_health
+    # is neither cleaned between tests nor per-user, so the default "Acme"
+    # could already carry an unrelated automatic watch from an earlier test,
+    # and this test's claim is specifically that a rejected promotion
+    # creates nothing.
+    company = _company_name()
+    job = _job(company=company)
     summary = run_pipeline(
         settings,
-        sources=[FakeSource([_job()])],
+        sources=[FakeSource([job])],
         store=store,
         ai=gemini,
         telegram=FakeTelegram(),
     )
 
-    assert store.get_company_watch("Acme") is None
+    assert store.get_company_watch(company) is None
     assert len(promotion_calls) == 1
     promoted_job_id, promoted_threshold = promotion_calls[0]
     assert promoted_threshold == 75
-    assert promoted_job_id == store.upsert_job(_job())[0]
+    assert promoted_job_id == store.upsert_job(job)[0]
     assert summary.possible_matches == 1
 
 
@@ -1038,9 +1058,12 @@ def test_pipeline_passes_configured_package_threshold_to_promotion(
         raising=False,
     )
 
+    # A company no other test shares (#204) -- see the matching note in
+    # test_pipeline_does_not_promote_possible_match.
+    company = _company_name()
     summary = run_pipeline(
         settings,
-        sources=[FakeSource([_job()])],
+        sources=[FakeSource([_job(company=company)])],
         store=store,
         ai=FakeGemini(),
         telegram=FakeTelegram(),
@@ -1048,7 +1071,7 @@ def test_pipeline_passes_configured_package_threshold_to_promotion(
 
     assert summary.ready_to_apply == 1
     assert promotion_calls == [95]
-    assert store.get_company_watch("Acme") is None
+    assert store.get_company_watch(company) is None
 
 
 def test_pipeline_isolates_company_watch_source_failure(
@@ -4594,9 +4617,14 @@ def test_an_unreadable_company_response_leaves_the_company_retryable(store, sett
     summary = run_pipeline(settings, sources=[FakeSource([_job(company=company)])],
                            store=store, ai=gemini, telegram=FakeTelegram())
 
-    # Nothing is written, so nothing claims to know what the company is, and
-    # the next run is free to try again.
-    assert store.get_company_facets(company) is None
+    # No real facts are written, so nothing claims to know what the company
+    # is, and the next run is free to try again. A bare entity row can now
+    # exist regardless -- this job's own automatic promotion (#204)
+    # references job_hunter_companies too, and a watch can be discovered
+    # before any facets ever are -- but it carries no model, so it is not
+    # evidence extraction succeeded.
+    facets = store.get_company_facets(company)
+    assert facets is None or facets.model == ""
     assert store.companies_needing_facets([company]) == {
         normalize_company_name(company)
     }
@@ -4622,7 +4650,12 @@ def test_a_posting_is_scored_even_when_its_company_is_unknown(store, settings):
     summary = run_pipeline(settings, sources=[FakeSource([_job(company=company)])],
                            store=store, ai=gemini, telegram=FakeTelegram())
 
-    assert store.get_company_facets(company) is None
+    # A bare entity row can exist from this job's own automatic promotion
+    # (#204) without meaning the company's facts are known -- see the
+    # matching note in test_an_unreadable_company_response_leaves_the_
+    # company_retryable.
+    facets = store.get_company_facets(company)
+    assert facets is None or facets.model == ""
     assert summary.ready_to_apply == 1
     assert summary.evaluated == 1
     # The scoring prompt says so rather than staying silent: silence is what
@@ -4875,6 +4908,11 @@ def test_a_run_without_the_privileged_connection_scores_and_delivers_what_exists
     # earlier run stored and reached the digest.
     assert summary.evaluated == 1
     assert telegram.messages
+    # A high-scoring job also attempts automatic company watch promotion
+    # (#204's shared job_hunter_company_watch_health needs the same
+    # privileged connection this mode has none of), and that must be
+    # skipped rather than attempted and counted as a run error.
+    assert summary.errors == 0
 
 
 def _close_posting_of(ingestion_database, job_id: str) -> None:

@@ -29,10 +29,13 @@ race this port fixes) is handled per table:
 - ``job_sources``, ``evaluations``, ``materials``, ``deliveries``: the
   Postgres column is ``NOT NULL``, so the row is dropped and logged. There is
   no lossless way to keep provenance for a job that isn't there.
-- ``company_watch.discovered_from_job_id``: nullable in Postgres, so the
-  watch row still migrates with that column set to ``NULL`` rather than being
-  dropped -- the watch itself (company name, ATS identity, confidence) is
-  useful on its own.
+- ``company_watch.discovered_from_job_id``: since #204 this only matters for
+  an automatic row, which now migrates onto the shared
+  ``job_hunter_company_watch_health`` (see ``_migrate_company_watch``); that
+  column there is unenforced provenance with no foreign key at all, but a
+  dangling value is nulled anyway rather than kept wrong. A manual row is
+  migrated without the column, because that table dropped it entirely --
+  a manual watch never carried one.
 - ``application_events.job_id``: nullable in Postgres for the same reason as
   ``company_watch`` -- an application event is itself a first-class signal
   (an email thread, a confidence score) independent of whether the job
@@ -87,6 +90,27 @@ logger = logging.getLogger(__name__)
 
 #: Rebuilt by the next real run; migrating stale rows would be actively wrong.
 _SKIPPED_TABLES = ("pending_ai_work", "gemini_quota_state", "candidate_context_cache")
+
+
+#: Mirrors `postgres_store._SUPPORTED_ATS_PROVIDERS`.
+_SUPPORTED_ATS_PROVIDERS = frozenset({"ashby", "greenhouse", "lever"})
+
+
+def _watch_endpoint_strength(
+    careers_url: str, ats_provider: str | None, ats_identifier: str | None
+) -> int:
+    """Rank a watch endpoint: supported ATS > generic URL > company only.
+
+    A duplicate of `postgres_store._watch_endpoint_strength`, kept local
+    rather than imported: that one is a private module helper, and this
+    script's own migration functions all decide things in the open rather
+    than reaching into `PostgresJobStore`'s internals.
+    """
+    if ats_provider in _SUPPORTED_ATS_PROVIDERS and ats_identifier:
+        return 3
+    if careers_url:
+        return 2
+    return 1
 
 
 def _iso(table: str, column: str, value: str | None) -> str | None:
@@ -206,7 +230,7 @@ def migrate(
         _migrate_evaluations(conn, client, job_id_map, counts)
         _migrate_materials(conn, client, job_id_map, counts)
         _migrate_deliveries(conn, client, job_id_map, counts)
-        _migrate_company_watch(conn, client, job_id_map, counts)
+        _migrate_company_watch(conn, client, ingestion, job_id_map, counts)
         _migrate_ats_registry(conn, client, counts)
         _migrate_gmail_sync_state(conn, client, counts)
         _migrate_gmail_messages(conn, client, counts)
@@ -417,9 +441,32 @@ def _migrate_deliveries(
 def _migrate_company_watch(
     conn: sqlite3.Connection,
     client: SupabaseClient,
+    ingestion: Any,
     job_id_map: dict[int, str],
     counts: dict[str, int],
 ) -> None:
+    """Migrate one legacy watch row to wherever #204 now keeps it.
+
+    A manual row (``promotion_source == "manual"``) still lands on the
+    per-user ``job_hunter_company_watch``, minus the two columns #204
+    dropped from it: ``promotion_source`` (every row left is one) and
+    ``discovered_from_job_id`` (a manual watch never carried one).
+
+    An automatic row instead promotes onto the shared
+    ``job_hunter_company_watch_health``, over the privileged connection --
+    #179's pattern, adopted by that table from creation. It is keyed on
+    #198's company entity rather than the legacy row's own identity, so
+    the entity is ensured first exactly as
+    ``PostgresJobStore._ensure_company_id`` does: an insert that never
+    overwrites an existing company's real facets, with ``extracted_at``
+    pinned to the epoch so a bare stub still reads as never-extracted.
+    ``discovered_from_job_id`` is nulled when dangling for the same
+    audit-log reason the original did, even though the shared table's
+    version of that column is unenforced provenance rather than a foreign
+    key -- a dangling value there could not violate anything, but it would
+    still be a wrong answer to "which job suggested this company" and the
+    same warning applies either way.
+    """
     migrated = 0
     for row in _rows(conn, "company_watch"):
         discovered_from = row.get("discovered_from_job_id")
@@ -431,35 +478,131 @@ def _migrate_company_watch(
                 row["id"],
                 discovered_from,
             )
-        payload = {
-            "user_id": client.user_id,
-            "company_name": row["company_name"],
-            "normalized_company_name": row["normalized_company_name"],
-            "careers_url": row.get("careers_url") or "",
-            "ats_provider": row.get("ats_provider"),
-            "ats_identifier": row.get("ats_identifier"),
-            "discovered_from_job_id": new_discovered_from,
-            "promotion_source": row["promotion_source"],
-            "confidence": row.get("confidence", 0),
-            "active": bool(row.get("active", 1)),
-            "paused_until": _iso("company_watch", "paused_until", row.get("paused_until")),
-            "first_seen_at": _iso("company_watch", "first_seen_at", row["first_seen_at"]),
-            "last_verified_at": _iso(
-                "company_watch", "last_verified_at", row.get("last_verified_at")
-            ),
-            "last_successful_check_at": _iso(
-                "company_watch", "last_successful_check_at", row.get("last_successful_check_at")
-            ),
-            "consecutive_failures": row.get("consecutive_failures", 0),
-            "created_at": _iso("company_watch", "created_at", row["created_at"]),
-            "updated_at": _iso("company_watch", "updated_at", row["updated_at"]),
-        }
-        _upsert_one(
-            client,
-            "job_hunter_company_watch",
-            payload,
-            on_conflict="user_id,normalized_company_name",
-        )
+
+        if row["promotion_source"] == "manual":
+            payload = {
+                "user_id": client.user_id,
+                "company_name": row["company_name"],
+                "normalized_company_name": row["normalized_company_name"],
+                "careers_url": row.get("careers_url") or "",
+                "ats_provider": row.get("ats_provider"),
+                "ats_identifier": row.get("ats_identifier"),
+                "confidence": row.get("confidence", 0),
+                "active": bool(row.get("active", 1)),
+                "paused_until": _iso("company_watch", "paused_until", row.get("paused_until")),
+                "first_seen_at": _iso("company_watch", "first_seen_at", row["first_seen_at"]),
+                "last_verified_at": _iso(
+                    "company_watch", "last_verified_at", row.get("last_verified_at")
+                ),
+                "last_successful_check_at": _iso(
+                    "company_watch", "last_successful_check_at", row.get("last_successful_check_at")
+                ),
+                "consecutive_failures": row.get("consecutive_failures", 0),
+                "created_at": _iso("company_watch", "created_at", row["created_at"]),
+                "updated_at": _iso("company_watch", "updated_at", row["updated_at"]),
+            }
+            _upsert_one(
+                client,
+                "job_hunter_company_watch",
+                payload,
+                on_conflict="user_id,normalized_company_name",
+            )
+        else:
+            careers_url = row.get("careers_url") or ""
+            ats_provider = row.get("ats_provider")
+            ats_identifier = row.get("ats_identifier")
+            confidence = row.get("confidence", 0)
+            with ingestion.connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "insert into public.job_hunter_companies "
+                        "  (identity, display_name, extracted_at) "
+                        "values (%s, %s, to_timestamp(0)) "
+                        "on conflict (identity) do update set identity = excluded.identity "
+                        "returning id",
+                        (row["normalized_company_name"], row["company_name"]),
+                    )
+                    company_id = cursor.fetchone()[0]
+
+                    # Ranked the same way a live promotion ranks repeated
+                    # writes to one company (supported ATS beats a generic
+                    # URL beats company-only; equal strength needs greater
+                    # confidence to replace), so migrating more than one
+                    # automatic row for the same employer -- more than one
+                    # legacy database, or duplicate rows within one -- cannot
+                    # have a weaker endpoint silently overwrite a stronger
+                    # one already migrated.
+                    cursor.execute(
+                        "select careers_url, ats_provider, ats_identifier, confidence "
+                        "  from public.job_hunter_company_watch_health "
+                        " where company_id = %s",
+                        (company_id,),
+                    )
+                    existing = cursor.fetchone()
+                    if existing is None:
+                        write_url, write_provider, write_identifier, write_confidence = (
+                            careers_url, ats_provider, ats_identifier, confidence,
+                        )
+                    else:
+                        existing_url, existing_provider, existing_identifier, existing_confidence = existing
+                        candidate_strength = _watch_endpoint_strength(
+                            careers_url, ats_provider, ats_identifier
+                        )
+                        existing_strength = _watch_endpoint_strength(
+                            existing_url, existing_provider, existing_identifier
+                        )
+                        replace = candidate_strength > existing_strength or (
+                            candidate_strength == existing_strength
+                            and confidence > existing_confidence
+                        )
+                        if replace:
+                            write_url, write_provider, write_identifier, write_confidence = (
+                                careers_url, ats_provider, ats_identifier, confidence,
+                            )
+                        else:
+                            write_url, write_provider, write_identifier, write_confidence = (
+                                existing_url, existing_provider, existing_identifier, existing_confidence,
+                            )
+
+                    cursor.execute(
+                        "insert into public.job_hunter_company_watch_health "
+                        "  (company_id, careers_url, ats_provider, ats_identifier, "
+                        "   confidence, discovered_from_job_id, first_seen_at, "
+                        "   last_verified_at, last_successful_check_at, "
+                        "   consecutive_failures, active, paused_until, "
+                        "   created_at, updated_at) "
+                        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                        "on conflict (company_id) do update set "
+                        "  careers_url = excluded.careers_url, "
+                        "  ats_provider = excluded.ats_provider, "
+                        "  ats_identifier = excluded.ats_identifier, "
+                        "  confidence = excluded.confidence, "
+                        "  discovered_from_job_id = coalesce(excluded.discovered_from_job_id, "
+                        "    public.job_hunter_company_watch_health.discovered_from_job_id), "
+                        "  active = excluded.active, "
+                        "  paused_until = excluded.paused_until, "
+                        "  updated_at = excluded.updated_at",
+                        (
+                            company_id,
+                            write_url,
+                            write_provider,
+                            write_identifier,
+                            write_confidence,
+                            new_discovered_from,
+                            _iso("company_watch", "first_seen_at", row["first_seen_at"]),
+                            _iso("company_watch", "last_verified_at", row.get("last_verified_at")),
+                            _iso(
+                                "company_watch",
+                                "last_successful_check_at",
+                                row.get("last_successful_check_at"),
+                            ),
+                            row.get("consecutive_failures", 0),
+                            bool(row.get("active", 1)),
+                            _iso("company_watch", "paused_until", row.get("paused_until")),
+                            _iso("company_watch", "created_at", row["created_at"]),
+                            _iso("company_watch", "updated_at", row["updated_at"]),
+                        ),
+                    )
         migrated += 1
     counts["company_watch"] = migrated
 
