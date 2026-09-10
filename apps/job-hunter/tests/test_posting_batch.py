@@ -281,6 +281,12 @@ class QueueRecordingCursor:
             self._rows = [(7, {"batch_id": self._database.batch_id}, 0)]
         elif "job_hunter_merge_posting_batch" in statement:
             self._rows = [(self._database.fingerprint, "posting-a", True)]
+        elif "job_hunter_job_facets" in statement:
+            # The _enqueue_needing_facets select: every posting id passed in
+            # is treated as missing current facets, for a fake simple enough
+            # to make "does merge_posting_batch enqueue extraction" testable
+            # without a real database.
+            self._rows = [(posting_id,) for posting_id in params[0]]
         elif "job_hunter_stage_queue_metrics" in statement:
             self._rows = [
                 (stage, 0, 0, 0)
@@ -342,6 +348,21 @@ def test_resolve_persist_is_reached_as_a_queue_consumer():
     assert any("pgmq.send" in statement for statement in database.statements)
     assert any("pgmq.read" in statement for statement in database.statements)
     assert any("pgmq.delete" in statement for statement in database.statements)
+
+
+def test_merge_posting_batch_enqueues_extraction_for_what_it_resolved():
+    """crawl_source's persist path never calls upsert_logical_jobs (that
+    writes job_hunter_jobs, a per-user table this user-free stage must not
+    touch), so merge_posting_batch itself is the only place a Render
+    crawl-only deployment can enqueue extraction for what it just merged."""
+    job = _job()
+    database = QueueRecordingDatabase(job_fingerprint(job))
+    store = PostgresJobStore(RecordingClient(), database)
+
+    store.merge_posting_batch([job])
+
+    sends = [s for s in database.statements if "pgmq.send" in s]
+    assert len(sends) == 2, "one send for resolve_persist, one for extract_facets"
 
 
 # Against a real database ---------------------------------------------------------

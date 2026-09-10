@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from job_hunter.config import (
     load_gmail_settings,
     load_ingestion_dsn,
+    load_platform_ai_settings,
     load_settings,
     load_supabase_settings,
 )
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
 from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
+from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
 from job_hunter.gmail_client import GmailClient
 from job_hunter.gmail_sync import GmailSyncService
@@ -29,6 +32,10 @@ from job_hunter.supabase_client import SupabaseClient
 from job_hunter.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
+
+#: Consecutive canonical-resolution search failures before a drain stops
+#: paying for more of them this process. Same threshold `pipeline.py` uses.
+_SEARCH_FAILURE_THRESHOLD = 5
 
 
 def _configure_logging() -> None:
@@ -77,6 +84,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Most re-checks to drain in this run",
     )
 
+    crawl_parser = subparsers.add_parser(
+        "crawl-source",
+        help="Drain due per-source crawls: discover, drop unchanged, persist raw postings",
+    )
+    crawl_parser.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Most crawls to drain in this run",
+    )
+
+    extract_parser = subparsers.add_parser(
+        "extract-facets",
+        help="Drain due objective extraction: read a posting's own words, once, for everyone",
+    )
+    extract_parser.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Most extractions to drain in this run",
+    )
+
     return parser
 
 
@@ -92,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
             return _generate_cover_letter(args)
         if args.command == "recheck-freshness":
             return _recheck_freshness(args)
+        if args.command == "crawl-source":
+            return _crawl_source(args)
+        if args.command == "extract-facets":
+            return _extract_facets(args)
         return _run(args)
     except Exception:
         logger.exception("job hunter run failed")
@@ -282,6 +315,132 @@ def _recheck_freshness(args: argparse.Namespace) -> int:
             "recheck_freshness completed no check: %d claimed, %d failed",
             drain.claimed,
             drain.outcomes[FAILED],
+        )
+        return 1
+    return 0
+
+
+def _crawl_source(args: argparse.Namespace) -> int:
+    """Drain the crawl_source queue (#184, #189).
+
+    Not as user-free as `recheck-freshness`: `sources.build_source` needs
+    `settings.policy` (which markets/ATS boards/keywords to crawl, the Brave
+    key) to build the one source a message names, and that policy still
+    lives on the per-user search profile row -- so this needs the full
+    per-user `Settings`, not just ingestion's connection. Accepted for a
+    single-user deployment; splitting search policy out of the per-user
+    profile is separate, real work this ticket does not do.
+    """
+    from job_hunter.crawl_source import drain_crawl_source
+    from job_hunter.sources import build_brave_budget, build_source
+
+    dsn = load_ingestion_dsn()
+    if dsn is None:
+        logger.error(
+            "crawl-source needs SUPABASE_DB_URL: a crawl writes postings, "
+            "which only ingestion's direct connection may do"
+        )
+        return 1
+
+    http = HttpClient()
+    ingestion = IngestionDatabase(dsn)
+    store = PostgresJobStore(_build_client(http), ingestion)
+    try:
+        settings = load_settings(store)
+        search_breaker = CircuitBreaker(_SEARCH_FAILURE_THRESHOLD)
+        brave_budget = build_brave_budget(settings, store.client)
+        query_date = datetime.now(ZoneInfo(settings.timezone)).date()
+
+        def _build_one_source(crawl_key: str):
+            return build_source(
+                settings,
+                http,
+                crawl_key,
+                store=store,
+                search_breaker=search_breaker,
+                query_date=query_date,
+                brave_budget=brave_budget,
+                supabase_client=store.client,
+            )
+
+        drain = drain_crawl_source(
+            ingestion,
+            http,
+            build_source=_build_one_source,
+            persist=store.merge_posting_batch,
+            limit=args.limit,
+        )
+    finally:
+        store.close()
+    logger.info("crawl_source complete: %s", drain.summary())
+    if drain.claimed and drain.claimed == drain.outcomes.get("failed", 0):
+        # Every single crawl failing is a process that cannot reach
+        # anything -- make it red. An isolated source failure is the
+        # queue's own retry/backoff to handle, same rule recheck-freshness
+        # applies.
+        logger.error(
+            "crawl_source completed no crawl: %d claimed, %d failed",
+            drain.claimed,
+            drain.outcomes["failed"],
+        )
+        return 1
+    return 0
+
+
+def _extract_facets(args: argparse.Namespace) -> int:
+    """Drain the extract_facets queue (#185, #189).
+
+    Spends only the platform key, never a user's -- `load_platform_ai_settings`
+    reads it straight from the environment, with no search profile, CV, or
+    cover letter required. A working Supabase client is still needed: the
+    platform ledger (`job_hunter_platform_ai_quota_state`,
+    `PlatformUsageLedger`) is read and written over PostgREST as an
+    authenticated user even though the rows themselves carry no user id.
+    """
+    from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
+    from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
+    from job_hunter.extract_facets_stage import drain_extract_facets
+
+    dsn = load_ingestion_dsn()
+    if dsn is None:
+        logger.error(
+            "extract-facets needs SUPABASE_DB_URL: extraction writes shared "
+            "facets, which only ingestion's direct connection may do"
+        )
+        return 1
+
+    platform_settings = load_platform_ai_settings()
+    if platform_settings is None:
+        logger.error(
+            "extract-facets needs PLATFORM_GEMINI_API_KEY: extraction spends "
+            "only the platform key, never a user's"
+        )
+        return 1
+    platform_key, platform_quota, ai_model = platform_settings
+
+    http = HttpClient()
+    ingestion = IngestionDatabase(dsn)
+    store = PostgresJobStore(_build_client(http), ingestion)
+    try:
+        platform_tracker = AIUsageTracker(
+            PlatformUsageLedger(store), platform_quota, ai_model, provider=PROVIDER
+        )
+        ai = build_gemini_provider(
+            "",
+            ai_model,
+            http,
+            platform_api_key=platform_key,
+            platform_tracker=platform_tracker,
+        )
+        drain = drain_extract_facets(ingestion, ai, limit=args.limit)
+    finally:
+        store.close()
+    logger.info("extract_facets complete: %s", drain.summary())
+    if drain.claimed and drain.claimed == drain.outcomes.get("failed", 0):
+        logger.error(
+            "extract_facets completed no extraction: %d claimed, %d failed",
+            drain.claimed,
+            drain.outcomes["failed"],
         )
         return 1
     return 0

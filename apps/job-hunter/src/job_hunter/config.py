@@ -346,6 +346,23 @@ def _ai_quota(model: str) -> AIQuotaSettings:
     )
 
 
+def load_platform_ai_settings() -> tuple[str, AIQuotaSettings, str] | None:
+    """The platform key, its quota, and the model it calls -- no store needed.
+
+    Standalone from `load_settings`: extraction (`extract-facets`) spends
+    only the platform key and needs no search profile, CV, cover letter, or
+    per-user credential -- everything `load_settings` would otherwise
+    require present before it could hand back just these three values.
+    Returns None where no platform key is configured, exactly as
+    `_run_with` treats a missing one: no extraction rather than a crash.
+    """
+    api_key = _platform_ai_api_key()
+    if api_key is None:
+        return None
+    model = _ai_model()
+    return api_key, _platform_ai_quota(model), model
+
+
 def _platform_ai_api_key() -> str | None:
     """The platform-owned key that funds shared objective extraction (#128).
 

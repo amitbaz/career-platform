@@ -1,0 +1,56 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec) for job-hunter's
+# ingestion stages (#189). Matching/delivery stays on Vercel + GitHub Actions
+# -- see #114's "Locked decisions" -- so only stages with no request-response
+# shape (crawling, extraction, freshness re-checks) live here.
+#
+# envVarGroups.caddie-engine holds the secrets these services share
+# (SUPABASE_DB_URL, JOB_HUNTER_USER_ID, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY,
+# SUPABASE_SIGNING_KEY_B64, PLATFORM_GEMINI_API_KEY, GEMINI_*), configured in
+# the Render dashboard rather than here: `sync: false` is not supported inside
+# `envVarGroups` in a Blueprint, only on a service's own `envVars`.
+services:
+  - type: cron
+    name: job-hunter-crawl-source
+    runtime: python
+    plan: starter
+    region: frankfurt # fixed at creation; must match Supabase's eu-west-1
+    rootDir: apps/job-hunter
+    buildCommand: pip install -e .
+    startCommand: python -m job_hunter crawl-source --limit 200
+    # The fastest yield-derived band job_hunter_reschedule_sources() uses
+    # (source_schedule.py BANDS[0] = 15 minutes) -- pg_cron enqueues due
+    # crawls independently of this schedule; this just drains often enough
+    # that a hot source's messages don't sit long before being claimed.
+    schedule: "*/15 * * * *"
+    envVarGroups:
+      - caddie-engine
+
+  - type: cron
+    name: job-hunter-extract-facets
+    runtime: python
+    plan: starter
+    region: frankfurt
+    rootDir: apps/job-hunter
+    buildCommand: pip install -e .
+    startCommand: python -m job_hunter extract-facets --limit 200
+    # Paced by the platform allowance, not a source cadence -- no band
+    # concept applies to extraction, so this just drains often enough that
+    # a freshly-crawled or freshly-changed posting isn't read stale for long.
+    schedule: "*/15 * * * *"
+    envVarGroups:
+      - caddie-engine
+
+  - type: cron
+    name: job-hunter-recheck-freshness
+    runtime: python
+    plan: starter
+    region: frankfurt
+    rootDir: apps/job-hunter
+    buildCommand: pip install -e .
+    startCommand: python -m job_hunter recheck-freshness --limit 2000
+    # Same cadence as the GitHub Actions workflow it replaces: pg_cron
+    # decides what is due every 30 minutes, four drains a day is enough
+    # because the shortest re-check interval is six hours.
+    schedule: "23 */6 * * *"
+    envVarGroups:
+      - caddie-engine
