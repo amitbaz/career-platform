@@ -346,6 +346,16 @@ class PostgresJobStore:
     # ------------------------------------------------------------------
 
     @property
+    def platform_ingestion(self):
+        """The privileged lease, for platform tables with no store method.
+
+        Exposed deliberately rather than reached for as `_ingestion`, so that
+        `DryRunStore` can withhold it by name. A dry run that reached the raw
+        lease would write platform rows while reporting that it wrote nothing.
+        """
+        return self._ingestion
+
+    @property
     def can_write_shared_rows(self) -> bool:
         """Whether this store can write the tables that have no user.
 
@@ -3744,6 +3754,13 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         # run answers it truthfully, because the pipeline uses it to decide
         # what to skip and a dry run should skip exactly what a real run would.
         "can_write_shared_rows",
+        # Classified here because it performs no write itself -- it is the
+        # accessor for the privileged lease. Note that `DryRunStore` does NOT
+        # delegate it: it names `platform_ingestion = None` directly, because
+        # handing a dry run the raw lease would let a caller write platform
+        # tables without passing through any store method, which is exactly
+        # the fail-open this registry exists to close (#184).
+        "platform_ingestion",
         # Classified as a read because it persists nothing: it resolves a job
         # to its posting and remembers, in this store's own memory, that the
         # run has spent a facet call on it. A dry run wants that bookkeeping
@@ -3913,6 +3930,18 @@ class DryRunStore:
         # source discovery's persisted budget in `run_pipeline`) must not be
         # given a DryRunStore, or must be changed to not need `.client`.
         raise AssertionError("a dry run must not reach the client")
+
+    #: The privileged connection is withheld from a dry run.
+    #:
+    #: `__getattr__` below fails open by design -- anything this class does not
+    #: name reaches the real store. That is safe for read methods and for the
+    #: write methods the registry stubs, but `_ingestion` is neither: it is the
+    #: raw lease, and a caller holding it can write any platform table without
+    #: passing through a store method at all. Naming it here is what stops
+    #: `getattr(store, "platform_ingestion", None)` from handing a dry run a
+    #: live connection to `job_hunter_source_cursors` and
+    #: `job_hunter_source_crawls` (issue #184).
+    platform_ingestion = None
 
     def __getattr__(self, name: str) -> Any:
         # Only reached for names DryRunStore doesn't define itself -- every

@@ -12,6 +12,10 @@ _URL_TEMPLATE = "https://api.ashbyhq.com/posting-api/job-board/{board}?includeCo
 
 
 class AshbySource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
     def __init__(self, board: str, http) -> None:
         self._board = board
         self._http = http

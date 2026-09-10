@@ -110,11 +110,15 @@ class CrawlSourceStage:
 
         try:
             jobs = list(source.discover())
-        # The board answered 304 through an active conditional scope. This is
-        # a BaseException so the seventeen adapters cannot swallow it (see
-        # http.NotModifiedSignal), which also means the `except Exception`
-        # below would let it escape and kill the worker. It has to be caught
-        # here, ahead of that clause, and it must stay ahead of it.
+        # Defensive, and currently unreachable: this stage does not open a
+        # conditional scope -- it probes separately, above -- so nothing here
+        # can raise the signal today. It stays because the cost of being
+        # wrong is asymmetric. NotModifiedSignal is a BaseException, so the
+        # `except Exception` below cannot catch it; the moment this stage
+        # gains a scope, or `_build_source` hands back a source crawled under
+        # one, an uncaught signal would escape `__call__`, kill the worker,
+        # and leave the message unacknowledged and endlessly redelivered.
+        # Must stay ahead of the `except Exception` clause.
         except NotModifiedSignal:
             outcome = CrawlOutcome(
                 source_key=source_key,

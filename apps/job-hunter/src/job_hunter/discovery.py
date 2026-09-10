@@ -25,7 +25,7 @@ from job_hunter.http import (
     Validators,
 )
 from job_hunter.normalize import job_fingerprint
-from job_hunter.sources.base import source_key_for
+from job_hunter.sources.base import crawls_one_resource, source_key_for
 from job_hunter.job_identity import job_fallback_identity
 from job_hunter.market_policy import attribute_market, market_by_id
 from job_hunter.models import CandidatePreferences, Job, SearchPolicy
@@ -150,6 +150,12 @@ class DiscoveryStats:
     # against the labels already taken this run, so the mapping cannot be
     # reconstructed afterwards by calling it again.
     keys_by_label: dict[str, str] = field(default_factory=dict)
+    # Whether the staged merge actually ran this run. False when
+    # `merge_posting_batch` fell back -- a queue hiccup, or no privileged
+    # connection -- in which case `new_to_corpus_by_label` is empty because
+    # nothing was counted, not because nothing was new. The two must not be
+    # allowed to look alike to the scheduler.
+    novelty_measured: bool = False
     canonical_resolved: int = 0
     # Of the resolved jobs, how many resolved to exactly what they already
     # were and so cost no store write. The gap between this and
@@ -394,7 +400,7 @@ def _client_request_count(http) -> int:
 
 
 @contextmanager
-def _conditional_scope(http, validators: Validators, url: str):
+def _conditional_scope(http, validators: Validators, url: str, enabled: bool = True):
     """Open `http`'s conditional-request scope, or a inert stand-in.
 
     Same contract as `_client_request_count` above and for the same reason: a
@@ -403,7 +409,7 @@ def _conditional_scope(http, validators: Validators, url: str):
     nothing is written back and no cursor is invented for a client that never
     issued a conditional request.
     """
-    opener = getattr(http, "conditional", None)
+    opener = getattr(http, "conditional", None) if enabled else None
     if opener is None:
         yield ConditionalScope()
         return
@@ -705,7 +711,12 @@ def _iter_source_jobs(
     # must key on the source's durable identity, not on its display name.
     key = source_key_for(source)
     cursor_url, stored = ("", Validators())
-    if cursors is not None:
+    # A source that walks many independent resources in one crawl is never
+    # crawled conditionally: a 304 unwinds out of `discover()` and there is no
+    # way back in, so one unchanged board would silently cancel every board
+    # after it. See `JobSource.crawl_is_one_resource`.
+    conditional = cursors is not None and crawls_one_resource(source)
+    if conditional:
         cursor_url, stored = cursors.read(key)
 
     def bracket(step):
@@ -735,7 +746,7 @@ def _iter_source_jobs(
             return False
         return elapsed >= budget_seconds
 
-    with _conditional_scope(http, stored, cursor_url) as scope:
+    with _conditional_scope(http, stored, cursor_url, conditional) as scope:
         try:
             try:
                 jobs = bracket(lambda: iter(source.discover()))
@@ -802,7 +813,18 @@ def _iter_source_jobs(
             # would mean a source that always overruns never gets a cursor at
             # all -- the sources most worth making conditional would be the
             # only ones that never are.
-            if cursors is not None and scope.observed_url:
+            # Not on SOURCE_FAILED. A source that read its first page and
+            # then broke would store that page's validator, and the next
+            # crawl would 304 on it and stop -- turning a hard failure into a
+            # permanent "unchanged", the absence-without-a-reason this ticket
+            # exists to remove. A cut-off source is different: it is working,
+            # just large, and withholding its cursor would mean the sources
+            # most worth making conditional are the only ones that never are.
+            if (
+                conditional
+                and scope.observed_url
+                and stats.source_outcomes.get(label) != SOURCE_FAILED
+            ):
                 cursors.write(key, scope.observed_url, scope.observed)
 
 
@@ -896,12 +918,19 @@ def collect_candidates(
         # itself is a flat set. A source contributing a listing another source
         # already contributed this run counts zero here, which is right: the
         # corpus gained nothing from the second one.
+        stats.novelty_measured = bool(raw_batch.posting_ids)
         if raw_batch.new_fingerprints:
             for source_label, source_jobs in jobs_by_label.items():
-                novel = sum(
-                    1
-                    for job in source_jobs
-                    if job_fingerprint(job) in raw_batch.new_fingerprints
+                # Distinct fingerprints, not jobs: a source re-advertising one
+                # listing twice in a single crawl added one posting to the
+                # corpus, not two, and counting jobs would band it as more
+                # productive than it is. Two *different* sources that both
+                # produced a novel fingerprint are still both credited -- the
+                # corpus genuinely gained it from whichever arrived first, and
+                # there is no fair way to pick between them here.
+                novel = len(
+                    {job_fingerprint(job) for job in source_jobs}
+                    & raw_batch.new_fingerprints
                 )
                 if novel:
                     stats.new_to_corpus_by_label[source_label] = novel

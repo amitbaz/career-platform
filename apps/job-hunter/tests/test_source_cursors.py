@@ -111,13 +111,13 @@ def test_one_row_per_source_the_run_read():
     cursor = _Cursor()
     written = record_run_crawls(_Database(cursor), _stats(), {})
     assert written == 3
-    assert len(cursor.many[0][1]) == 3
+    assert len(cursor.many[1][1]) == 3
 
 
 def test_an_unchanged_board_records_not_modified_not_an_empty_fetch():
     cursor = _Cursor()
     record_run_crawls(_Database(cursor), _stats(), {})
-    rows = {row[0]: row for row in cursor.many[0][1]}
+    rows = {row[0]: row for row in cursor.many[1][1]}
     assert rows["lever:acme"][1] == "not_modified"
     assert rows["jobicy"][1] == "failed"
     assert rows["remotive"][1] == "fetched"
@@ -131,7 +131,7 @@ def test_a_source_cut_off_by_its_budget_is_a_fetch_not_a_failure():
     stats.raw_by_label["remotive"] = 40
     cursor = _Cursor()
     record_run_crawls(_Database(cursor), stats, {})
-    assert cursor.many[0][1][0][1] == "fetched"
+    assert cursor.many[1][1][0][1] == "fetched"
 
 
 def test_changed_is_never_reported_by_the_inline_path():
@@ -141,9 +141,9 @@ def test_changed_is_never_reported_by_the_inline_path():
     fastest band."""
     cursor = _Cursor()
     record_run_crawls(_Database(cursor), _stats(), {})
-    sql = cursor.many[0][0]
+    sql = cursor.many[1][0]
     assert "changed" not in sql
-    remotive = next(row for row in cursor.many[0][1] if row[0] == "remotive")
+    remotive = next(row for row in cursor.many[1][1] if row[0] == "remotive")
     assert remotive[2] == 120, "fetched"
     assert remotive[3] == 7, "new_to_corpus"
 
@@ -153,7 +153,7 @@ def test_rows_are_keyed_by_the_durable_source_key_not_the_label():
     would silently split one source's history in two."""
     cursor = _Cursor()
     record_run_crawls(_Database(cursor), _stats(), {"lever:acme": "lever:acme-board"})
-    keys = {row[0] for row in cursor.many[0][1]}
+    keys = {row[0] for row in cursor.many[1][1]}
     assert "lever:acme-board" in keys
     assert "lever:acme" not in keys
 
@@ -164,3 +164,25 @@ def test_a_failed_write_does_not_raise_into_the_run():
 
 def test_a_run_that_read_no_sources_writes_nothing():
     assert record_run_crawls(_Database(_Cursor()), DiscoveryStats(), {}) == 0
+
+
+def test_every_source_is_registered_as_a_crawl_target():
+    """The scheduler loops over job_hunter_crawl_targets. Writing yield rows
+    for keys that table has never heard of means it iterates nothing and
+    installs no cron entry at all."""
+    cursor = _Cursor()
+    record_run_crawls(_Database(cursor), _stats(), {})
+    targets_sql, targets = cursor.many[0]
+    assert "job_hunter_crawl_targets" in targets_sql
+    assert {row[0] for row in targets} == {"remotive", "lever:acme", "jobicy"}
+
+
+def test_a_run_that_measured_no_novelty_records_nothing():
+    """new_to_corpus=0 means 'nothing was new'. A run whose staged batch fell
+    back counted nothing, which is a different claim -- and six of them would
+    walk the whole portfolio to the weekly band over a queue hiccup."""
+    cursor = _Cursor()
+    assert record_run_crawls(
+        _Database(cursor), _stats(), {}, novelty_measured=False
+    ) == 0
+    assert cursor.many == []

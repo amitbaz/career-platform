@@ -233,3 +233,44 @@ def test_no_scope_means_no_conditional_headers_at_all():
     client, session = _routed({"https://b/f": _FakeResponse(200, {}, {"ok": 1})})
     client.get_json("https://b/f")
     assert "headers" not in session.calls[0][1]
+
+
+def test_a_304_keeps_the_validators_it_just_confirmed():
+    """RFC 7232 lets a 304 carry neither validator. Storing what it omitted
+    would erase the one it just proved still good, and the source would
+    alternate conditional and full fetches forever."""
+    client, _ = _routed({"https://b/f": _FakeResponse(304, {}, None)})
+    sent = Validators(etag='"v1"', last_modified="Tue")
+
+    with client.conditional(sent, url="https://b/f") as scope:
+        with pytest.raises(NotModifiedSignal):
+            client.get_json("https://b/f")
+
+    assert scope.observed == sent
+
+
+def test_a_304_that_restates_a_validator_takes_the_new_one():
+    client, _ = _routed({"https://b/f": _FakeResponse(304, {"ETag": '"v2"'}, None)})
+
+    with client.conditional(Validators(etag='"v1"'), url="https://b/f") as scope:
+        with pytest.raises(NotModifiedSignal):
+            client.get_json("https://b/f")
+
+    assert scope.observed.etag == '"v2"'
+
+
+def test_only_the_first_matching_request_in_a_scope_is_conditional():
+    """Paginated sources walk many pages from one URL, varying only params.
+    Matching every page would send page 0's validator to page 1 and then
+    store page 1's ETag under the identity of the whole board."""
+    client, session = _routed(
+        {"https://b/feed": _FakeResponse(200, {"ETag": '"page"'}, {"ok": 1})}
+    )
+
+    with client.conditional(Validators(etag='"board"'), url="https://b/feed") as scope:
+        client.get_json("https://b/feed")
+        client.get_json("https://b/feed", params={"cursor": "2"})
+
+    assert session.calls[0][1]["headers"]["If-None-Match"] == '"board"'
+    assert "headers" not in session.calls[1][1], "page 2 is not the board"
+    assert scope.observed_url == "https://b/feed"

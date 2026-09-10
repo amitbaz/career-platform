@@ -96,7 +96,9 @@ _CRAWL_OUTCOMES = {
 }
 
 
-def record_run_crawls(database, stats, keys_by_label: dict[str, str]) -> int:
+def record_run_crawls(
+    database, stats, keys_by_label: dict[str, str], *, novelty_measured: bool = True
+) -> int:
     """Write one `job_hunter_source_crawls` row per source this run read.
 
     The inline pipeline is the only thing that crawls today -- nothing drains
@@ -109,6 +111,19 @@ def record_run_crawls(database, stats, keys_by_label: dict[str, str]) -> int:
     Best-effort, like the cursors: telemetry must not be able to fail a run
     that already delivered. Returns the number of rows written.
     """
+    # A run whose staged batch fell back measured no novelty at all, and
+    # `new_to_corpus` would be zero for every source -- which the scheduler
+    # reads as "nothing was new", not as "nothing was counted". Six such runs
+    # would walk the whole portfolio to the weekly band because of a queue
+    # hiccup. Record nothing rather than record a zero that means something
+    # else.
+    if not novelty_measured:
+        logger.info(
+            "skipping this run's crawl rows: novelty was not measured, and a "
+            "zero would be read as an absence of new postings"
+        )
+        return 0
+
     rows = []
     for label, outcome in stats.source_outcomes.items():
         rows.append(
@@ -126,6 +141,17 @@ def record_run_crawls(database, stats, keys_by_label: dict[str, str]) -> int:
     try:
         with database.connection() as connection:
             with connection.cursor() as cursor:
+                # Register the crawl targets alongside their rows. The
+                # scheduler loops over `job_hunter_crawl_targets`, and the
+                # only other writer is the crawl stage -- which has no
+                # consumer. Without this the yield table fills up while the
+                # targets table stays empty, so `job_hunter_reschedule_sources`
+                # iterates nothing and installs no cron entry at all.
+                cursor.executemany(
+                    "insert into public.job_hunter_crawl_targets (crawl_key) "
+                    "values (%s) on conflict (crawl_key) do nothing",
+                    [(row[0],) for row in rows],
+                )
                 cursor.executemany(
                     # `changed` is deliberately left at its default of zero.
                     # It counts listings that survived the description-hash

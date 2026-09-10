@@ -81,12 +81,15 @@ class ConditionalScope:
     issues then adopts the scope: that is what lets a source bootstrap its
     own cursor without anyone configuring a URL for it.
 
-    Only requests to `url` are made conditional. A source that fetches many
-    distinct URLs in one crawl -- `learned_ats` walks a board per company --
-    sends its stored validator to the one resource it belongs to and fetches
-    the rest unconditionally. Sending one board's ETag to another board's URL
-    would invite a 304 that means nothing, so the narrow behaviour is the
-    correct one rather than a limitation to remove later.
+    Exactly one request per scope is made conditional: the first one matching
+    `url`, or simply the first when bootstrapping. Everything else in the same
+    crawl -- later pages, other boards -- is fetched unconditionally. A
+    paginated source reuses one URL with different `params`, so anything
+    looser would send page 0's validator to page 1 and then store page 1's
+    ETag under the identity of the whole board.
+
+    Only sources that are a single resource open a scope at all; see
+    `JobSource.crawl_is_one_resource`.
     """
 
     url: str = ""
@@ -232,9 +235,17 @@ class HttpClient:
         scope = self._scope
         if scope is None:
             return None
+        # One request per scope, always. Paginated sources walk many pages
+        # from a single URL varying only `params` -- himalayas and remotive
+        # both do -- so matching on the URL alone would send page 0's
+        # validator to page 1, then store page 1's ETag under the identity of
+        # the whole board. The next crawl would then 304 mid-drain and skip
+        # every remaining page while reporting the board unchanged.
+        if scope.observed_url:
+            return None
         if scope.url:
             return scope if scope.url == url else None
-        return scope if not scope.observed_url else None
+        return scope
 
     def get_json(self, url: str, *, validators: Validators | None = None, **kwargs):
         """GET and decode JSON, honouring a conditional request.
@@ -267,10 +278,22 @@ class HttpClient:
         self._last_validators = observed
         if scope is not None:
             scope.observed_url = url
-            scope.observed = observed
             scope.not_modified = response.status_code == 304
             if response.status_code == 304:
+                # A 304 may legally carry neither validator -- RFC 7232 only
+                # requires ETag when none was sent -- and many boards send an
+                # empty-headed one. Storing what it omitted would erase the
+                # validator it just confirmed is still good, and the source
+                # would alternate conditional and full fetches forever. Keep
+                # what we sent, and fill in only what this response restated.
+                scope.observed = Validators(
+                    etag=observed.etag or scope.validators.etag,
+                    last_modified=(
+                        observed.last_modified or scope.validators.last_modified
+                    ),
+                )
                 raise NotModifiedSignal()
+            scope.observed = observed
         if response.status_code == 304:
             return NOT_MODIFIED
         response.raise_for_status()

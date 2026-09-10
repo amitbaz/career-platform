@@ -80,6 +80,7 @@ class _Source:
     idea conditional requests exist."""
 
     source_label = "demo"
+    crawl_is_one_resource = True
 
     def __init__(self, http, jobs=None):
         self._http = http
@@ -163,9 +164,11 @@ def test_a_first_crawl_bootstraps_a_cursor_it_did_not_have():
     assert "headers" not in http._session.calls[0][1], "nothing to be conditional about"
 
 
-def test_a_failing_source_still_advances_its_cursor():
-    """The validators describe what the board answered, not whether we
-    finished reading it."""
+def test_a_failing_source_does_not_advance_its_cursor():
+    """A source that read page 0 and then broke would otherwise store page
+    0's validator, and the next crawl would 304 on it and stop -- turning a
+    hard failure into a permanent 'unchanged', which is the
+    absence-without-a-reason this ticket exists to remove."""
 
     class _Failing(_Source):
         def discover(self):
@@ -180,9 +183,37 @@ def test_a_failing_source_still_advances_its_cursor():
 
     assert [j.title for j in jobs] == ["Engineer"]
     assert stats.source_outcomes["demo"] == SOURCE_FAILED
-    assert cursors.writes == [
-        ("demo", "https://acme.example/feed", Validators(etag='"v2"'))
-    ]
+    assert cursors.writes == [], "a broken source must be re-read in full"
+
+
+def test_a_multi_resource_source_is_never_crawled_conditionally():
+    """learned_ats walks a board per company inside one discover(). A 304
+    unwinds out of the adapter with no way back in, so one unchanged board
+    would silently cancel every board after it."""
+
+    class _ManyBoards:
+        source_label = "learned_ats"
+        crawl_is_one_resource = False
+
+        def __init__(self, http):
+            self._http = http
+
+        def discover(self):
+            for board in ("a", "b"):
+                self._http.get_json(f"https://acme.example/{board}")
+                yield _job(board)
+
+    http = _client(_FakeResponse(200, {"ETag": '"v2"'}, {"ok": 1}))
+    cursors = _RecordingCursors(
+        {"learned_ats": ("https://acme.example/a", Validators(etag='"old"'))}
+    )
+
+    jobs, _ = _drain(_ManyBoards(http), http, cursors)
+
+    assert len(jobs) == 2, "every board is visited"
+    for _url, kwargs in http._session.calls:
+        assert "headers" not in kwargs, "no board is asked conditionally"
+    assert cursors.writes == []
 
 
 def test_no_cursor_store_leaves_every_request_unconditional():

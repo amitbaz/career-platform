@@ -1571,7 +1571,7 @@ def run_pipeline(
         # privileged connection, and a run without one has no cursor table to
         # read. Passing None then is what keeps such a deployment on exactly
         # the behaviour it had before (issue #184).
-        ingestion = getattr(store, "_ingestion", None)
+        ingestion = getattr(store, "platform_ingestion", None)
         cursors = SourceCursorStore(ingestion) if ingestion is not None else None
         discovery = collect_candidates(
             sources,
@@ -2009,9 +2009,14 @@ def run_pipeline(
     # writes job_hunter_source_crawls -- the crawl_source queue has no
     # consumer yet -- and the scheduler would band every source on an empty
     # history (issue #184).
-    ingestion = getattr(store, "_ingestion", None)
+    ingestion = getattr(store, "platform_ingestion", None)
     if ingestion is not None and discovery.stats.source_outcomes:
-        record_run_crawls(ingestion, discovery.stats, discovery.stats.keys_by_label)
+        record_run_crawls(
+            ingestion,
+            discovery.stats,
+            discovery.stats.keys_by_label,
+            novelty_measured=discovery.stats.novelty_measured,
+        )
     _log_ats_registry_metrics(store, discovery, _learned_ats_stats(base_sources))
 
     logger.info(

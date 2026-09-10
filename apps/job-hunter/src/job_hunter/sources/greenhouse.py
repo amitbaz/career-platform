@@ -12,6 +12,10 @@ _URL_TEMPLATE = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content
 
 
 class GreenhouseSource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
     def __init__(self, token: str, http) -> None:
         self._token = token
         self._http = http

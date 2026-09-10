@@ -1,9 +1,11 @@
 """The per-source crawl cadence, derived from measured novelty (issue #184).
 
-Kept apart from the scheduler that installs the cron entries so that the
-policy -- how often a source is worth visiting -- is a pure function over
-what the last crawl produced, and can be tested exhaustively without a
-database.
+This module renders a band index to a cron expression. It does not decide
+which band a source is in -- `job_hunter_reschedule_sources()` in the
+migration does, from the last six crawls, and pgTAP asserts it there. The
+split is deliberate: the decision needs crawl history and therefore a
+database, while the rendering does not, and `BANDS` plus the cron shapes are
+cross-checked against the migration from the Python side.
 
 No operator sets these frequencies. A source earns a faster band by
 producing material the corpus did not already have, and loses one by
@@ -15,10 +17,11 @@ from __future__ import annotations
 
 import hashlib
 
-#: Crawl cadence in minutes, fastest first. A source moves one step at a
-#: time in either direction, so the ladder's spacing is the recovery rate as
-#: much as it is the range: five empty crawls take the most-favoured source
-#: to the floor, and five productive ones bring it back.
+#: Crawl cadence in minutes, fastest first. The scheduler bands a source at
+#: `3 + demotions - promotions` over its last six crawls, so six barren
+#: crawls take the most-favoured source to the floor and six productive ones
+#: bring it back. The ladder's spacing is therefore the recovery rate as much
+#: as it is the range.
 BANDS: tuple[int, ...] = (15, 60, 360, 1440, 4320, 10080)
 
 # Which band a source lands in is decided by job_hunter_reschedule_sources()

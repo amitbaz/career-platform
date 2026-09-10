@@ -27,6 +27,18 @@ class JobSource(Protocol):
     # as a metrics label and a registry key must not drift with it.
     source_key: str
 
+    # Whether one crawl of this source reads one resource, so that a 304
+    # answers for the whole source. True for a board fetched from a single
+    # URL, paginated or not. False -- the default -- for a source that walks
+    # many independent resources in one crawl: `learned_ats` visits a board
+    # per company, and a 304 from one of them says nothing about the others,
+    # so ending the crawl there would silently skip every board after it.
+    #
+    # Opt-in rather than opt-out because the failure it prevents is invisible:
+    # a source that quietly stops visiting most of its boards still reports a
+    # successful, unchanged crawl.
+    crawl_is_one_resource: bool
+
     def discover(self) -> Iterator[Job]:
         """Yield jobs as they are found, not as one fully built list.
 
@@ -69,6 +81,16 @@ def source_key_for(source) -> str:
         or getattr(source, "source_label", None)
         or type(source).__name__
     )
+
+
+def crawls_one_resource(source) -> bool:
+    """Whether `source` may be crawled conditionally.
+
+    Defaults to False for anything that has not declared itself, so a source
+    added without the attribute is crawled in full rather than risking the
+    silent skip described on the Protocol.
+    """
+    return bool(getattr(source, "crawl_is_one_resource", False))
 
 
 def strip_html(text: str) -> str:
