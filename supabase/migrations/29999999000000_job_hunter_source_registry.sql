@@ -380,3 +380,127 @@ select provider, occurred_at, min(created_at)
 on conflict (provider, occurred_at) do nothing;
 
 drop table public.job_hunter_search_api_usage;
+
+-- The yield-driven scheduler -----------------------------------------------
+--
+-- Reads the crawl ledger, bands each enabled source on its recent novelty,
+-- and installs one pg_cron entry per source through the fixed helper. No
+-- operator sets these frequencies: a source earns a faster band by producing
+-- material the corpus did not already have, and loses one by producing none.
+-- Configuration may pin one source as an override; it is never the
+-- mechanism.
+--
+-- The band ladder is mirrored in `source_schedule.py`, where the same policy
+-- is unit-tested without a database. The two must agree; the Python side is
+-- the one with the exhaustive tests.
+create or replace function public.job_hunter_reschedule_sources()
+returns integer
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_bands int[] := array[15, 60, 360, 1440, 4320, 10080];
+  v_source record;
+  v_index int;
+  v_minute int;
+  v_hour int;
+  v_schedule text;
+  v_count int := 0;
+begin
+  -- Unschedule everything this function owns first, so a source that has
+  -- been disabled or removed stops firing rather than being left behind by
+  -- a loop that only ever adds.
+  for v_source in
+    select jobname from cron.job
+     where jobname like 'job-hunter-enqueue-crawl-source-%'
+  loop
+    perform cron.unschedule(v_source.jobname);
+  end loop;
+
+  for v_source in
+    select s.source_key,
+           coalesce((
+             select count(*)
+               from (
+                 select c.outcome, c.new_to_corpus + c.changed as novelty
+                   from public.job_hunter_source_crawls c
+                  where c.source_key = s.source_key
+                  order by c.started_at desc
+                  limit 6
+               ) recent
+              where recent.outcome in ('rate_limited', 'failed')
+                 or recent.novelty = 0
+           ), 0) as demotions,
+           coalesce((
+             select count(*)
+               from (
+                 select c.outcome, c.new_to_corpus + c.changed as novelty
+                   from public.job_hunter_source_crawls c
+                  where c.source_key = s.source_key
+                  order by c.started_at desc
+                  limit 6
+               ) recent
+              where recent.outcome not in ('rate_limited', 'failed')
+                and recent.novelty > 0
+           ), 0) as promotions
+      from public.job_hunter_sources s
+     where s.enabled
+  loop
+    -- A source with no history starts in the middle of the ladder: fast
+    -- enough to prove itself within a day, slow enough that eighteen unknown
+    -- sources do not open at fifteen-minute intervals.
+    v_index := greatest(0, least(
+      array_length(v_bands, 1) - 1,
+      3 + v_source.demotions - v_source.promotions
+    ));
+
+    -- A stable per-source offset, so sources sharing a band do not stampede.
+    v_minute := abs(hashtext(v_source.source_key)) % 60;
+    v_hour := abs(hashtext(v_source.source_key || ':hour')) % 24;
+
+    v_schedule := case v_bands[v_index + 1]
+      when 15 then format('%s-59/15 * * * *', v_minute % 15)
+      when 60 then format('%s * * * *', v_minute)
+      when 360 then format('%s %s-23/6 * * *', v_minute, v_hour % 6)
+      when 1440 then format('%s %s * * *', v_minute, v_hour)
+      when 4320 then format('%s %s 1-31/3 * *', v_minute, v_hour)
+      -- The slowest band, like the 72-hour one above, varies only minute and
+      -- hour by source: 1,440 combinations already keep sources from
+      -- stampeding, so the weekday is a fixed literal rather than a second
+      -- computed offset. Must match source_schedule.py's cron_expression
+      -- day/month/weekday shape for every band, verified by
+      -- test_every_python_cron_rendering_appears_in_the_sql.
+      else format('%s %s * * 4', v_minute, v_hour)
+    end;
+
+    perform public.job_hunter_schedule_stage_enqueue(
+      'crawl_source',
+      v_schedule,
+      jsonb_build_object('source_key', v_source.source_key),
+      v_source.source_key
+    );
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end;
+$$;
+
+comment on function public.job_hunter_reschedule_sources() is
+  'Install one pg_cron entry per enabled source, banded on measured corpus '
+  'novelty rather than on an operator setting (issue #184). Unschedules '
+  'first, so a disabled source stops firing rather than being left behind.';
+
+revoke all on function public.job_hunter_reschedule_sources()
+  from public, anon, authenticated, service_role;
+
+-- The scheduler reschedules itself. One meta-entry, deliberately not
+-- per-source: it reads the ledger for every source at once.
+select cron.schedule(
+  'job-hunter-reschedule-sources',
+  '7 * * * *',
+  'select public.job_hunter_reschedule_sources();'
+);
+
+select public.job_hunter_reschedule_sources();

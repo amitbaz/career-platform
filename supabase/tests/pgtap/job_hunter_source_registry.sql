@@ -1,5 +1,5 @@
 begin;
-select plan(22);
+select plan(25);
 
 -- Shared knowledge: readable by any authenticated user, written by none ----
 
@@ -126,6 +126,28 @@ select is(
     where polrelid = 'public.job_hunter_platform_search_usage'::regclass),
   3,
   'select, insert and update only, all on the runner claim');
+
+-- The scheduler installs one entry per source ------------------------------
+
+insert into public.job_hunter_sources (source_key, kind) values ('arbeitnow', 'crawl')
+  on conflict (source_key) do nothing;
+update public.job_hunter_sources set enabled = false where source_key = 'example_licensed';
+
+select is(
+  public.job_hunter_reschedule_sources(),
+  (select count(*)::int from public.job_hunter_sources where enabled),
+  'every enabled source is scheduled and no disabled one is');
+
+select is(
+  (select count(distinct jobname)::int from cron.job
+    where jobname like 'job-hunter-enqueue-crawl-source-%'),
+  (select count(*)::int from public.job_hunter_sources where enabled),
+  'one distinct cron entry per enabled source, not one shared entry');
+
+select is_empty(
+  $$ select 1 from cron.job
+      where jobname = 'job-hunter-enqueue-crawl-source-example-licensed' $$,
+  'a disabled source is unscheduled rather than left firing');
 
 select * from finish();
 rollback;

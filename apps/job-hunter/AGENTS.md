@@ -179,6 +179,19 @@ Migration rules:
    enqueues the current crawl batch, then asks the bounded runner to consume visible
    `resolve_persist` work. A deployment without the direct connection still takes the
    existing per-listing fallback.
+   #184 installs the first schedules on that machinery. `job_hunter_sources` is the
+   shared source registry — a source's kind (`crawl` or `licensed`) and any
+   `display_credit` it obliges a surface to show, resolved by
+   `job_hunter_posting_display_credit` with no `user_id` in the path.
+   `job_hunter_source_crawls` records what each crawl fetched and how much of it was
+   new, and `job_hunter_reschedule_sources` bands each source on that novelty and
+   installs one `pg_cron` entry per source. `job_hunter_schedule_stage_enqueue` gained a
+   `p_schedule_key` argument for exactly that reason: `cron.schedule` replaces by name,
+   so a stage-derived job name would collapse every per-source schedule into one and
+   crawl a single source forever without raising anything. The external search allowance
+   moved to `job_hunter_platform_search_usage`, keyed on the provider — the quota belongs
+   to the API key, not to a person. `crawl_source.py` is the stage handler and, like
+   `resolve_persist.py`, imports nothing user-scoped.
 2. **Do not bypass `PostgresJobStore` opportunistically while implementing unrelated features.**
 3. Feature development must continue independently of any further schema evolution.
 4. Prefer boundaries that make future persistence changes easier.
