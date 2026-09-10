@@ -21,30 +21,14 @@ import hashlib
 #: to the floor, and five productive ones bring it back.
 BANDS: tuple[int, ...] = (15, 60, 360, 1440, 4320, 10080)
 
-_HEALTHY_OUTCOMES = frozenset({"fetched", "not_modified"})
-_BACKOFF_OUTCOMES = frozenset({"rate_limited", "failed"})
-
-
-def next_band(current_index: int, *, outcome: str, novelty: int) -> int:
-    """Return the band a source moves to after one crawl.
-
-    `not_modified` is healthy but produced nothing, so it demotes exactly
-    like an empty fetch: a board that keeps answering "unchanged" is
-    telling us it does not need visiting this often.
-
-    `rate_limited` and `failed` demote regardless of what the crawl
-    returned, because the constraint is the source's tolerance rather than
-    its productivity -- and because a source that returns rows *and* a 429
-    is precisely the one to slow down.
-    """
-    if outcome in _BACKOFF_OUTCOMES:
-        return min(current_index + 1, len(BANDS) - 1)
-    if outcome not in _HEALTHY_OUTCOMES:
-        raise ValueError(f"unknown crawl outcome: {outcome!r}")
-    if novelty > 0:
-        return max(current_index - 1, 0)
-    return min(current_index + 1, len(BANDS) - 1)
-
+# Which band a source lands in is decided by job_hunter_reschedule_sources()
+# in the migration, not here. This module renders a band index to a cron
+# expression and nothing more. A second decision procedure lived here until
+# it was removed: it stepped one band from the source's current one, while
+# the SQL computes an absolute band from the last six crawls, so the two
+# disagreed about every history -- and only the SQL ever ran. If band
+# selection needs testing, test it where it happens (pgTAP,
+# job_hunter_source_registry.sql).
 
 def _offset(source_key: str, modulus: int) -> int:
     """A stable per-source offset, so sources on one band do not stampede.

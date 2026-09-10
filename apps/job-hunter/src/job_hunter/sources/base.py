@@ -58,8 +58,17 @@ def source_key_for(source) -> str:
     `source_key` is declared on the Protocol but is not required of an
     adapter: every existing one predates it, and none of them needs
     changing for the key to be correct.
+
+    A source with neither falls back to its class name, matching
+    `discovery.source_cost_label` -- a test double or a source added without
+    a label is keyed and measured rather than crashing the crawl over its
+    own bookkeeping.
     """
-    return getattr(source, "source_key", None) or source.source_label
+    return (
+        getattr(source, "source_key", None)
+        or getattr(source, "source_label", None)
+        or type(source).__name__
+    )
 
 
 def strip_html(text: str) -> str:

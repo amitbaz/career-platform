@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
-from .http import NOT_MODIFIED, Validators
+from .http import NOT_MODIFIED, NotModifiedSignal, Validators
 from .normalize import job_fingerprint
 from .stage_queue import PermanentStageFailure, QueueMessage, Stage
 
@@ -110,6 +110,20 @@ class CrawlSourceStage:
 
         try:
             jobs = list(source.discover())
+        # The board answered 304 through an active conditional scope. This is
+        # a BaseException so the seventeen adapters cannot swallow it (see
+        # http.NotModifiedSignal), which also means the `except Exception`
+        # below would let it escape and kill the worker. It has to be caught
+        # here, ahead of that clause, and it must stay ahead of it.
+        except NotModifiedSignal:
+            outcome = CrawlOutcome(
+                source_key=source_key,
+                outcome="not_modified",
+                requests=self._requests_since(requests_before),
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+            self._record(outcome)
+            return outcome
         # Exception, not BaseException: stage_queue.StageRunner.run_once
         # depends on a killed or interrupted worker propagating
         # KeyboardInterrupt/SystemExit uncaught, so it never acknowledges its

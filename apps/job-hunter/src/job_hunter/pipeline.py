@@ -62,6 +62,7 @@ from job_hunter.models import (
 )
 from job_hunter.pdf import render_cover_letter_pdf
 from job_hunter.ranking import rank_jobs, select_diverse_candidates
+from job_hunter.source_cursors import SourceCursorStore, record_run_crawls
 from job_hunter.search_backend import build_search_backend
 from job_hunter.search_budget import BraveRequestBudget
 from job_hunter.sources import (
@@ -1566,6 +1567,12 @@ def run_pipeline(
         )
     preferences = candidate_context.preferences if candidate_context is not None else None
     if can_ingest:
+        # Conditional requests and the cursors that drive them need the
+        # privileged connection, and a run without one has no cursor table to
+        # read. Passing None then is what keeps such a deployment on exactly
+        # the behaviour it had before (issue #184).
+        ingestion = getattr(store, "_ingestion", None)
+        cursors = SourceCursorStore(ingestion) if ingestion is not None else None
         discovery = collect_candidates(
             sources,
             store,
@@ -1573,6 +1580,7 @@ def run_pipeline(
             settings.policy,
             resolver=resolver,
             preferences=preferences,
+            cursors=cursors,
         )
     else:
         # An empty crawl rather than a skipped one, so everything downstream
@@ -1997,6 +2005,13 @@ def run_pipeline(
         decision_counts_by_source,
         delivered_by_source,
     )
+    # The persisted counterpart to the log line above. Without it nothing
+    # writes job_hunter_source_crawls -- the crawl_source queue has no
+    # consumer yet -- and the scheduler would band every source on an empty
+    # history (issue #184).
+    ingestion = getattr(store, "_ingestion", None)
+    if ingestion is not None and discovery.stats.source_outcomes:
+        record_run_crawls(ingestion, discovery.stats, discovery.stats.keys_by_label)
     _log_ats_registry_metrics(store, discovery, _learned_ats_stats(base_sources))
 
     logger.info(

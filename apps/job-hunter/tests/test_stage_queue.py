@@ -254,6 +254,7 @@ def test_resolve_persist_consumes_a_batch_id_and_returns_the_merge_result():
             "fingerprint-b": "00000000-0000-0000-0000-000000000002",
         },
         newly_discovered=1,
+        new_fingerprints=frozenset({"fingerprint-a"}),
     )
     assert "job_hunter_merge_posting_batch" in database.cursor.calls[0][0]
     assert database.cursor.calls[0][1] == (

@@ -1,5 +1,5 @@
 begin;
-select plan(32);
+select plan(36);
 
 -- Shared knowledge: readable by any authenticated user, written by none ----
 
@@ -209,6 +209,73 @@ select ok(
         where s.source_key = t.crawl_key
      )),
   'a crawl target with no matching posting source is a legitimate state too');
+
+-- The band responds to measured yield -------------------------------------
+--
+-- This is acceptance criterion 4 and until now nothing asserted it: the
+-- suite proved one cron entry per enabled target and that a disabled target
+-- is unscheduled, neither of which says a productive source is visited more
+-- often than a barren one. The policy that actually runs is the PL/pgSQL
+-- below; `source_schedule.py` carries the cron *rendering* and is
+-- cross-checked against it from the Python side, but the band selection
+-- lives only here.
+--
+-- `job_hunter_reschedule_sources` reads the last six crawls per target and
+-- lands on band `3 + demotions - promotions`, so six productive crawls put a
+-- source at the floor (15 minutes, `*/15`) and six barren ones at the
+-- ceiling (weekly, a fixed weekday literal).
+
+insert into public.job_hunter_crawl_targets (crawl_key) values
+  ('band-productive'), ('band-barren')
+  on conflict (crawl_key) do nothing;
+
+insert into public.job_hunter_source_crawls
+  (source_key, outcome, fetched, new_to_corpus, changed, started_at)
+select 'band-productive', 'fetched', 10, 5, 5, now() - (n || ' hours')::interval
+  from generate_series(1, 6) n;
+
+insert into public.job_hunter_source_crawls
+  (source_key, outcome, fetched, new_to_corpus, changed, started_at)
+select 'band-barren', 'fetched', 10, 0, 0, now() - (n || ' hours')::interval
+  from generate_series(1, 6) n;
+
+select public.job_hunter_reschedule_sources();
+
+select is(
+  (select split_part(schedule, ' ', 1) ~ '/15$' from cron.job
+    where command like '%"crawl_key": "band-productive"%'),
+  true,
+  'six productive crawls put a source on the fastest band');
+
+select is(
+  (select split_part(schedule, ' ', 5) from cron.job
+    where command like '%"crawl_key": "band-barren"%'),
+  '4',
+  'six barren crawls put a source on the slowest, weekly band');
+
+-- A rate-limited source backs off even though it returned rows, because the
+-- constraint is the source's tolerance rather than its productivity.
+insert into public.job_hunter_crawl_targets (crawl_key) values ('band-throttled')
+  on conflict (crawl_key) do nothing;
+insert into public.job_hunter_source_crawls
+  (source_key, outcome, fetched, new_to_corpus, changed, started_at)
+select 'band-throttled', 'rate_limited', 10, 5, 5, now() - (n || ' hours')::interval
+  from generate_series(1, 6) n;
+
+select public.job_hunter_reschedule_sources();
+
+select is(
+  (select split_part(schedule, ' ', 5) from cron.job
+    where command like '%"crawl_key": "band-throttled"%'),
+  '4',
+  'a rate-limited source backs off however much it returned');
+
+select isnt(
+  (select schedule from cron.job
+    where command like '%"crawl_key": "band-productive"%'),
+  (select schedule from cron.job
+    where command like '%"crawl_key": "band-barren"%'),
+  'yield changes the cadence: the two bands are not the same schedule');
 
 select * from finish();
 rollback;

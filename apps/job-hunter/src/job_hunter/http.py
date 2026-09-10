@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -46,6 +47,55 @@ class Validators:
         return headers
 
 
+class NotModifiedSignal(BaseException):
+    """Raised inside an adapter when its board answered 304.
+
+    Deliberately a `BaseException` rather than an `Exception`, which is the
+    opposite of the rule `crawl_source` follows and needs its own defence.
+
+    Adapters catch `Exception` freely -- per-board `try` blocks in
+    `learned_ats`, stale-board 404 handling in several others. A signal that
+    those swallow is a signal that silently becomes "this source returned
+    nothing", which is precisely the collapse `NOT_MODIFIED` exists to
+    prevent: "unchanged" and "empty" would stop being different answers.
+    Sitting outside `Exception` is what makes the signal survive the
+    seventeen adapters unchanged, none of which knows conditional requests
+    exist.
+
+    It is caught in exactly two places -- `discovery._iter_source_jobs` and
+    `crawl_source.CrawlSourceStage.__call__` -- both of which sit outside the
+    adapter and convert it into a recorded `not_modified` outcome. It must
+    never be allowed to escape past those, which is why both catch it
+    explicitly rather than relying on a bare `except`.
+    """
+
+    __slots__ = ()
+
+
+@dataclass
+class ConditionalScope:
+    """The validators for one crawl of one source, and what came back.
+
+    `url` is the resource the stored validators were captured from. It is
+    empty the first time a source is crawled, and the first GET the source
+    issues then adopts the scope: that is what lets a source bootstrap its
+    own cursor without anyone configuring a URL for it.
+
+    Only requests to `url` are made conditional. A source that fetches many
+    distinct URLs in one crawl -- `learned_ats` walks a board per company --
+    sends its stored validator to the one resource it belongs to and fetches
+    the rest unconditionally. Sending one board's ETag to another board's URL
+    would invite a 304 that means nothing, so the narrow behaviour is the
+    correct one rather than a limitation to remove later.
+    """
+
+    url: str = ""
+    validators: Validators = field(default_factory=Validators)
+    observed_url: str = ""
+    observed: Validators = field(default_factory=Validators)
+    not_modified: bool = False
+
+
 class HttpClient:
     """Thin wrapper around requests.Session with retry logic and sensible defaults.
 
@@ -65,6 +115,7 @@ class HttpClient:
         self._timeout = (5, 25)
         self.request_count = 0
         self._last_validators = Validators()
+        self._scope: ConditionalScope | None = None
 
     def timeout_for_read(self, read_seconds: float) -> tuple[float, float]:
         """Return this client's timeout with a longer read budget.
@@ -147,24 +198,79 @@ class HttpClient:
             **kwargs,
         )
 
+    @contextmanager
+    def conditional(self, validators: Validators, *, url: str = ""):
+        """Make this client issue one source's crawl conditionally.
+
+        Wraps a single source's whole drain. Scopes nest and restore, so a
+        source that somehow opened its own scope cannot strand the caller's.
+
+        The adapters are not involved and do not change: they call
+        `get_json(url)` exactly as before, and this decides whether that call
+        carries `If-None-Match`/`If-Modified-Since`. A 304 raises
+        `NotModifiedSignal` out through the adapter to whoever opened the
+        scope, because there is no return value an adapter expecting a list
+        or a dict could be handed that does not either crash it or get
+        mistaken for an empty board.
+        """
+        scope = ConditionalScope(url=url, validators=validators)
+        previous, self._scope = self._scope, scope
+        try:
+            yield scope
+        finally:
+            self._scope = previous
+
+    def _scope_for(self, url: str) -> ConditionalScope | None:
+        """The active scope, if it governs `url`.
+
+        An empty `scope.url` means the source has no stored cursor yet and
+        the first GET claims the scope. `observed_url` is what makes that
+        happen once: without it every later URL in the same crawl would
+        overwrite the first, and a paginated source would store the validator
+        of its last page under the identity of its whole board.
+        """
+        scope = self._scope
+        if scope is None:
+            return None
+        if scope.url:
+            return scope if scope.url == url else None
+        return scope if not scope.observed_url else None
+
     def get_json(self, url: str, *, validators: Validators | None = None, **kwargs):
         """GET and decode JSON, honouring a conditional request.
 
-        Returns `NOT_MODIFIED` when the server answers 304. Every other
-        status keeps the previous behaviour exactly, `raise_for_status`
-        included, so a real failure is still a failure.
+        Returns `NOT_MODIFIED` when the server answers 304 to validators
+        passed explicitly here. When the 304 answers an active
+        `conditional()` scope instead, raises `NotModifiedSignal`: the
+        explicit caller asked for the sentinel and can read it, whereas a
+        scope is invisible to the adapter that made the call and needs a
+        signal that unwinds rather than a value it would misread.
+
+        Every other status keeps the previous behaviour exactly,
+        `raise_for_status` included, so a real failure is still a failure.
         """
-        if validators is not None:
-            conditional = validators.as_headers()
+        scope = self._scope_for(url) if validators is None else None
+        effective = validators if validators is not None else (
+            scope.validators if scope is not None else None
+        )
+        if effective is not None:
+            conditional = effective.as_headers()
             if conditional:
                 headers = dict(kwargs.pop("headers", None) or {})
                 headers.update(conditional)
                 kwargs["headers"] = headers
         response = self.get(url, **kwargs)
-        self._last_validators = Validators(
+        observed = Validators(
             etag=response.headers.get("ETag", "") or "",
             last_modified=response.headers.get("Last-Modified", "") or "",
         )
+        self._last_validators = observed
+        if scope is not None:
+            scope.observed_url = url
+            scope.observed = observed
+            scope.not_modified = response.status_code == 304
+            if response.status_code == 304:
+                raise NotModifiedSignal()
         if response.status_code == 304:
             return NOT_MODIFIED
         response.raise_for_status()

@@ -24,6 +24,11 @@ class PostingBatch:
 
     posting_ids: dict[str, str] = field(default_factory=dict)
     newly_discovered: int = 0
+    # Which fingerprints were new, not just how many. The count answers
+    # "how much did this run add"; the set answers "which source added it",
+    # which is what per-source yield -- and so the crawl cadence banded on it
+    # -- needs (issue #184).
+    new_fingerprints: frozenset[str] = frozenset()
 
 
 class ResolvePersistStage:
@@ -53,6 +58,9 @@ class ResolvePersistStage:
                 if posting_id is not None
             },
             newly_discovered=sum(1 for _fingerprint, _posting_id, is_new in rows if is_new),
+            new_fingerprints=frozenset(
+                fingerprint for fingerprint, _posting_id, is_new in rows if is_new
+            ),
         )
 
     @staticmethod

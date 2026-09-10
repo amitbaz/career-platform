@@ -187,6 +187,13 @@ create index job_hunter_source_crawls_recent_idx
 -- for a source that has none would satisfy a checkbox and change no cost.
 create table public.job_hunter_source_cursors (
   source_key text primary key,
+  -- The resource the validators below were captured from. A source that
+  -- fetches several URLs in one crawl -- learned_ats walks a board per
+  -- company -- gets its validator sent only to this one; the others are
+  -- fetched unconditionally, because a 304 provoked by another board's ETag
+  -- would be an answer to a question nobody asked. Empty until the first
+  -- crawl, which adopts whichever URL it fetches first.
+  url text not null default '',
   etag text not null default '',
   last_modified text not null default '',
   high_water_at timestamptz,
@@ -502,9 +509,13 @@ drop table public.job_hunter_search_api_usage;
 -- Configuration may pin one source as an override; it is never the
 -- mechanism.
 --
--- The band ladder is mirrored in `source_schedule.py`, where the same policy
--- is unit-tested without a database. The two must agree; the Python side is
--- the one with the exhaustive tests.
+-- `source_schedule.py` carries the same band ladder and the cron *rendering*
+-- for it, and `test_every_python_cron_rendering_appears_in_the_sql` pins the
+-- day/month/weekday shapes below against it. Band *selection* -- which band a
+-- source lands in -- lives only here and is asserted only by pgTAP, in
+-- job_hunter_source_registry.sql under "The band responds to measured yield".
+-- The two files are not two implementations of one policy: Python renders,
+-- this function decides. Do not add a second decision procedure there.
 create or replace function public.job_hunter_reschedule_sources()
 returns integer
 language plpgsql

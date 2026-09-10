@@ -335,7 +335,9 @@ def test_resolve_persist_is_reached_as_a_queue_consumer():
     batch = store.merge_posting_batch([job])
 
     assert batch == PostingBatch(
-        posting_ids={job_fingerprint(job): "posting-a"}, newly_discovered=1
+        posting_ids={job_fingerprint(job): "posting-a"},
+        newly_discovered=1,
+        new_fingerprints=frozenset({job_fingerprint(job)}),
     )
     assert any("pgmq.send" in statement for statement in database.statements)
     assert any("pgmq.read" in statement for statement in database.statements)
