@@ -129,7 +129,15 @@ select columns_are('public', 'job_hunter_postings', array[
   'normalized_identity',
   'canonical_url_of_url',
   'normalized_company',
-  'normalized_title'
+  'normalized_title',
+  -- Whether the advertisement still exists, and when that is next asked
+  -- (#186). See job_hunter_posting_freshness.sql.
+  'closed_at',
+  'closed_reason',
+  'freshness_checked_at',
+  'freshness_next_check_at',
+  'freshness_etag',
+  'freshness_last_modified'
 ], 'the posting carries what the advertisement says and how it was fetched');
 
 -- No user_id. Naming its absence separately from columns_are keeps the
