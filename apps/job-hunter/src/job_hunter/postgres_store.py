@@ -1583,6 +1583,37 @@ class PostgresJobStore:
             return None
         return job_facets_from_row(rows[0])
 
+    def match_jobs(
+        self,
+        *,
+        preferred_roles: list[str],
+        preferred_seniority: list[str],
+        must_have_signals: list[str],
+        nice_to_have_signals: list[str],
+        preferred_locations: list[str],
+        avoid_signals: list[str],
+    ) -> list[dict[str, Any]]:
+        """Rank and flag the caller's whole corpus in one SQL call (#187).
+
+        `job_hunter_match_jobs` is `security invoker`, so this returns only
+        the membership rows the acting user holds -- ranked by the SQL port
+        of `ranking.profile_priority_score` and flagged with the SQL port of
+        `hard_blockers.hard_blockers_from_facets`. Each row is
+        `{"job_id", "posting_id", "score", "hard_blockers", "has_facets"}`;
+        `matching.match_jobs` is what turns this into scored `Evaluation`s.
+        """
+        return self._client.rpc(
+            "job_hunter_match_jobs",
+            {
+                "p_preferred_roles": preferred_roles,
+                "p_preferred_seniority": preferred_seniority,
+                "p_must_have_signals": must_have_signals,
+                "p_nice_to_have_signals": nice_to_have_signals,
+                "p_preferred_locations": preferred_locations,
+                "p_avoid_signals": avoid_signals,
+            },
+        )
+
     def jobs_needing_facets(self, job_ids: list[str]) -> set[str]:
         """Which of `job_ids` sit on a posting nobody has current facets for.
 
@@ -3803,6 +3834,9 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "find_job_by_identity",
         "count_jobs",
         "list_jobs_for_matching",
+        # SQL ranking and hard blocking over the caller's whole corpus (#187):
+        # no write, so a dry run answers it exactly as a real run would.
+        "match_jobs",
         "get_job",
         "needs_evaluation",
         "needs_evaluation_bulk",

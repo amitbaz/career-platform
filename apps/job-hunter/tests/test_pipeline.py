@@ -3767,7 +3767,75 @@ def _seed_facets(store, job, **overrides):
     return job_id
 
 
+def _insert_search_profile(supabase_client, user_id, **overrides):
+    """A `job_hunter_search_profiles` row for this user (#187).
+
+    Without one, `job_hunter_match_jobs` has no profile to rank against and
+    returns nothing, so the run falls back to the pre-#187 Python ranking --
+    the same fallback a real deployment takes if the SQL call itself fails.
+    Inserting this row is what lets a test exercise the SQL path instead.
+    """
+    row = dict(
+        user_id=user_id,
+        timezone="Europe/Berlin",
+        scheduled_hour=9,
+        max_jobs_per_run=35,
+        source_minimum_per_run=0,
+        source_max_share=0.5,
+        salary_floor_eur=90000,
+        max_search_queries_per_run=30,
+        max_canonical_resolutions_per_run=80,
+        max_learned_ats_boards_per_run=75,
+    )
+    row.update(overrides)
+    supabase_client.insert("job_hunter_search_profiles", [row])
+
+
 def test_pay_below_the_users_floor_blocks_a_job_without_a_scoring_call(store, settings):
+    job = _job()
+    job_id = _seed_facets(
+        store,
+        job,
+        compensation=Compensation(
+            disclosed=True, currency="EUR", minimum=50000, maximum=60000, period="year"
+        ),
+    )
+    gemini = FakeGemini()
+
+    summary = run_pipeline(settings, sources=[FakeSource([job])], store=store,
+                           ai=gemini, telegram=FakeTelegram())
+
+    assert gemini.eval_calls == 0
+    evaluation = store.get_evaluation(job_id)
+    assert evaluation.decision == "blocked"
+    assert len(evaluation.hard_blockers) == 1
+    assert "60000" in evaluation.hard_blockers[0]
+    assert summary.blocked_by_facets == 1
+
+
+def test_pay_below_the_users_floor_blocks_via_sql_ranking_when_a_profile_exists(
+    store, settings, policy, supabase_client, monkeypatch
+):
+    """AC1 (#187): with a search profile in place, ranking and hard blocking
+    both come from `job_hunter_match_jobs`, not from the Python originals --
+    `rank_jobs` and `_facet_decided_blockers` are patched to fail the test if
+    either is reached, so this only passes if the SQL path actually ran.
+    """
+    _insert_search_profile(
+        supabase_client, supabase_client.user_id, salary_floor_eur=policy.salary_floor_eur
+    )
+
+    def _fail_rank_jobs(*args, **kwargs):
+        raise AssertionError("rank_jobs was called; the SQL ranking should have run instead")
+
+    def _fail_facet_decided_blockers(*args, **kwargs):
+        raise AssertionError(
+            "_facet_decided_blockers was called; the SQL hard blockers should have run instead"
+        )
+
+    monkeypatch.setattr("job_hunter.pipeline.rank_jobs", _fail_rank_jobs)
+    monkeypatch.setattr("job_hunter.pipeline._facet_decided_blockers", _fail_facet_decided_blockers)
+
     job = _job()
     job_id = _seed_facets(
         store,
