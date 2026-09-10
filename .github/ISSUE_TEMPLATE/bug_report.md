@@ -5,6 +5,10 @@ title: ""
 labels: bug
 ---
 
+<!-- Add exactly one area:* label (ingestion, matching, applying, outcomes, coach, app,
+     platform, business) — see docs/agents/triage-labels.md. A daily check flags issues
+     without one. -->
+
 ## Problem
 
 <!-- What's broken, and how you noticed (an error message, a failing run, a user-visible symptom). -->

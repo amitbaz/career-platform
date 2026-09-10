@@ -1,0 +1,46 @@
+# Every open issue carries exactly one `area:*` label, so the tracker can be read
+# by area (AGENTS.md, "Issue areas"). GitHub allows any number of labels per
+# issue, including none, and enforces nothing, so this checks the rule daily and
+# fails, naming each offending issue, when it stops holding. A failed scheduled
+# run emails the repository owner.
+#
+# Epics (label `epic`) are exempt: they span areas by design.
+name: Issue areas
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every open non-epic issue has exactly one area label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          issues=$(gh issue list --state open --limit 1000 --json number,title,labels)
+          checked=$(echo "$issues" | jq '[.[] | select([.labels[].name] | index("epic") | not)] | length')
+          bad=$(echo "$issues" | jq -r '.[]
+            | [.labels[].name] as $names
+            | select($names | index("epic") | not)
+            | ($names | map(select(startswith("area:")))) as $areas
+            | select(($areas | length) != 1)
+            | "#\(.number) \(.title) (area labels: \(if ($areas | length) == 0 then "none" else ($areas | join(", ")) end))"')
+          echo "Checked $checked open non-epic issues."
+          if [ -n "$bad" ]; then
+            {
+              echo "## Open issues without exactly one area label"
+              echo
+              echo "$bad" | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "$bad"
+            echo "::error::$(echo "$bad" | wc -l | tr -d ' ') of $checked open issues need exactly one area:* label"
+            exit 1
+          fi
+          echo "Every one has exactly one area label."
