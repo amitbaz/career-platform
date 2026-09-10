@@ -1672,6 +1672,34 @@ def test_new_to_corpus_comes_back_from_the_persist_call():
     assert outcome.changed == 1
 
 
+def test_new_to_corpus_does_not_track_changed():
+    """The distinction the scheduler bands on, pinned so a regression fails.
+
+    A source re-advertising jobs the corpus already holds, with edited
+    descriptions, is *changed* but not *new*. Deriving `new_to_corpus` from
+    `len(fresh)` would earn such a source a faster cadence forever while it
+    adds nothing. The previous test cannot catch that: it passes one fresh,
+    genuinely-new job, so `changed` and `new_to_corpus` are both 1 and the
+    two are indistinguishable. This one separates them.
+    """
+    from job_hunter.resolve_persist import PostingBatch
+
+    edited = _job("remotive", "3", "same job, reworded description")
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _StubSource([edited]),
+        persist=lambda jobs: PostingBatch(posting_ids={"fp": "id"}, newly_discovered=0),
+    )
+    outcome = stage(_message())
+
+    assert outcome.changed == 1, "the listing did reach persistence"
+    assert outcome.new_to_corpus == 0, (
+        "the corpus already held it -- banding on this must not reward a "
+        "source that only reworded what we already have"
+    )
+
+
 def test_a_rate_limited_source_records_rate_limited_and_does_not_raise():
     """Criterion 5. This source stalls; nothing else may be affected."""
     import requests
@@ -1883,7 +1911,17 @@ class CrawlSourceStage:
 
         try:
             jobs = list(source.discover())
-        except BaseException as error:  # noqa: BLE001 - classified, then recorded
+        # `Exception`, deliberately NOT `BaseException` -- matching
+        # `resolve_persist.py`. `StageRunner.run_once`'s docstring states that
+        # `BaseException` is intentionally not caught, because a killed or
+        # interrupted process must NOT acknowledge its claim: Postgres'
+        # visibility timeout is what re-delivers the message to a later
+        # worker. Catching KeyboardInterrupt or SystemExit here would convert
+        # an operator's Ctrl-C into a recorded `failed` outcome, let the
+        # runner complete the message, and lose the crawl -- while also
+        # demoting that source's cadence for a reason that had nothing to do
+        # with the source.
+        except Exception as error:
             outcome = CrawlOutcome(
                 source_key=source_key,
                 outcome="rate_limited" if _is_rate_limited(error) else "failed",
