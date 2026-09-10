@@ -175,9 +175,11 @@ the product in an Israeli investor conversation.
 
 ### Unresolved — read this before commissioning any design work
 
-**No UKIPO or EUIPO trademark search has been run, and no app-store search has been run.**
-Both registers refused automated access. Nothing recorded here is clearance. **A paid UK and
-EU attorney opinion is required before identity or design work starts.** The open web screens
+**No trademark search has been run in any launch market (EUIPO, USPTO, UKIPO or the Israel
+Patent Office), and no app-store search has been run.** The UKIPO and EUIPO registers refused
+automated access; USPTO and the Israeli register have not been tried. Nothing recorded here is
+clearance. **A paid attorney opinion covering all four launch markets — EU, US, UK and Israel
+— is required before identity or design work starts.** The open web screens
 described below find identical names and obvious near-marks with websites; they do not search
 the registers, do not judge likelihood of confusion, and do not catch a similar mark in a
 related class.
@@ -232,8 +234,8 @@ From `direction-2-illustration-v2.pen`:
 | Topic | Still to decide |
 | --- | --- |
 | First campaign audience | Which targeting segment should we test first within the cross-profession audience? |
-| Market | Geography, language, and initial age segment. Affects whether the name and slang choices travel. |
-| Name | **Settled: Gili.** Domains held. Still needs a paid UK and EU trademark opinion and an app-store check before anything public or any design work. |
+| Market | **Geography settled 2026-09-10: EU, US, UK and Israel, together.** Still open: language and initial age segment. Affects whether the name and slang choices travel. |
+| Name | **Settled: Gili.** Domains held. Still needs a paid trademark opinion covering the EU, US, UK and Israel, and an app-store check, before anything public or any design work. |
 | Logo | Review and refine the direction 2 flag mark and wordmark; final logo remains open. |
 | Motion | How progress and personality appear through animation, beyond the concept notes. |
 | Landing page | Main message, product proof, and primary call to action. |
@@ -296,6 +298,15 @@ From `direction-2-illustration-v2.pen`:
 - The repository-wide rename is deliberately **not** done. It touches nearly every file and
   will conflict with every open branch; it needs a frozen merge train and there were four
   tickets in flight when the name was chosen. Only this document was updated.
+
+### 2026-09-10 — launch markets
+
+- Founder settled the launch geography: **EU, US, UK and Israel, together**. A draft that
+  said "UK and EU first" was corrected; nothing had ever narrowed it to those two.
+- The trademark requirement widened accordingly: the attorney opinion must cover USPTO and
+  the Israel Patent Office as well as UKIPO and EUIPO.
+- Found a second competitor, preproom.ai (US-first, so a direct rival in the US market);
+  teardown in [research/preproom-teardown.md](research/preproom-teardown.md).
 
 ## Continuing this work
 

@@ -92,6 +92,19 @@ Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 Read `docs/marketing-and-brand.md` before marketing, landing-page, or visual-identity work.
 It records agreed direction, exploratory proposals, and open decisions.
 
+### Competitive position
+
+Before recommending or deciding anything on product shape, ticket priority, pricing,
+positioning, the coach, or matching, read `docs/research/beating-both.md`, and name which of
+its insights the change serves or conflicts with. The owner asked for this on 2026-09-10. It
+says where we can beat Prep Room and caddie.careers: the loop from inbox outcomes back into
+matching and preparation, with #80 as the join. It also says what not to copy from them.
+
+Competitor facts live in `docs/research/preproom-teardown.md` and
+`docs/research/caddie-careers-teardown.md`, dated as fetched. They go stale: Caddie's pricing
+changed between two reads a day apart. Re-fetch before quoting a competitor's price or
+feature, and update the teardown when it has changed.
+
 ### Memory (MemPalace)
 
 Cross-session memory lives in a MemPalace **shared-brain hub**, wing `career_platform` —
