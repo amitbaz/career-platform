@@ -85,7 +85,7 @@ class _StubSource:
 
 def _message(source_key="remotive") -> QueueMessage:
     return QueueMessage(
-        stage=Stage.CRAWL_SOURCE, message_id=1, payload={"source_key": source_key}
+        stage=Stage.CRAWL_SOURCE, message_id=1, payload={"crawl_key": source_key}
     )
 
 
@@ -121,6 +121,46 @@ def test_a_listing_whose_hash_is_unchanged_never_reaches_persistence():
     assert [job.source_job_id for job in persisted[0]] == ["2"]
     assert outcome.unchanged_by_hash == 1
     assert outcome.fetched == 2
+
+
+def test_the_stage_registers_its_crawl_target_on_first_crawl():
+    """job_hunter_reschedule_sources loops job_hunter_crawl_targets, keyed by
+    the fine string build_source() answers to -- not job_hunter_sources,
+    which is keyed by the coarse posting source and has no row for an ATS
+    adapter's fine key. Nothing registers that row except this stage."""
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database, build_source=lambda key: _StubSource([]), persist=lambda jobs: None
+    )
+    stage(_message())
+
+    inserts = [
+        (sql, params)
+        for sql, params in database.executed
+        if "job_hunter_crawl_targets" in sql
+    ]
+    assert len(inserts) == 1
+    sql, params = inserts[0]
+    assert "on conflict" in sql.lower()
+    assert params == ("remotive",)
+
+
+def test_registering_the_crawl_target_is_idempotent_on_the_second_crawl():
+    """The second crawl of the same source must not fail or duplicate the row."""
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database, build_source=lambda key: _StubSource([]), persist=lambda jobs: None
+    )
+    stage(_message())
+    stage(_message())
+
+    inserts = [
+        (sql, params)
+        for sql, params in database.executed
+        if "job_hunter_crawl_targets" in sql
+    ]
+    assert len(inserts) == 2, "each crawl attempts the on-conflict-do-nothing insert"
+    assert all(params == ("remotive",) for _, params in inserts)
 
 
 def test_an_unchanged_board_records_not_modified_rather_than_an_empty_fetch():
@@ -246,7 +286,7 @@ def test_an_unexpected_payload_key_is_a_permanent_failure():
     message = QueueMessage(
         stage=Stage.CRAWL_SOURCE,
         message_id=1,
-        payload={"source_key": "remotive", "user_id": "someone"},
+        payload={"crawl_key": "remotive", "user_id": "someone"},
     )
     with pytest.raises(PermanentStageFailure):
         stage(message)
@@ -352,3 +392,28 @@ def test_a_crawl_that_produced_nothing_still_leaves_a_row(store):
 
     assert row[0] == "failed"
     assert "upstream down" in row[1]
+
+
+@pytest.mark.integration
+def test_the_stage_registers_the_target_row_idempotently_against_the_real_table(store):
+    """The insert this stage issues really lands, and a second crawl of the
+    same fine key does not error or duplicate the row -- which is what makes
+    first_seen_at mean what its name says."""
+    stage = CrawlSourceStage(
+        store._ingestion,
+        build_source=lambda key: _StubSource([]),
+        persist=lambda jobs: None,
+    )
+    stage(_message("greenhouse:int-registers"))
+    stage(_message("greenhouse:int-registers"))
+
+    with store._ingestion.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select count(*) from public.job_hunter_crawl_targets "
+                "where crawl_key = %s",
+                ("greenhouse:int-registers",),
+            )
+            row = cursor.fetchone()
+
+    assert row[0] == 1, "one row, no matter how many times this key is crawled"

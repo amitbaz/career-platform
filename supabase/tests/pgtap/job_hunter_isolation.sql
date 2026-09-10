@@ -377,7 +377,8 @@ select unnest(array[
   'job_hunter_stage_attempts',
   'job_hunter_stage_dead_letters',
   'job_hunter_source_crawls',
-  'job_hunter_source_cursors'
+  'job_hunter_source_cursors',
+  'job_hunter_crawl_targets'
 ]) as table_name;
 
 -- Guard: every job_hunter_ table in the schema is in the list under test,

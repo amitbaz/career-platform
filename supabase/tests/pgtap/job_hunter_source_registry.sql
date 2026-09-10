@@ -1,5 +1,5 @@
 begin;
-select plan(25);
+select plan(32);
 
 -- Shared knowledge: readable by any authenticated user, written by none ----
 
@@ -127,27 +127,88 @@ select is(
   3,
   'select, insert and update only, all on the runner claim');
 
--- The scheduler installs one entry per source ------------------------------
+-- The scheduler installs one entry per crawl target, not per registry row --
+--
+-- job_hunter_sources is keyed by the coarse posting source; build_source
+-- answers only to the fine crawl key. The scheduler must loop over
+-- job_hunter_crawl_targets -- keyed by that fine string -- or an ATS
+-- adapter's cron payload carries a key no adapter recognises (issue #184).
 
-insert into public.job_hunter_sources (source_key, kind) values ('arbeitnow', 'crawl')
-  on conflict (source_key) do nothing;
-update public.job_hunter_sources set enabled = false where source_key = 'example_licensed';
+select has_table('public', 'job_hunter_crawl_targets',
+  'the crawl target registry exists');
+
+select is_empty(
+  $$ select 1 where has_table_privilege(
+       'authenticated', 'public.job_hunter_crawl_targets',
+       'select, insert, update, delete') $$,
+  'a user cannot reach the crawl target registry at all');
+select is_empty(
+  $$ select 1 where has_table_privilege(
+       'anon', 'public.job_hunter_crawl_targets',
+       'select, insert, update, delete') $$,
+  'nor anon');
+select is_empty(
+  $$ select 1 where has_table_privilege(
+       'service_role', 'public.job_hunter_crawl_targets',
+       'select, insert, update, delete') $$,
+  'nor the unused service role');
+
+insert into public.job_hunter_crawl_targets (crawl_key) values
+  ('remotive'), ('arbeitnow'), ('greenhouse:acme')
+  on conflict (crawl_key) do nothing;
+update public.job_hunter_crawl_targets set enabled = false
+  where crawl_key = 'arbeitnow';
 
 select is(
   public.job_hunter_reschedule_sources(),
-  (select count(*)::int from public.job_hunter_sources where enabled),
-  'every enabled source is scheduled and no disabled one is');
+  (select count(*)::int from public.job_hunter_crawl_targets where enabled),
+  'every enabled crawl target is scheduled and no disabled one is');
 
 select is(
   (select count(distinct jobname)::int from cron.job
     where jobname like 'job-hunter-enqueue-crawl-source-%'),
-  (select count(*)::int from public.job_hunter_sources where enabled),
-  'one distinct cron entry per enabled source, not one shared entry');
+  (select count(*)::int from public.job_hunter_crawl_targets where enabled),
+  'one distinct cron entry per enabled crawl target, not one shared entry');
 
 select is_empty(
   $$ select 1 from cron.job
-      where jobname = 'job-hunter-enqueue-crawl-source-example-licensed' $$,
-  'a disabled source is unscheduled rather than left firing');
+      where jobname = 'job-hunter-enqueue-crawl-source-arbeitnow-'
+        || left(encode(sha256(convert_to('arbeitnow', 'UTF8')), 'hex'), 16) $$,
+  'a disabled crawl target is unscheduled rather than left firing');
+
+-- The regression: a fine key, not a coarse one, on the cron payload --------
+--
+-- Before the fix this fails: the scheduler read job_hunter_sources, which
+-- has no row keyed 'greenhouse:acme', so this fine key was never scheduled
+-- and its payload never carried the string build_source() actually needs.
+select ok(
+  exists(
+    select 1 from cron.job
+     where jobname like 'job-hunter-enqueue-crawl-source-%'
+       and command like '%"crawl_key": "greenhouse:acme"%'),
+  'a fine crawl key reaches the cron payload verbatim, not the coarse source');
+
+-- job_hunter_sources and job_hunter_crawl_targets are allowed to disagree --
+--
+-- Deliberately not foreign-keyed: a posting source nothing has crawled yet,
+-- and a crawl target that yielded nothing the corpus did not already have,
+-- are both ordinary states. Nobody should "fix" this with a link.
+select ok(
+  exists(
+    select 1 from public.job_hunter_sources s
+     where not exists (
+       select 1 from public.job_hunter_crawl_targets t
+        where t.crawl_key = s.source_key
+     )),
+  'a posting source with no matching crawl target is a legitimate state');
+select ok(
+  exists(
+    select 1 from public.job_hunter_crawl_targets t
+     where not exists (
+       select 1 from public.job_hunter_sources s
+        where s.source_key = t.crawl_key
+     )),
+  'a crawl target with no matching posting source is a legitimate state too');
 
 select * from finish();
 rollback;

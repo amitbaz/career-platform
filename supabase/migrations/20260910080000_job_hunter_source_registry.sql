@@ -55,9 +55,14 @@ create table public.job_hunter_sources (
 );
 
 comment on table public.job_hunter_sources is
-  'Every source the engine crawls or licenses, keyed by the same string the '
-  'Python adapters expose as source_label (issue #184). Carries the source '
-  'kind and any display obligation the source imposes on a surface.';
+  'Every source the engine crawls or licenses, keyed by the coarse string a '
+  'posting carries as job_hunter_postings.source (issue #184). Carries the '
+  'source kind and any display obligation the source imposes on a surface. '
+  'Deliberately NOT keyed by the fine crawl key build_source() answers to -- '
+  'LearnedAtsSource alone emits postings under three different Job.source '
+  'values from one crawl, so no single fine key could own this row. '
+  'job_hunter_crawl_targets is the table keyed by the fine crawl key, and '
+  'the two are not joined: see its comment.';
 comment on column public.job_hunter_sources.display_credit is
   'What a surface is obliged to display for a posting from this source. A '
   'property of the source, never of the reader: nothing in the path that '
@@ -200,6 +205,103 @@ revoke all on table public.job_hunter_source_crawls
 revoke all on table public.job_hunter_source_cursors
   from public, anon, authenticated, service_role;
 
+-- The crawl targets --------------------------------------------------------
+--
+-- Keyed by `crawl_key`, the FINE string `build_source(settings, http, key)`
+-- in `sources/__init__.py` answers to -- and deliberately NOT `source_key`,
+-- even though that is the natural name: this ticket's whole defect was two
+-- different key spaces both being called `source_key`, and a join written
+-- as `t.source_key = s.source_key` would look correct while reintroducing
+-- exactly that. Written as `t.crawl_key = s.source_key` it looks wrong on
+-- sight, which is the point -- the two are not meant to be joined at all.
+--
+-- The two key spaces really disagree: greenhouse's fine key is
+-- `greenhouse:{token}` where its coarse key (`job_hunter_sources.source_key`,
+-- the same as `job_hunter_postings.source`) is `greenhouse`; company_watch,
+-- gmail_staged and targeted_search disagree by a different WORD, not a
+-- prefix; and learned_ats has no single fine key at all, since it delegates
+-- to three ATS adapters and emits postings under three different coarse
+-- values from one crawl. A `provider` column or a foreign key between this
+-- table and `job_hunter_sources` would need learned_ats to pick one of
+-- those three, which is exactly the conflation that made
+-- `job_hunter_reschedule_sources` enqueue `{"source_key": "greenhouse"}` and
+-- hand it to `build_source`, which raises `KeyError` because no adapter
+-- answers to the coarse key. The two tables are deliberately allowed to
+-- disagree: a posting source with no crawl target (nothing has crawled it
+-- yet) and a crawl target with no posting source (every job it returned was
+-- already known) are both ordinary states, not a data-integrity problem to
+-- fix with a link.
+--
+-- `job_hunter_source_crawls.source_key` below also holds this same fine
+-- key and, by that argument, is arguably misnamed too -- but it already has
+-- rows and assertions depending on that name, where this table and the
+-- queue payload are new today and renaming here is free. Left as the one
+-- inconsistency rather than chased across a table nothing requires touching.
+--
+-- Shared machinery in the #183 sense, same shape as job_hunter_source_crawls
+-- and job_hunter_source_cursors: row level security on with no policy at
+-- all, every grant revoked. The scheduler and the crawl stage both run as
+-- the privileged role; no user reads this table.
+create table public.job_hunter_crawl_targets (
+  crawl_key text primary key,
+  enabled boolean not null default true,
+  first_seen_at timestamptz not null default now()
+);
+
+comment on table public.job_hunter_crawl_targets is
+  'Every fine crawl key build_source() answers to, registered by the crawl '
+  'stage the first time it crawls that key (issue #184). This is what '
+  'job_hunter_reschedule_sources loops over -- not job_hunter_sources. '
+  'job_hunter_sources is keyed by the coarse posting source and cannot '
+  'serve as the crawl key space, because a source like learned_ats '
+  'delegates to Greenhouse, Lever and Ashby and emits postings under '
+  'several different coarse sources within one crawl -- there is no single '
+  'coarse key that row could hold. The column is named crawl_key rather '
+  'than source_key specifically so a join against '
+  'job_hunter_sources.source_key reads as wrong on sight -- the two are '
+  'deliberately not joined. Deliberately not foreign-keyed to '
+  'job_hunter_sources: see that table''s comment.';
+
+alter table public.job_hunter_crawl_targets enable row level security;
+
+revoke all on table public.job_hunter_crawl_targets
+  from public, anon, authenticated, service_role;
+
+-- Two key spaces, three columns, and the one join that must never exist.
+--
+-- After #184 there are exactly two key spaces in this schema, and every
+-- column below belongs to one of them. Naming them apart is the whole point
+-- of the split: `job_hunter_sources` could not serve both, because a source
+-- like `learned_ats` delegates to Greenhouse, Lever and Ashby and so emits
+-- postings under several different coarse sources within a single crawl.
+--
+-- These comments exist because the hazard is a join that LOOKS right. A
+-- reader inspecting any one of these tables alone should learn the other two
+-- exist and which of them it may be joined to.
+comment on column public.job_hunter_sources.source_key is
+  'COARSE key space: the posting''s own `source` string (job_hunter_postings.'
+  '`source`), which is a provider such as `greenhouse`. Joinable to '
+  'job_hunter_postings.source and to nothing else. NEVER join this to '
+  'job_hunter_source_crawls.source_key or job_hunter_crawl_targets.crawl_key '
+  '-- those hold the fine crawl key, and the names matching is exactly the '
+  'trap this comment exists to spring (issue #184).';
+
+comment on column public.job_hunter_crawl_targets.crawl_key is
+  'FINE key space: the string build_source(settings, http, key) answers to, '
+  'which is JobSource.source_label -- a crawl target such as '
+  '`greenhouse:acme`. Joinable to job_hunter_source_crawls.source_key, which '
+  'holds the same key space despite the differing column name. NEVER join to '
+  'job_hunter_sources.source_key (issue #184).';
+
+comment on column public.job_hunter_source_crawls.source_key is
+  'FINE key space, despite the name: this holds the crawl key, the same '
+  'strings as job_hunter_crawl_targets.crawl_key, and is joinable only to '
+  'that. The column kept its name because renaming it was not worth the '
+  'ticket''s remaining time; the cost is that the correct join reads oddly '
+  '(`c.source_key = t.crawl_key`) while the forbidden one reads naturally '
+  '(`c.source_key = s.source_key`). If you are about to write the second, '
+  'do not (issue #184).';
+
 -- One cron entry per source, not one per stage -----------------------------
 --
 -- #183 shipped job_hunter_schedule_stage_enqueue deriving its cron job name
@@ -228,10 +330,20 @@ as $$
   -- threshold, to guarantee two different keys never produce the same job
   -- name. Only a key with no alnum characters at all (or the empty string)
   -- yields '', which the caller treats as "no usable job-name form".
+  --
+  -- 16 hex characters (64 bits), not 8: the population this hashes is
+  -- job_hunter_crawl_targets, one row per crawl target rather than per
+  -- adapter, and learned_ats discovers boards without any decision anyone
+  -- makes bounding the count. At 32 bits and ten thousand targets the
+  -- birthday bound on two keys colliding is around one percent, which is
+  -- not negligible for a function whose only job is keeping two sources
+  -- from sharing a cron entry. `cron.job.jobname` is `text`, not `name`,
+  -- so there is no 63-byte identifier ceiling paying for the wider tail.
+  -- Nobody should trim this back as dead weight.
   select case
            when v.slug = '' then ''
            else left(v.slug, 31) || '-' ||
-                left(encode(sha256(convert_to(p_key, 'UTF8')), 'hex'), 8)
+                left(encode(sha256(convert_to(p_key, 'UTF8')), 'hex'), 16)
          end
     from (
       select trim(both '-' from
@@ -419,13 +531,13 @@ begin
   end loop;
 
   for v_source in
-    select s.source_key,
+    select s.crawl_key,
            coalesce((
              select count(*)
                from (
                  select c.outcome, c.new_to_corpus + c.changed as novelty
                    from public.job_hunter_source_crawls c
-                  where c.source_key = s.source_key
+                  where c.source_key = s.crawl_key
                   order by c.started_at desc
                   limit 6
                ) recent
@@ -437,14 +549,14 @@ begin
                from (
                  select c.outcome, c.new_to_corpus + c.changed as novelty
                    from public.job_hunter_source_crawls c
-                  where c.source_key = s.source_key
+                  where c.source_key = s.crawl_key
                   order by c.started_at desc
                   limit 6
                ) recent
               where recent.outcome not in ('rate_limited', 'failed')
                 and recent.novelty > 0
            ), 0) as promotions
-      from public.job_hunter_sources s
+      from public.job_hunter_crawl_targets s
      where s.enabled
   loop
     -- A source with no history starts in the middle of the ladder: fast
@@ -456,8 +568,8 @@ begin
     ));
 
     -- A stable per-source offset, so sources sharing a band do not stampede.
-    v_minute := abs(hashtext(v_source.source_key)) % 60;
-    v_hour := abs(hashtext(v_source.source_key || ':hour')) % 24;
+    v_minute := abs(hashtext(v_source.crawl_key)) % 60;
+    v_hour := abs(hashtext(v_source.crawl_key || ':hour')) % 24;
 
     v_schedule := case v_bands[v_index + 1]
       when 15 then format('%s-59/15 * * * *', v_minute % 15)
@@ -477,8 +589,8 @@ begin
     perform public.job_hunter_schedule_stage_enqueue(
       'crawl_source',
       v_schedule,
-      jsonb_build_object('source_key', v_source.source_key),
-      v_source.source_key
+      jsonb_build_object('crawl_key', v_source.crawl_key),
+      v_source.crawl_key
     );
     v_count := v_count + 1;
   end loop;

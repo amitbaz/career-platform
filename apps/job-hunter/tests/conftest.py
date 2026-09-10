@@ -478,6 +478,7 @@ _PLATFORM_TABLES = (
     "job_hunter_platform_ai_quota_state",
     "job_hunter_source_crawls",
     "job_hunter_source_cursors",
+    "job_hunter_crawl_targets",
 )
 
 

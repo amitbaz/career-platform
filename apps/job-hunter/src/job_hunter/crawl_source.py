@@ -94,6 +94,7 @@ class CrawlSourceStage:
         started = time.monotonic()
         requests_before = getattr(self._http, "request_count", 0) if self._http else 0
 
+        self._register_target(source_key)
         validators = self._read_cursor(source_key)
         source = self._build_source(source_key)
 
@@ -188,6 +189,34 @@ class CrawlSourceStage:
                 rows = cursor.fetchall()
         return {fingerprint: hashed for fingerprint, hashed in rows}
 
+    def _register_target(self, source_key: str) -> None:
+        """Register this fine crawl key the first time it is ever crawled.
+
+        `job_hunter_reschedule_sources` loops over `job_hunter_crawl_targets`,
+        not `job_hunter_sources` -- the registry is keyed by the coarse
+        posting source, and `build_source` answers only to the fine key on
+        this message. `on conflict do nothing` is what makes
+        `first_seen_at` mean what its name says: it is written once, on the
+        crawl that first proves this key real, and never touched again.
+        Same privileged connection as `_record`; nothing user-scoped enters
+        this stage.
+        """
+        try:
+            with self._database.connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "insert into public.job_hunter_crawl_targets "
+                        "(crawl_key) values (%s) "
+                        "on conflict (crawl_key) do nothing",
+                        (source_key,),
+                    )
+        except Exception:
+            logger.exception(
+                "could not register crawl target %s; its schedule may not "
+                "pick it up",
+                source_key,
+            )
+
     def _read_cursor(self, source_key: str) -> Validators:
         with self._database.connection() as connection:
             with connection.cursor() as cursor:
@@ -242,13 +271,20 @@ class CrawlSourceStage:
 
     @staticmethod
     def _source_key(message: QueueMessage) -> str:
+        # The payload key is "crawl_key", not "source_key": it carries the
+        # fine string build_source() answers to, which is a different key
+        # space from job_hunter_sources.source_key (issue #184's defect).
+        # This method's own name still says source_key because everywhere
+        # else in this file -- CrawlOutcome, job_hunter_source_crawls,
+        # job_hunter_source_cursors -- already uses that name for the same
+        # fine string; only the wire format changes here.
         if message.stage is not Stage.CRAWL_SOURCE:
             raise PermanentStageFailure("crawl_source received the wrong stage")
-        if set(message.payload) != {"source_key"}:
+        if set(message.payload) != {"crawl_key"}:
             raise PermanentStageFailure(
-                "crawl_source payload must contain only source_key"
+                "crawl_source payload must contain only crawl_key"
             )
-        source_key = message.payload.get("source_key")
+        source_key = message.payload.get("crawl_key")
         if not isinstance(source_key, str) or not source_key:
-            raise PermanentStageFailure("crawl_source source_key must be a string")
+            raise PermanentStageFailure("crawl_source crawl_key must be a string")
         return source_key
