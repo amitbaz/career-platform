@@ -99,6 +99,10 @@ State is separate from area: the triage labels above, plus `needs-rewrite` for a
 direction changed and which must be re-specified against `docs/product-vision.md` before anyone
 works on it.
 
+Kind is separate again: `research` marks an issue whose output is a decision or a spec rather
+than code, so exploration shows on the board next to implementation work. See
+`docs/agents/triage-labels.md`.
+
 ### Domain docs
 
 Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.

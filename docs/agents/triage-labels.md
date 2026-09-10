@@ -17,6 +17,19 @@ Edit the right-hand column to match whatever vocabulary you actually use.
 `needs-rewrite` is this repo's addition: the issue's direction changed, and it must be
 re-specified against `docs/product-vision.md` before anyone works on it.
 
+## Kind labels
+
+What kind of work an issue is, alongside its area. Optional; add one when it applies.
+
+| Label         | Meaning                                                                          |
+| ------------- | -------------------------------------------------------------------------------- |
+| `bug`         | Something is broken                                                              |
+| `enhancement` | A new capability or improvement                                                  |
+| `research`    | Explore or decide before building; the output is a decision or a spec, not code |
+
+A `research` issue is done when its decision is recorded (in `docs/product-vision.md`, an ADR
+or a spec) and the implementation tickets it produced are filed, not when code ships.
+
 ## Area labels
 
 Separate from triage state, every open issue carries exactly one area label (epics are
