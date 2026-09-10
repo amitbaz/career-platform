@@ -59,6 +59,14 @@ VALID_RELOCATION_POLICY = frozenset({"offered", "required", "not_offered", UNKNO
 VALID_DEPTHS = frozenset({"familiarity", "experience", "deep_expert"})
 VALID_REQUIREMENT_KINDS = frozenset({"must_have", "preferred"})
 VALID_PERIODS = frozenset({"", "hour", "day", "month", "year"})
+#: The wire-only stand-in for `""` in `VALID_PERIODS`. Gemini's
+#: structured-output schema rejects an empty string as an enum value
+#: (`enum[0]: cannot be empty`), so the schema and prompt offer this
+#: non-empty token instead and `_parse_compensation` maps it back to `""`
+#: before validating -- the internal vocabulary, and every existing reader
+#: of `Compensation.period` (`evaluation.py`, `hard_blockers.py`, the stored
+#: column), stay exactly as they were.
+_PERIOD_UNSPECIFIED = "unspecified"
 #: The region vocabulary is `hiring_scope`'s, not a second one: the
 #: deterministic reader and the model must answer the same question in the
 #: same terms or the facet means two different things depending on who filled
@@ -209,7 +217,7 @@ _FIELD_INSTRUCTIONS = {
     "compensation": (
         '- "compensation": {"disclosed": bool, "currency": ISO-4217 code or "", '
         '"minimum": integer or null, "maximum": integer or null, '
-        '"period": ""|hour|day|month|year}. Only what the posting itself discloses, in whole '
+        '"period": unspecified|hour|day|month|year}. Only what the posting itself discloses, in whole '
         "units of the stated currency. A posting that states one end of a range carries that "
         'end and null for the other. When it discloses nothing, set disclosed to false and '
         "leave every other field empty or null."
@@ -230,7 +238,10 @@ _COMPENSATION_SCHEMA = {
         "currency": {"type": "STRING"},
         "minimum": {"type": "INTEGER", "minimum": 0, "nullable": True},
         "maximum": {"type": "INTEGER", "minimum": 0, "nullable": True},
-        "period": {"type": "STRING", "enum": sorted(VALID_PERIODS)},
+        "period": {
+            "type": "STRING",
+            "enum": sorted((VALID_PERIODS - {""}) | {_PERIOD_UNSPECIFIED}),
+        },
     },
     "required": ["disclosed", "currency", "minimum", "maximum", "period"],
 }
@@ -434,6 +445,8 @@ def _parse_compensation(value: object) -> Compensation:
     period = value.get("period")
     if isinstance(period, str):
         period = period.strip().lower()
+        if period == _PERIOD_UNSPECIFIED:
+            period = ""
     if period not in VALID_PERIODS:
         raise FacetExtractionError(
             f"compensation.period {period!r} must be one of {sorted(VALID_PERIODS)}"
