@@ -94,10 +94,10 @@ class CrawlSourceStage:
         started = time.monotonic()
         requests_before = getattr(self._http, "request_count", 0) if self._http else 0
 
-        cursor = self._read_cursor(source_key)
+        validators = self._read_cursor(source_key)
         source = self._build_source(source_key)
 
-        if self._probe is not None and self._probe(source, cursor) is NOT_MODIFIED:
+        if self._probe is not None and self._probe(source, validators) is NOT_MODIFIED:
             outcome = CrawlOutcome(
                 source_key=source_key,
                 outcome="not_modified",
@@ -109,7 +109,16 @@ class CrawlSourceStage:
 
         try:
             jobs = list(source.discover())
-        except BaseException as error:  # noqa: BLE001 - classified, then recorded
+        # Exception, not BaseException: stage_queue.StageRunner.run_once
+        # depends on a killed or interrupted worker propagating
+        # KeyboardInterrupt/SystemExit uncaught, so it never acknowledges its
+        # claim and Postgres' visibility timeout redelivers the message.
+        # Catching BaseException here would convert that into a recorded
+        # "failed" outcome, let __call__ return normally, and let the
+        # runner complete the message -- losing the crawl instead of
+        # retrying it, and demoting this source's cadence for a reason that
+        # has nothing to do with the source. Do not widen this back.
+        except Exception as error:
             outcome = CrawlOutcome(
                 source_key=source_key,
                 outcome="rate_limited" if _is_rate_limited(error) else "failed",
@@ -182,6 +191,9 @@ class CrawlSourceStage:
     def _read_cursor(self, source_key: str) -> Validators:
         with self._database.connection() as connection:
             with connection.cursor() as cursor:
+                # high_water_at is read but not carried into Validators: it
+                # serves the since-style sources recheck_freshness resumes
+                # from, not the HTTP validators this stage's probe uses.
                 cursor.execute(
                     "select etag, last_modified, high_water_at "
                     "from public.job_hunter_source_cursors where source_key = %s",
