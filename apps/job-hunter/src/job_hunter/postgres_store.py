@@ -660,7 +660,9 @@ class PostgresJobStore:
                         "select p.id from public.job_hunter_postings p "
                         "left join public.job_hunter_job_facets f "
                         "on f.posting_id = p.id "
-                        "where p.id = any(%s) and ("
+                        # A closed posting (#186) is never delivered, so
+                        # reading it would be platform spend nobody uses.
+                        "where p.id = any(%s) and p.closed_at is null and ("
                         "f.posting_id is null or "
                         "f.description_hash_at_extraction is distinct from p.description_hash"
                         ")",
@@ -2915,6 +2917,28 @@ class PostgresJobStore:
             params={"work_type": f"eq.{work_type}", "order": "created_at.asc"},
         )
 
+    def closed_job_ids(self, job_ids: Iterable[str]) -> set[str]:
+        """Which of `job_ids` are memberships of a posting found gone (#186).
+
+        A freshness re-check closes a posting for everyone; this is how one
+        user's run learns which of its candidates that happened to. Read
+        through PostgREST like every other per-user read, so an id the caller
+        does not hold simply never comes back.
+        """
+        ids = sorted({job_id for job_id in job_ids if job_id})
+        closed: set[str] = set()
+        for chunk in _chunked(ids, _URL_FILTER_CHUNK_SIZE):
+            rows = self._client.select(
+                "job_hunter_jobs",
+                params={
+                    "id": f"in.({','.join(chunk)})",
+                    "select": "id,posting:job_hunter_postings!inner(closed_at)",
+                    "posting.closed_at": "not.is.null",
+                },
+            )
+            closed.update(row["id"] for row in rows)
+        return closed
+
     def complete_ai_work(self, work_type: str, job_id: str) -> None:
         """Remove a completed deferred AI-work item.
 
@@ -3787,6 +3811,7 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "resolve_merged_job_id",
         "has_delivery",
         "pending_delivery_job_ids",
+        "closed_job_ids",
         "get_company_watch",
         "list_due_company_watches",
         "list_due_ats_boards",

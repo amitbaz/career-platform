@@ -205,6 +205,10 @@ class ExtractFacetsStage:
         everywhere else -- the posting's `description_hash` against the hash
         the stored facets were read at -- so an edited advertisement is still
         re-read, and there is no second notion of "changed" here.
+
+        A closed posting (#186) counts as needing nothing: it is never
+        delivered, so a read of it is platform spend nobody will use. Its
+        message is drained like any other that asked for work already done.
         """
         try:
             with self._database.connection() as connection:
@@ -212,9 +216,10 @@ class ExtractFacetsStage:
                     cursor.execute(
                         "select p.title, p.company, p.location, p.remote, "
                         "       p.description, p.content_confidence, p.source, "
-                        "       (f.posting_id is not null "
-                        "        and f.description_hash_at_extraction "
-                        "            is not distinct from p.description_hash) "
+                        "       ((f.posting_id is not null "
+                        "         and f.description_hash_at_extraction "
+                        "             is not distinct from p.description_hash) "
+                        "        or p.closed_at is not null) "
                         "  from public.job_hunter_postings p "
                         "  left join public.job_hunter_job_facets f "
                         "    on f.posting_id = p.id "

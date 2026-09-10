@@ -196,12 +196,19 @@ class CrawlSourceStage:
         return fresh, unchanged
 
     def _known_hashes(self, fingerprints: list[str]) -> dict[str, str]:
+        """The stored hash of every open posting among `fingerprints`.
+
+        A closed posting (#186) is left out on purpose, so its listing is
+        never "unchanged": its employer's own board listing it again is the
+        evidence that reopens it, and that happens in the merge this
+        short-circuit would otherwise skip.
+        """
         with self._database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "select fingerprint, description_hash "
                     "from public.job_hunter_postings "
-                    "where fingerprint = any(%s)",
+                    "where fingerprint = any(%s) and closed_at is null",
                     (fingerprints,),
                 )
                 rows = cursor.fetchall()
