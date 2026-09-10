@@ -5,7 +5,7 @@ digest all call: one ranking implementation, not one per caller. It ranks
 and flags the requesting user's whole corpus in a single SQL round trip
 (`PostgresJobStore.match_jobs`, a term-for-term port of
 `ranking.profile_priority_score` and `hard_blockers.hard_blockers_from_facets`
--- see `supabase/migrations/29999999000000_job_hunter_match_jobs.sql` and
+-- see `supabase/migrations/20260910140000_job_hunter_match_jobs.sql` and
 `docs/superpowers/specs/2026-09-10-answer-matching-as-one-operation-design.md`),
 so filtering and hard blocking cost nothing before a provider call. Only the
 first `limit` rows that survive both -- unblocked and already read -- are

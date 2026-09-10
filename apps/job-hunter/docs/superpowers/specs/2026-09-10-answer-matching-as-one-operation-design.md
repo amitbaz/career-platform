@@ -149,6 +149,7 @@ asserting the same job ids in the same order.
 
 New functions only; no existing table or column changes.
 `supabase/tests/pgtap/job_hunter_store_functions.sql` pins the exact function set and must
-be updated to include the new functions. Filename placeholder
-`29999999000000_job_hunter_match_jobs.sql` per AGENTS.md's numbering rule — renamed to a
-real `YYYYMMDDHHMMSS` at PR time.
+be updated to include the new functions. Written under a placeholder filename
+(`29999999000000_job_hunter_match_jobs.sql`) per AGENTS.md's numbering rule while the branch
+was in flight; renamed to `20260910140000_job_hunter_match_jobs.sql` at PR time, after
+checking `main` and the other in-flight worktree for the highest timestamp either carried.
