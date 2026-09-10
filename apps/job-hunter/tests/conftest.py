@@ -394,6 +394,7 @@ def ingestion_database():
         # whole point; the last test of a session leaves its messages for the
         # first test of the next.
         _purge_stage_queues(database)
+        _clean_platform_tables(database)
         yield database
     finally:
         database.close()
@@ -446,6 +447,69 @@ def _purge_stage_queues(database) -> None:
             "include its messages",
             _EXTRACT_FACETS_QUEUE_TABLE,
         )
+
+
+#: Tables that meter or track a platform-owned resource rather than a user's
+#: own data: no `user_id`, so `_TABLES_CHILD_FIRST` (which deletes by user
+#: id) cannot reach them, and no run-scoping column of any kind, so nothing
+#: distinguishes one test's rows from another's. `job_hunter_source_crawls`
+#: and `job_hunter_source_cursors` do not have a ledger-style cap any test
+#: asserts on yet, but they are the same shape and issue #184's crawl work
+#: will grow tests that do; they are cleaned here from the start rather than
+#: added the day something breaks. None references another table in this
+#: tuple or outside it, so deletion order does not matter.
+_PLATFORM_TABLES = (
+    "job_hunter_platform_search_usage",
+    "job_hunter_platform_ai_usage",
+    "job_hunter_platform_ai_quota_state",
+    "job_hunter_source_crawls",
+    "job_hunter_source_cursors",
+)
+
+
+def _clean_platform_tables(database) -> None:
+    """Empty every platform-owned table with no user or run column.
+
+    Issue #184: `job_hunter_platform_search_usage` broke
+    `tests/test_brave_budget.py` this way first -- an early test wrote 250
+    rows toward a shared monthly cap, and a later test asserting a fresh
+    3-call cap found it already blown, because nothing about a usage row
+    marks it as belonging to one test rather than another. Every table in
+    `_PLATFORM_TABLES` has exactly the same exposure: `_cleanup_seed_users`
+    walks `_TABLES_CHILD_FIRST` by user id and cannot reach any of them.
+
+    Deleted with ingestion's privileged connection, the same shape as
+    `_purge_stage_queues`, because no RLS-scoped client can see a row it
+    does not own and these tables have no ownership column at all. Unlike
+    `_purge_stage_queues` this delete is unconditional rather than
+    orphan-scoped -- there is nothing about a usage row that marks it as
+    this test's versus a concurrently running suite's -- so a worktree
+    running the same tests at the same moment as this one can lose the
+    race and see (or lose) a budget the other suite just spent. That is
+    the same trade-off the pgTAP suite already accepts for shared,
+    user-less tables; there is no narrower cut available without adding a
+    run-scoping column these tables were deliberately not given.
+    """
+    with database.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("set local lock_timeout = '5s'")
+            for table in _PLATFORM_TABLES:
+                cursor.execute(f"delete from public.{table}")
+
+
+@pytest.fixture
+def clean_platform_tables(ingestion_database):
+    """Empty every table in `_PLATFORM_TABLES` before and after a test.
+
+    For a test that needs the guarantee `ingestion_database` gives every
+    store-backed test for free (see `_clean_platform_tables`'s call there)
+    but has no other reason to depend on `ingestion_database` itself --
+    `tests/test_brave_budget.py`'s tests build a bare `SearchUsageLedger`
+    over `supabase_client` and never touch a store.
+    """
+    _clean_platform_tables(ingestion_database)
+    yield
+    _clean_platform_tables(ingestion_database)
 
 
 @pytest.fixture

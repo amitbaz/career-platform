@@ -11,7 +11,7 @@ callers. What protects this in practice is not application logic but
 deployment shape: every workflow that can call `try_record`
 (`job-hunter-daily.yml`, `job-hunter-generate-cover-letter.yml`) shares
 `concurrency: group: job-hunter-state` with `cancel-in-progress: false`, so
-at most one writer is ever *running* against a given user's rows at a time
+at most one writer is ever *running* against the ledger at a time
 -- a second run in that group, including a manually-triggered
 `workflow_dispatch` of either workflow, queues behind the first rather than
 overlapping it. The real escape hatch is anything outside GitHub Actions

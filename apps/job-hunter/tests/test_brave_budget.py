@@ -1,6 +1,8 @@
 import itertools
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import job_hunter.search_budget as search_budget
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.models import Job, SearchQuery
@@ -11,6 +13,15 @@ from job_hunter.search_budget import (
     split_queries_for_brave,
 )
 
+# job_hunter_platform_search_usage has no user_id (issue #184), so nothing
+# about a row here marks it as this test's. Every test in this file shares
+# provider="brave" and dates within September 2026, so without this an
+# earlier test's writes are a later test's already-blown cap -- see
+# `clean_platform_tables` in conftest.py for the full story. Applied to the
+# whole module rather than per-test: the two tests that do not touch the
+# ledger (`test_brave_query_selection_round_robins_across_markets`, and the
+# `_Http`/`_Response` helpers) still take the fixture harmlessly.
+pytestmark = pytest.mark.usefixtures("clean_platform_tables")
 
 UTC = timezone.utc
 
