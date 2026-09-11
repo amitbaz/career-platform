@@ -150,7 +150,7 @@ Migration rules:
    caller's rows, and the new internal `job_hunter_collapse_job_rows` folds the membership
    rows a posting merge would otherwise duplicate — for every affected user, not only the
    caller. An additional user now costs one narrow row per posting.)
-   `20260910130000_job_hunter_company_watch_health.sql` shares a company's careers-page
+   `20260910145000_job_hunter_company_watch_health.sql` shares a company's careers-page
    endpoint and its health between users (#204): `job_hunter_company_watch` held a careers URL,
    an ATS reference and consecutive-failure health once per user, for both a user's manual
    watches and the engine's own automatic promotions merged onto one row. It adds
