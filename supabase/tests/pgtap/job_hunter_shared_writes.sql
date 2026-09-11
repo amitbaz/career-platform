@@ -463,9 +463,7 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 
 -- The inventory, so a definer function added later and granted to
 -- `authenticated` is a decision somebody made rather than an accident nobody
--- saw. Three read-only ones, plus five Engine Lab functions (#257) that
--- deliberately do write -- see below for why that is the intended shape
--- there, not an accident:
+-- saw. All three are read-only:
 --
 --   * job_hunter_get_provider_credentials reads the caller's own provider
 --     credentials.
@@ -479,19 +477,13 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 --     obligation for a posting. It is definer only because job_hunter_sources'
 --     select policy is open to authenticated but the join runs from a
 --     posting, not a session; it takes no user argument either.
---   * job_hunter_engine_lab_caller_is_owner and _is_active_collaborator read
---     membership; job_hunter_engine_lab_bootstrap_owner, _invite and
---     _claim_invite write it. There is deliberately no insert/update policy
---     on job_hunter_engine_lab_collaborators for `authenticated` at all (see
---     job_hunter_engine_lab.sql) -- these five definer functions are the
---     entire write surface, each independently re-checking who is allowed to
---     call it rather than relying on a table-level grant: _invite and
---     _claim_invite check the caller-is-owner / self-email-match;
---     _bootstrap_owner has `execute` granted like the others (it must, to be
---     callable at all) but requires the job_hunter_runner claim, which no
---     ordinary reviewer session ever carries -- see the security fix on
---     PR #282, where it originally checked only the caller's own email and
---     was directly exploitable.
+--
+-- (Issue #257's Engine Lab used to add five more here -- a collaborators
+-- table and its owner-bootstrap/invite/claim security-definer functions.
+-- That identity/login layer was removed once the owner decided against a
+-- bespoke review page; see job_hunter_engine_lab.sql's "Superseded" note.
+-- The ledger tables that remain have no policies for `authenticated` at
+-- all, so nothing from #257 belongs in this list any more.)
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -500,12 +492,9 @@ select is(
       and p.prosecdef
       and p.proname like 'job\_hunter\_%'
       and has_function_privilege('authenticated', p.oid, 'execute')),
-  array['job_hunter_engine_lab_bootstrap_owner', 'job_hunter_engine_lab_caller_is_owner',
-        'job_hunter_engine_lab_claim_invite', 'job_hunter_engine_lab_invite',
-        'job_hunter_engine_lab_is_active_collaborator',
-        'job_hunter_find_job_by_identity', 'job_hunter_get_provider_credentials',
+  array['job_hunter_find_job_by_identity', 'job_hunter_get_provider_credentials',
         'job_hunter_posting_display_credit'],
-  'only the read-only security definers and Engine Lab''s self-checking ones are reachable by authenticated');
+  'only the read-only security definers are reachable by authenticated');
 
 -- And the one they must not reach: the posting lookup that names whose corpus
 -- to search. A user who could call this could ask which advertisements any

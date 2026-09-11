@@ -161,6 +161,15 @@ do not.
 
 Engine Lab is private to the owner and explicitly invited collaborators. It has two surfaces:
 
+**Update (2026-09-11):** #257's implementation of Review shipped a bespoke Flask page with its
+own Supabase Auth login, then dropped it — the owner found a one-off login flow not worth
+maintaining for a single-owner tool and is instead evaluating an off-the-shelf internal tool
+(Retool or similar, tracked as #283) to serve as the actual surface. What #257 built and kept is
+the measurement ledger only (two tables, no identity scheme — see its own design doc); "the
+review page" below describes the product behavior any surface serving it must have, not a page
+that exists in this repository. Analytics (#264) has not been built yet and may or may not follow
+the same path.
+
 ### Review
 
 The review page shows the card facts, why line and source link, then records:

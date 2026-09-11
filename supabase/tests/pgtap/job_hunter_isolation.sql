@@ -295,18 +295,15 @@ select unnest(array[
   'job_hunter_platform_search_usage'
 ]) as table_name;
 
--- Engine Lab's collaborator list and measurement ledger (issue #257) hold
--- no product user_id at all: `reviewer_id` names an Engine Lab collaborator,
--- a concept this file's own-row-by-`auth.uid()` pattern below does not fit,
--- because a trusted runner claim also reads across every reviewer's rows
--- for the daily summary -- the same "different axis of isolation" reason
--- the platform tables above are named here rather than asserted here. Their
--- own properties (a reviewer sees only their own rows unless carrying the
--- runner claim; nobody without an engine-lab claim reaches them at all) are
--- asserted in job_hunter_engine_lab.sql.
+-- Engine Lab's measurement ledger (issue #257) holds no product user_id and
+-- no per-reviewer identity at all -- `reviewer_id` is a free-form string
+-- supplied by whatever trusted tool judges a card, not an `auth.uid()`.
+-- RLS is on with no policy for any role a user can hold, the same shape as
+-- the ingestion tables below, so this file's own-row-by-`auth.uid()`
+-- pattern does not fit. Its own property (nobody but a trusted connection
+-- reaches it at all) is asserted in job_hunter_engine_lab.sql.
 create view pg_temp.job_hunter_engine_lab_tables as
 select unnest(array[
-  'job_hunter_engine_lab_collaborators',
   'job_hunter_engine_lab_impressions',
   'job_hunter_engine_lab_judgements'
 ]) as table_name;

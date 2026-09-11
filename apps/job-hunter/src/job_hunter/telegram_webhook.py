@@ -7,7 +7,6 @@ import os
 from flask import Flask, jsonify, request
 
 from job_hunter.config import WebhookSettings, load_supabase_settings, load_webhook_settings
-from job_hunter.engine_lab_web import register_engine_lab_routes
 from job_hunter.github_dispatch import trigger_repository_dispatch
 from job_hunter.http import HttpClient
 from job_hunter.navigation_repository import PostgresNavigationRepository
@@ -195,7 +194,5 @@ def create_app(
             on_generate=_trigger_cover_letter_generation,
         )
         return jsonify(ok=True)
-
-    register_engine_lab_routes(app, http)
 
     return app
