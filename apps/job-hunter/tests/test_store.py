@@ -2477,25 +2477,19 @@ def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
         )
 
     # The two ATS rows (`ats-application`, `ats-delivery`) name the same
-    # `(ats_provider, ats_board, ats_job_id)` -- exactly #249's shape, one ATS
-    # job reached through two source labels. Since normalize.job_fingerprint
-    # now keys on that triple, `store.upsert_job`'s plain fingerprint match
-    # already resolved both onto one posting and therefore one job row
-    # above, before this function's own deferred identity resolution runs
-    # at all: `job_ids[2]` and `job_ids[3]` are the same id, and looking it
-    # up by that ATS triple is no longer ambiguous.
-    #
-    # It also takes the "Berlin" identity match out of contention: the
-    # posting's location backfills only when empty, so the merged posting
-    # keeps `ats-application`'s "London" rather than `ats-delivery`'s
-    # "Berlin", leaving `canonical-material`'s posting as the single
-    # remaining "Acme"/"Senior Frontend Engineer"/"Berlin" match instead of
-    # two competing ones.
+    # `(ats_provider, ats_board, ats_job_id)` but different `source_job_id`
+    # values ("ats-1", "ats-2") that neither agrees with the shared
+    # ats_job_id ("abc"). normalize.job_fingerprint (#249, #254) only trusts
+    # the ATS triple when source_job_id is absent or agrees with it, so this
+    # fixture -- deliberately shaped to test the *deferred* identity
+    # resolution below, not eager fingerprint collapsing -- still produces
+    # four distinct postings here, exactly as before #249: each of the three
+    # lookups below still finds two ambiguous candidates and returns None.
     assert store.find_job_by_canonical_url(canonical_url) is None
-    assert store.find_job_by_ats("lever", "acme", "abc") == job_ids[2]
+    assert store.find_job_by_ats("lever", "acme", "abc") is None
     assert store.find_job_by_identity(
         "Acme", "Senior Frontend Engineer", "Berlin"
-    ) == job_ids[1]
+    ) is None
 
     evaluation_id, material_id, application_id, delivery_id = job_ids
     store.save_evaluation(evaluation_id, _evaluation(evaluation_id))
