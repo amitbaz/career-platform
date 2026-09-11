@@ -85,6 +85,11 @@ GitHub Issues (repo: amitbaz/career-platform), via `gh` CLI. See `docs/agents/is
 
 Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 
+### Roles
+
+Delivery is split between a developer bot and a reviewer bot, started with `/dev <issue>` and
+`/reviewer <pr>`. The owner triages, checks and merges. See `docs/agents/roles.md`.
+
 ### Issue areas
 
 Every open issue carries **exactly one** `area:*` label saying which part of the product it

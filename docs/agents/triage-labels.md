@@ -17,6 +17,9 @@ Edit the right-hand column to match whatever vocabulary you actually use.
 `needs-rewrite` is this repo's addition: the issue's direction changed, and it must be
 re-specified against `docs/product-vision.md` before anyone works on it.
 
+`needs-owner` is an agent loop stopped and needs the owner's decision; the latest `@amitbaz`
+comment says which one. Removed by the owner once they have answered.
+
 ## Kind labels
 
 What kind of work an issue is, alongside its area. Optional; add one when it applies.
