@@ -28,9 +28,9 @@ and it exposed three gaps this design closes:
 | --- | --- |
 | How does work start? | The owner launches sessions; each session then drives its own loop. No dispatcher, no cloud agents. |
 | How does a ticket reach dev? | Every issue auto-assigns to the owner. The owner adds `amitbaz-developer` at triage; that assignment is the only go signal. |
-| How does a session learn its role? | A role command at launch: `/dev <issue>` or `/review <pr>`, available to Claude and Codex alike. |
+| How does a session learn its role? | A role command at launch: `/dev <issue>` or `/reviewer <pr>`, available to Claude and Codex alike. |
 | Where do agents talk? | GitHub is the record. MemPalace logstream is the doorbell, so it works for Claude and Codex. |
-| Who launches the reviewer? | The owner runs `/review <pr>` each time. Sessions die when the machine closes, so nothing is designed to stand; every session resumes from GitHub state. |
+| Who launches the reviewer? | The owner runs `/reviewer <pr>` each time. Sessions die when the machine closes, so nothing is designed to stand; every session resumes from GitHub state. |
 | Who merges? | The owner. The ruleset requires two approvals: the reviewer bot's, then the owner's. The owner's check is deliberately shallower than the bot's. |
 | Where does role logic live? | One agent-neutral document, `docs/agents/roles.md`, linked from AGENTS.md. Launchers are thin and point at it. |
 
@@ -104,12 +104,13 @@ bot account" is updated to point here and to state the enforcement correctly.
 
 ### 5. Launchers
 
-- Claude: repo-local skills `.claude/skills/dev/SKILL.md` and `.claude/skills/review/SKILL.md`.
-  They are hand-written, not entries in `skills-lock.json`, so a skills update never overwrites
-  them.
-- Codex: the same two launchers in whichever repository location Codex reads skills or prompts
-  from. The implementation ticket confirms that location from Codex's current documentation
-  before writing the files.
+- One copy of each launcher, `.agents/skills/dev/SKILL.md` and
+  `.agents/skills/reviewer/SKILL.md`. Codex discovers `.agents/skills` from the repository
+  ancestry (`codex-rs/ext/skills/src/host_roots.rs`).
+- Claude reads them through the symlinks `.claude/skills/dev` and `.claude/skills/reviewer`. They
+  are hand-written, not entries in `skills-lock.json`, so a skills update never overwrites them.
+- The reviewer launcher is `reviewer`, not `review`, because Claude Code already has a built-in
+  `/review`.
 
 Each launcher does four things only: announce the role, set the MemPalace identity, start the
 watcher for the correlation, then follow `docs/agents/roles.md`.
@@ -134,7 +135,7 @@ watcher for the correlation, then follow `docs/agents/roles.md`.
 3. Branch and implement under the existing AGENTS.md rules (test stack, migration timestamps,
    raw-file reads), then self-review before opening a PR.
 4. Open the PR as the bot, with the repository's PR template and `Addresses #N` or `Closes #N`.
-5. Comment `@amitbaz ready for review — run /review <pr>` on the PR, which is the owner's
+5. Comment `@amitbaz ready for review — run /reviewer <pr>` on the PR, which is the owner's
    signal to launch a reviewer. Post a `task.request` (status `open`) to `cp-reviewer` for the
    reviewer to find on start, then wait on the watcher. A reviewer session, once started, stays
    alive across rounds until it approves or escalates.
@@ -143,7 +144,7 @@ watcher for the correlation, then follow `docs/agents/roles.md`.
 7. After the reviewer bot approves, stay alive until the PR is merged or closed, because the
    owner's check may request changes too.
 
-## The reviewer loop — `/review <pr>`
+## The reviewer loop — `/reviewer <pr>`
 
 1. Fetch the PR head into its own worktree and reconcile (see "Resuming"). If a prior review by
    `amitbaz-reviewer` exists, review the change since that review's commit, and re-check every
@@ -195,7 +196,7 @@ the loop; it loses nothing.
 ## The owner's touchpoints
 
 1. Triage: assign `amitbaz-developer` to a ticket that should be built.
-2. Launch `/dev <issue>` for it, and `/review <pr>` when a PR is waiting.
+2. Launch `/dev <issue>` for it, and `/reviewer <pr>` when a PR is waiting.
 3. Final check on `@amitbaz ready for your check`: skim, approve, merge.
 
 The owner can also type into either session at any time.
@@ -211,7 +212,7 @@ The owner can also type into either session at any time.
   session cannot fix. The session posts a `blocked` reply and escalates.
 - **Silent peer.** A `fixes_pushed` request gets no `claimed` acknowledgement within 30 minutes,
   so the reviewer session has died (for example the machine closed). The developer escalates and
-  names the command that resumes it (for example `/review 312`). The first request on a PR is
+  names the command that resumes it (for example `/reviewer 312`). The first request on a PR is
   exempt: no reviewer exists until the owner launches one.
 - **Scope creep.** Work found outside the ticket becomes a new issue assigned to the owner, not to
   the developer. The owner decides whether it is dev work.
