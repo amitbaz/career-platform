@@ -201,6 +201,7 @@ select is(
     'job_hunter_assign_variant_groups',
     'job_hunter_avoid_signal_penalty',
     'job_hunter_backend_transition_penalty',
+    'job_hunter_backfill_ats_triple_dupes',
     'job_hunter_backfill_variant_groups',
     'job_hunter_canonicalize_url',
     'job_hunter_collapse_job_rows',
@@ -248,7 +249,7 @@ select is(
     'job_hunter_upsert_posting',
     'job_hunter_word_set_jaccard',
     'job_hunter_words'],
-  'exactly the fifty expected public.job_hunter_* functions exist (#187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard), so the two checks above are not asserting over an empty set');
+  'exactly the fifty-one expected public.job_hunter_* functions exist (#187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above), so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

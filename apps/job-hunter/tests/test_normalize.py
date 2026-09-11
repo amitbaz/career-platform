@@ -39,3 +39,37 @@ def test_fingerprint_unique_for_different_ids():
     job1 = Job(source="ashby", source_job_id="abc", title="X", company="X")
     job2 = Job(source="ashby", source_job_id="xyz", title="X", company="X")
     assert job_fingerprint(job1) != job_fingerprint(job2)
+
+
+def test_fingerprint_prefers_ats_triple_across_source_labels():
+    direct = Job(
+        source="ashby",
+        source_job_id="ashby-999",
+        ats_provider="ashby",
+        ats_board="bjak",
+        ats_job_id="999",
+        title="X",
+        company="X",
+    )
+    via_watch = Job(
+        source="watch:ashby",
+        source_job_id="ashby-999",
+        ats_provider="ashby",
+        ats_board="bjak",
+        ats_job_id="999",
+        title="X",
+        company="X",
+    )
+    assert job_fingerprint(direct) == job_fingerprint(via_watch)
+
+
+def test_fingerprint_falls_back_when_ats_triple_incomplete():
+    job1 = Job(source="ashby", source_job_id="abc", ats_provider="ashby", title="X", company="X")
+    job2 = Job(source="watch:ashby", source_job_id="abc", ats_provider="ashby", title="X", company="X")
+    assert job_fingerprint(job1) != job_fingerprint(job2)
+
+
+def test_fingerprint_ats_triple_distinguishes_different_boards():
+    job1 = Job(source="ashby", ats_provider="ashby", ats_board="bjak", ats_job_id="999", title="X", company="X")
+    job2 = Job(source="watch:ashby", ats_provider="ashby", ats_board="other", ats_job_id="999", title="X", company="X")
+    assert job_fingerprint(job1) != job_fingerprint(job2)

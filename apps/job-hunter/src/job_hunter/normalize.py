@@ -40,7 +40,20 @@ def description_hash(text: str) -> str:
 
 
 def job_fingerprint(job) -> str:
-    if job.source_job_id:
+    # The ATS triple wins over (source, source_job_id) when all three are
+    # present (#249). A board crawled directly and the same board rediscovered
+    # through a company watch relabel every job it scans (`source =
+    # f"watch:{provider}"`, sources/company_watch.py), so the old key --
+    # scoped to `source` -- hashed one ATS job twice. The triple identifies
+    # the advertisement itself, independent of which source label reached it,
+    # which is exactly the property `ats_board_key` already relies on for the
+    # denylist; reuse its provider/board normalization here so the two never
+    # silently diverge on casing or stray whitespace. The job id is left
+    # exactly as read, same as `parse_supported_ats_url` -- ATS job ids are
+    # case-sensitive in URLs.
+    if job.ats_provider and job.ats_board and job.ats_job_id:
+        raw = f"id:{ats_board_key(job.ats_provider, job.ats_board)}:{job.ats_job_id}"
+    elif job.source_job_id:
         raw = f"id:{job.source.lower()}:{job.source_job_id}"
     elif job.url:
         raw = f"url:{canonicalize_url(job.url)}"
