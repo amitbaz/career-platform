@@ -68,6 +68,20 @@ permanent work dead-letters immediately; quota exhaustion delays the message wit
 increasing its attempt count. A claimed message that is never acknowledged is not a
 failure classification: its visibility timeout expires and another worker may claim it.
 
+**Worker run** — one invocation of a scheduled ingestion worker (`crawl-source`,
+`extract-facets`, `recheck-freshness`), recorded in `job_hunter_worker_runs` from start
+to finish. A worker that woke to an empty queue is a finished run with stop reason
+`queue_empty`, not a missing row. A run whose heartbeat went stale is **unfinished**; a
+worker with no run started in two scheduled intervals is **missing**. Both are health
+failures.
+
+**Crawl window** — one crawl target, ISO weekday and UTC hour. Its evidence is the
+novelty (new plus changed postings) its crawls found over the lookback, and its verdict
+is `keep`, `reduce` or `insufficient_evidence`. A reduced window keeps **safety crawls**:
+crawls labelled `safety`, at the next-slower band, so a change in the source's
+behaviour there is still seen. Not a business-hours rule: each target is judged
+against its own rate.
+
 ## Jobs and their lifecycle
 
 **Posting** — one job advertisement in the world, held once in `job_hunter_postings` and

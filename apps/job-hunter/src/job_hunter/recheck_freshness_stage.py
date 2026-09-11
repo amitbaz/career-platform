@@ -20,6 +20,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Protocol
 
 import requests
@@ -31,11 +32,13 @@ from .http import Validators
 from .postgres_stage_queue import PostgresStageQueue
 from .stage_queue import (
     PermanentStageFailure,
+    QueueDelays,
     QueueMessage,
     QuotaExhausted,
     Stage,
     StageRunner,
     TransientStageFailure,
+    utc_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,12 @@ RATE_LIMITED = "rate_limited"
 
 #: How long a rate-limited check waits when the site did not say.
 _RATE_LIMITED_RETRY_SECONDS = 15 * 60
+
+#: How long a claimed re-check stays invisible to other workers. It covers a
+#: whole batch at the HTTP client's read budget, and is how long a worker run
+#: may go without a heartbeat before `job_hunter_worker_health` reports it
+#: unfinished (#258).
+VISIBILITY_TIMEOUT_SECONDS = 15 * 60
 
 #: The boards a posting can be re-checked on, by the adapter that crawls them.
 _BOARD_PROVIDERS = frozenset({"greenhouse", "lever", "ashby"})
@@ -451,6 +460,7 @@ class FreshnessDrain:
     claimed: int = 0
     outcomes: Counter = field(default_factory=Counter)
     stopped_because: str = ""
+    queue_delays: QueueDelays = field(default_factory=QueueDelays)
 
     @property
     def completed(self) -> int:
@@ -477,6 +487,8 @@ def drain_recheck_freshness(
     batch_size: int = 25,
     time_budget_seconds: float = 20 * 60,
     clock: Callable[[], float] = time.monotonic,
+    on_batch: Callable[[FreshnessDrain], None] | None = None,
+    now: Callable[[], datetime] = utc_now,
 ) -> FreshnessDrain:
     """Drain up to `limit` due re-checks, in batches, within a time budget.
 
@@ -491,11 +503,15 @@ def drain_recheck_freshness(
     The visibility timeout covers a whole batch at the HTTP client's read
     budget, so a slow batch is not redelivered to a second worker while the
     first is still on it.
+
+    `on_batch` is called with the drain after every batch, including the one
+    that finds the queue empty (#258).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
     runner = StageRunner(
-        PostgresStageQueue(database), visibility_timeout_seconds=15 * 60
+        PostgresStageQueue(database),
+        visibility_timeout_seconds=VISIBILITY_TIMEOUT_SECONDS,
     )
     stage = RecheckFreshnessStage(database, http)
     drain = FreshnessDrain()
@@ -513,6 +529,7 @@ def drain_recheck_freshness(
         def handler(message: QueueMessage) -> FreshnessOutcome:
             nonlocal seen
             seen += 1
+            drain.queue_delays.observe(message, now())
             try:
                 outcome = stage(message)
             except QuotaExhausted:
@@ -530,6 +547,8 @@ def drain_recheck_freshness(
             batch_size=min(batch_size, limit - drain.claimed),
         )
         drain.claimed += seen
+        if on_batch is not None:
+            on_batch(drain)
         if seen == 0:
             drain.stopped_because = "queue_empty"
             break

@@ -280,7 +280,8 @@ class QueueRecordingCursor:
         elif "pgmq.send" in statement:
             self._row = (7,)
         elif "pgmq.read" in statement:
-            self._rows = [(7, {"batch_id": self._database.batch_id}, 0)]
+            # msg_id, payload, attempt count, enqueued_at -- the claim's columns.
+            self._rows = [(7, {"batch_id": self._database.batch_id}, 0, None)]
         elif "job_hunter_merge_posting_batch" in statement:
             self._rows = [(self._database.fingerprint, "posting-a", True)]
         elif "job_hunter_job_facets" in statement:
