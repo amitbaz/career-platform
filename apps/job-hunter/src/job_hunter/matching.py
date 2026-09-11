@@ -71,6 +71,11 @@ class MatchedJob:
     evaluation: Evaluation
     scored: bool
     fresh: bool
+    #: Every open location of this row's variant group (#61) that the caller
+    #: holds a membership row for -- just this posting's own location for a
+    #: row with no group. `row["locations"]` from job_hunter_match_jobs,
+    #: carried through unchanged.
+    locations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +201,7 @@ def match_jobs(
                     existing,
                     scored=True,
                     fresh=False,
+                    locations=tuple(row["locations"] or ()),
                 )
             )
             continue
@@ -223,6 +229,7 @@ def match_jobs(
                 MatchedJob(
                     job_id, row["posting_id"], row["score"], evaluation,
                     scored=False, fresh=True,
+                    locations=tuple(row["locations"] or ()),
                 )
             )
             continue
@@ -285,6 +292,7 @@ def match_jobs(
             MatchedJob(
                 job_id, row["posting_id"], row["score"], evaluation,
                 scored=True, fresh=True,
+                locations=tuple(row["locations"] or ()),
             )
         )
         scored_count += 1

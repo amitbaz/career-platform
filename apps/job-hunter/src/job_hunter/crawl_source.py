@@ -43,6 +43,10 @@ class CrawlOutcome:
     requests: int = 0
     elapsed_ms: int = 0
     error: str = ""
+    # How many of this crawl's postings joined an already-existing variant
+    # group (#61), read off resolve_persist's PostingBatch. Written on every
+    # crawl, including zero (AGENTS.md rule 5).
+    joined_variant_group: int = 0
 
 
 def description_hash(description: str) -> str:
@@ -172,6 +176,7 @@ class CrawlSourceStage:
             unchanged_by_hash=unchanged,
             requests=self._requests_since(requests_before),
             elapsed_ms=int((time.monotonic() - started) * 1000),
+            joined_variant_group=getattr(batch, "joined_existing_group", 0) or 0,
         )
         self._record(outcome)
         return outcome
@@ -276,8 +281,8 @@ class CrawlSourceStage:
                         "insert into public.job_hunter_source_crawls "
                         "(source_key, finished_at, outcome, fetched, "
                         " new_to_corpus, changed, unchanged_by_hash, "
-                        " requests, elapsed_ms, error) "
-                        "values (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s)",
+                        " requests, elapsed_ms, error, joined_variant_group) "
+                        "values (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (
                             outcome.source_key,
                             outcome.outcome,
@@ -288,6 +293,7 @@ class CrawlSourceStage:
                             outcome.requests,
                             outcome.elapsed_ms,
                             outcome.error,
+                            outcome.joined_variant_group,
                         ),
                     )
         except Exception:

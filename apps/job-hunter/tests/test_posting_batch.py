@@ -26,6 +26,8 @@ from job_hunter.postgres_store import (
     PostgresJobStore,
     PostingBatch,
 )
+from job_hunter.resolve_persist import ResolvePersistStage
+from job_hunter.stage_queue import QueueMessage, Stage
 
 
 def job_fingerprint(job: Job) -> str:
@@ -363,6 +365,105 @@ def test_merge_posting_batch_enqueues_extraction_for_what_it_resolved():
 
     sends = [s for s in database.statements if "pgmq.send" in s]
     assert len(sends) == 2, "one send for resolve_persist, one for extract_facets"
+
+
+# Variant grouping (issue #61) -----------------------------------------------------
+#
+# resolve_persist calls job_hunter_assign_variant_groups right after the merge
+# resolves, over the same connection, and reports how many of the batch's
+# postings joined a group that already existed. These fakes are deliberately
+# separate from QueueRecordingCursor above: that fake's "job_hunter_merge_
+# posting_batch" branch is shared by many unrelated tests whose exact-equality
+# assertions on PostingBatch would break if it started returning nonzero
+# variant-group rows by default.
+
+
+class _VariantGroupCursor:
+    def __init__(self, merge_rows, group_rows):
+        self._merge_rows = merge_rows
+        self._group_rows = group_rows
+        self.description = None
+        self._last_statement = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def execute(self, statement, params=None):
+        self._last_statement = statement
+        self.description = ("result",)
+
+    def fetchall(self):
+        if "job_hunter_merge_posting_batch" in self._last_statement:
+            return self._merge_rows
+        if "job_hunter_assign_variant_groups" in self._last_statement:
+            return self._group_rows
+        return []
+
+
+class _VariantGroupConnection:
+    def __init__(self, merge_rows, group_rows):
+        self._merge_rows = merge_rows
+        self._group_rows = group_rows
+
+    def cursor(self):
+        return _VariantGroupCursor(self._merge_rows, self._group_rows)
+
+
+class _VariantGroupDatabase:
+    unavailable = False
+
+    def __init__(self, merge_rows, group_rows):
+        self._merge_rows = merge_rows
+        self._group_rows = group_rows
+
+    @contextmanager
+    def connection(self):
+        yield _VariantGroupConnection(self._merge_rows, self._group_rows)
+
+
+def test_resolve_persist_counts_postings_that_joined_an_existing_variant_group():
+    merge_rows = [
+        ("fp-a", "posting-a", True),
+        ("fp-b", "posting-b", True),
+        ("fp-c", "posting-c", True),
+    ]
+    group_rows = [
+        ("posting-a", "posting-a", False),  # founded its own group
+        ("posting-b", "posting-a", True),  # joined posting-a's group
+        ("posting-c", None, False),  # no ATS board: left ungrouped
+    ]
+    database = _VariantGroupDatabase(merge_rows, group_rows)
+    stage = ResolvePersistStage(database)
+
+    batch = stage(
+        QueueMessage(
+            stage=Stage.RESOLVE_PERSIST,
+            message_id=1,
+            payload={"batch_id": str(uuid.uuid4())},
+        )
+    )
+
+    assert batch.joined_existing_group == 1
+
+
+def test_resolve_persist_reports_zero_when_nothing_joined_a_group():
+    merge_rows = [("fp-a", "posting-a", True)]
+    group_rows = [("posting-a", "posting-a", False)]
+    database = _VariantGroupDatabase(merge_rows, group_rows)
+    stage = ResolvePersistStage(database)
+
+    batch = stage(
+        QueueMessage(
+            stage=Stage.RESOLVE_PERSIST,
+            message_id=1,
+            payload={"batch_id": str(uuid.uuid4())},
+        )
+    )
+
+    assert batch.joined_existing_group == 0
 
 
 # Against a real database ---------------------------------------------------------

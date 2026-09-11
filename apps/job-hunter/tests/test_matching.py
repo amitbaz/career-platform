@@ -528,6 +528,66 @@ def test_match_jobs_stops_at_limit(store, supabase_client, seed_postings):
     assert all(r.scored for r in results)
 
 
+def test_match_jobs_folds_a_variant_group_to_one_scored_representative(
+    store, supabase_client, seed_postings
+):
+    """Issue #61: two location variants of one position fold into one match,
+    and subjective scoring runs once, not twice, carrying both open
+    locations."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    posting_ids = seed_postings(
+        [
+            _posting_row(
+                fingerprint="variant-berlin",
+                url="https://boards.greenhouse.io/acme/variant-berlin",
+                canonical_url="https://boards.greenhouse.io/acme/variant-berlin",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash="h-variant-berlin",
+            ),
+            _posting_row(
+                fingerprint="variant-paris",
+                url="https://boards.greenhouse.io/acme/variant-paris",
+                canonical_url="https://boards.greenhouse.io/acme/variant-paris",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Paris",
+                description="kubernetes postgres",
+                description_hash="h-variant-paris",
+            ),
+        ]
+    )
+    # What job_hunter_assign_variant_groups would have written at ingestion --
+    # set directly here so this test is about match_jobs's fold, not about
+    # the grouping walk (covered in supabase/tests/pgtap/job_hunter_variant_groups.sql).
+    group_id = posting_ids[0]
+    with store.platform_ingestion.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "update public.job_hunter_postings set variant_group_id = %s "
+                "where id = any(%s)",
+                (group_id, posting_ids),
+            )
+
+    job_ids = [
+        _insert_membership(supabase_client, user_id, posting_id)
+        for posting_id in posting_ids
+    ]
+    for job_id in job_ids:
+        store.save_job_facets(job_id, make_facets(compensation=Compensation()))
+
+    ai = FakeAI()
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+
+    assert ai.calls == 1
+    assert len(results) == 1
+    assert sorted(results[0].locations) == ["Berlin", "Paris"]
+
+
 # Equivalence with the Python originals (AC7) -------------------------------------
 #
 # `ranking.profile_priority_score` and `hard_blockers.hard_blockers_from_facets`

@@ -115,6 +115,19 @@ advertisement's text must not be stamped on another's as permanently current. Do
 confuse this with deduplication, which is resolving a discovered record against the
 posting that shares its fingerprint — that has one answer and no decision in it.
 
+**Variant group** — a set of postings on one ATS board that advertise the same position
+in different places, e.g. one role an employer publishes as a separate ATS job per
+office. It is a fact about the world, decided once at ingestion and stored on each
+posting (`job_hunter_postings.variant_group_id`), by ATS board, normalized title and
+description similarity (`job_hunter_assign_variant_groups`, #61). Matching folds a
+group down to the caller's single best-ranked row, carrying every open location in the
+group the caller holds a row for — but nothing about the postings themselves changes.
+Do not confuse this with Merge: a merge is one advertisement seen twice that collapses
+to one surviving row with the loser's facets discarded; a variant group is several
+different advertisements for the same position that all keep their own row, their own
+apply URL, their own location and their own facets, linked only for presentation and
+scoring. Grouping never merges, redirects or discards a posting.
+
 **Source** — one origin of postings. A feed, a public ATS board, a targeted search
 backend, a watched company, or staged email.
 

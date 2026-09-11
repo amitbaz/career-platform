@@ -137,7 +137,10 @@ select columns_are('public', 'job_hunter_postings', array[
   'freshness_checked_at',
   'freshness_next_check_at',
   'freshness_etag',
-  'freshness_last_modified'
+  'freshness_last_modified',
+  -- Which variant group this posting belongs to, if any (#61). See
+  -- job_hunter_variant_groups.sql.
+  'variant_group_id'
 ], 'the posting carries what the advertisement says and how it was fetched');
 
 -- No user_id. Naming its absence separately from columns_are keeps the

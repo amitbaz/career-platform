@@ -1668,9 +1668,10 @@ class PostgresJobStore:
         `job_hunter_match_jobs` is `security invoker`, so this returns only
         the membership rows the acting user holds -- ranked by the SQL port
         of `ranking.profile_priority_score` and flagged with the SQL port of
-        `hard_blockers.hard_blockers_from_facets`. Each row is
-        `{"job_id", "posting_id", "score", "hard_blockers", "has_facets"}`;
-        `matching.match_jobs` is what turns this into scored `Evaluation`s.
+        `hard_blockers.hard_blockers_from_facets`, then folded to one row per
+        variant group (#61). Each row is `{"job_id", "posting_id", "score",
+        "hard_blockers", "has_facets", "locations"}`; `matching.match_jobs`
+        is what turns this into scored `Evaluation`s.
         """
         return self._client.rpc(
             "job_hunter_match_jobs",
