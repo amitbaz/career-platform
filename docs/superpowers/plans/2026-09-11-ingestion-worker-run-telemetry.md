@@ -63,12 +63,14 @@ measurement". This plan records the implementation decisions the design left to 
    are judged against their own rates. Only silent windows are reduced. A quiet window is kept.
 7. **Reduction is enforced in the enqueue, with labelled safety crawls.** The per-target cron
    command becomes `select public.job_hunter_enqueue_crawl(<payload>, <safety minutes>)`. In a
-   window currently recommended `reduce`, it enqueues only when the target has not crawled in
-   that same window within the next-slower band's interval and has no safety crawl still
-   queued, and the message carries `purpose = 'safety'`. Crawls in adjacent kept windows do not
-   count. For a target on the hourly band or slower the safety interval outlasts a one-hour
-   window, so a reduced window keeps one crawl per occurrence; the reduction takes effect on
-   the fifteen-minute band. Safety crawls feed the same evidence, so one that finds novelty turns
+   window currently recommended `reduce`, it enqueues only when the target has had no safety
+   crawl within the next-slower band's interval and none is still queued, and the message
+   carries `purpose = 'safety'`. Across a run of reduced windows, every band is therefore
+   probed at the next-slower cadence. Only safety crawls count, so scheduled crawls in
+   adjacent kept windows never stand in for a probe. A reduced window whose occurrence keeps
+   falling inside another window's safety interval becomes `insufficient_evidence` for lack
+   of a crawl in the lookback, is crawled on schedule, and is judged again, so every window
+   is observed at least every other week. Safety crawls feed the same evidence, so one that finds novelty turns
    its window back to `keep`. `apply_reductions`, `significance` and `lookback_days` live in
    `job_hunter_ingestion_timing_config`, one row.
 8. **Worker evidence** (`job_hunter_worker_run_evidence`) is worker × ISO weekday × UTC hour:

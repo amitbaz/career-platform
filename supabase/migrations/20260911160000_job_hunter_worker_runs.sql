@@ -522,13 +522,19 @@ comment on function public.job_hunter_crawl_window_evidence(timestamptz, text) i
 --
 -- What each crawl target's cron entry now runs, in place of a bare pgmq.send.
 -- In a window the evidence currently says to reduce, it enqueues only when
--- the target has not crawled in that same window within p_safety_minutes --
--- the next-slower band's interval -- and has no safety crawl still queued,
--- and labels that message a safety crawl. Crawls in adjacent kept windows do
--- not count: they say nothing about this window, and counting them could
--- leave it unprobed forever. For a target on the hourly band or slower the
--- safety interval outlasts a one-hour window, so a reduced window keeps one
--- crawl per occurrence; the reduction takes effect on the fifteen-minute band. Safety crawls feed the same evidence, so one that
+-- the target has had no safety crawl within p_safety_minutes -- the
+-- next-slower band's interval -- and none is still queued, and labels that
+-- message a safety crawl. So across a run of reduced windows every band is
+-- probed at the next-slower cadence: an hourly target's quiet night gets one
+-- safety crawl per six hours, a fifteen-minute target's one per hour.
+--
+-- Only safety crawls count. A scheduled crawl in an adjacent kept window says
+-- nothing about a reduced one, and counting it could leave the reduced window
+-- unprobed forever. A reduced window whose occurrence keeps falling inside
+-- another window's safety interval is not starved either: with no crawl of
+-- its own in the lookback it becomes insufficient_evidence, is crawled on
+-- schedule at its next occurrence, and is judged again -- so every window is
+-- observed at least every other week. Safety crawls feed the same evidence, so one that
 -- finds something turns its window back to keep. Everywhere else, and when
 -- apply_reductions is off, it enqueues a scheduled crawl exactly as before.
 create or replace function public.job_hunter_enqueue_crawl(
@@ -568,11 +574,8 @@ begin
       if exists (
            select 1 from public.job_hunter_source_crawls c
             where c.source_key = v_key
-              and c.started_at > now() - make_interval(mins => p_safety_minutes)
-              and extract(isodow from c.started_at at time zone 'UTC')
-                  = extract(isodow from now() at time zone 'UTC')
-              and extract(hour from c.started_at at time zone 'UTC')
-                  = extract(hour from now() at time zone 'UTC'))
+              and c.purpose = 'safety'
+              and c.started_at > now() - make_interval(mins => p_safety_minutes))
          or exists (
            select 1 from pgmq.q_job_hunter_crawl_source q
             where q.message ->> 'crawl_key' = v_key

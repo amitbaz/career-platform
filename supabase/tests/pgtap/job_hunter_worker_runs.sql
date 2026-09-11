@@ -278,34 +278,42 @@ select is(
 -- Each enqueue runs as its own statement, into a temp table: a row the
 -- function inserts is invisible to the statement that called it.
 --
--- The target crawled in the previous hour, well inside a 180-minute safety
--- interval, but that crawl was in a kept window and says nothing about this
--- one. Counting it is the defect that could leave a reduced window unprobed
--- forever.
+-- The safety interval here is 360 minutes, what an hourly target is given.
+-- The target crawled in the previous hour, well inside it, but that was a
+-- scheduled crawl in a kept window and says nothing about this one. Counting
+-- it is the defect that could leave a reduced window unprobed forever.
 create temp table enqueued_safety as
-  select public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180) as msg_id;
+  select public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 360) as msg_id;
 select is(
   (select q.message ->> 'purpose' from pgmq.q_job_hunter_crawl_source q
      join enqueued_safety e on e.msg_id = q.msg_id),
   'safety',
-  'crawls in adjacent kept windows do not stand in for a reduced window''s safety crawl');
+  'scheduled crawls in adjacent kept windows do not stand in for a reduced window''s safety crawl');
 
 select is(
-  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180),
+  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 360),
   null,
   'and not a second one while it is still queued');
 
--- Once that safety crawl has run, this window is probed for the rest of its interval.
+-- Once a safety crawl has run -- here two hours ago, in an earlier reduced
+-- hour of the same quiet stretch -- an hourly target is not probed again for
+-- six hours. This is what makes reduce real for the hourly band and slower,
+-- not only the fifteen-minute one.
 select pgmq.delete('job_hunter_crawl_source', (select msg_id from enqueued_safety));
 insert into public.job_hunter_source_crawls
   (source_key, outcome, fetched, new_to_corpus, changed, started_at, finished_at, purpose)
 values ('enqueue-reduced', 'fetched', 0, 0, 0,
-        greatest(date_trunc('hour', now()), now() - interval '1 minute'), now(), 'safety');
+        now() - interval '2 hours', now() - interval '2 hours', 'safety');
 
 select is(
-  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180),
+  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 360),
   null,
-  'a reduced window already probed within its safety interval gets no second safety crawl');
+  'an hourly target''s reduced hours get one safety crawl per six hours, not one per hour');
+
+select isnt(
+  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 60),
+  null,
+  'while a fifteen-minute target, whose safety interval is an hour, is probed again');
 
 update public.job_hunter_ingestion_timing_config set apply_reductions = false;
 create temp table enqueued_unreduced as
