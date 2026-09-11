@@ -528,8 +528,7 @@ owner is in `docs/agents/roles.md`. A session takes a role only through `/dev <i
 "Protect Main" (`protect-main.json`) blocks deletion and force-pushes and requires the `test`
 check, and nobody can bypass it. "Require approvals" (`require-approvals.json`) requires **two
 approvals** (the reviewer bot's and the owner's), approval of the most recent push, and every
-review thread resolved, and any later push dismisses an approval. Until #269 applies "Require
-approvals" to the repository, only "Protect Main" is enforced and a merge needs no approval.
+review thread resolved, and any later push dismisses an approval.
 GitHub never counts an author's approval of their own PR, which is why the developer role must
 author PRs as its bot: only then can the owner's approval count. The repository admin can bypass
 "Require approvals", but never "Protect Main", explicitly and visibly; that is meant for PRs the
