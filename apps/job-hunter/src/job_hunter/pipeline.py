@@ -1215,6 +1215,7 @@ def run_pipeline(
                     nice_to_have_signals=preferences.nice_to_have_signals,
                     preferred_locations=preferences.preferred_locations,
                     avoid_signals=preferences.avoid_signals,
+                    limit=settings.policy.max_jobs_per_run,
                 )
             }
         except Exception:
@@ -1308,7 +1309,13 @@ def run_pipeline(
     # logged and treated as "nothing new to match this run" rather than
     # allowed to propagate.
     match_result = MatchResult(
-        matched=[], failed_job_ids=[], parse_failure_job_ids=[], skipped_without_facets_job_ids=[]
+        matched=[],
+        failed_job_ids=[],
+        parse_failure_job_ids=[],
+        skipped_without_facets_job_ids=[],
+        skipped_without_facets_posting_ids=[],
+        state_counts={},
+        state_reasons={},
     )
     if candidate_context is not None:
         try:
@@ -1318,6 +1325,12 @@ def run_pipeline(
                 settings.policy,
                 candidate_context,
                 limit=settings.policy.max_jobs_per_run,
+                # #243 does not touch this legacy pipeline (design doc: "not
+                # by design, #189's job") -- it stays scoped to what this
+                # user's own crawl history already produced, exactly as
+                # before #243, rather than picking up the whole shared
+                # corpus's newly-reachable postings too.
+                new_posting_limit=0,
             )
         except Exception:
             logger.exception("matching failed; delivering nothing new this run")

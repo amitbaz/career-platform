@@ -8,7 +8,7 @@
 -- must stay apart.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(25);
+select plan(28);
 
 create function pg_temp.authenticate_as(p_user uuid) returns void
 language plpgsql as $$
@@ -123,10 +123,15 @@ insert into public.job_hunter_postings
   (id, fingerprint, source, ats_provider, ats_board, company, title, location,
    description, description_hash, content_confidence, first_seen_at, last_seen_at)
 values (
+  -- last_seen_at = now(), not a fixed 2026-01-02 (#243): this posting is
+  -- read below with no job_hunter_jobs row for its user, via
+  -- job_hunter_match_jobs's freshest-first bounded candidate scan, which a
+  -- fixed old date cannot reliably win a place in on a stack that keeps
+  -- accumulating other postings.
   'e1000000-0000-0000-0000-000000000024'::uuid, 'variant-fp-kira-24',
   'ashby', 'ashby', 'bjakcareer', 'KIRA', 'Lead Software Engineer', 'City 24',
   'about kira we build fintech infra location loc24', '', 'official_ats',
-  '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z'
+  '2026-01-02T00:00:00Z', now()
 );
 
 select groups_formed, postings_grouped from public.job_hunter_backfill_variant_groups() \gset backfill_
@@ -182,8 +187,16 @@ select is(
 select is(
   (select array_length(locations, 1) from public.job_hunter_match_jobs()
     where posting_id in (select id from public.job_hunter_postings where fingerprint like 'variant-fp-kira-%')),
-  23,
-  'match_jobs: the single result carries every open location in the group'
+  -- 24, not 23: the backfill above (job_hunter_backfill_variant_groups, this
+  -- file's earlier section) joined posting 'variant-fp-kira-24' to this same
+  -- group, but this user was never given a job_hunter_jobs row for it (only
+  -- 1-23 were inserted above). Since #243 the group's open locations are
+  -- read from every open posting in the group, not only ones this caller
+  -- holds a membership row for -- so an undiscovered group-mate still
+  -- supplements the group's answer, matching the same open-corpus reading
+  -- match_jobs now gives every row.
+  24,
+  'match_jobs: the single result carries every open location in the group, including an undiscovered group-mate (#243)'
 );
 
 select pg_temp.become_postgres();
@@ -194,7 +207,7 @@ select pg_temp.authenticate_as('cccccccc-2222-0000-0000-000000000001'::uuid);
 select is(
   (select array_length(locations, 1) from public.job_hunter_match_jobs()
     where posting_id in (select id from public.job_hunter_postings where fingerprint like 'variant-fp-kira-%')),
-  22,
+  23,
   'match_jobs: a closed variant drops out of the group''s open locations (#61, #186)'
 );
 
@@ -386,6 +399,69 @@ select ok(
   (select array_length(hard_blockers, 1) from public.job_hunter_match_jobs()
     where job_id in ('f4000000-0000-0000-0000-000000000005'::uuid, 'f4000000-0000-0000-0000-000000000006'::uuid)) > 0,
   'match_jobs: a fully blocked group reads as blocked'
+);
+
+-- Case 4 (#243 review fix): a higher-scoring never-discovered group-mate
+-- must not shadow the caller's own known variant, even at p_limit = 0 --
+-- the exact scenario the fold's own ordering must resolve before `bounded`
+-- ever sees the row, since `bounded`'s "every known row comes back"
+-- guarantee only protects a row that is still a candidate by that point.
+select pg_temp.become_postgres();
+
+insert into public.job_hunter_postings
+  (id, fingerprint, source, ats_provider, ats_board, company, title, location,
+   description, description_hash, content_confidence, first_seen_at, last_seen_at)
+values
+  -- Known to the caller, but weak on the query below (no "kubernetes").
+  ('e5000000-0000-0000-0000-000000000001'::uuid, 'variant-fp-shadow-known',
+   'ashby', 'ashby', 'shadow-board', 'Shadow Co', 'Widget Engineer', 'Berlin',
+   'we build reliable widgets for our customers', '', 'official_ats',
+   '2026-01-03T00:00:04Z', now()),
+  -- Never discovered by this caller, strictly higher-scoring on the same
+  -- query -- exactly what used to be able to win the fold and, with it,
+  -- displace the known row above from the group's single result.
+  ('e5000000-0000-0000-0000-000000000002'::uuid, 'variant-fp-shadow-new',
+   'ashby', 'ashby', 'shadow-board', 'Shadow Co', 'Widget Engineer', 'Paris',
+   'we build reliable widgets for our customers on kubernetes', '', 'official_ats',
+   '2026-01-03T00:00:05Z', now());
+
+update public.job_hunter_postings
+   set variant_group_id = 'e5000000-0000-0000-0000-000000000001'::uuid
+ where fingerprint in ('variant-fp-shadow-known', 'variant-fp-shadow-new');
+
+select pg_temp.authenticate_as('cccccccc-2222-0000-0000-000000000001'::uuid);
+
+insert into public.job_hunter_jobs (id, user_id, posting_id, market_id, first_seen_at, last_seen_at)
+values
+  ('f5000000-0000-0000-0000-000000000001'::uuid, 'cccccccc-2222-0000-0000-000000000001',
+   'e5000000-0000-0000-0000-000000000001'::uuid, '', now(), now());
+
+select ok(
+  (select public.job_hunter_signal_coverage(
+     'Widget Engineer', 'we build reliable widgets for our customers on kubernetes',
+     array['kubernetes'], array[]::text[]
+   )) >
+  (select public.job_hunter_signal_coverage(
+     'Widget Engineer', 'we build reliable widgets for our customers',
+     array['kubernetes'], array[]::text[]
+   )),
+  'sanity: the never-discovered variant genuinely outscores the known one on this query'
+);
+
+select is(
+  (select job_id from public.job_hunter_match_jobs(
+     p_must_have_signals => array['kubernetes'], p_limit => 0
+   ) where posting_id = 'e5000000-0000-0000-0000-000000000001'),
+  'f5000000-0000-0000-0000-000000000001'::uuid,
+  'match_jobs: the caller''s own known variant still represents the group at p_limit=0, despite a higher-scoring never-discovered sibling'
+);
+
+select is(
+  (select count(*) from public.job_hunter_match_jobs(
+     p_must_have_signals => array['kubernetes'], p_limit => 0
+   ) where posting_id = 'e5000000-0000-0000-0000-000000000002'),
+  0::bigint,
+  'match_jobs: ...and the never-discovered sibling does not also appear separately -- the group still folds to one row'
 );
 
 select * from finish();

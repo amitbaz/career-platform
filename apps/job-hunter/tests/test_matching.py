@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from job_hunter.hard_blockers import BlockingThresholds, hard_blockers_from_facets
 from job_hunter.matching import match_jobs
@@ -210,7 +211,7 @@ def test_match_jobs_skips_a_facetless_row_and_never_calls_the_model(
     _insert_membership(supabase_client, user_id, posting_id)
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert results == []
     assert ai.calls == 0
@@ -238,7 +239,7 @@ def test_match_jobs_scores_a_clean_facets_row(store, supabase_client, seed_posti
     store.save_job_facets(job_id, make_facets(compensation=Compensation()))
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert ai.calls == 1
     assert len(results) == 1
@@ -276,7 +277,7 @@ def test_match_jobs_blocks_on_facets_at_zero_cost(store, supabase_client, seed_p
     )
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert ai.calls == 0
     assert len(results) == 1
@@ -322,7 +323,7 @@ def test_match_jobs_isolates_one_rows_scoring_failure_from_the_rest(
             return super().generate_text(*args, **kwargs)
 
     ai = FlakyAI()
-    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0)
 
     assert len(result.matched) == 1
     assert result.matched[0].fresh is True
@@ -370,7 +371,7 @@ def test_match_jobs_stops_and_returns_what_it_has_on_quota_exhaustion(
             return super().generate_text(*args, **kwargs)
 
     ai = ExhaustingAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert ai.calls == 2
     assert len(results) == 1
@@ -405,7 +406,7 @@ def test_match_jobs_skips_a_delivered_job_and_never_calls_the_model(
     store.mark_delivered(job_id, "telegram_message")
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert results == []
     assert ai.calls == 0
@@ -439,7 +440,7 @@ def test_match_jobs_reuses_an_evaluated_undelivered_job_without_calling_the_mode
     store.save_evaluation(job_id, _evaluation(job_id, total_score=91))
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert ai.calls == 0
     assert len(results) == 1
@@ -490,7 +491,7 @@ def test_match_jobs_does_not_reuse_an_evaluation_whose_posting_has_since_changed
     assert description_changed is True
 
     ai = FakeAI()
-    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5)
+    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0)
 
     assert ai.calls == 0  # nothing trustworthy to score against either
     assert result.matched == []
@@ -521,7 +522,7 @@ def test_match_jobs_stops_at_limit(store, supabase_client, seed_postings):
         store.save_job_facets(job_id, make_facets(compensation=Compensation()))
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=2).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=2, new_posting_limit=0).matched
 
     assert ai.calls == 2
     assert len(results) == 2
@@ -581,11 +582,207 @@ def test_match_jobs_folds_a_variant_group_to_one_scored_representative(
         store.save_job_facets(job_id, make_facets(compensation=Compensation()))
 
     ai = FakeAI()
-    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0).matched
 
     assert ai.calls == 1
     assert len(results) == 1
     assert sorted(results[0].locations) == ["Berlin", "Paris"]
+
+
+# Matching without a prior membership row (#243) ----------------------------------
+
+
+def test_match_jobs_considers_a_posting_with_no_prior_membership(
+    store, supabase_client, seed_postings
+):
+    """AC: an open posting cannot become invisible solely for lack of a
+    job_hunter_jobs row -- the ticket's literal acceptance criterion."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    (posting_id,) = seed_postings(
+        [
+            _posting_row(
+                fingerprint="never-discovered",
+                url="https://boards.greenhouse.io/acme/never-discovered",
+                canonical_url="https://boards.greenhouse.io/acme/never-discovered",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash="h-never-discovered",
+                # Recent, not _posting_row's default fixed date: found via
+                # store.match_jobs's freshest-first bounded candidate scan
+                # (#243), not by ranking the whole shared corpus (which a
+                # long-lived local stack, or an earlier test in this same
+                # session, may already hold many other postings in).
+                last_seen_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ]
+    )
+    # No _insert_membership call: this posting was never crawled for this
+    # user. Facets are posting-keyed (#175), so they can be written directly
+    # without a job_id at all -- `_write_posting_facets` is what
+    # `save_job_facets` itself resolves down to once it has one.
+    store._write_posting_facets(posting_id, make_facets(compensation=Compensation()))
+
+    ai = FakeAI()
+    # Not asserting an exact ai.calls/len(results) here (unlike the
+    # membership-required tests above): with the default new_posting_limit,
+    # this call also ranks whatever else is genuinely open in the shared
+    # corpus (#243's own point), and a long-lived local stack -- or simply
+    # every earlier test in this same session, since job_hunter_postings is
+    # never cleaned between tests -- may hold real postings that score
+    # too. What this test owns is this one posting's own outcome.
+    results = match_jobs(store, ai, _policy(), _candidate_context(), limit=5).matched
+    matches = [r for r in results if r.posting_id == posting_id]
+
+    assert len(matches) == 1
+    assert matches[0].fresh is True
+
+    (membership,) = supabase_client.select(
+        "job_hunter_jobs",
+        params={"select": "id", "posting_id": f"eq.{posting_id}", "user_id": f"eq.{user_id}"},
+    )
+    assert membership["id"] == matches[0].job_id
+
+
+def test_match_jobs_never_creates_membership_for_an_unresolved_posting(
+    store, supabase_client, seed_postings
+):
+    """AC8: membership is an output of matching acting on a row, never
+    permission to be considered -- an unresolved row (no facets yet) is
+    never acted on, so it earns no row."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id)
+
+    (posting_id,) = seed_postings(
+        [
+            _posting_row(
+                fingerprint="never-discovered-unresolved",
+                url="https://boards.greenhouse.io/acme/never-discovered-unresolved",
+                canonical_url="https://boards.greenhouse.io/acme/never-discovered-unresolved",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+            )
+        ]
+    )
+
+    ai = FakeAI()
+    result = match_jobs(store, ai, _policy(), _candidate_context(), limit=5, new_posting_limit=0)
+
+    assert ai.calls == 0
+    assert result.matched == []
+    # Not in skipped_without_facets_posting_ids: that field only ever names
+    # a row store.match_jobs actually returned, and a never-discovered,
+    # unresolved posting is never one of them (AC10's bound would be
+    # meaningless otherwise) -- store.match_state_counts is where this
+    # posting's state is visible instead.
+    assert posting_id not in result.skipped_without_facets_posting_ids
+    counts = store.match_state_counts(
+        preferred_roles=[], preferred_seniority=[], must_have_signals=[],
+        nice_to_have_signals=[], preferred_locations=[], avoid_signals=[],
+    )
+    unresolved_reasons = {row["reason"] for row in counts if row["state"] == "unresolved"}
+    assert "no_facets" in unresolved_reasons
+
+    membership_rows = supabase_client.select(
+        "job_hunter_jobs",
+        params={"select": "id", "posting_id": f"eq.{posting_id}", "user_id": f"eq.{user_id}"},
+    )
+    assert membership_rows == []
+
+
+def test_match_jobs_reports_state_counts_on_a_short_result(
+    store, supabase_client, seed_postings
+):
+    """AC9: an empty or short result still names how many postings were
+    ineligible/unresolved and why."""
+    user_id = supabase_client.user_id
+    _insert_search_profile(supabase_client, user_id, salary_floor_eur=90000)
+
+    # Read before this test's own postings exist, and compare by delta
+    # rather than an exact total (#243 review fix's test): state_counts is
+    # corpus-wide, and a shared local stack already holds many postings that
+    # are ineligible for a fresh, marketless user's own floor -- a delta
+    # is what stays true regardless of how much of that pre-exists.
+    _preferences = _candidate_context().preferences
+    _state_counts_kwargs = dict(
+        preferred_roles=_preferences.preferred_roles,
+        preferred_seniority=_preferences.preferred_seniority,
+        must_have_signals=_preferences.must_have_signals,
+        nice_to_have_signals=_preferences.nice_to_have_signals,
+        preferred_locations=_preferences.preferred_locations,
+        avoid_signals=_preferences.avoid_signals,
+    )
+    def _ineligible_total(rows) -> int:
+        # Mirrors matching.match_jobs's own aggregation: reason is None is
+        # the state's one-row-per-posting total; a reason-not-null row is a
+        # breakdown entry and must never be summed into it.
+        return sum(row["count"] for row in rows if row["state"] == "ineligible" and row["reason"] is None)
+
+    before_ineligible = _ineligible_total(store.match_state_counts(**_state_counts_kwargs))
+
+    (blocked_posting_id, unresolved_posting_id) = seed_postings(
+        [
+            _posting_row(
+                fingerprint="counts-ineligible",
+                url="https://boards.greenhouse.io/acme/counts-ineligible",
+                canonical_url="https://boards.greenhouse.io/acme/counts-ineligible",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+                description_hash="h-counts-ineligible",
+            ),
+            _posting_row(
+                fingerprint="counts-unresolved",
+                url="https://boards.greenhouse.io/acme/counts-unresolved",
+                canonical_url="https://boards.greenhouse.io/acme/counts-unresolved",
+                company="Acme",
+                title="Senior Backend Engineer",
+                location="Berlin",
+                description="kubernetes postgres",
+            ),
+        ]
+    )
+    blocked_job_id = _insert_membership(supabase_client, user_id, blocked_posting_id)
+    store.save_job_facets(
+        blocked_job_id,
+        # Two blockers at once (salary and relocation -- this user has no
+        # configured market, so the fallback treats relocation as not
+        # allowed): job_hunter_hard_blockers returns an array precisely
+        # because several can fire together, and this posting must still
+        # count once toward "ineligible", not twice (#243 review fix).
+        make_facets(
+            compensation=Compensation(disclosed=True, currency="EUR", maximum=50000, period="year"),
+            relocation_policy="required",
+        ),
+    )
+
+    ai = FakeAI()
+    result = match_jobs(store, ai, _policy(salary_floor_eur=90000), _candidate_context(), limit=5, new_posting_limit=0)
+
+    # Exactly +1 over the pre-existing corpus baseline, not +2: blocked_
+    # posting_id carries two hard-blocker reasons (salary and relocation),
+    # and must still count once (#243 review fix -- the SQL used to sum one
+    # row per reason, so a two-reason posting used to add 2 here).
+    assert result.state_counts.get("ineligible", 0) - before_ineligible == 1
+    # Both of this posting's own reasons are visible in the (corpus-wide)
+    # breakdown -- not asserting the breakdown's total size, which reflects
+    # every ineligible posting on the stack, not just this test's own.
+    ineligible_reasons = result.state_reasons.get("ineligible", {})
+    assert "disclosed compensation maximum EUR 50000 is below the EUR 90000 floor" in ineligible_reasons
+    assert "posting requires relocation" in ineligible_reasons
+    assert result.state_counts.get("unresolved", 0) >= 1
+    # unresolved_posting_id is never-discovered and has no facets, so
+    # store.match_jobs never returns it at all (AC10's bound) -- it is
+    # visible only through the aggregate below, not the job/posting id
+    # lists, which stay scoped to rows that were actually returned.
+    assert unresolved_posting_id not in result.skipped_without_facets_posting_ids
+    assert "no_facets" in result.state_reasons.get("unresolved", {})
 
 
 # Equivalence with the Python originals (AC7) -------------------------------------
@@ -641,6 +838,11 @@ def test_match_jobs_agrees_with_ranking_profile_priority_score(
         nice_to_have_signals=preferences.nice_to_have_signals,
         preferred_locations=preferences.preferred_locations,
         avoid_signals=preferences.avoid_signals,
+        # #243: this user has no membership rows at all -- everything in
+        # the SQL's "never-discovered" branch would be real corpus noise on
+        # a long-lived stack, and this test wants exactly the one fixture
+        # posting it just seeded.
+        limit=0,
     )
 
     python_job = Job(
@@ -686,6 +888,8 @@ def test_match_jobs_agrees_with_hard_blockers_from_facets_on_salary(
     (sql_row,) = store.match_jobs(
         preferred_roles=[], preferred_seniority=[], must_have_signals=[],
         nice_to_have_signals=[], preferred_locations=[], avoid_signals=[],
+        # #243: see the equivalence test above -- no membership-free noise.
+        limit=0,
     )
 
     python_job = Job(
@@ -749,6 +953,8 @@ def test_match_jobs_agrees_with_hard_blockers_from_facets_under_a_market(
     (sql_row,) = store.match_jobs(
         preferred_roles=[], preferred_seniority=[], must_have_signals=[],
         nice_to_have_signals=[], preferred_locations=[], avoid_signals=[],
+        # #243: see the equivalence test above -- no membership-free noise.
+        limit=0,
     )
 
     market = MarketPolicy(

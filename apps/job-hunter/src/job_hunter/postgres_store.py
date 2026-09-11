@@ -1662,16 +1662,22 @@ class PostgresJobStore:
         nice_to_have_signals: list[str],
         preferred_locations: list[str],
         avoid_signals: list[str],
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Rank and flag the caller's whole corpus in one SQL call (#187).
+        """Rank and flag every open posting in one SQL call (#187, #243).
 
-        `job_hunter_match_jobs` is `security invoker`, so this returns only
-        the membership rows the acting user holds -- ranked by the SQL port
-        of `ranking.profile_priority_score` and flagged with the SQL port of
-        `hard_blockers.hard_blockers_from_facets`, then folded to one row per
-        variant group (#61). Each row is `{"job_id", "posting_id", "score",
+        `job_hunter_match_jobs` is `security invoker`, so RLS still scopes
+        this to what the acting user may see -- but since #243 that is no
+        longer only the membership rows they already hold: every open
+        posting is ranked, `job_id` is `None` for one the caller has never
+        been matched against before, and every row the caller already holds
+        a membership row for comes back in full regardless of state. A
+        never-discovered posting is capped at `limit`, ranked -- see the SQL
+        function's own comment for why that bound falls only on that new
+        surface. Each row is `{"job_id", "posting_id", "market_id", "score",
         "hard_blockers", "has_facets", "locations"}`; `matching.match_jobs`
-        is what turns this into scored `Evaluation`s.
+        is what turns this into scored `Evaluation`s, and what creates a
+        membership row for a `job_id`-less row it decides to act on.
         """
         return self._client.rpc(
             "job_hunter_match_jobs",
@@ -1682,8 +1688,53 @@ class PostgresJobStore:
                 "p_nice_to_have_signals": nice_to_have_signals,
                 "p_preferred_locations": preferred_locations,
                 "p_avoid_signals": avoid_signals,
+                "p_limit": limit,
             },
         )
+
+    def match_state_counts(
+        self,
+        *,
+        preferred_roles: list[str],
+        preferred_seniority: list[str],
+        must_have_signals: list[str],
+        nice_to_have_signals: list[str],
+        preferred_locations: list[str],
+        avoid_signals: list[str],
+    ) -> list[dict[str, Any]]:
+        """Aggregate ineligible/qualified/unresolved counts and reasons (#243).
+
+        `job_hunter_match_state_counts` classifies every open posting the
+        same way `match_jobs` does, but returns counts only -- no row
+        bodies -- so a caller can report why a bounded ranked result was
+        short or empty (AC9) without paging through the whole corpus. Each
+        row is `{"state", "reason", "count"}`.
+        """
+        return self._client.rpc(
+            "job_hunter_match_state_counts",
+            {
+                "p_preferred_roles": preferred_roles,
+                "p_preferred_seniority": preferred_seniority,
+                "p_must_have_signals": must_have_signals,
+                "p_nice_to_have_signals": nice_to_have_signals,
+                "p_preferred_locations": preferred_locations,
+                "p_avoid_signals": avoid_signals,
+            },
+        )
+
+    def ensure_membership(self, posting_id: str, market_id: str = "") -> str:
+        """Per-user membership as an output of matching, not a precondition (#243).
+
+        Thin wrapper around `job_hunter_ensure_job_membership`: idempotent,
+        `security invoker`, so RLS confines it to a row the acting user owns
+        or is creating for themselves. Not a re-sighting -- a second call for
+        a posting matching already acted on returns the existing id rather
+        than touching `last_seen_at`.
+        """
+        return self._client.rpc(
+            "job_hunter_ensure_job_membership",
+            {"p_posting_id": posting_id, "p_market_id": market_id},
+        )[0]
 
     def jobs_needing_facets(self, job_ids: list[str]) -> set[str]:
         """Which of `job_ids` sit on a posting nobody has current facets for.
@@ -4203,6 +4254,19 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "attach_navigation_message_id": "bool",
     "prune_navigation_sessions": "count",
     "save_search_profile": "id",
+    # Per-user membership as an output of matching, not a precondition
+    # (#243): idempotent insert-or-touch of one job_hunter_jobs row.
+    #
+    # Known dry-run edge (review, non-blocking): DryRunStore fabricates a
+    # uuid4() here without writing anything, so the subsequent store.get_job
+    # (a read, delegated to the real store) finds nothing for that invented
+    # id and matching.match_jobs treats it as "job vanished, skip". A dry
+    # run therefore silently drops every never-discovered posting -- the
+    # exact surface this ticket exists to add -- and reports a match count
+    # indistinguishable from a genuinely quiet corpus. Not a correctness bug
+    # (a dry run performs no writes by design), but this path is not
+    # measurable in a dry run and should not be read as "nothing new".
+    "ensure_membership": "id",
 }
 
 # Every public method that only reads, plus `close`/`__enter__`/`__exit__`
@@ -4246,6 +4310,9 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         # SQL ranking and hard blocking over the caller's whole corpus (#187):
         # no write, so a dry run answers it exactly as a real run would.
         "match_jobs",
+        # Aggregate ineligible/qualified/unresolved counts (#243): the same
+        # classification as match_jobs, no row bodies, no write.
+        "match_state_counts",
         # The obligation a source imposes on a display surface (#184, read
         # by #188): resolved from the posting's source, writes nothing.
         "posting_display_credit",
