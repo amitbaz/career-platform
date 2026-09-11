@@ -4256,6 +4256,16 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "save_search_profile": "id",
     # Per-user membership as an output of matching, not a precondition
     # (#243): idempotent insert-or-touch of one job_hunter_jobs row.
+    #
+    # Known dry-run edge (review, non-blocking): DryRunStore fabricates a
+    # uuid4() here without writing anything, so the subsequent store.get_job
+    # (a read, delegated to the real store) finds nothing for that invented
+    # id and matching.match_jobs treats it as "job vanished, skip". A dry
+    # run therefore silently drops every never-discovered posting -- the
+    # exact surface this ticket exists to add -- and reports a match count
+    # indistinguishable from a genuinely quiet corpus. Not a correctness bug
+    # (a dry run performs no writes by design), but this path is not
+    # measurable in a dry run and should not be read as "nothing new".
     "ensure_membership": "id",
 }
 

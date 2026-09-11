@@ -703,6 +703,28 @@ def test_match_jobs_reports_state_counts_on_a_short_result(
     user_id = supabase_client.user_id
     _insert_search_profile(supabase_client, user_id, salary_floor_eur=90000)
 
+    # Read before this test's own postings exist, and compare by delta
+    # rather than an exact total (#243 review fix's test): state_counts is
+    # corpus-wide, and a shared local stack already holds many postings that
+    # are ineligible for a fresh, marketless user's own floor -- a delta
+    # is what stays true regardless of how much of that pre-exists.
+    _preferences = _candidate_context().preferences
+    _state_counts_kwargs = dict(
+        preferred_roles=_preferences.preferred_roles,
+        preferred_seniority=_preferences.preferred_seniority,
+        must_have_signals=_preferences.must_have_signals,
+        nice_to_have_signals=_preferences.nice_to_have_signals,
+        preferred_locations=_preferences.preferred_locations,
+        avoid_signals=_preferences.avoid_signals,
+    )
+    def _ineligible_total(rows) -> int:
+        # Mirrors matching.match_jobs's own aggregation: reason is None is
+        # the state's one-row-per-posting total; a reason-not-null row is a
+        # breakdown entry and must never be summed into it.
+        return sum(row["count"] for row in rows if row["state"] == "ineligible" and row["reason"] is None)
+
+    before_ineligible = _ineligible_total(store.match_state_counts(**_state_counts_kwargs))
+
     (blocked_posting_id, unresolved_posting_id) = seed_postings(
         [
             _posting_row(
@@ -729,15 +751,31 @@ def test_match_jobs_reports_state_counts_on_a_short_result(
     blocked_job_id = _insert_membership(supabase_client, user_id, blocked_posting_id)
     store.save_job_facets(
         blocked_job_id,
+        # Two blockers at once (salary and relocation -- this user has no
+        # configured market, so the fallback treats relocation as not
+        # allowed): job_hunter_hard_blockers returns an array precisely
+        # because several can fire together, and this posting must still
+        # count once toward "ineligible", not twice (#243 review fix).
         make_facets(
-            compensation=Compensation(disclosed=True, currency="EUR", maximum=50000, period="year")
+            compensation=Compensation(disclosed=True, currency="EUR", maximum=50000, period="year"),
+            relocation_policy="required",
         ),
     )
 
     ai = FakeAI()
     result = match_jobs(store, ai, _policy(salary_floor_eur=90000), _candidate_context(), limit=5, new_posting_limit=0)
 
-    assert result.state_counts.get("ineligible", 0) >= 1
+    # Exactly +1 over the pre-existing corpus baseline, not +2: blocked_
+    # posting_id carries two hard-blocker reasons (salary and relocation),
+    # and must still count once (#243 review fix -- the SQL used to sum one
+    # row per reason, so a two-reason posting used to add 2 here).
+    assert result.state_counts.get("ineligible", 0) - before_ineligible == 1
+    # Both of this posting's own reasons are visible in the (corpus-wide)
+    # breakdown -- not asserting the breakdown's total size, which reflects
+    # every ineligible posting on the stack, not just this test's own.
+    ineligible_reasons = result.state_reasons.get("ineligible", {})
+    assert "disclosed compensation maximum EUR 50000 is below the EUR 90000 floor" in ineligible_reasons
+    assert "posting requires relocation" in ineligible_reasons
     assert result.state_counts.get("unresolved", 0) >= 1
     # unresolved_posting_id is never-discovered and has no facets, so
     # store.match_jobs never returns it at all (AC10's bound) -- it is

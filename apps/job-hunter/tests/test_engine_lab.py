@@ -90,6 +90,7 @@ class FakeStore:
         self._jobs = jobs or {}
         self._evaluations = evaluations or {}
         self._posting_hashes = posting_hashes or {}
+        self.match_jobs_calls: list[dict] = []
 
     def get_source_documents(self) -> dict[str, str]:
         return {"cv": self._cv, "cover_letter": ""}
@@ -101,6 +102,7 @@ class FakeStore:
         return self._cached_context
 
     def match_jobs(self, **kwargs) -> list[dict]:
+        self.match_jobs_calls.append(kwargs)
         return self._match_rows
 
     def get_job(self, job_id: str) -> Job | None:
@@ -246,6 +248,36 @@ def test_select_next_card_never_returns_an_intended_cohort_without_a_score_check
     _, rows = client.inserted[0]
     assert rows[0]["cohort"] == "audit_below_threshold"
     assert "no grounded reasoning" in card.why_line
+
+
+def test_select_next_card_stays_on_the_reviewers_own_membership_history():
+    """#243: store.match_jobs's default now includes never-discovered rows
+    whose job_id is None, which _build_card cannot render (store.get_job(None)
+    finds nothing and raises "job None vanished"). Engine Lab is not yet
+    given its own path for a job_id-less card, so select_next_card must ask
+    for limit=0 explicitly -- this fails the moment that call reverts to the
+    default and stops being a decision."""
+    store = FakeStore(
+        match_rows=[_ROW_INTENDED],
+        jobs={"job-intended": Job(source="test", title="Engineer", company="Acme", location="Remote", url="https://x/1")},
+        evaluations={"job-intended": Evaluation(job_id="job-intended", total_score=90, scores={}, decision="offer", hard_blockers=[], strengths=[], gaps=[], salary_note="", location_note="", rationale="Strong fit.", model="gemini")},
+        posting_hashes={"posting-intended": "hash-1"},
+    )
+    client = FakeSupabaseClient()
+
+    engine_lab.select_next_card(
+        store, client, reviewer_id="reviewer-1", already_shown_posting_ids=set()
+    )
+
+    assert store.match_jobs_calls == [{
+        "preferred_roles": ["engineer"],
+        "preferred_seniority": ["senior"],
+        "must_have_signals": [],
+        "nice_to_have_signals": [],
+        "preferred_locations": [],
+        "avoid_signals": [],
+        "limit": 0,
+    }]
 
 
 def test_select_next_card_excludes_postings_already_shown_today():

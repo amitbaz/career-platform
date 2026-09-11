@@ -6,7 +6,8 @@ and flags every open posting in the shared corpus in a single SQL round trip
 (`PostgresJobStore.match_jobs`, a term-for-term port of
 `ranking.profile_priority_score` and `hard_blockers.hard_blockers_from_facets`
 -- see `supabase/migrations/20260910140000_job_hunter_match_jobs.sql`,
-`.../20260912000000_job_hunter_match_every_open_posting.sql` and
+`.../29999999000243_job_hunter_match_every_open_posting.sql` (placeholder
+timestamp, per AGENTS.md's numbering rule) and
 `docs/superpowers/specs/2026-09-10-answer-matching-as-one-operation-design.md`,
 `docs/superpowers/specs/2026-09-11-match-every-open-posting-design.md`),
 so filtering and hard blocking cost nothing before a provider call. A
@@ -195,9 +196,17 @@ def match_jobs(
     for state_row in state_rows:
         state = state_row["state"]
         count = state_row["count"]
-        state_counts[state] = state_counts.get(state, 0) + count
-        if state_row["reason"] is not None:
-            state_reasons.setdefault(state, {})[state_row["reason"]] = count
+        reason = state_row["reason"]
+        # #243 review fix: `reason is None` is the state's own total -- one
+        # row per posting, computed once in SQL specifically so this loop
+        # never has to. A reason-not-null row is a breakdown that can
+        # overlap other reasons for the same posting (a facet-decided block
+        # can carry several hard-blocker reasons at once), so it is never
+        # added to state_counts, only recorded in state_reasons.
+        if reason is None:
+            state_counts[state] = state_counts.get(state, 0) + count
+        else:
+            state_reasons.setdefault(state, {})[reason] = count
 
     # #243: `job_id` is `None` for a row matching has never acted on before
     # -- there is no history to look up, so it cannot be delivered, cannot
@@ -288,6 +297,14 @@ def match_jobs(
                 # row, never permission to be considered -- a facet-decided
                 # block is exactly such an action (it produces a persisted
                 # `Evaluation`, per `MatchedJob.fresh`'s own docstring).
+                # Known imperfection (review, non-blocking): the row is
+                # created here, before `get_job` below confirms the posting
+                # is still readable. The only way the two can disagree is
+                # the posting disappearing in the instant between this call
+                # and the next line (e.g. a concurrent merge), which leaves
+                # an orphaned membership row for a posting this call then
+                # declines to act on -- a narrow contradiction of "an output
+                # of acting", not of "a precondition for being considered".
                 job_id = store.ensure_membership(row["posting_id"], row.get("market_id") or "")
             job = store.get_job(job_id)
             if job is None:

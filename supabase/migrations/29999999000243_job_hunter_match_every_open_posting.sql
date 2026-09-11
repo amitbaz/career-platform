@@ -2,8 +2,12 @@
 -- (issue #243). Design: apps/job-hunter/docs/superpowers/specs/
 -- 2026-09-11-match-every-open-posting-design.md.
 --
--- Placeholder timestamp per AGENTS.md's migration-numbering rule; renumbered
--- to a real YYYYMMDDHHMMSS at PR time.
+-- Placeholder timestamp per AGENTS.md's migration-numbering rule --
+-- 29999999000243 (visibly not a date, with the issue number rather than the
+-- generic 29999999000000, which job_hunter_engine_lab.sql already carries
+-- unmerged on main) -- renumbered to a real YYYYMMDDHHMMSS once the branch
+-- is otherwise ready to merge, issued by whoever owns the board rather than
+-- picked as "next after the highest on main".
 --
 -- Three additions and one rewrite:
 --
@@ -460,10 +464,21 @@ as $$
       left join grouped_locations_unblocked u on u.row_group_key = a.row_group_key
   ),
   ranked as (
+    -- #243 review fix: a row the caller already holds a membership row for
+    -- must represent its own group whenever one exists in it, ahead of
+    -- eligibility and score -- otherwise a higher-scoring never-discovered
+    -- group-mate can win the fold, and the known row (never itself passed
+    -- to `bounded`'s unconditional job_id-is-not-null branch, because it is
+    -- no longer even a candidate by the time that branch runs) silently
+    -- disappears from the result along with the rest of its group. This is
+    -- the literal guarantee "every posting the caller already holds a
+    -- membership row for comes back in full" depends on holding through the
+    -- fold, not only through the final union.
     select s.*,
            row_number() over (
              partition by s.row_group_key
-             order by (s.row_has_facets and cardinality(s.row_hard_blockers) = 0) desc,
+             order by (s.row_job_id is not null) desc,
+                      (s.row_has_facets and cardinality(s.row_hard_blockers) = 0) desc,
                       s.row_score desc, lower(s.row_company), lower(s.row_title), s.row_posting_id
            ) as row_rank
       from reduced s
@@ -655,15 +670,31 @@ as $$
     from reduced
    where row_market_rank = 1
   ),
+  -- #243 review fix: a state's own total (reason is null) is always exactly
+  -- one row per posting, counted here before any reason is unnested --
+  -- `job_hunter_hard_blockers` returns an array precisely because several
+  -- reasons can fire together, so a posting blocked on both salary and
+  -- relocation must still count once toward `ineligible`, not twice. The
+  -- reason breakdown below is a second, separate aggregate over the same
+  -- postings and is never summed into the total -- matching.match_jobs reads
+  -- reason-is-null rows into state_counts and reason-is-not-null rows into
+  -- state_reasons, and must keep doing so rather than summing every row
+  -- this function returns.
+  totals as (
+    select state, null::text as reason from states
+  ),
   reasons as (
     select state, unresolved_reason as reason from states where state = 'unresolved'
     union all
     select state, unnest(row_hard_blockers) as reason from states where state = 'ineligible'
+  ),
+  counted as (
+    select state, reason from totals
     union all
-    select state, null::text as reason from states where state = 'qualified'
+    select state, reason from reasons
   )
   select state, reason, count(*)::integer
-    from reasons
+    from counted
    group by state, reason;
 $$;
 

@@ -274,6 +274,14 @@ def select_next_card(
         nice_to_have_signals=preferences.nice_to_have_signals,
         preferred_locations=preferences.preferred_locations,
         avoid_signals=preferences.avoid_signals,
+        # #243: a never-discovered row's job_id is None, and _build_card
+        # below needs a real membership row to load (store.get_job(None)
+        # finds nothing). Engine Lab stays on the pre-#243 surface -- the
+        # reviewer's own membership history -- until it is given its own
+        # path for a job_id-less card (ensure_membership at selection time,
+        # or a render path that does not need one); that is a Review-surface
+        # decision (#257/#283), not this ticket's to make silently.
+        limit=0,
     )
     rows = [row for row in rows if row["posting_id"] not in already_shown_posting_ids]
 

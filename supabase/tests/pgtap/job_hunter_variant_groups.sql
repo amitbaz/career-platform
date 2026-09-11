@@ -8,7 +8,7 @@
 -- must stay apart.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(25);
+select plan(28);
 
 create function pg_temp.authenticate_as(p_user uuid) returns void
 language plpgsql as $$
@@ -399,6 +399,69 @@ select ok(
   (select array_length(hard_blockers, 1) from public.job_hunter_match_jobs()
     where job_id in ('f4000000-0000-0000-0000-000000000005'::uuid, 'f4000000-0000-0000-0000-000000000006'::uuid)) > 0,
   'match_jobs: a fully blocked group reads as blocked'
+);
+
+-- Case 4 (#243 review fix): a higher-scoring never-discovered group-mate
+-- must not shadow the caller's own known variant, even at p_limit = 0 --
+-- the exact scenario the fold's own ordering must resolve before `bounded`
+-- ever sees the row, since `bounded`'s "every known row comes back"
+-- guarantee only protects a row that is still a candidate by that point.
+select pg_temp.become_postgres();
+
+insert into public.job_hunter_postings
+  (id, fingerprint, source, ats_provider, ats_board, company, title, location,
+   description, description_hash, content_confidence, first_seen_at, last_seen_at)
+values
+  -- Known to the caller, but weak on the query below (no "kubernetes").
+  ('e5000000-0000-0000-0000-000000000001'::uuid, 'variant-fp-shadow-known',
+   'ashby', 'ashby', 'shadow-board', 'Shadow Co', 'Widget Engineer', 'Berlin',
+   'we build reliable widgets for our customers', '', 'official_ats',
+   '2026-01-03T00:00:04Z', now()),
+  -- Never discovered by this caller, strictly higher-scoring on the same
+  -- query -- exactly what used to be able to win the fold and, with it,
+  -- displace the known row above from the group's single result.
+  ('e5000000-0000-0000-0000-000000000002'::uuid, 'variant-fp-shadow-new',
+   'ashby', 'ashby', 'shadow-board', 'Shadow Co', 'Widget Engineer', 'Paris',
+   'we build reliable widgets for our customers on kubernetes', '', 'official_ats',
+   '2026-01-03T00:00:05Z', now());
+
+update public.job_hunter_postings
+   set variant_group_id = 'e5000000-0000-0000-0000-000000000001'::uuid
+ where fingerprint in ('variant-fp-shadow-known', 'variant-fp-shadow-new');
+
+select pg_temp.authenticate_as('cccccccc-2222-0000-0000-000000000001'::uuid);
+
+insert into public.job_hunter_jobs (id, user_id, posting_id, market_id, first_seen_at, last_seen_at)
+values
+  ('f5000000-0000-0000-0000-000000000001'::uuid, 'cccccccc-2222-0000-0000-000000000001',
+   'e5000000-0000-0000-0000-000000000001'::uuid, '', now(), now());
+
+select ok(
+  (select public.job_hunter_signal_coverage(
+     'Widget Engineer', 'we build reliable widgets for our customers on kubernetes',
+     array['kubernetes'], array[]::text[]
+   )) >
+  (select public.job_hunter_signal_coverage(
+     'Widget Engineer', 'we build reliable widgets for our customers',
+     array['kubernetes'], array[]::text[]
+   )),
+  'sanity: the never-discovered variant genuinely outscores the known one on this query'
+);
+
+select is(
+  (select job_id from public.job_hunter_match_jobs(
+     p_must_have_signals => array['kubernetes'], p_limit => 0
+   ) where posting_id = 'e5000000-0000-0000-0000-000000000001'),
+  'f5000000-0000-0000-0000-000000000001'::uuid,
+  'match_jobs: the caller''s own known variant still represents the group at p_limit=0, despite a higher-scoring never-discovered sibling'
+);
+
+select is(
+  (select count(*) from public.job_hunter_match_jobs(
+     p_must_have_signals => array['kubernetes'], p_limit => 0
+   ) where posting_id = 'e5000000-0000-0000-0000-000000000002'),
+  0::bigint,
+  'match_jobs: ...and the never-discovered sibling does not also appear separately -- the group still folds to one row'
 );
 
 select * from finish();
