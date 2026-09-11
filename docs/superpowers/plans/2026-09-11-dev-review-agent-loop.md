@@ -27,7 +27,7 @@
 These are not agent tasks. Tasks 3 and 6 check for them and stop if they are missing.
 
 - **P1.** Create the GitHub account `amitbaz-developer`, and invite it as a write collaborator on `amitbaz/career-platform`.
-- **P2.** Create a fine-grained PAT for it, limited to this repository: Contents read/write, Pull requests read/write, Issues read/write, Metadata read. Store it with
+- **P2.** Signed in as `amitbaz-developer`, create a **classic** PAT with scopes `repo` and `workflow`. Fine-grained tokens cannot reach a repository where the account is only a collaborator (github/roadmap#601, paused). Store it with
   `security add-generic-password -a career-platform-developer -s career-platform-developer-pat -w <PAT>`.
 - **P3.** In `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, directly under "Your agent identity is …", add:
   `A role command (/dev, /reviewer) assigns this session a role identity (cp-developer or cp-reviewer); it overrides the identity above for that session only.`
@@ -806,9 +806,13 @@ push to a bot PR deadlocks the two-approval rule. What changed:
   Run: `scripts/gh-as.sh developer api user --jq .login` and `scripts/gh-as.sh reviewer api user --jq .login`
   Expected: `amitbaz-developer`, then `amitbaz-reviewer`.
 
-  Ask the owner to confirm, in GitHub's token settings, that the **reviewer** PAT has
-  Contents: **read** only. A fine-grained PAT's scopes cannot be read back through the API. Only
-  that scope stops the reviewer from writing code through the contents API.
+  Check both tokens' classic scopes:
+  `scripts/gh-as.sh developer api -i user 2>/dev/null | grep -i '^x-oauth-scopes'`
+  Expected: `repo` and `workflow`, and nothing broader such as `admin:*`, `delete_repo` or `user`.
+  `scripts/gh-as.sh reviewer api -i user 2>/dev/null | grep -i '^x-oauth-scopes'`
+  Expected: `repo`, and nothing broader.
+  Classic `repo` grants contents write, so no token stops the reviewer from writing code. The
+  role rules and `gh-as.sh`'s git refusal do (spec, "Identities").
 
 - [ ] **Step 2: Check that "Protect Main" has not drifted from its file**
 
