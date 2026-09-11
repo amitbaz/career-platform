@@ -180,17 +180,20 @@ mempalace logstream watch --agent cp-developer --correlation-id pr-<number> \
 `--agent` excludes the session's own events, and `--correlation-id` keeps parallel sessions from
 waking each other.
 
-Events are doorbells. They carry the PR link, a commit SHA, a round number and a status, and
-never findings or replies — those live on GitHub, so there is one record.
+Events are doorbells. They carry the PR link and never findings or replies — those live on
+GitHub, so there is one record.
 
-| From → to | `type` / `status` | Body |
-| --- | --- | --- |
-| developer → reviewer | `task.request` / `open` | PR link, head SHA, round 1 |
-| reviewer → developer | `event.ack` / `claimed` | picked up |
-| reviewer → developer | `task.reply` / `changes_requested` or `approved` | review link, reviewed SHA |
-| developer → reviewer | `event.ack` / `claimed` | verdict picked up |
-| developer → reviewer | `task.request` / `fixes_pushed` | new head SHA, round n |
-| either → owner | `task.reply` / `blocked` | reason; mirrored on GitHub (see below) |
+| From → to | `type` / `status` | `metadata` | Body |
+| --- | --- | --- | --- |
+| developer → reviewer | `task.request` / `open` | `kind: review_requested`, `round: 1`, `head_sha` | PR link |
+| reviewer → developer | `event.ack` / `claimed` | — | picked up |
+| reviewer → developer | `task.reply` / `ready` | `verdict: changes_requested` or `verdict: approved`, `reviewed_sha` | review link |
+| developer → reviewer | `event.ack` / `claimed` | — | verdict picked up |
+| developer → reviewer | `task.request` / `open` | `kind: fixes_pushed`, `round: n`, `head_sha` | PR link |
+| either → owner | `task.reply` / `blocked` | `reason` | escalation comment link |
+
+`status` must be one of MemPalace's values (`open`, `claimed`, `ready`, `applied`, `blocked`,
+`failed`, `superseded`); the loop's own states live in `metadata` (`kind`, `verdict`).
 
 ## Resuming
 
@@ -223,13 +226,15 @@ the bypass. The owner asks the developer to push instead.
   reviewer resolves reviewer threads.
 - **Blocked.** A migration timestamp, a secret, a product decision, or a failing environment the
   session cannot fix. The session posts a `blocked` reply and escalates.
-- **Silent peer.** A `fixes_pushed` request gets no `claimed` acknowledgement within 30 minutes,
-  so the reviewer session has died (for example the machine closed). The developer escalates and
-  names the command that resumes it (for example `/reviewer 312`). The first request on a PR is
-  exempt: no reviewer exists until the owner launches one.
-- **Silent developer.** A `changes_requested` verdict gets no `claimed` acknowledgement within 30
-  minutes, or no `fixes_pushed` within 4 hours after it. The reviewer escalates and names the
-  command that resumes the developer (for example `/dev 254`).
+- **Silent peer.** A fixes-pushed request (`kind: fixes_pushed`) gets no `claimed` acknowledgement
+  within 30 minutes, so the reviewer session has died (for example the machine closed). The
+  developer escalates and names the command that resumes it (for example `/reviewer 312`). The
+  first review request (`kind: review_requested`) on a PR is exempt: no reviewer exists until the
+  owner launches one.
+- **Silent developer.** A changes-requested verdict (`verdict: changes_requested`) gets no `claimed`
+  acknowledgement within 30 minutes, or no fixes-pushed request (`kind: fixes_pushed`) within 4
+  hours after it. The reviewer escalates and names the command that resumes the developer (for
+  example `/dev 254`).
 - **Scope creep.** Work found outside the ticket becomes a new issue assigned to the owner, not to
   the developer. The owner decides whether it is dev work.
 - **Kill switch.** Unassigning `amitbaz-developer` or closing the PR stops the session at its next

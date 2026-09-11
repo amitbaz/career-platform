@@ -47,8 +47,8 @@ Design and rationale: `docs/superpowers/specs/2026-09-11-dev-review-agent-loop-d
 5. Open the PR as the bot, using `.github/PULL_REQUEST_TEMPLATE.md` and `Closes #<issue>` or
    `Addresses #<issue>`:
    `scripts/gh-as.sh developer pr create --base main --head <branch> --title "…" --body-file <file>`.
-6. Comment on the PR `@amitbaz ready for review — run /reviewer <pr>`, post the `open` event
-   (see "Channel"), and start the watcher.
+6. Comment on the PR `@amitbaz ready for review — run /reviewer <pr>`, post a review request
+   (`kind: review_requested`) (see "Channel"), and start the watcher.
 7. When the reviewer requests changes:
    - acknowledge the verdict within 30 minutes: `mempalace_event_ack` on its event, status
      `claimed`;
@@ -56,7 +56,7 @@ Design and rationale: `docs/superpowers/specs/2026-09-11-dev-review-agent-loop-d
    - reply on every review thread as the bot:
      `scripts/gh-as.sh developer api repos/amitbaz/career-platform/pulls/<pr>/comments/<comment-id>/replies -X POST -f body="…"`;
    - to dispute a finding, reply on its thread with evidence, never by ignoring it;
-   - post the `fixes_pushed` event. Never resolve a reviewer's thread yourself.
+   - post a fixes-pushed request (`kind: fixes_pushed`). Never resolve a reviewer's thread yourself.
 8. After the reviewer approves, stay alive until the PR is merged or closed. The owner's check may
    request changes, and you treat those exactly like the reviewer's.
 9. Work found outside the ticket becomes a new issue assigned to `amitbaz`, not to the developer.
@@ -87,24 +87,26 @@ Design and rationale: `docs/superpowers/specs/2026-09-11-dev-review-agent-loop-d
    ```
    List thread ids with
    `gh api graphql -f query='query($n:Int!){repository(owner:"amitbaz",name:"career-platform"){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved comments(first:1){nodes{body path}}}}}}}' -F n=<pr>`.
-7. After approving, comment `@amitbaz ready for your check`, post the `approved` event, and end
-   the session. Never merge.
+7. After approving, comment `@amitbaz ready for your check`, post the verdict (`status: ready`,
+   `verdict: approved`), and end the session. Never merge.
 8. Each round, post the verdict event and keep the watcher running until you approve or escalate.
 
 ## Channel
 
 Every event on a PR uses `stream = project/career-platform`, `room = review` and
-`correlation_id = pr-<pr>`. Bodies carry only the PR link, a commit SHA, the round number and a
-status line. Findings and replies live on GitHub.
+`correlation_id = pr-<pr>`. Findings and replies live on GitHub.
 
-| From → to | `type` / `status` | Body |
-| --- | --- | --- |
-| developer → reviewer | `task.request` / `open` | PR link, head SHA, round 1 |
-| reviewer → developer | `event.ack` / `claimed` | picked up (use `mempalace_event_ack`) |
-| reviewer → developer | `task.reply` / `changes_requested` or `approved` | review link, reviewed SHA |
-| developer → reviewer | `event.ack` / `claimed` | verdict picked up (use `mempalace_event_ack`) |
-| developer → reviewer | `task.request` / `fixes_pushed` | new head SHA, round n |
-| either → the other | `task.reply` / `blocked` | reason, and the escalation comment link |
+| From → to | `type` / `status` | `metadata` | Body |
+| --- | --- | --- | --- |
+| developer → reviewer | `task.request` / `open` | `kind: review_requested`, `round: 1`, `head_sha` | PR link |
+| reviewer → developer | `event.ack` / `claimed` | — | picked up (use `mempalace_event_ack`) |
+| reviewer → developer | `task.reply` / `ready` | `verdict: changes_requested` or `verdict: approved`, `reviewed_sha` | review link |
+| developer → reviewer | `event.ack` / `claimed` | — | verdict picked up (use `mempalace_event_ack`) |
+| developer → reviewer | `task.request` / `open` | `kind: fixes_pushed`, `round: n`, `head_sha` | PR link |
+| either → the other | `task.reply` / `blocked` | `reason` | escalation comment link |
+
+`status` must be one of MemPalace's values (`open`, `claimed`, `ready`, `applied`, `blocked`,
+`failed`, `superseded`); the loop's own states live in `metadata` (`kind`, `verdict`).
 
 Post with `mempalace_event_append` (`from_agent` = your role identity, `to_agent` = the other
 role's). Run the watcher in the background, and relaunch it after every exit:
@@ -133,13 +135,14 @@ gh pr view <pr> --json state,headRefOid,reviewDecision,latestReviews,statusCheck
   and has not been answered by a later push.
 - **Reviewer:** review if the head differs from the commit of your latest review, or if you have
   not reviewed yet.
-- **Silent peer (developer):** your last `fixes_pushed` has had no `claimed` acknowledgement for
-  30 minutes, so the reviewer session died. Escalate, naming `/reviewer <pr>` as the command that
-  resumes it. The first `open` request is exempt, because no reviewer exists until the owner
-  launches one.
-- **Silent peer (reviewer):** your `changes_requested` verdict has had no `claimed` acknowledgement
-  for 30 minutes, or no `fixes_pushed` for 4 hours after it was acknowledged, so the developer
-  session died or stalled. Escalate, naming `/dev <issue>` as the command that resumes it.
+- **Silent peer (developer):** your last fixes-pushed request (`kind: fixes_pushed`) has had no
+  `claimed` acknowledgement for 30 minutes, so the reviewer session died. Escalate, naming
+  `/reviewer <pr>` as the command that resumes it. The first review request (`kind: review_requested`)
+  is exempt, because no reviewer exists until the owner launches one.
+- **Silent peer (reviewer):** your changes-requested verdict (`verdict: changes_requested`) has
+  had no `claimed` acknowledgement for 30 minutes, or no fixes-pushed request (`kind: fixes_pushed`)
+  for 4 hours after it was acknowledged, so the developer session died or stalled. Escalate, naming
+  `/dev <issue>` as the command that resumes it.
 
 ## Escalating
 
