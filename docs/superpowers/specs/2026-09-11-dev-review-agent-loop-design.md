@@ -121,8 +121,11 @@ bot account" is updated to point here and to state the enforcement correctly.
 - The reviewer launcher is `reviewer`, not `review`, because Claude Code already has a built-in
   `/review`.
 
-Each launcher does four things only: announce the role, set the MemPalace identity, start the
-watcher for the correlation, then follow `docs/agents/roles.md`.
+Each launcher first checks for the number it needs and asks the owner if it is missing. Otherwise
+it announces the role, reads `docs/agents/roles.md` in full, and follows it — `roles.md` is what
+sets the MemPalace identity and starts the watcher, not the launcher itself. Both launchers are
+explicit-only: `disable-model-invocation: true` for Claude, and `agents/openai.yaml`'s
+`allow_implicit_invocation: false` for Codex.
 
 ## Rules for both roles
 
@@ -230,21 +233,30 @@ the bypass. The owner asks the developer to push instead.
 - **Blocked.** A migration timestamp, a secret, a product decision, or a failing environment the
   session cannot fix. The session posts a `blocked` reply and escalates.
 - **Silent peer.** A fixes-pushed request (`kind: fixes_pushed`) gets no `claimed` acknowledgement
-  within 30 minutes, so the reviewer session has died (for example the machine closed). The
-  developer escalates and names the command that resumes it (for example `/reviewer 312`). The
-  first review request (`kind: review_requested`) on a PR is exempt: no reviewer exists until the
-  owner launches one.
+  within 30 minutes, so the reviewer session has died (for example the machine closed). This is
+  not a decision for the owner: the developer does not add `needs-owner`, does not post a
+  `blocked` reply, and does not end its session. It comments `@amitbaz` naming the command that
+  resumes the reviewer (for example `/reviewer 312`), and keeps its watcher running. The first
+  review request (`kind: review_requested`) on a PR is exempt: no reviewer exists until the owner
+  launches one.
 - **Silent developer.** A changes-requested verdict (`verdict: changes_requested`) gets no `claimed`
   acknowledgement within 30 minutes, or no fixes-pushed request (`kind: fixes_pushed`) within 4
-  hours after it. The reviewer escalates and names the command that resumes the developer (for
-  example `/dev 254`).
+  hours after it. The same rule applies: the reviewer comments `@amitbaz` naming the command that
+  resumes the developer (for example `/dev 254`), and keeps its watcher running, without adding
+  `needs-owner`, posting a `blocked` reply, or ending its session.
 - **Scope creep.** Work found outside the ticket becomes a new issue assigned to the owner, not to
   the developer. The owner decides whether it is dev work.
-- **Kill switch.** Unassigning `amitbaz-developer` or closing the PR stops the session at its next
-  reconcile.
+- **Kill switch.** Both roles stop when the PR is merged or closed. The developer also stops when
+  the issue is closed, or no longer assigned to `amitbaz-developer`
+  (`gh issue view <issue> --json state,assignees`). The reviewer only knows the PR, so it checks
+  the PR state only. Every check runs at the session's next reconcile.
 
 To escalate means: add the `needs-owner` label, and comment `@amitbaz` with a short two-sided
-summary and the decision needed.
+summary and the decision needed, then post a `blocked` reply and end the session. `needs-owner` is
+reserved for the loop cap, an unresolved dispute, and being blocked — not for a silent peer. A
+session that receives a `blocked` reply, or finds `needs-owner` already on the PR at any reconcile,
+stops acting and ends without repeating these steps; the owner removes the label after answering,
+then relaunches.
 
 ## Verification
 

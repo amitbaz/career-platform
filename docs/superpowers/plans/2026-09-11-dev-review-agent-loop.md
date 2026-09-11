@@ -741,8 +741,9 @@ mempalace logstream watch --agent cp-developer --correlation-id pr-probe-b --idl
 ```
 
 Then call `mempalace_event_append` with `from_agent=cp-reviewer`, `to_agent=cp-developer`,
-`type=task.reply`, `status=changes_requested`, `stream=project/career-platform`, `room=review`,
-`correlation_id=pr-probe-a`, `body="probe: parallel watch check"`.
+`type=task.reply`, `status=ready`, `metadata={"verdict": "changes_requested"}`,
+`stream=project/career-platform`, `room=review`, `correlation_id=pr-probe-a`,
+`body="probe: parallel watch check"`.
 
 Expected after 90 seconds: `/tmp/watch-exit` contains `a=0` and `b=2`.
 
