@@ -151,15 +151,27 @@ class CanonicalResolver:
             links = extract_job_page_links(response_text, response_url or job.url)
         except Exception:
             links = []
+        # An embedded link has no company or title check behind it (#254):
+        # it is trustworthy only when the page names exactly one distinct
+        # ATS posting. A page listing more than one -- a careers page with
+        # several open roles, a "similar jobs" widget -- makes "the first
+        # anchor" an arbitrary pick among them, and blindly trusting it
+        # attributed one job's identity to a completely different
+        # advertisement in the corruption #254 found live. Two links to the
+        # same posting (a duplicated anchor) still count as one candidate.
+        embedded_candidates: dict[tuple[str, str, str], tuple[str, AtsReference]] = {}
         for url in links:
             ats = parse_supported_ats_url(url)
             if ats is not None:
-                return CanonicalResolution(
-                    url=url,
-                    ats=ats,
-                    confidence=0.95,
-                    method="embedded",
-                )
+                embedded_candidates.setdefault((ats.provider, ats.board, ats.job_id), (url, ats))
+        if len(embedded_candidates) == 1:
+            (url, ats) = next(iter(embedded_candidates.values()))
+            return CanonicalResolution(
+                url=url,
+                ats=ats,
+                confidence=0.95,
+                method="embedded",
+            )
 
         try:
             candidates = self._search_candidates(job)
