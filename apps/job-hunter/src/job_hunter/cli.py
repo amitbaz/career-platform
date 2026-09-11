@@ -15,7 +15,6 @@ from job_hunter.config import (
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
 from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
 from job_hunter.circuit_breaker import CircuitBreaker
-from job_hunter.engine_lab import admin_client, invite_collaborator
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
 from job_hunter.gmail_client import GmailClient
 from job_hunter.gmail_sync import GmailSyncService
@@ -107,19 +106,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Most extractions to drain in this run",
     )
 
-    invite_parser = subparsers.add_parser(
-        "engine-lab-invite",
-        help="Invite a collaborator to the private Engine Lab review page (#257)",
-    )
-    invite_parser.add_argument("--email", type=str, required=True)
-    invite_parser.add_argument("--display-name", type=str, default="")
-    invite_parser.add_argument(
-        "--invited-by",
-        type=str,
-        default="owner",
-        help="Who is running this invite, recorded on the collaborator row",
-    )
-
     return parser
 
 
@@ -139,8 +125,6 @@ def main(argv: list[str] | None = None) -> int:
             return _crawl_source(args)
         if args.command == "extract-facets":
             return _extract_facets(args)
-        if args.command == "engine-lab-invite":
-            return _engine_lab_invite(args)
         return _run(args)
     except Exception:
         logger.exception("job hunter run failed")
@@ -459,24 +443,6 @@ def _extract_facets(args: argparse.Namespace) -> int:
             drain.outcomes["failed"],
         )
         return 1
-    return 0
-
-
-def _engine_lab_invite(args: argparse.Namespace) -> int:
-    """Invite a collaborator to the private Engine Lab review page (#257).
-
-    Prints the raw invite token exactly once -- only its hash is stored, so
-    this is the only place it will ever be readable again. Share it with
-    the invitee out of band; anyone holding it can sign in as them.
-    """
-    http = HttpClient()
-    settings = load_supabase_settings()
-    client = admin_client(http, settings)
-    reviewer_id, token = invite_collaborator(
-        client, email=args.email, display_name=args.display_name, invited_by=args.invited_by
-    )
-    print(f"Invited {args.email} as Engine Lab reviewer {reviewer_id}.")
-    print(f"Invite token (share once, out of band): {token}")
     return 0
 
 

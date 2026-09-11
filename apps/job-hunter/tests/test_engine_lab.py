@@ -3,8 +3,9 @@
 These are pure unit tests against fakes -- they exercise the invariants the
 acceptance criteria describe (impression before render, independent
 judgements, cohort concealment, no missing cohort silently dropped) without
-needing the live Supabase stack. Schema-level enforcement (not-null
-columns, RLS, the one-judgement-per-impression constraint) is proved
+needing the live Supabase stack or a real GoTrue email round trip. Schema
+and identity-boundary enforcement (not-null columns, RLS, the owner
+bootstrap/invite/claim functions, one-judgement-per-impression) is proved
 separately in `supabase/tests/pgtap/job_hunter_engine_lab.sql`, which this
 suite does not duplicate.
 """
@@ -49,6 +50,12 @@ def _candidate_context() -> CandidateContext:
     )
 
 
+def _dataclass_to_dict(context: CandidateContext) -> dict:
+    from dataclasses import asdict
+
+    return asdict(context)
+
+
 class FakeCacheEntry:
     def __init__(self, context: dict) -> None:
         self.context = context
@@ -71,7 +78,7 @@ class FakeStore:
         self._cv = cv
         self._profile = profile
         self._cached_context = (
-            FakeCacheEntry(dataclass_to_dict(_candidate_context()))
+            FakeCacheEntry(_dataclass_to_dict(_candidate_context()))
             if cached_context == "default"
             else cached_context
         )
@@ -102,19 +109,18 @@ class FakeStore:
         return self._posting_hashes.get(posting_id)
 
 
-def dataclass_to_dict(context: CandidateContext) -> dict:
-    from dataclasses import asdict
-
-    return asdict(context)
-
-
 class FakeSupabaseClient:
     """Duck-types the `SupabaseClient` calls `engine_lab` makes."""
 
     def __init__(self, select_results: dict[str, list[dict]] | None = None) -> None:
         self.inserted: list[tuple[str, list[dict]]] = []
+        self.rpc_calls: list[tuple[str, dict | None]] = []
         self._select_results = select_results or {}
+        self._rpc_results: dict[str, list] = {}
         self._next_id = 0
+
+    def set_rpc_result(self, function: str, result: list) -> None:
+        self._rpc_results[function] = result
 
     def insert(self, table: str, rows: list[dict]) -> list[dict]:
         self.inserted.append((table, [dict(r) for r in rows]))
@@ -125,6 +131,10 @@ class FakeSupabaseClient:
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict]:
         return self._select_results.get(table, [])
+
+    def rpc(self, function: str, payload: dict | None = None, *, retry: bool = True) -> list:
+        self.rpc_calls.append((function, payload))
+        return self._rpc_results.get(function, [])
 
 
 _ROW_INTENDED = {
@@ -175,9 +185,6 @@ def test_bucket_candidates_classifies_each_row_into_exactly_one_cohort():
 
 
 def test_bucket_candidates_hard_blocker_wins_over_missing_facets():
-    # A row can carry hard_blockers even with has_facets False if the SQL
-    # ranking derived a block from something other than facets (e.g. a
-    # location/company signal); hard exclusion is checked first.
     row = {**_ROW_UNRESOLVED, "hard_blockers": ["not open to remote"]}
     buckets = engine_lab._bucket_candidates([row], score_floor=80)
     assert buckets["audit_hard_excluded"] == [row]
@@ -232,9 +239,6 @@ def test_select_next_card_writes_the_impression_before_returning_the_card():
 
 
 def test_select_next_card_never_returns_an_intended_cohort_without_a_score_check():
-    # A row just under the floor must never be classified intended, even
-    # when it is the only candidate -- it must come back as the audit
-    # bucket or not at all, never silently relabelled.
     store = FakeStore(match_rows=[_ROW_BELOW_THRESHOLD], jobs={
         "job-below": Job(source="test", title="Below", company="Acme", location="Remote", url="https://x/2")
     })
@@ -319,6 +323,8 @@ def test_record_judgement_stores_both_verdicts_as_independent_fields():
 
 
 def test_daily_summary_names_a_cohort_with_zero_impressions():
+    import datetime as dt
+
     client = FakeSupabaseClient(
         select_results={
             "job_hunter_engine_lab_impressions": [
@@ -330,7 +336,7 @@ def test_daily_summary_names_a_cohort_with_zero_impressions():
         }
     )
 
-    summaries = engine_lab.daily_summary(client, __import__("datetime").date(2026, 9, 11))
+    summaries = engine_lab.daily_summary(client, dt.date(2026, 9, 11))
 
     by_cohort = {row.cohort: row for row in summaries}
     assert set(by_cohort) == set(engine_lab.COHORTS)
@@ -358,32 +364,73 @@ def test_configuration_version_is_stable_for_identical_input():
     assert engine_lab._configuration_version(_PROFILE_ROW) == engine_lab._configuration_version(dict(_PROFILE_ROW))
 
 
-# Collaborator token handling -------------------------------------------------------
+# Collaborators: owner bootstrap gate, invite, claim (RPC call shape only) ---------
+#
+# The functions' actual authorisation logic (only the configured owner email
+# can bootstrap, only the owner may invite, only a matching verified email
+# can claim) lives in Postgres and is proved in the pgtap suite. What's
+# tested here is that this module calls the right RPC with the right
+# arguments, and refuses to call it at all when its own precondition fails.
 
 
-def test_invite_collaborator_never_stores_the_raw_token():
+def test_bootstrap_owner_if_matching_never_calls_the_rpc_for_a_non_owner_email():
     client = FakeSupabaseClient()
-    user_id, token = engine_lab.invite_collaborator(
-        client, email="a@b.com", display_name="A", invited_by="owner"
+    engine_lab.bootstrap_owner_if_matching(
+        client, verified_email="someone-else@example.com", owner_email="owner@example.com"
     )
-    _, rows = client.inserted[0]
-    assert rows[0]["user_id"] == user_id
-    assert rows[0]["token_hash"] != token
-    assert token not in rows[0].values()
+    assert client.rpc_calls == []
 
 
-def test_find_collaborator_by_token_refuses_a_revoked_collaborator():
-    token = "some-raw-token"
+def test_bootstrap_owner_if_matching_calls_the_rpc_for_the_owner_email_case_insensitively():
+    client = FakeSupabaseClient()
+    engine_lab.bootstrap_owner_if_matching(
+        client, verified_email="Owner@Example.com", owner_email="owner@example.com"
+    )
+    assert client.rpc_calls == [("job_hunter_engine_lab_bootstrap_owner", {"p_email": "Owner@Example.com"})]
+
+
+def test_claim_invite_returns_false_when_the_rpc_reports_nothing_claimed():
+    client = FakeSupabaseClient()
+    client.set_rpc_result("job_hunter_engine_lab_claim_invite", [False])
+    assert engine_lab.claim_invite(client) is False
+
+
+def test_claim_invite_returns_true_when_the_rpc_reports_a_claim():
+    client = FakeSupabaseClient()
+    client.set_rpc_result("job_hunter_engine_lab_claim_invite", [True])
+    assert engine_lab.claim_invite(client) is True
+
+
+def test_invite_collaborator_calls_the_invite_rpc_with_the_email():
+    client = FakeSupabaseClient()
+    engine_lab.invite_collaborator(client, "new-reviewer@example.com")
+    assert client.rpc_calls == [("job_hunter_engine_lab_invite", {"p_email": "new-reviewer@example.com"})]
+
+
+def test_get_own_collaborator_treats_a_revoked_row_as_absent():
     client = FakeSupabaseClient(
         select_results={
             "job_hunter_engine_lab_collaborators": [
-                {
-                    "user_id": "u1",
-                    "email": "a@b.com",
-                    "display_name": "",
-                    "revoked_at": "2026-01-01T00:00:00Z",
-                }
+                {"user_id": "u1", "email": "a@b.com", "is_owner": False, "revoked_at": "2026-01-01T00:00:00Z"}
             ]
         }
     )
-    assert engine_lab.find_collaborator_by_token(client, token) is None
+    assert engine_lab.get_own_collaborator(client, "u1") is None
+
+
+# Sessions ------------------------------------------------------------------------
+
+
+def test_session_needs_refresh_is_true_within_the_margin():
+    import time
+
+    fresh = engine_lab.AuthSession(
+        user_id="u1", email="a@b.com", access_token="t", refresh_token="r",
+        expires_at=time.time() + 30,
+    )
+    stale = engine_lab.AuthSession(
+        user_id="u1", email="a@b.com", access_token="t", refresh_token="r",
+        expires_at=time.time() + 3600,
+    )
+    assert engine_lab.session_needs_refresh(fresh) is True
+    assert engine_lab.session_needs_refresh(stale) is False

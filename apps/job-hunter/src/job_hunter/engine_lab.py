@@ -1,12 +1,22 @@
-"""Engine Lab: the private review page's card selection and measurement ledger (#257).
+"""Engine Lab: the private review page's identity, card selection and ledger (#257).
 
 Full design: docs/superpowers/specs/2026-09-11-engine-lab-review-ledger-design.md.
 
 This module is the whole of the "engine-owned interface" Engine Lab needs: it is
-the only place that decides which posting becomes which cohort's card, and the
-only place that writes an impression or a judgement. `engine_lab_web.py` turns
-what this module returns into HTML and turns a POST into a call here -- it
-contains no selection, ranking, or explanation logic of its own.
+the only place that decides who is signed in, which posting becomes which
+cohort's card, and the only place that writes an impression or a judgement.
+`engine_lab_web.py` turns what this module returns into HTML and turns a
+request into a call here -- it contains no identity, selection, ranking or
+explanation logic of its own.
+
+Identity is real Supabase Auth (GoTrue's own emailed one-time code), not a
+platform-minted token: `send_login_code`/`verify_login_code` call GoTrue's
+`/auth/v1/otp` and `/auth/v1/verify` directly. A verified session's own
+`access_token` is used as-is for that person's PostgREST calls -- there is no
+custom JWT claim anywhere in this design. "The owner" is decided once, by
+this module comparing the verified email against `ENGINE_LAB_OWNER_EMAIL`;
+everything after that is enforced by the three `job_hunter_engine_lab_*`
+security-definer functions the migration defines.
 
 No function here ever calls an AI provider. Card selection reads only what
 `matching.match_jobs` (#187) already computes and persists on a normal pipeline
@@ -21,8 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import secrets
-import uuid
+import time
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -66,6 +75,10 @@ _CONFIGURATION_FIELDS = (
     "blocked_title_keywords",
 )
 
+# GoTrue expires an access token after roughly an hour; refresh once fewer
+# than this many seconds remain, mirroring AccessTokenMinter's own margin.
+_SESSION_REFRESH_MARGIN_SECONDS = 60
+
 
 class EngineLabUnavailable(RuntimeError):
     """No card can be produced right now, with the reason (AGENTS.md rule 5).
@@ -77,11 +90,30 @@ class EngineLabUnavailable(RuntimeError):
     """
 
 
+class LoginError(RuntimeError):
+    """A GoTrue email/code exchange failed, with its own reported reason."""
+
+
+@dataclass(frozen=True, slots=True)
+class AuthSession:
+    """One verified Supabase Auth session -- a real `auth.users` identity.
+
+    `access_token` is GoTrue's own JWT, used as-is for this person's
+    PostgREST calls; this module never mints one itself.
+    """
+
+    user_id: str
+    email: str
+    access_token: str
+    refresh_token: str
+    expires_at: float
+
+
 @dataclass(frozen=True, slots=True)
 class Collaborator:
     user_id: str
     email: str
-    display_name: str
+    is_owner: bool
     revoked_at: str | None
 
 
@@ -113,93 +145,161 @@ def _chunked(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-# Client construction ---------------------------------------------------------
-#
-# Three trust levels, all minted from the one platform signing key already
-# required for this deployment (`SUPABASE_SIGNING_KEY_B64`) -- never a
-# Supabase JWT the reviewer's own browser ever holds.
+# Login: real Supabase Auth, emailed one-time code -----------------------------
 
 
-def runner_client(http: HttpClient, settings: SupabaseSettings) -> SupabaseClient:
-    """Acts as the platform's own trusted process (the unmodified `job_hunter_runner` claim).
+def _auth_headers(settings: SupabaseSettings) -> dict[str, str]:
+    return {"apikey": settings.publishable_key, "Content-Type": "application/json"}
 
-    Used to read the collaborator list (checking a login token or an active
-    session) and to read across every reviewer's rows for the daily summary.
+
+def _auth_error_message(response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        return f"Supabase Auth request failed with HTTP {response.status_code}"
+    return (
+        payload.get("msg")
+        or payload.get("error_description")
+        or payload.get("error")
+        or f"Supabase Auth request failed with HTTP {response.status_code}"
+    )
+
+
+def _session_from_payload(payload: dict[str, Any]) -> AuthSession:
+    user = payload["user"]
+    return AuthSession(
+        user_id=user["id"],
+        email=user.get("email") or "",
+        access_token=payload["access_token"],
+        refresh_token=payload["refresh_token"],
+        expires_at=time.time() + float(payload.get("expires_in", 3600)),
+    )
+
+
+def send_login_code(http: HttpClient, settings: SupabaseSettings, email: str) -> None:
+    """Ask GoTrue to email `email` a one-time login code.
+
+    `create_user=True` so a first-time invitee (who has no `auth.users` row
+    yet) can still receive one -- their Engine Lab access is decided
+    afterwards, by whether they can claim an invite, not by whether GoTrue
+    happens to already know them.
+    """
+    response = http.post(
+        f"{settings.url}/auth/v1/otp",
+        headers=_auth_headers(settings),
+        json={"email": email, "create_user": True},
+    )
+    if response.status_code >= 400:
+        raise LoginError(_auth_error_message(response))
+
+
+def verify_login_code(http: HttpClient, settings: SupabaseSettings, email: str, code: str) -> AuthSession:
+    """Exchange an emailed code for a real Supabase Auth session."""
+    response = http.post(
+        f"{settings.url}/auth/v1/verify",
+        headers=_auth_headers(settings),
+        json={"type": "email", "email": email, "token": code},
+    )
+    if response.status_code >= 400:
+        raise LoginError(_auth_error_message(response))
+    return _session_from_payload(response.json())
+
+
+def refresh_session(http: HttpClient, settings: SupabaseSettings, refresh_token: str) -> AuthSession | None:
+    """Exchange a refresh token for a fresh session, or `None` if it no longer works."""
+    response = http.post(
+        f"{settings.url}/auth/v1/token",
+        params={"grant_type": "refresh_token"},
+        headers=_auth_headers(settings),
+        json={"refresh_token": refresh_token},
+    )
+    if response.status_code >= 400:
+        return None
+    return _session_from_payload(response.json())
+
+
+def session_needs_refresh(session: AuthSession) -> bool:
+    return session.expires_at - time.time() <= _SESSION_REFRESH_MARGIN_SECONDS
+
+
+# Clients -----------------------------------------------------------------------
+
+
+class _StaticToken:
+    """Wraps an already-issued access token to satisfy `SupabaseClient`'s
+    minter interface (`.user_id`, `.token()`).
+
+    This is a *real* Supabase Auth session token, never one this platform
+    minted itself -- see the module docstring.
+    """
+
+    def __init__(self, user_id: str, access_token: str) -> None:
+        self.user_id = user_id
+        self._access_token = access_token
+
+    def token(self) -> str:
+        return self._access_token
+
+
+def session_client(http: HttpClient, settings: SupabaseSettings, session: AuthSession) -> SupabaseClient:
+    """A `SupabaseClient` acting as one verified reviewer, using their own real session."""
+    scoped_settings = replace(settings, user_id=session.user_id)
+    return SupabaseClient(http, scoped_settings, _StaticToken(session.user_id, session.access_token))
+
+
+def subject_store_client(http: HttpClient, settings: SupabaseSettings) -> SupabaseClient:
+    """A client acting as the platform's own trusted process, scoped to `JOB_HUNTER_USER_ID`.
+
+    This has nothing to do with who is logged into Engine Lab -- it is
+    "whose corpus and profile are being matched", the same identity every
+    other Job Hunter process (the pipeline, the webhook) already acts as.
+    Used to build the `PostgresJobStore` that `select_next_card` reads.
     """
     return SupabaseClient(http, settings, AccessTokenMinter(settings.user_id, settings.signing_key_jwk))
-
-
-def admin_client(http: HttpClient, settings: SupabaseSettings) -> SupabaseClient:
-    """May invite or revoke a collaborator. CLI-only; never built for a web request."""
-    minter = AccessTokenMinter(
-        settings.user_id, settings.signing_key_jwk, extra_claims={"engine_lab_admin": True}
-    )
-    return SupabaseClient(http, settings, minter)
-
-
-def reviewer_client(http: HttpClient, settings: SupabaseSettings, reviewer_id: str) -> SupabaseClient:
-    """Scoped to one reviewer's own impressions and judgements.
-
-    Deliberately turns the platform's `job_hunter_runner` claim off: a
-    reviewer's session must not also reach the platform ledgers that claim
-    guards.
-    """
-    reviewer_settings = replace(settings, user_id=reviewer_id)
-    minter = AccessTokenMinter(
-        reviewer_id,
-        settings.signing_key_jwk,
-        extra_claims={"job_hunter_runner": False, "engine_lab_reviewer": True},
-    )
-    return SupabaseClient(http, reviewer_settings, minter)
 
 
 # Collaborators -----------------------------------------------------------------
 
 
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
 def _collaborator_from_row(row: dict[str, Any]) -> Collaborator:
     return Collaborator(
-        user_id=row["user_id"],
+        user_id=row.get("user_id") or "",
         email=row["email"],
-        display_name=row.get("display_name") or "",
+        is_owner=bool(row.get("is_owner")),
         revoked_at=row.get("revoked_at"),
     )
 
 
-def invite_collaborator(
-    client: SupabaseClient, *, email: str, display_name: str, invited_by: str
-) -> tuple[str, str]:
-    """Create a new collaborator, returning `(user_id, raw_token)`.
+def bootstrap_owner_if_matching(client: SupabaseClient, *, verified_email: str, owner_email: str) -> None:
+    """Claim the owner role for the current session, iff its email is the configured owner's.
 
-    The raw token exists only in this return value -- only its hash is
-    stored, and it is never logged. Sharing the raw token with the invitee
-    out of band is the explicit invitation the acceptance criteria ask for.
+    `owner_email` (`ENGINE_LAB_OWNER_EMAIL`) is the one fact this whole
+    scheme rests on, and only this module -- never the database -- reads
+    it. The RPC re-checks `verified_email` against the session's own JWT,
+    so a mismatched call here would fail there too; the check here is what
+    stops it being attempted at all for anyone else.
     """
-    reviewer_id = str(uuid.uuid4())
-    token = secrets.token_urlsafe(32)
-    client.insert(
-        "job_hunter_engine_lab_collaborators",
-        [
-            {
-                "user_id": reviewer_id,
-                "email": email,
-                "display_name": display_name,
-                "token_hash": _hash_token(token),
-                "invited_by": invited_by,
-            }
-        ],
-    )
-    return reviewer_id, token
+    if verified_email.strip().lower() != owner_email.strip().lower():
+        return
+    client.rpc("job_hunter_engine_lab_bootstrap_owner", {"p_email": verified_email})
 
 
-def find_collaborator_by_token(client: SupabaseClient, token: str) -> Collaborator | None:
-    """Look up an active (not revoked) collaborator by their login token."""
+def claim_invite(client: SupabaseClient) -> bool:
+    """Backfill the caller's own pending invite with their real user_id, if one exists."""
+    result = client.rpc("job_hunter_engine_lab_claim_invite")
+    return bool(result and result[0])
+
+
+def invite_collaborator(client: SupabaseClient, email: str) -> None:
+    """Owner-only (enforced by the RPC): add or un-revoke a collaborator by email."""
+    client.rpc("job_hunter_engine_lab_invite", {"p_email": email})
+
+
+def get_own_collaborator(client: SupabaseClient, user_id: str) -> Collaborator | None:
+    """The caller's own collaborator row, or `None` if they are not (or no longer) one."""
     rows = client.select(
         "job_hunter_engine_lab_collaborators",
-        params={"token_hash": f"eq.{_hash_token(token)}"},
+        params={"user_id": f"eq.{user_id}", "select": "user_id,email,is_owner,revoked_at"},
     )
     if not rows:
         return None
@@ -207,20 +307,13 @@ def find_collaborator_by_token(client: SupabaseClient, token: str) -> Collaborat
     return None if collaborator.revoked_at else collaborator
 
 
-def get_active_collaborator(client: SupabaseClient, user_id: str) -> Collaborator | None:
-    """Re-check one reviewer's standing -- call this on every authenticated request.
-
-    A revoked collaborator therefore loses access on their very next
-    request, not only at their next login.
-    """
+def list_collaborators(client: SupabaseClient) -> list[Collaborator]:
+    """Every invited collaborator, active or not -- readable only by the owner (RLS)."""
     rows = client.select(
         "job_hunter_engine_lab_collaborators",
-        params={"user_id": f"eq.{user_id}"},
+        params={"select": "user_id,email,is_owner,revoked_at", "order": "invited_at.asc"},
     )
-    if not rows:
-        return None
-    collaborator = _collaborator_from_row(rows[0])
-    return None if collaborator.revoked_at else collaborator
+    return [_collaborator_from_row(row) for row in rows]
 
 
 # Versions ----------------------------------------------------------------------
@@ -264,7 +357,7 @@ def _choose_cohort(buckets: dict[str, list[dict[str, Any]]]) -> str:
 
 def _build_card(
     store: "PostgresJobStore",
-    reviewer_client_: SupabaseClient,
+    reviewer_client: SupabaseClient,
     row: dict[str, Any],
     cohort: str,
     *,
@@ -289,7 +382,7 @@ def _build_card(
 
     posting_version = store.get_posting_description_hash(row["posting_id"]) or ""
 
-    impression_rows = reviewer_client_.insert(
+    impression_rows = reviewer_client.insert(
         "job_hunter_engine_lab_impressions",
         [
             {
@@ -321,10 +414,10 @@ def _build_card(
     )
 
 
-def shown_posting_ids_today(reviewer_client_: SupabaseClient, reviewer_id: str) -> set[str]:
+def shown_posting_ids_today(reviewer_client: SupabaseClient, reviewer_id: str) -> set[str]:
     """Postings already shown to this reviewer since UTC midnight."""
     start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    rows = reviewer_client_.select(
+    rows = reviewer_client.select(
         "job_hunter_engine_lab_impressions",
         params={
             "reviewer_id": f"eq.{reviewer_id}",
@@ -337,7 +430,7 @@ def shown_posting_ids_today(reviewer_client_: SupabaseClient, reviewer_id: str) 
 
 def select_next_card(
     store: "PostgresJobStore",
-    reviewer_client_: SupabaseClient,
+    reviewer_client: SupabaseClient,
     *,
     reviewer_id: str,
     already_shown_posting_ids: set[str],
@@ -387,7 +480,7 @@ def select_next_card(
 
     return _build_card(
         store,
-        reviewer_client_,
+        reviewer_client,
         row,
         cohort,
         reviewer_id=reviewer_id,
@@ -400,7 +493,7 @@ def select_next_card(
 
 
 def record_judgement(
-    reviewer_client_: SupabaseClient,
+    reviewer_client: SupabaseClient,
     *,
     reviewer_id: str,
     impression_id: str,
@@ -410,7 +503,7 @@ def record_judgement(
 ) -> None:
     if why_line_judgement not in ("helpful", "flawed"):
         raise ValueError(f"why_line_judgement must be 'helpful' or 'flawed', got {why_line_judgement!r}")
-    reviewer_client_.insert(
+    reviewer_client.insert(
         "job_hunter_engine_lab_judgements",
         [
             {
@@ -440,6 +533,10 @@ def reveal_cohort(client: SupabaseClient, impression_id: str) -> str:
 
 def daily_summary(client: SupabaseClient, day: date) -> list[CohortSummary]:
     """One row per known cohort, even a cohort with zero impressions that day.
+
+    Owner-only in practice: RLS only lets a plain collaborator see their own
+    rows, so this only reflects the whole ledger when called with the
+    owner's own session.
 
     A plain `group by` over the day's rows would simply omit an empty
     cohort; starting from the four known cohort names and folding counts

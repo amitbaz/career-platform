@@ -28,50 +28,49 @@ set of routes on that same Flask app, in a new `engine_lab_web.py` registered fr
 CV/cover letter/keys) per root `AGENTS.md`, and Engine Lab is not a product feature — it is the
 engine's own instrumentation, so it belongs with the engine.
 
-This also means Engine Lab never needs Relay's Supabase Auth (browser-side signup/session). It
-authenticates its own reviewers server-side, the same way the webhook already authenticates
-Job Hunter's own trusted processes.
+This also means Engine Lab never needs Relay at all — but it does use real Supabase Auth,
+directly, server-side (see below), not a platform-minted token.
 
 ## Identity: who is "the owner and explicitly invited collaborators"
 
-No owner/collaborator concept exists anywhere in this codebase today (confirmed: no `owner_id`
-column, no allowlist table, no `is_owner()` function). This design introduces exactly one new
-table, `job_hunter_engine_lab_collaborators`, and reuses the JWT-minting pattern
-`AccessTokenMinter` already established for `JOB_HUNTER_USER_ID` (`supabase_auth.py`) rather
-than inventing browser-facing auth (password login, magic links, Supabase Auth signup).
+**Revised after owner review** (2026-09-11): the first version of this design minted its own
+JWTs with a custom `token_hash`-based invite link, mirroring `AccessTokenMinter`'s
+trusted-process pattern. The owner rejected that in review — a bespoke token to generate, copy
+and track for every person, and no answer to "who is the owner, based on what" beyond "whoever
+ran the CLI first." This version uses real Supabase Auth instead: no tokens, no CLI, no custom
+JWT claim.
 
-- `invited_by` runs `python -m job_hunter engine-lab-invite --email you@example.com`. This
-  generates a fresh `user_id` (a `uuid4`, not necessarily a real `auth.users` row — the same way
-  `JOB_HUNTER_USER_ID` is just a UUID recognised by RLS, not evidence of a signup flow) and a
-  32-byte random token, stores the token's SHA-256 hash, and prints the raw token once. Sharing
-  that token out of band with a collaborator *is* the explicit invitation the acceptance
-  criteria ask for.
-- A reviewer visits `/engine-lab/login`, submits the token. Flask hashes it, looks up the
-  collaborator (a `job_hunter_runner`-claimed read — see below), and on a match sets a signed
-  Flask session cookie (`app.secret_key` from a new `ENGINE_LAB_SESSION_SECRET` env var) holding
-  the collaborator's `user_id`, nothing else. The raw token is never stored, never logged, and
-  never leaves the login request.
-- Every later request re-reads `job_hunter_engine_lab_collaborators` for that `user_id` and
-  refuses (redirects to `/engine-lab/login`) if the row is missing or `revoked_at` is set — so
-  revoking access is one `update ... set revoked_at = now()` away from taking effect on the next
-  request, not just at next login.
-- The reviewer's browser never sees a Supabase JWT. Flask mints one server-side, per request,
-  scoped to that reviewer's `user_id`, using the existing `SUPABASE_SIGNING_KEY_B64` (already a
-  required env var for this deployment) and an extended `AccessTokenMinter` that can carry one
-  extra boolean claim: `engine_lab_reviewer: true`. That claim, plus `sub = <reviewer uuid>`, is
-  what row-level security keys on for the two ledger tables.
-- Reading the collaborators table to validate a login token needs a caller trusted before we
-  know who they are. `job_hunter_platform_ai_usage`'s RLS already solved this: gate `select` to
-  the existing `job_hunter_runner` claim (any token minted by a process holding the signing
-  key), not to a specific `sub`. Flask mints a `job_hunter_runner` token as `JOB_HUNTER_USER_ID`
-  for this one lookup, exactly as `telegram_webhook._build_supabase_client` already does.
-  `insert`/`update` on the collaborators table (inviting, revoking) requires a second claim,
-  `engine_lab_admin: true`, set only by the CLI invite command — so a compromised webhook
-  process could read the collaborator list but could not invite or revoke.
+- **Login is GoTrue's own emailed one-time code** — `POST /auth/v1/otp` then `POST /auth/v1/verify`
+  (`type: "email"`), called directly from Flask via the existing `HttpClient`, never through a
+  browser SDK or Relay. A reviewer gets a real `auth.users` row and a real Supabase-issued
+  `access_token`/`refresh_token` — this module never mints a token of its own for a reviewer.
+- **`ENGINE_LAB_OWNER_EMAIL`** (a new env var) is the one fact that decides who the owner is.
+  Nothing in the database knows this value. Right after a code verifies, Flask compares the
+  verified email against it and, only on a match, calls
+  `job_hunter_engine_lab_bootstrap_owner(p_email)` — which independently re-checks the caller's
+  own `auth.jwt() ->> 'email'` against `p_email` and refuses a second, different email once an
+  owner exists. The env var is the real gate; the function just makes the grant durable and
+  can't be tricked into granting it to the wrong session.
+- **Collaborators are invited by email, from the page itself, by the owner** — a plain HTML form
+  (`/engine-lab/invite`) that calls `job_hunter_engine_lab_invite(p_email)` (owner-only,
+  self-checked). This creates a row with no `user_id` yet, because the invitee has no
+  `auth.users` row until they sign in. When they do, `job_hunter_engine_lab_claim_invite()`
+  backfills their real `user_id` by matching their own verified email — never a caller-supplied
+  one, so nobody can claim someone else's invite.
+- **Revocation** is `revoked_at` on the collaborators row (owner-only path, not yet a page
+  action — filed as a small follow-up if wanted). Every route re-reads the caller's own
+  collaborator row on each request, so a revoke takes effect on the very next request, not just
+  at next login.
+- **Session state**: Flask's own signed cookie (`ENGINE_LAB_SESSION_SECRET`) holds the reviewer's
+  `access_token`/`refresh_token`/`expires_at` between requests, refreshing via
+  `/auth/v1/token?grant_type=refresh_token` when close to expiry. The token is used as-is for
+  that reviewer's own PostgREST calls — no re-minting.
 
-`AccessTokenMinter` changes minimally: one new constructor parameter,
-`extra_claims: dict[str, Any] | None = None`, merged into the minted payload. Default is
-`None` → identical behaviour to today, so the webhook's own token minting is untouched.
+Nothing in `supabase_auth.py` changes. `AccessTokenMinter` is unmodified and is used for exactly
+one thing here: `subject_store_client`, which is a completely separate concept from reviewer
+login — it answers "whose corpus and profile is being matched" (always `JOB_HUNTER_USER_ID`,
+the same identity every other Job Hunter process already acts as), never "who is signed into
+Engine Lab."
 
 ## Schema
 
@@ -81,17 +80,24 @@ time.
 
 ```sql
 create table public.job_hunter_engine_lab_collaborators (
-  user_id     uuid primary key,
-  email       text not null unique,
-  display_name text not null default '',
-  token_hash  text not null,
-  invited_at  timestamptz not null default now(),
-  invited_by  text not null,
-  revoked_at  timestamptz
+  email      text primary key,
+  user_id    uuid unique references auth.users(id),
+  is_owner   boolean not null default false,
+  invited_at timestamptz not null default now(),
+  invited_by uuid references public.job_hunter_engine_lab_collaborators(user_id),
+  revoked_at timestamptz
 );
--- RLS: select to job_hunter_runner claim; insert/update to engine_lab_admin claim. No delete
--- policy — revoke by setting revoked_at, never by removing the row a token_hash could collide
--- into.
+-- Keyed by email, not user_id: an invitee has no auth.users row (and hence no user_id) until
+-- their first sign-in. No insert/update/delete policy for `authenticated` at all — every write
+-- goes through one of three security-definer functions:
+--   job_hunter_engine_lab_bootstrap_owner(p_email)  -- claims owner, once, re-checking the
+--                                                       caller's own verified email
+--   job_hunter_engine_lab_invite(p_email)           -- owner-only, adds a pending row
+--   job_hunter_engine_lab_claim_invite()            -- backfills the caller's own user_id by
+--                                                       their own verified email
+-- Two more security-definer helpers, job_hunter_engine_lab_caller_is_owner() and
+-- job_hunter_engine_lab_is_active_collaborator(uuid), let RLS policies (here and on the two
+-- tables below) check membership without a recursive self-join.
 
 create table public.job_hunter_engine_lab_impressions (
   id                    uuid primary key default gen_random_uuid(),
@@ -106,10 +112,10 @@ create table public.job_hunter_engine_lab_impressions (
   configuration_version text not null,
   shown_at              timestamptz not null default now()
 );
--- RLS: insert to (engine_lab_reviewer claim and auth.uid() = reviewer_id) or job_hunter_runner
--- (the daily-summary job reads across reviewers). No update, no delete — an impression is a
--- fact about what was shown, immutable once written; that immutability is what makes "durable
--- before render" checkable at all.
+-- RLS: insert requires reviewer_id = auth.uid() and an active collaborator row for that uid;
+-- select allows a reviewer their own rows, or the owner across everyone (for the daily
+-- summary). No update, no delete — an impression is a fact about what was shown, immutable
+-- once written; that immutability is what makes "durable before render" checkable at all.
 
 create table public.job_hunter_engine_lab_judgements (
   id                 uuid primary key default gen_random_uuid(),
@@ -223,15 +229,36 @@ four known cohort names and left-joins counts onto them rather than the other wa
   out-of-set value. For "one judgement per impression", a second insert on the same
   `impression_id` must raise a unique violation. For RLS, `authenticate_as` a non-collaborator
   and assert both ledger tables refuse insert and select.
-- **pytest** (`apps/job-hunter/tests/test_engine_lab.py`): `select_review_cards` writes an
-  impression row before constructing the returned card (assert the row exists via a second,
-  independent read, not via the return value, so a code path that builds a card without writing
-  first is caught); a card is never missing any of the five version fields (a
-  dataclass with no defaults on those fields already makes "forgot to set one" a
-  `TypeError`, and a test constructs one without each field in turn to confirm it); cohort is
-  absent from the HTTP response body until judgement, present after;
-  `record_judgement` rejects a second call for the same `impression_id`; `daily_summary` names a
-  cohort with zero rows rather than omitting it.
+- **pytest, module-level** (`apps/job-hunter/tests/test_engine_lab.py`): `select_next_card`
+  writes an impression row before constructing the returned card (asserted against the fake
+  client's own call log, not the return value, so a code path that builds a card without
+  writing first is caught); bucket classification and the audit-vs-intended score-floor boundary;
+  `record_judgement` rejects an invalid why-line verdict before writing; `daily_summary` names a
+  cohort with zero rows rather than omitting it; the owner-bootstrap/invite/claim functions are
+  called with the right RPC name and arguments, and never called at all when this module's own
+  precondition (verified email matches `ENGINE_LAB_OWNER_EMAIL`) fails.
+- **pytest, HTTP layer** (`apps/job-hunter/tests/test_engine_lab_web.py`), a Flask test client
+  with `engine_lab` faked at the module boundary: cohort is absent from `GET /engine-lab/review`'s
+  body and present after `POST /engine-lab/judge`; a `javascript:`-scheme posting URL is never
+  rendered as a link; `/engine-lab/invite` and `/engine-lab/summary` refuse a non-owner; an
+  unauthenticated request redirects to login; a wrong code and an uninvited email are both
+  refused without creating a session.
+
+## The page itself is deliberately minimal
+
+`engine_lab_web.py` renders plain HTML strings from Flask — no template engine, no client-side
+JavaScript, a full page reload on every action. That is a real, visible trade-off, made
+knowingly: `apps/job-hunter` already deploys as one small Flask app on Vercel for the Telegram
+webhook, and reusing it for a handful of internal pages costs no new app, hosting or build
+pipeline for a tool a few people use. It is not a statement about what internal tooling should
+look like going forward.
+
+The owner's direction (2026-09-11): once there is more than one internal page like this, they
+want a separate, modern internal web app — for the owner's own use running the business, not
+the mobile app end users see — with room for more pages beyond review (analytics, ingestion
+health, and whatever else #264 and later engine work need a place to live). That is a real
+initiative, not a decision to make inside this ticket; filed as a follow-up issue rather than
+started here.
 
 ## Out of scope, filed as follow-ups if found
 
