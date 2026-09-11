@@ -145,11 +145,13 @@ watcher for the correlation, then follow `docs/agents/roles.md`.
    raw-file reads), then self-review before opening a PR.
 4. Open the PR as the bot, with the repository's PR template and `Addresses #N` or `Closes #N`.
 5. Comment `@amitbaz ready for review — run /reviewer <pr>` on the PR, which is the owner's
-   signal to launch a reviewer. Post a `task.request` (status `open`) to `cp-reviewer` for the
-   reviewer to find on start, then wait on the watcher. A reviewer session, once started, stays
-   alive across rounds until it approves or escalates.
-6. On `changes_requested`: fix, push as the bot, reply on each review thread as the bot, and post
-   a `task.request` (status `fixes_pushed`). Repeat.
+   signal to launch a reviewer. Post the review request (`task.request`, status `open`,
+   `kind: review_requested`) to `cp-reviewer` for the reviewer to find on start, then wait on the
+   watcher. A reviewer session, once started, stays alive across rounds until it approves or
+   escalates.
+6. On a changes-requested verdict (`verdict: changes_requested`): fix, push as the bot, reply on
+   each review thread as the bot, and post a fixes-pushed request (`task.request`, status `open`,
+   `kind: fixes_pushed`). Repeat.
 7. After the reviewer bot approves, stay alive until the PR is merged or closed, because the
    owner's check may request changes too.
 
@@ -161,7 +163,8 @@ watcher for the correlation, then follow `docs/agents/roles.md`.
 2. Review with raw file reads and verify the PR's claims against evidence, including read-only
    live data where a claim is about the corpus.
 3. Post findings as inline comments and a verdict, both through `scripts/gh-as.sh reviewer`, then
-   post a `task.reply` (status `changes_requested` or `approved`) to `cp-developer`.
+   post the verdict (`task.reply`, status `ready`, `verdict: changes_requested` or
+   `verdict: approved`) to `cp-developer`.
 4. Approve only when CI is green and the PR head equals the commit that was reviewed.
 5. After approving, comment `@amitbaz ready for your check`, which reaches the owner through
    GitHub notifications. Never merge.
@@ -186,11 +189,11 @@ GitHub, so there is one record.
 | From → to | `type` / `status` | `metadata` | Body |
 | --- | --- | --- | --- |
 | developer → reviewer | `task.request` / `open` | `kind: review_requested`, `round: 1`, `head_sha` | PR link |
-| reviewer → developer | `event.ack` / `claimed` | — | picked up |
+| reviewer → developer | `event.ack` / `claimed` | — | picked up (use `mempalace_event_ack`) |
 | reviewer → developer | `task.reply` / `ready` | `verdict: changes_requested` or `verdict: approved`, `reviewed_sha` | review link |
-| developer → reviewer | `event.ack` / `claimed` | — | verdict picked up |
+| developer → reviewer | `event.ack` / `claimed` | — | verdict picked up (use `mempalace_event_ack`) |
 | developer → reviewer | `task.request` / `open` | `kind: fixes_pushed`, `round: n`, `head_sha` | PR link |
-| either → owner | `task.reply` / `blocked` | `reason` | escalation comment link |
+| either → the other | `task.reply` / `blocked` | `reason` | escalation comment link |
 
 `status` must be one of MemPalace's values (`open`, `claimed`, `ready`, `applied`, `blocked`,
 `failed`, `superseded`); the loop's own states live in `metadata` (`kind`, `verdict`).
