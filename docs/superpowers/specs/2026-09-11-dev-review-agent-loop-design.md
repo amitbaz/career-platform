@@ -44,13 +44,20 @@ Three GitHub identities:
 | `amitbaz-developer` | new bot, write collaborator | Commits, pushes, opens PRs, replies to review threads. |
 | `amitbaz-reviewer` | existing bot, write collaborator | Reviews, inline comments, verdicts. |
 
-Each bot has a fine-grained personal access token scoped to this repository only, stored in the
-macOS Keychain and never committed:
+Each bot has a **classic** personal access token, stored in the macOS Keychain and never
+committed. Fine-grained tokens cannot reach a repository owned by another personal account where
+the token's owner is only a collaborator. GitHub's roadmap item for that
+(github/roadmap#601) was open and labelled "Paused" on 2026-09-11.
 
-- developer: `career-platform-developer-pat` — contents, pull requests and issues read/write.
-- reviewer: `career-platform-reviewer-pat` (exists) — pull requests read/write, contents read.
+- developer: `career-platform-developer-pat`, scopes `repo` and `workflow`. `workflow` is required
+  to push changes under `.github/workflows/`.
+- reviewer: `career-platform-reviewer-pat` (exists), scope `repo`.
 
-Neither bot has admin, so neither can change or bypass the ruleset.
+A classic `repo` scope reaches every repository the account can access. Each bot is a collaborator
+on this repository only, and must stay that way. `repo` also grants contents write, so the token
+does not stop the reviewer from writing code: the role rules and `scripts/gh-as.sh`'s refusal do.
+The reviewer needs the write collaborator role anyway, because only approvals from users with write
+access count. Neither bot has admin, so neither can change or bypass a ruleset.
 
 Two MemPalace identities, one per role, independent of which agent plays it: `cp-developer` and
 `cp-reviewer`. The role command sets the identity for the whole session. The global instruction
@@ -246,7 +253,7 @@ The system is ready when each of these has been observed, not assumed:
 These need a human with access to accounts and secrets, and no agent performs them:
 
 1. Create the `amitbaz-developer` GitHub account and invite it as a write collaborator.
-2. Create its fine-grained PAT and store it:
+2. Create its classic PAT (scopes `repo` and `workflow`) and store it:
    `security add-generic-password -a career-platform-developer -s career-platform-developer-pat -w <PAT>`.
 3. Add the role-identity override line to the global Claude and Codex instruction files.
 
