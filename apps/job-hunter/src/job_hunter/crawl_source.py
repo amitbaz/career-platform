@@ -16,14 +16,35 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Protocol
 
 from .http import NOT_MODIFIED, NotModifiedSignal, Validators
 from .normalize import job_fingerprint
 from .postgres_stage_queue import PostgresStageQueue
-from .stage_queue import PermanentStageFailure, QueueMessage, QuotaExhausted, Stage, StageRunner
+from .stage_queue import (
+    PermanentStageFailure,
+    QueueDelays,
+    QueueMessage,
+    QuotaExhausted,
+    Stage,
+    StageRunner,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
+
+#: How long a claimed crawl stays invisible to other workers. It covers a
+#: whole batch at the HTTP client's read budget, so a slow batch is not
+#: redelivered while its worker is still on it -- and for the same reason it
+#: is how long a worker run may go without a heartbeat before
+#: `job_hunter_worker_health` reports it unfinished (#258).
+VISIBILITY_TIMEOUT_SECONDS = 15 * 60
+
+#: Why a crawl message was enqueued. `safety` is the one crawl
+#: `job_hunter_enqueue_crawl` keeps in a window its evidence says to reduce,
+#: so a change in the source's behaviour there is still observed (#258).
+CRAWL_PURPOSES = ("scheduled", "safety")
 
 
 class _ConnectionLease(Protocol):
@@ -47,6 +68,13 @@ class CrawlOutcome:
     # group (#61), read off resolve_persist's PostingBatch. Written on every
     # crawl, including zero (AGENTS.md rule 5).
     joined_variant_group: int = 0
+    # When the crawl began, when its message was enqueued and claimed, and why
+    # it ran (#258). `started_at` is taken before the crawl rather than at
+    # insert time; `claimed_at - enqueued_at` is the queue-to-worker delay.
+    started_at: datetime | None = None
+    enqueued_at: datetime | None = None
+    claimed_at: datetime | None = None
+    purpose: str = "scheduled"
 
 
 def description_hash(description: str) -> str:
@@ -76,11 +104,17 @@ class CrawlSourceStage:
         persist: Callable[[list], Any],
         probe: Callable[[Any, Validators], Any] | None = None,
         http: Any | None = None,
+        worker_run_id: str | None = None,
+        now: Callable[[], datetime] = utc_now,
     ) -> None:
         self._database = database
         self._build_source = build_source
         self._persist = persist
         self._probe = probe
+        # The `job_hunter_worker_runs` row this crawl belongs to, when the
+        # worker could record one (#258).
+        self._worker_run_id = worker_run_id
+        self._now = now
         # The cost half of the yield figure. `HttpClient` counts every attempt
         # it makes, retries included, so bracketing the drain attributes the
         # requests to this source the way `discovery.collect_candidates`
@@ -96,10 +130,47 @@ class CrawlSourceStage:
         return max(0, getattr(self._http, "request_count", 0) - before)
 
     def __call__(self, message: QueueMessage) -> CrawlOutcome:
-        source_key = self._source_key(message)
+        source_key, purpose = self._parse_payload(message)
+        timing = {
+            "started_at": self._now(),
+            "enqueued_at": message.enqueued_at,
+            "claimed_at": message.claimed_at,
+            "purpose": purpose,
+        }
         started = time.monotonic()
         requests_before = getattr(self._http, "request_count", 0) if self._http else 0
+        try:
+            return self._crawl(source_key, timing, started, requests_before)
+        # Exception, not BaseException, for the reason given at the
+        # discover() clause below: a killed worker must propagate uncaught.
+        except Exception as error:
+            # A failure anywhere else in the attempt -- the cursor read,
+            # building the source, the probe, the unchanged-hash check, the
+            # persist -- used to reach the runner with no crawl row, so the
+            # window evidence silently lost this source's failure, cost and
+            # time. Record it, then re-raise so the queue retries the message
+            # exactly as it did before.
+            outcome = CrawlOutcome(
+                source_key=source_key,
+                **timing,
+                outcome="failed",
+                requests=self._requests_since(requests_before),
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error=str(error)[:500],
+            )
+            logger.warning(
+                "crawl_source %s failed outside the source: %s", source_key, error
+            )
+            self._record(outcome)
+            raise
 
+    def _crawl(
+        self,
+        source_key: str,
+        timing: dict[str, Any],
+        started: float,
+        requests_before: int,
+    ) -> CrawlOutcome:
         self._register_target(source_key)
         validators = self._read_cursor(source_key)
         source = self._build_source(source_key)
@@ -107,6 +178,7 @@ class CrawlSourceStage:
         if self._probe is not None and self._probe(source, validators) is NOT_MODIFIED:
             outcome = CrawlOutcome(
                 source_key=source_key,
+                **timing,
                 outcome="not_modified",
                 requests=self._requests_since(requests_before),
                 elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -128,6 +200,7 @@ class CrawlSourceStage:
         except NotModifiedSignal:
             outcome = CrawlOutcome(
                 source_key=source_key,
+                **timing,
                 outcome="not_modified",
                 requests=self._requests_since(requests_before),
                 elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -146,6 +219,7 @@ class CrawlSourceStage:
         except Exception as error:
             outcome = CrawlOutcome(
                 source_key=source_key,
+                **timing,
                 outcome="rate_limited" if _is_rate_limited(error) else "failed",
                 requests=self._requests_since(requests_before),
                 elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -169,6 +243,7 @@ class CrawlSourceStage:
 
         outcome = CrawlOutcome(
             source_key=source_key,
+            **timing,
             outcome="fetched",
             fetched=len(jobs),
             new_to_corpus=getattr(batch, "newly_discovered", 0) or 0,
@@ -279,12 +354,15 @@ class CrawlSourceStage:
                 with connection.cursor() as cursor:
                     cursor.execute(
                         "insert into public.job_hunter_source_crawls "
-                        "(source_key, finished_at, outcome, fetched, "
+                        "(source_key, started_at, finished_at, outcome, fetched, "
                         " new_to_corpus, changed, unchanged_by_hash, "
-                        " requests, elapsed_ms, error, joined_variant_group) "
-                        "values (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        " requests, elapsed_ms, error, purpose, enqueued_at, "
+                        " claimed_at, worker_run_id, joined_variant_group) "
+                        "values (%s, coalesce(%s, now()), now(), %s, %s, %s, %s, "
+                        "%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (
                             outcome.source_key,
+                            outcome.started_at,
                             outcome.outcome,
                             outcome.fetched,
                             outcome.new_to_corpus,
@@ -293,6 +371,10 @@ class CrawlSourceStage:
                             outcome.requests,
                             outcome.elapsed_ms,
                             outcome.error,
+                            outcome.purpose,
+                            outcome.enqueued_at,
+                            outcome.claimed_at,
+                            self._worker_run_id,
                             outcome.joined_variant_group,
                         ),
                     )
@@ -303,24 +385,35 @@ class CrawlSourceStage:
             )
 
     @staticmethod
-    def _source_key(message: QueueMessage) -> str:
-        # The payload key is "crawl_key", not "source_key": it carries the
-        # fine string build_source() answers to, which is a different key
-        # space from job_hunter_sources.source_key (issue #184's defect).
-        # This method's own name still says source_key because everywhere
-        # else in this file -- CrawlOutcome, job_hunter_source_crawls,
-        # job_hunter_source_cursors -- already uses that name for the same
-        # fine string; only the wire format changes here.
+    def _parse_payload(message: QueueMessage) -> tuple[str, str]:
+        """`(source_key, purpose)` from a crawl message.
+
+        The payload key is "crawl_key", not "source_key": it carries the fine
+        string build_source() answers to, which is a different key space from
+        job_hunter_sources.source_key (issue #184's defect). Everywhere else
+        in this file -- CrawlOutcome, job_hunter_source_crawls,
+        job_hunter_source_cursors -- the same fine string is called
+        source_key; only the wire format differs.
+
+        `purpose` was added by #258 and is optional, so a message enqueued
+        before it existed is still a scheduled crawl.
+        """
         if message.stage is not Stage.CRAWL_SOURCE:
             raise PermanentStageFailure("crawl_source received the wrong stage")
-        if set(message.payload) != {"crawl_key"}:
+        if set(message.payload) not in ({"crawl_key"}, {"crawl_key", "purpose"}):
             raise PermanentStageFailure(
-                "crawl_source payload must contain only crawl_key"
+                "crawl_source payload must contain only crawl_key and, "
+                "optionally, purpose"
             )
         source_key = message.payload.get("crawl_key")
         if not isinstance(source_key, str) or not source_key:
             raise PermanentStageFailure("crawl_source crawl_key must be a string")
-        return source_key
+        purpose = message.payload.get("purpose", "scheduled")
+        if purpose not in CRAWL_PURPOSES:
+            raise PermanentStageFailure(
+                "crawl_source purpose must be scheduled or safety"
+            )
+        return source_key, purpose
 
 
 # The consumer ---------------------------------------------------------------------
@@ -339,6 +432,7 @@ class CrawlDrain:
     claimed: int = 0
     outcomes: Counter = field(default_factory=Counter)
     stopped_because: str = ""
+    queue_delays: QueueDelays = field(default_factory=QueueDelays)
 
     def summary(self) -> str:
         counts = " ".join(
@@ -359,6 +453,9 @@ def drain_crawl_source(
     batch_size: int = 10,
     time_budget_seconds: float = 20 * 60,
     clock: Callable[[], float] = time.monotonic,
+    on_batch: Callable[[CrawlDrain], None] | None = None,
+    worker_run_id: str | None = None,
+    now: Callable[[], datetime] = utc_now,
 ) -> CrawlDrain:
     """Drain up to `limit` due crawls, in batches, within a time budget.
 
@@ -375,13 +472,25 @@ def drain_crawl_source(
     budget is checked between batches and never mid-request, and a batch's
     visibility timeout covers the whole HTTP read budget so a slow batch is
     not redelivered to a second worker while the first is still on it.
+
+    `on_batch` is called with the drain after every batch, including the one
+    that finds the queue empty; `worker_run.WorkerRun.heartbeat` is what the
+    CLI passes. `worker_run_id` links each crawl row to that run (#258).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
     runner = StageRunner(
-        PostgresStageQueue(database), visibility_timeout_seconds=15 * 60
+        PostgresStageQueue(database),
+        visibility_timeout_seconds=VISIBILITY_TIMEOUT_SECONDS,
     )
-    stage = CrawlSourceStage(database, build_source=build_source, persist=persist, http=http)
+    stage = CrawlSourceStage(
+        database,
+        build_source=build_source,
+        persist=persist,
+        http=http,
+        worker_run_id=worker_run_id,
+        now=now,
+    )
     drain = CrawlDrain()
     started = clock()
 
@@ -397,6 +506,7 @@ def drain_crawl_source(
         def handler(message: QueueMessage) -> CrawlOutcome:
             nonlocal seen
             seen += 1
+            drain.queue_delays.observe(message)
             try:
                 outcome = stage(message)
             except QuotaExhausted:
@@ -414,6 +524,8 @@ def drain_crawl_source(
             batch_size=min(batch_size, limit - drain.claimed),
         )
         drain.claimed += seen
+        if on_batch is not None:
+            on_batch(drain)
         if seen == 0:
             drain.stopped_because = "queue_empty"
             break

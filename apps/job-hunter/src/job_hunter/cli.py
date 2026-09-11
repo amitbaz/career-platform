@@ -30,6 +30,7 @@ from job_hunter.postgres_store import DryRunStore, PostgresJobStore
 from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient
 from job_hunter.telegram import TelegramClient
+from job_hunter.worker_runs import WorkerRun, report_worker_health
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,49 @@ def _run_with(
     return 0
 
 
+def _recorded_drain(database, worker: str, stale_after_seconds: int, drain):
+    """Run `drain(run)` as one recorded worker run; return `(result, healthy)`.
+
+    Every ingestion worker invocation that can reach the database gets a
+    `job_hunter_worker_runs` row, including one that finds its queue empty
+    (#258). So everything that can fail once the connection exists -- a
+    missing key, a client or profile that will not load -- belongs inside
+    `drain`, where it becomes a failed run rather than an absent one. An
+    invocation with no SUPABASE_DB_URL cannot be recorded; health reports its
+    worker missing instead. `drain` receives the run
+    so it can pass `run.heartbeat` as its `on_batch` and `run.id` to rows it
+    writes itself. An exception finishes the run as an error and propagates.
+    A killed process finishes nothing, and health reports the run once its
+    heartbeat is stale.
+
+    `healthy` is the whole fleet's health read after this run finished, so a
+    worker that stopped being invoked is reported by the ones still running.
+    """
+    run = WorkerRun(database, worker, stale_after_seconds=stale_after_seconds)
+    run.start()
+    try:
+        result = drain(run)
+    except Exception as error:
+        run.fail(error)
+        raise
+    run.finish(result)
+    return result, report_worker_health(database)
+
+
+def _health_exit_code(worker: str, healthy: bool) -> int:
+    if healthy:
+        return 0
+    # Non-zero on purpose, even though this worker's own drain was fine: a
+    # failed Render cron run is visible, and a log line is not (AGENTS.md
+    # rule 5). The ingestion_health lines above name the worker at fault.
+    logger.error(
+        "%s finished its own work, but not every ingestion worker is healthy; "
+        "see the ingestion_health lines above",
+        worker,
+    )
+    return 1
+
+
 def _recheck_freshness(args: argparse.Namespace) -> int:
     """Drain the recheck_freshness queue (#186).
 
@@ -293,7 +337,11 @@ def _recheck_freshness(args: argparse.Namespace) -> int:
     that connection it cannot write a posting at all, so it fails rather than
     reporting a quiet day.
     """
-    from job_hunter.recheck_freshness_stage import FAILED, drain_recheck_freshness
+    from job_hunter.recheck_freshness_stage import (
+        FAILED,
+        VISIBILITY_TIMEOUT_SECONDS,
+        drain_recheck_freshness,
+    )
 
     dsn = load_ingestion_dsn()
     if dsn is None:
@@ -304,7 +352,14 @@ def _recheck_freshness(args: argparse.Namespace) -> int:
         return 1
     database = IngestionDatabase(dsn)
     try:
-        drain = drain_recheck_freshness(database, HttpClient(), limit=args.limit)
+        drain, healthy = _recorded_drain(
+            database,
+            "recheck_freshness",
+            VISIBILITY_TIMEOUT_SECONDS,
+            lambda run: drain_recheck_freshness(
+                database, HttpClient(), limit=args.limit, on_batch=run.heartbeat
+            ),
+        )
     finally:
         database.close()
     logger.info("recheck_freshness complete: %s", drain.summary())
@@ -317,7 +372,7 @@ def _recheck_freshness(args: argparse.Namespace) -> int:
             drain.outcomes[FAILED],
         )
         return 1
-    return 0
+    return _health_exit_code("recheck_freshness", healthy)
 
 
 def _crawl_source(args: argparse.Namespace) -> int:
@@ -331,7 +386,7 @@ def _crawl_source(args: argparse.Namespace) -> int:
     single-user deployment; splitting search policy out of the per-user
     profile is separate, real work this ticket does not do.
     """
-    from job_hunter.crawl_source import drain_crawl_source
+    from job_hunter.crawl_source import VISIBILITY_TIMEOUT_SECONDS, drain_crawl_source
     from job_hunter.sources import build_brave_budget, build_source
 
     dsn = load_ingestion_dsn()
@@ -344,8 +399,11 @@ def _crawl_source(args: argparse.Namespace) -> int:
 
     http = HttpClient()
     ingestion = IngestionDatabase(dsn)
-    store = PostgresJobStore(_build_client(http), ingestion)
-    try:
+
+    def _drain(run: WorkerRun):
+        # Inside the recorded run, so a Supabase client or search profile that
+        # cannot be loaded is a failed run rather than an absent one.
+        store = PostgresJobStore(_build_client(http), ingestion)
         settings = load_settings(store)
         search_breaker = CircuitBreaker(_SEARCH_FAILURE_THRESHOLD)
         brave_budget = build_brave_budget(settings, store.client)
@@ -363,15 +421,24 @@ def _crawl_source(args: argparse.Namespace) -> int:
                 supabase_client=store.client,
             )
 
-        drain = drain_crawl_source(
+        return drain_crawl_source(
             ingestion,
             http,
             build_source=_build_one_source,
             persist=store.merge_posting_batch,
             limit=args.limit,
+            on_batch=run.heartbeat,
+            worker_run_id=run.id,
+        )
+
+    try:
+        drain, healthy = _recorded_drain(
+            ingestion, "crawl_source", VISIBILITY_TIMEOUT_SECONDS, _drain
         )
     finally:
-        store.close()
+        # The pool is the only thing a store holds (`PostgresJobStore.close`
+        # closes exactly this), and it outlives the store so health can be read.
+        ingestion.close()
     logger.info("crawl_source complete: %s", drain.summary())
     if drain.claimed and drain.claimed == drain.outcomes.get("failed", 0):
         # Every single crawl failing is a process that cannot reach
@@ -384,7 +451,7 @@ def _crawl_source(args: argparse.Namespace) -> int:
             drain.outcomes["failed"],
         )
         return 1
-    return 0
+    return _health_exit_code("crawl_source", healthy)
 
 
 def _extract_facets(args: argparse.Namespace) -> int:
@@ -399,7 +466,10 @@ def _extract_facets(args: argparse.Namespace) -> int:
     """
     from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
     from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
-    from job_hunter.extract_facets_stage import drain_extract_facets
+    from job_hunter.extract_facets_stage import (
+        VISIBILITY_TIMEOUT_SECONDS,
+        drain_extract_facets,
+    )
 
     dsn = load_ingestion_dsn()
     if dsn is None:
@@ -409,19 +479,20 @@ def _extract_facets(args: argparse.Namespace) -> int:
         )
         return 1
 
-    platform_settings = load_platform_ai_settings()
-    if platform_settings is None:
-        logger.error(
-            "extract-facets needs PLATFORM_GEMINI_API_KEY: extraction spends "
-            "only the platform key, never a user's"
-        )
-        return 1
-    platform_key, platform_quota, ai_model = platform_settings
-
     http = HttpClient()
     ingestion = IngestionDatabase(dsn)
-    store = PostgresJobStore(_build_client(http), ingestion)
-    try:
+
+    def _drain(run: WorkerRun):
+        # Inside the recorded run: a missing platform key is a failed
+        # invocation with its reason on the row, not an absent one.
+        platform_settings = load_platform_ai_settings()
+        if platform_settings is None:
+            raise RuntimeError(
+                "extract-facets needs PLATFORM_GEMINI_API_KEY: extraction spends "
+                "only the platform key, never a user's"
+            )
+        platform_key, platform_quota, ai_model = platform_settings
+        store = PostgresJobStore(_build_client(http), ingestion)
         platform_tracker = AIUsageTracker(
             PlatformUsageLedger(store), platform_quota, ai_model, provider=PROVIDER
         )
@@ -432,9 +503,16 @@ def _extract_facets(args: argparse.Namespace) -> int:
             platform_api_key=platform_key,
             platform_tracker=platform_tracker,
         )
-        drain = drain_extract_facets(ingestion, ai, limit=args.limit)
+        return drain_extract_facets(
+            ingestion, ai, limit=args.limit, on_batch=run.heartbeat
+        )
+
+    try:
+        drain, healthy = _recorded_drain(
+            ingestion, "extract_facets", VISIBILITY_TIMEOUT_SECONDS, _drain
+        )
     finally:
-        store.close()
+        ingestion.close()
     logger.info("extract_facets complete: %s", drain.summary())
     if drain.claimed and drain.claimed == drain.outcomes.get("failed", 0):
         logger.error(
@@ -443,7 +521,7 @@ def _extract_facets(args: argparse.Namespace) -> int:
             drain.outcomes["failed"],
         )
         return 1
-    return 0
+    return _health_exit_code("extract_facets", healthy)
 
 
 def _generate_cover_letter(args: argparse.Namespace) -> int:

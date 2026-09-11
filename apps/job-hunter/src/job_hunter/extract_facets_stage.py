@@ -49,6 +49,7 @@ from job_hunter.postgres_stage_queue import PostgresStageQueue
 from job_hunter.stage_queue import (
     DeferredToALaterRun,
     PermanentStageFailure,
+    QueueDelays,
     QueueMessage,
     QuotaExhausted,
     Stage,
@@ -70,6 +71,11 @@ _ALLOWANCE_RETRY_DELAY_SECONDS = 15 * 60
 #: before being offered again. Longer than the allowance delay because the
 #: condition clears when the run ends, not when a provider window reopens.
 _ALREADY_ATTEMPTED_RETRY_DELAY_SECONDS = 60 * 60
+
+#: How long a claimed extraction stays invisible to other workers, and so how
+#: long a worker run may go without a heartbeat before
+#: `job_hunter_worker_health` reports it unfinished (#258).
+VISIBILITY_TIMEOUT_SECONDS = 5 * 60
 
 
 class _ConnectionLease(Protocol):
@@ -334,6 +340,7 @@ class ExtractFacetsDrain:
     claimed: int = 0
     outcomes: Counter = field(default_factory=Counter)
     stopped_because: str = ""
+    queue_delays: QueueDelays = field(default_factory=QueueDelays)
 
     def summary(self) -> str:
         counts = " ".join(
@@ -352,6 +359,7 @@ def drain_extract_facets(
     batch_size: int = 25,
     time_budget_seconds: float = 20 * 60,
     clock: Callable[[], float] = time.monotonic,
+    on_batch: Callable[[ExtractFacetsDrain], None] | None = None,
 ) -> ExtractFacetsDrain:
     """Drain up to `limit` due extractions, in batches, within a time budget.
 
@@ -360,11 +368,15 @@ def drain_extract_facets(
     `ai` is trusted to already be resolved to the platform key (#128) --
     this module never sees a user's credential, the same guarantee
     `ExtractFacetsStage` itself makes.
+
+    `on_batch` is called with the drain after every batch, including the one
+    that finds the queue empty (#258).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
     runner = StageRunner(
-        PostgresStageQueue(database), visibility_timeout_seconds=5 * 60
+        PostgresStageQueue(database),
+        visibility_timeout_seconds=VISIBILITY_TIMEOUT_SECONDS,
     )
     stage = ExtractFacetsStage(database, ai)
     drain = ExtractFacetsDrain()
@@ -382,6 +394,7 @@ def drain_extract_facets(
         def handler(message: QueueMessage):
             nonlocal seen
             seen += 1
+            drain.queue_delays.observe(message)
             try:
                 result = stage(message)
             except QuotaExhausted:
@@ -405,6 +418,8 @@ def drain_extract_facets(
             batch_size=min(batch_size, limit - drain.claimed),
         )
         drain.claimed += seen
+        if on_batch is not None:
+            on_batch(drain)
         if seen == 0:
             drain.stopped_because = "queue_empty"
             break

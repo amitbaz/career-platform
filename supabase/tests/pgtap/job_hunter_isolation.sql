@@ -400,7 +400,10 @@ select unnest(array[
   'job_hunter_stage_dead_letters',
   'job_hunter_source_crawls',
   'job_hunter_source_cursors',
-  'job_hunter_crawl_targets'
+  'job_hunter_crawl_targets',
+  'job_hunter_worker_runs',
+  'job_hunter_worker_schedules',
+  'job_hunter_ingestion_timing_config'
 ]) as table_name;
 
 -- Guard: every job_hunter_ table this tree's migrations create is on one of
