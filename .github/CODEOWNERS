@@ -1,0 +1,3 @@
+# Every PR requests both approvers the ruleset needs: the reviewer bot reviews
+# in depth, the owner does the final check (docs/agents/roles.md).
+* @amitbaz @amitbaz-reviewer
