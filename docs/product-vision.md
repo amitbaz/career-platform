@@ -54,16 +54,23 @@ order.
 
 ## Decisions
 
-### D1. The stack: up to twenty cards a day, each one earned (2026-09-11)
+### D1. The stack: a fresh daily selection with configurable preparation capacity (2026-09-11)
 
-**Decided.** The user sees up to twenty match cards a day.
+**Decided.** The engine starts with capacity to prepare twenty applications a day, but the user
+is not punished for rejecting cards.
 
-- **Twenty is a ceiling, not a quota.** The stack is never padded. On a day with seven real
-  matches the stack holds seven and says so ("only 7 worth your time today"). Padding with
-  mediocre cards destroys the feeling the product is built on — *these are actually a match
-  for me* — and it does so within days.
+- **Twenty is configurable capacity, not a card-view limit or a quota.** The value belongs to
+  engine configuration and is not tied to pricing yet. A left swipe may be replaced from a ready
+  reserve while preparation capacity remains. The experience can pause after a configurable
+  number of reviews so it does not become an endless job board, but the user may continue.
+- **The stack is never padded.** On a day with seven real matches the stack holds seven and says
+  so ("only 7 worth your time today"). Padding with mediocre cards destroys the feeling the
+  product is built on — *these are actually a match for me* — and it does so within days.
 - **Skipped days do not pile up.** A user returning after three days sees the best twenty
   available now, not a backlog. Postings that closed in the meantime are gone.
+- **A new day feels fresh.** The first open selects from a background ready pool. Opportunities
+  not selected today can compete later; excellent jobs discovered after today's selection
+  normally arrive tomorrow instead of appearing as a blocked list.
 - **The card leads with why.** One line that immediately tells the user why this job is worth
   considering. Then the facts known about the posting: role, company, location and work mode,
   seniority, and salary when stated. An unknown is shown as unknown ("salary not stated"),
@@ -73,9 +80,11 @@ order.
 in place of hours of searching and reading. The relief is the product. It survives only if
 every card deserves its place, so match quality — not volume — sets the count.
 
-**What it asks of the engine:** a per-user ranked stream refreshed continuously, with a quality
-bar that can leave the stack short; a *why* line generated per user and posting; card facts
-from shared enrichment; closed postings removed from every stack.
+**What it asks of the engine:** a bounded per-user ready pool, selected into a daily stack on first
+open; first card within one second and the complete initial stack within two; configurable
+preparation capacity and review pause; reserve replenishment; a quality bar that can leave the
+stack short; a *why* line generated per user and posting; card facts from shared enrichment;
+closed postings removed immediately; every short or empty result carrying its reason.
 
 ### D2. A right swipe means "prepare it for me"; the product never submits (2026-09-11)
 
@@ -163,6 +172,7 @@ swipes; a diagnosis that names a cause from the user's own data.
   appear, drawn from the card's own facts: the company, the location, too junior, the salary,
   the industry. The user can tap one or keep swiping.
 - **Only an explicit reason creates a rule.** A single left swipe never hides anything for good.
+  An explicit rule applies to matching reserve cards immediately today as well as future ranking.
 - **Every rule is visible when it is learned** ("fewer on-site roles in Tel Aviv"), and the next
   cards visibly change.
 - **A "what I've learned about you" list** shows every rule and lets the user undo any of them.
@@ -278,6 +288,10 @@ without curation.
 - **A non-engineer must test the engine early.** The only real user today is a software engineer,
   so an engine tuned on his feedback will look right for engineers and quietly fail a marketing
   manager. #79 (a Hebrew non-tech persona) is the existing ticket for this.
+- **A rough CV is evidence, not an entrance exam.** Missing CV evidence is unknown, not negative.
+  The first useful stack needs only a minimum factual profile confirmed by the user. An explicit
+  career goal overrides previous job titles; the CV still determines confidence and makes stretch
+  visible. General polishing happens later, and tailoring happens per chosen job.
 
 ### D7. Two modes, two tiers, and nothing lost between them (2026-09-11)
 
@@ -389,6 +403,30 @@ neither of them can copy without rebuilding.
 mail, check-ins) joined to the application they belong to; silence inferred on a clock; a record
 of every message read, shown to the user.
 
+### D10. Engine readiness is earned in a private, blind seven-day review (2026-09-11)
+
+**Decided.** Engine quality is measured in Engine Lab before a product surface depends on it.
+For seven consecutive days, the owner reviews ten cards a day: seven intended recommendations
+and one blind sample each from hard-excluded, unresolved and just-below-threshold postings.
+
+The engine is ready only when at least 80% of the 49 intended recommendations are worth applying
+to; there are no hard eligibility mistakes; no why line invents or misstates a fact; at least 90%
+of why lines are specific and helpful; no clearly good match appears in the 21 blind-audit cards;
+the latency targets in D1 hold; and every short or empty result explains itself. Each threshold is
+reported separately. One week is an initial gate, not statistical proof of a near-zero miss rate,
+so blind audit continues afterward.
+
+**The measurement is built, not remembered.** The private Review page records impressions and
+judgements; the private Analytics page shows the funnel, reasons, versions, freshness, latency and
+ingestion health. Ingestion records every worker invocation, including an empty queue, and learns
+source/time-of-week yield without a global night or weekend blackout. Quiet windows retain safety
+crawls so changed behavior can be detected.
+
+**What it asks of the engine:** a versioned measurement ledger; blind samples from all decision
+states; owner-only aggregate analytics; durable worker-run telemetry; and a mechanism that makes
+stale or missing measurement visibly fail. The full shaping record is
+`docs/superpowers/specs/2026-09-11-engine-ready-stack-design.md`.
+
 ## What the engine must do
 
 Collected from the "What it asks of the engine" line of each decision. This is the bridge from
@@ -400,18 +438,30 @@ product to engine work; engine tickets are checked against it.
   engineering-only title filter anywhere (D6).
 - Card facts from shared enrichment: role, company, location and work mode, seniority, salary
   when stated, unknowns kept as unknown (D1).
+- Recover incomplete postings in the background; insufficient evidence remains `unresolved`,
+  never becomes a permanent `unmatchable` decision, and is reconsidered until closure (D10).
 - Each posting's applicant tracking system, its screening questions, and an effort class for its
   form (D2, D8).
 - Closed postings detected and removed from every stack and bucket (D1, D2).
+- Every ingestion worker invocation recorded, including an empty queue; source yield visible by
+  UTC hour and weekday, with safety crawls preserving evidence in quieter windows (D10).
 
 **Matching (per user):**
 
-- A ranked stream per user, refreshed continuously, with a quality bar that can leave the stack
-  short of twenty (D1).
-- A *why* line per user and posting (D1).
+- Every open posting considered for each user's match decision; no crawl-time per-user membership
+  row and no engineering-title filter determines what matching is allowed to see (D6, D10).
+- Known hard violations are `ineligible`, sufficient evidence is `qualified`, and insufficient
+  evidence is `unresolved`; unknown facts are not negative evidence (D6, D10).
+- A bounded ready pool per user, selected into a fresh daily stack with configurable preparation
+  capacity, reserve replenishment and explicit shortfall reasons (D1).
+- A grounded *why* line per user and posting, with the main stretch disclosed immediately (D1,
+  D10).
 - Preference signals at two strengths — a soft left swipe, an explicit reason — applied as
-  weights, with rules only from explicit reasons, each inspectable and reversible (D4).
+  weights, with rules only from explicit reasons, each inspectable, reversible and applied to
+  today's reserve immediately (D4).
 - Outcomes kept apart from preferences, and ranking that learns from both (D3, D4).
+- A private, versioned review and analytics interface that enforces the engine-ready thresholds
+  and continues blind recall auditing after the initial seven-day gate (D10).
 
 **Per-user work (metered):**
 
