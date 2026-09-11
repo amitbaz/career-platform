@@ -151,13 +151,16 @@ class CanonicalResolver:
             links = extract_job_page_links(response_text, response_url or job.url)
         except Exception:
             links = []
-        # An embedded link has no company or title check behind it (#254):
-        # it is trustworthy only when the page names exactly one distinct
-        # ATS posting. A page listing more than one -- a careers page with
+        # An embedded link has no company or title check behind it: it is
+        # trustworthy only when the page names exactly one distinct ATS
+        # posting. A page listing more than one -- a careers page with
         # several open roles, a "similar jobs" widget -- makes "the first
-        # anchor" an arbitrary pick among them, and blindly trusting it
-        # attributed one job's identity to a completely different
-        # advertisement in the corruption #254 found live. Two links to the
+        # anchor" an arbitrary pick among them, which could misattribute
+        # this job's identity to a different advertisement. Hardening only:
+        # #254's actual corruption was traced to job_hunter_upsert_job's
+        # legacy per-job merge (weak company/title/location identity match
+        # overwriting ats_* while leaving source_job_id alone), not this
+        # branch -- see #254 for the confirmed root cause. Two links to the
         # same posting (a duplicated anchor) still count as one candidate.
         embedded_candidates: dict[tuple[str, str, str], tuple[str, AtsReference]] = {}
         for url in links:

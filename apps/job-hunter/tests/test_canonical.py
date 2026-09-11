@@ -246,12 +246,15 @@ def test_embedded_supported_ats_url_resolves_at_095():
 
 
 def test_embedded_ambiguous_multiple_ats_links_does_not_pick_first_blindly():
-    # #254: a page can embed more than one employer job's ATS anchor -- a
-    # careers page listing several open roles, or a "similar jobs" widget --
-    # and the first one is not necessarily this job's own. Picking it blindly
-    # cross-contaminates this job's ats identity with an unrelated posting's.
-    # Two genuinely different Greenhouse postings at the same employer/board,
-    # shaped like the live pairs #254 found (different job ids, same board).
+    # Hardening, not a #254 repro: a page can embed more than one employer
+    # job's ATS anchor -- a careers page listing several open roles, or a
+    # "similar jobs" widget -- and the first one is not necessarily this
+    # job's own. Picking it blindly could cross-contaminate this job's ats
+    # identity with an unrelated posting's. (#254's actual corruption was
+    # traced to job_hunter_upsert_job's legacy per-job merge, not here --
+    # see #254.) Two distinct Greenhouse postings at one employer, shaped
+    # like #254's live pairs for illustration only (different job ids, same
+    # board).
     http = _Http(
         _Response(
             url="https://board.test/careers",
