@@ -107,7 +107,6 @@ class LearnedAtsSource:
         # run. `_reject_board` below writes a rejection to the shared board
         # table and must never be called from this path.
         remaining = []
-        denylisted_boards = []
         for entry in due:
             board_key = ats_board_key(entry.provider, entry.board_identifier)
             if board_key in self._denylist and board_key not in self._allowlist:
@@ -117,28 +116,8 @@ class LearnedAtsSource:
                     "(not written to the shared registry)",
                     board_key,
                 )
-                denylisted_boards.append((entry.provider, entry.board_identifier))
             else:
                 remaining.append(entry)
-
-        # #226: the shared board's `last_checked_at` is never set on this
-        # path, so without this every denylisted board sits in
-        # `select_ats_boards`' never-checked tier forever and can outrank a
-        # genuinely new board on the tie-break. The stamp is this user's own
-        # registry row, not the shared board -- see
-        # `record_ats_board_denylist_skips`' docstring. One batched call for
-        # the whole run, not one per board (#151's pattern for this table).
-        if denylisted_boards:
-            try:
-                self._store.record_ats_board_denylist_skips(
-                    denylisted_boards, checked_at
-                )
-            except Exception:
-                logger.warning(
-                    "learned ATS denylist-skip stamp failed for %d board(s)",
-                    len(denylisted_boards),
-                    exc_info=True,
-                )
 
         entries = select_ats_boards(
             remaining, self._market_order, self._limit, checked_at

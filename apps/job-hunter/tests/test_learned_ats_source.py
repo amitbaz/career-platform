@@ -440,33 +440,6 @@ def test_learned_ats_source_refuses_denylisted_board_without_scanning(store, _at
     assert _own_rejected(store, salt) == []
 
 
-def test_learned_ats_source_denylist_skip_stamps_this_users_registry_row(store, _ats_board_salt):
-    # Issue #226: a denylisted board is filtered out before
-    # record_ats_scan_success/failure ever runs, so without this stamp it
-    # never leaves the never-checked ranking tier.
-    salt = _ats_board_salt
-    jobgether = f"jobgether-{salt}"
-    _seed_board(store, "lever", jobgether)
-    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
-    http = RoutingHttp(responses={jobgether: _lever_postings(10, jobgether)})
-
-    source = LearnedAtsSource(
-        store,
-        http,
-        limit=500,
-        market_order=["berlin"],
-        now=lambda: now,
-        denylist=frozenset({f"lever:{jobgether}"}),
-    )
-    list(source.discover())
-
-    entries = {e.board_identifier: e for e in _own_due(store, now, salt)}
-    assert entries[jobgether].last_checked_at is not None
-    # Still this operator's policy, never evidence about the board.
-    assert entries[jobgether].rejected_reason is None
-    assert entries[jobgether].active is True
-
-
 def test_learned_ats_source_never_rescans_a_board_it_rejected_on_an_earlier_run(store, _ats_board_salt):
     salt = _ats_board_salt
     jobgether = f"jobgether-{salt}"

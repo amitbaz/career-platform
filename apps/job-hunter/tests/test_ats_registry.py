@@ -283,54 +283,6 @@ def test_select_ats_boards_tie_breaks_lexically_on_provider_and_board():
     ]
 
 
-def test_denylist_skip_leaves_never_checked_tier_without_leaking_to_other_users(
-    store, other_store
-):
-    # Issue #226: without a stamp, a config-denylisted board's
-    # last_checked_at is never set, so it sits in the never-checked tier
-    # forever and can outrank a genuinely new board on the
-    # board_identifier tie-break -- exactly what "aaa-denylisted" sorting
-    # ahead of "zzz-fresh" would do here if the fix regressed.
-    denylisted = f"aaa-denylisted-{uuid.uuid4().hex[:8]}"
-    fresh = f"zzz-fresh-{uuid.uuid4().hex[:8]}"
-    store.upsert_ats_board(provider="lever", board_identifier=denylisted)
-    store.upsert_ats_board(provider="lever", board_identifier=fresh)
-    now = datetime.now(timezone.utc)
-
-    # What learned_ats.py does when its config denylist skips a board: stamp
-    # this user's own registry row. Never the shared job_hunter_ats_boards
-    # row, and never rejected_reason -- that's this user's policy, not
-    # evidence about the board.
-    store.record_ats_board_denylist_skips([("lever", denylisted)], now)
-
-    mine = {
-        e.board_identifier: e
-        for e in store.list_due_ats_boards(now)
-        if e.board_identifier in (denylisted, fresh)
-    }
-    assert mine[denylisted].last_checked_at is not None
-    assert mine[fresh].last_checked_at is None
-    assert mine[denylisted].rejected_reason is None
-    assert mine[denylisted].active is True
-
-    # A genuinely new board still outranks the denylist-skipped one, even
-    # though its identifier sorts later -- the fix must not invert the
-    # ranking it is correcting.
-    selected = select_ats_boards([mine[denylisted], mine[fresh]], [], 1, now)
-    assert selected[0].board_identifier == fresh
-
-    # The stamp lives on this user's own registry row: a second user who has
-    # not denylisted the board still sees it as never-checked, so this
-    # user's policy is neither visible to nor binding on them.
-    theirs = {
-        e.board_identifier: e
-        for e in other_store.list_due_ats_boards(now)
-        if e.board_identifier in (denylisted, fresh)
-    }
-    assert theirs[denylisted].last_checked_at is None
-    assert theirs[fresh].last_checked_at is None
-
-
 def test_select_ats_boards_respects_limit():
     now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
     entries = [_entry("lever", f"board-{i}") for i in range(5)]
