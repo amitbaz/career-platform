@@ -376,7 +376,7 @@ def test_configuration_version_is_stable_for_identical_input():
 def test_bootstrap_owner_if_matching_never_calls_the_rpc_for_a_non_owner_email():
     client = FakeSupabaseClient()
     engine_lab.bootstrap_owner_if_matching(
-        client, verified_email="someone-else@example.com", owner_email="owner@example.com"
+        client, user_id="user-1", verified_email="someone-else@example.com", owner_email="owner@example.com"
     )
     assert client.rpc_calls == []
 
@@ -384,9 +384,11 @@ def test_bootstrap_owner_if_matching_never_calls_the_rpc_for_a_non_owner_email()
 def test_bootstrap_owner_if_matching_calls_the_rpc_for_the_owner_email_case_insensitively():
     client = FakeSupabaseClient()
     engine_lab.bootstrap_owner_if_matching(
-        client, verified_email="Owner@Example.com", owner_email="owner@example.com"
+        client, user_id="user-1", verified_email="Owner@Example.com", owner_email="owner@example.com"
     )
-    assert client.rpc_calls == [("job_hunter_engine_lab_bootstrap_owner", {"p_email": "Owner@Example.com"})]
+    assert client.rpc_calls == [
+        ("job_hunter_engine_lab_bootstrap_owner", {"p_user_id": "user-1", "p_email": "Owner@Example.com"})
+    ]
 
 
 def test_claim_invite_returns_false_when_the_rpc_reports_nothing_claimed():

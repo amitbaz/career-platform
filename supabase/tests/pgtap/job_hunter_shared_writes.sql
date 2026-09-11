@@ -485,8 +485,13 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 --     on job_hunter_engine_lab_collaborators for `authenticated` at all (see
 --     job_hunter_engine_lab.sql) -- these five definer functions are the
 --     entire write surface, each independently re-checking who is allowed to
---     call it (self-email-match, or the caller-is-owner check) rather than
---     relying on a table-level grant.
+--     call it rather than relying on a table-level grant: _invite and
+--     _claim_invite check the caller-is-owner / self-email-match;
+--     _bootstrap_owner has `execute` granted like the others (it must, to be
+--     callable at all) but requires the job_hunter_runner claim, which no
+--     ordinary reviewer session ever carries -- see the security fix on
+--     PR #282, where it originally checked only the caller's own email and
+--     was directly exploitable.
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p

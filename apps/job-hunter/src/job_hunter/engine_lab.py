@@ -253,7 +253,11 @@ def subject_store_client(http: HttpClient, settings: SupabaseSettings) -> Supaba
     This has nothing to do with who is logged into Engine Lab -- it is
     "whose corpus and profile are being matched", the same identity every
     other Job Hunter process (the pipeline, the webhook) already acts as.
-    Used to build the `PostgresJobStore` that `select_next_card` reads.
+    Used to build the `PostgresJobStore` that `select_next_card` reads, and
+    (since `AccessTokenMinter` always sets `job_hunter_runner: true`) as the
+    runner-claimed caller for `bootstrap_owner_if_matching`'s RPC -- the one
+    Engine Lab write that must never be reachable from a reviewer's own
+    session.
     """
     return SupabaseClient(http, settings, AccessTokenMinter(settings.user_id, settings.signing_key_jwk))
 
@@ -270,18 +274,25 @@ def _collaborator_from_row(row: dict[str, Any]) -> Collaborator:
     )
 
 
-def bootstrap_owner_if_matching(client: SupabaseClient, *, verified_email: str, owner_email: str) -> None:
-    """Claim the owner role for the current session, iff its email is the configured owner's.
+def bootstrap_owner_if_matching(
+    runner_client: SupabaseClient, *, user_id: str, verified_email: str, owner_email: str
+) -> None:
+    """Claim the owner role for `user_id`, iff `verified_email` is the configured owner's.
 
     `owner_email` (`ENGINE_LAB_OWNER_EMAIL`) is the one fact this whole
     scheme rests on, and only this module -- never the database -- reads
-    it. The RPC re-checks `verified_email` against the session's own JWT,
-    so a mismatched call here would fail there too; the check here is what
-    stops it being attempted at all for anyone else.
+    it. `runner_client` must be a runner-claimed client (`subject_store_client`),
+    never the reviewer's own session client: the RPC itself refuses any
+    caller without `job_hunter_runner: true`, so the database does not rely
+    on this check alone -- it is only what stops the call being *attempted*
+    for the wrong email, not what makes it safe.
     """
     if verified_email.strip().lower() != owner_email.strip().lower():
         return
-    client.rpc("job_hunter_engine_lab_bootstrap_owner", {"p_email": verified_email})
+    runner_client.rpc(
+        "job_hunter_engine_lab_bootstrap_owner",
+        {"p_user_id": user_id, "p_email": verified_email},
+    )
 
 
 def claim_invite(client: SupabaseClient) -> bool:

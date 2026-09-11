@@ -47,10 +47,21 @@ JWT claim.
 - **`ENGINE_LAB_OWNER_EMAIL`** (a new env var) is the one fact that decides who the owner is.
   Nothing in the database knows this value. Right after a code verifies, Flask compares the
   verified email against it and, only on a match, calls
-  `job_hunter_engine_lab_bootstrap_owner(p_email)` — which independently re-checks the caller's
-  own `auth.jwt() ->> 'email'` against `p_email` and refuses a second, different email once an
-  owner exists. The env var is the real gate; the function just makes the grant durable and
-  can't be tricked into granting it to the wrong session.
+  `job_hunter_engine_lab_bootstrap_owner(p_user_id, p_email)` using a *runner-claimed* client
+  (`subject_store_client`, the same `AccessTokenMinter` identity every other trusted Job Hunter
+  process uses) — never the reviewer's own session client.
+  **Security fix (PR #282 review round 3):** the first cut of this function checked only that
+  the caller's own `auth.jwt() ->> 'email'` matched `p_email`, which is a self-consistency check,
+  not an identity check — any Supabase Auth user (self-registered via `create_user: true` on
+  `/auth/v1/otp`) could call this RPC directly over PostgREST with their own uid/email and
+  permanently claim ownership before the real owner ever logged in, since the database never
+  compared against `ENGINE_LAB_OWNER_EMAIL` itself. The fix moves the gate into the database: the
+  function now requires the caller's JWT to carry `job_hunter_runner: true`, a claim only
+  `AccessTokenMinter` (run server-side, with a private signing key) can produce — an ordinary
+  reviewer session never has it, so the RPC is unreachable to anyone but Flask, regardless of
+  what `p_email` is passed. Flask's own `ENGINE_LAB_OWNER_EMAIL` check still runs first (so a
+  non-owner login never triggers the call at all), but the database no longer trusts that check
+  alone.
 - **Collaborators are invited by email, from the page itself, by the owner** — a plain HTML form
   (`/engine-lab/invite`) that calls `job_hunter_engine_lab_invite(p_email)` (owner-only,
   self-checked). This creates a row with no `user_id` yet, because the invitee has no
@@ -90,8 +101,9 @@ create table public.job_hunter_engine_lab_collaborators (
 -- Keyed by email, not user_id: an invitee has no auth.users row (and hence no user_id) until
 -- their first sign-in. No insert/update/delete policy for `authenticated` at all — every write
 -- goes through one of three security-definer functions:
---   job_hunter_engine_lab_bootstrap_owner(p_email)  -- claims owner, once, re-checking the
---                                                       caller's own verified email
+--   job_hunter_engine_lab_bootstrap_owner(p_user_id, p_email)  -- claims owner, once, callable
+--                                                       only by a caller carrying the
+--                                                       job_hunter_runner claim (see Identity)
 --   job_hunter_engine_lab_invite(p_email)           -- owner-only, adds a pending row
 --   job_hunter_engine_lab_claim_invite()            -- backfills the caller's own user_id by
 --                                                       their own verified email

@@ -2,10 +2,11 @@
 --
 -- What has to be true and cannot be asserted from the Python side alone:
 --
---   * only the app's own ENGINE_LAB_OWNER_EMAIL check can ever produce an
---     owner -- job_hunter_engine_lab_bootstrap_owner refuses a caller whose
---     own verified session email does not match what they are claiming,
---     and refuses a second, different email once an owner exists;
+--   * only a caller carrying the job_hunter_runner claim can ever produce an
+--     owner -- job_hunter_engine_lab_bootstrap_owner refuses every ordinary
+--     signed-in session outright, whatever p_user_id/p_email it passes, and
+--     refuses a second, different email once an owner exists even from a
+--     runner caller;
 --   * only the owner may invite; an invited row has no user_id until the
 --     invitee's own verified email claims it, and nobody can claim someone
 --     else's invite or a revoked one;
@@ -40,13 +41,15 @@ values
   ('eeeeeeee-a000-0000-0000-0000000000a7', 'second-collaborator@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', '{}', '{}', now(), now())
 on conflict (id) do nothing;
 
-create function pg_temp.authenticate_as(p_user uuid, p_email text) returns void
+create function pg_temp.authenticate_as(p_user uuid, p_email text, p_runner boolean default false) returns void
 language plpgsql as $$
 begin
   execute 'reset role';
   perform set_config(
     'request.jwt.claims',
-    jsonb_build_object('sub', p_user, 'role', 'authenticated', 'email', p_email)::text,
+    jsonb_build_object(
+      'sub', p_user, 'role', 'authenticated', 'email', p_email, 'job_hunter_runner', p_runner
+    )::text,
     true
   );
   execute 'set local role authenticated';
@@ -81,7 +84,7 @@ select columns_are('public', 'job_hunter_engine_lab_judgements', array[
 
 select has_function('public', 'job_hunter_engine_lab_caller_is_owner', array[]::text[], 'owner check exists');
 select has_function('public', 'job_hunter_engine_lab_is_active_collaborator', array['uuid'], 'membership check exists');
-select has_function('public', 'job_hunter_engine_lab_bootstrap_owner', array['text'], 'owner bootstrap exists');
+select has_function('public', 'job_hunter_engine_lab_bootstrap_owner', array['uuid', 'text'], 'owner bootstrap exists');
 select has_function('public', 'job_hunter_engine_lab_invite', array['text'], 'invite exists');
 select has_function('public', 'job_hunter_engine_lab_claim_invite', array[]::text[], 'claim exists');
 
@@ -116,39 +119,49 @@ select is(
   true, 'row-level security is on for judgements');
 
 -- Bootstrapping the owner ---------------------------------------------------
+--
+-- The database's own gate is the job_hunter_runner claim, not the caller's
+-- own email: an ordinary signed-in session can never call this RPC
+-- successfully, whatever p_user_id/p_email it passes -- only a
+-- platform-minted token (AccessTokenMinter, run server-side) carries the
+-- claim at all. See the reviewed security fix on PR #282.
 
+-- An ordinary authenticated session -- even claiming its own real email --
+-- has no job_hunter_runner claim and is refused outright.
 select pg_temp.authenticate_as('eeeeeeee-a000-0000-0000-0000000000a2', 'impostor@test.local');
 select throws_ok(
-  $$select public.job_hunter_engine_lab_bootstrap_owner('owner@test.local')$$,
+  $$select public.job_hunter_engine_lab_bootstrap_owner('eeeeeeee-a000-0000-0000-0000000000a2', 'owner@test.local')$$,
   null, null,
-  'a caller cannot bootstrap ownership under an email that is not their own verified session email'
+  'an ordinary session with no job_hunter_runner claim cannot bootstrap ownership at all'
 );
 select is(
   (select count(*)::int from public.job_hunter_engine_lab_collaborators where is_owner),
   0, 'the impostor''s attempt left no owner behind'
 );
 
-select pg_temp.authenticate_as('eeeeeeee-a000-0000-0000-0000000000a1', 'owner@test.local');
-select public.job_hunter_engine_lab_bootstrap_owner('owner@test.local');
+-- Only a runner-claimed caller can bootstrap the real owner.
+select pg_temp.authenticate_as('eeeeeeee-a000-0000-0000-0000000000a1', 'owner@test.local', true);
+select public.job_hunter_engine_lab_bootstrap_owner('eeeeeeee-a000-0000-0000-0000000000a1', 'owner@test.local');
 select is(
   (select user_id from public.job_hunter_engine_lab_collaborators where email = 'owner@test.local'),
   'eeeeeeee-a000-0000-0000-0000000000a1'::uuid,
-  'the real owner successfully bootstraps, matched to their own verified email'
+  'a runner-claimed caller successfully bootstraps the real owner'
 );
 
 -- Re-bootstrapping the same owner is idempotent (e.g. logging in again).
-select public.job_hunter_engine_lab_bootstrap_owner('owner@test.local');
+select public.job_hunter_engine_lab_bootstrap_owner('eeeeeeee-a000-0000-0000-0000000000a1', 'owner@test.local');
 select is(
   (select count(*)::int from public.job_hunter_engine_lab_collaborators where is_owner),
   1, 'bootstrapping the same owner twice does not create a second owner row'
 );
 
--- A second, genuinely different email can never also become owner.
-select pg_temp.authenticate_as('eeeeeeee-a000-0000-0000-0000000000a3', 'second-owner@test.local');
+-- A second, genuinely different email can never also become owner, even
+-- from a runner-claimed caller.
+select pg_temp.authenticate_as('eeeeeeee-a000-0000-0000-0000000000a3', 'second-owner@test.local', true);
 select throws_ok(
-  $$select public.job_hunter_engine_lab_bootstrap_owner('second-owner@test.local')$$,
+  $$select public.job_hunter_engine_lab_bootstrap_owner('eeeeeeee-a000-0000-0000-0000000000a3', 'second-owner@test.local')$$,
   null, null,
-  'a second, different email can never also claim ownership once one exists'
+  'a second, different email can never also claim ownership once one exists, even for a runner caller'
 );
 -- The rejected caller has no collaborator row, so RLS would hide the real
 -- owner row from them anyway; check the ground truth as postgres instead.

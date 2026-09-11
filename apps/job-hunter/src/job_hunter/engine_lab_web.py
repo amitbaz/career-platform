@@ -175,8 +175,12 @@ def register_engine_lab_routes(app: Flask, http: HttpClient) -> None:
 
         session.pop(_PENDING_EMAIL_KEY, None)
         client = engine_lab.session_client(http, settings, auth_session)
+        runner_client = engine_lab.subject_store_client(http, settings)
         engine_lab.bootstrap_owner_if_matching(
-            client, verified_email=auth_session.email, owner_email=_owner_email()
+            runner_client,
+            user_id=auth_session.user_id,
+            verified_email=auth_session.email,
+            owner_email=_owner_email(),
         )
         claimed = engine_lab.claim_invite(client)
         collaborator = engine_lab.get_own_collaborator(client, auth_session.user_id)

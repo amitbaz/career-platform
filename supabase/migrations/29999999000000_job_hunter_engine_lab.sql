@@ -11,10 +11,7 @@
 -- `/auth/v1/verify`), so `auth.uid()` is their own `auth.users.id` and
 -- `auth.jwt() ->> 'email'` is an email Supabase itself verified, not one a
 -- caller can assert. "The owner" is not a database concept: the app (which
--- holds `ENGINE_LAB_OWNER_EMAIL`) decides who may bootstrap that role, and
--- `job_hunter_engine_lab_bootstrap_owner` re-checks the caller's own
--- verified email before acting on it, so no email but the one the app
--- already trusts can ever claim it.
+-- holds `ENGINE_LAB_OWNER_EMAIL`) decides who may bootstrap that role.
 --
 -- One table, one row per invited person (owner included), keyed by email
 -- because an invitee has no `auth.users` row -- and hence no `user_id` --
@@ -24,14 +21,21 @@
 -- the same "single audited exception" shape `job_hunter_get_provider_credentials`
 -- already uses elsewhere in this schema:
 --
---   * `job_hunter_engine_lab_bootstrap_owner(p_email)` -- claims the owner
---     role for the caller, but only once (first call wins) and only after
---     re-checking `auth.jwt() ->> 'email' = p_email`. The app calls this
---     exactly once, right after its own `ENGINE_LAB_OWNER_EMAIL` check
---     passes -- nothing here knows that env var, so nothing here can be
---     tricked into granting ownership to the wrong email; the app's check
---     is the only gate, and this function is just where the grant is
---     durably recorded.
+--   * `job_hunter_engine_lab_bootstrap_owner(p_user_id, p_email)` -- claims
+--     the owner role for `p_user_id`, but only once (first call wins), and
+--     only for a caller carrying `job_hunter_runner: true` -- the same
+--     platform-minted-JWT claim `job_hunter_get_provider_credentials` and the
+--     source registry already gate on. A review-page session never carries
+--     that claim (only `AccessTokenMinter`, run server-side with a private
+--     signing key, can produce it), so an ordinary signed-in reviewer cannot
+--     reach this function at all, regardless of what `p_email` they pass --
+--     closing the hole where any self-registered Supabase Auth user could
+--     call this RPC directly over PostgREST and claim ownership before the
+--     real owner ever logs in. The app still does its own
+--     `ENGINE_LAB_OWNER_EMAIL` check first (so a non-owner login never
+--     triggers the call), but the database no longer trusts that check
+--     alone -- it independently verifies the caller's cryptographic identity
+--     before acting.
 --   * `job_hunter_engine_lab_invite(p_email)` -- owner-only (self-checked
 --     via `job_hunter_engine_lab_caller_is_owner`), adds a pending row with
 --     no `user_id` yet.
@@ -115,24 +119,22 @@ create policy self_or_owner_select on public.job_hunter_engine_lab_collaborators
 -- three functions below, each `security definer` and each auditable on
 -- its own terms.
 
-create or replace function public.job_hunter_engine_lab_bootstrap_owner(p_email text)
+create or replace function public.job_hunter_engine_lab_bootstrap_owner(p_user_id uuid, p_email text)
 returns void
 language plpgsql
 security definer
 set search_path = ''
 as $$
-declare
-  v_uid uuid := (select auth.uid());
-  v_jwt_email text := (select auth.jwt() ->> 'email');
 begin
-  if v_uid is null then
-    raise exception 'job_hunter_engine_lab_bootstrap_owner requires an authenticated caller';
+  if coalesce((select auth.jwt() -> 'job_hunter_runner'), 'false'::jsonb) <> 'true'::jsonb then
+    -- The database's own gate: only a platform-minted token (never a
+    -- reviewer's own Supabase Auth session) carries this claim, so no
+    -- amount of calling this RPC directly over PostgREST as an ordinary
+    -- signed-in user can ever succeed here, whatever p_email is passed.
+    raise exception 'job_hunter_engine_lab_bootstrap_owner may only be called by the trusted platform runner';
   end if;
-  if v_jwt_email is null or lower(v_jwt_email) <> lower(p_email) then
-    -- The caller's own verified session email must match what is being
-    -- claimed. This is what stops a parameter alone from ever granting
-    -- ownership: whoever calls this can only ever bootstrap themselves.
-    raise exception 'p_email does not match the authenticated session''s own email';
+  if p_user_id is null or p_email is null or p_email = '' then
+    raise exception 'p_user_id and p_email are required';
   end if;
   if exists (
     select 1 from public.job_hunter_engine_lab_collaborators
@@ -142,17 +144,17 @@ begin
   end if;
 
   insert into public.job_hunter_engine_lab_collaborators (email, user_id, is_owner)
-  values (lower(p_email), v_uid, true)
+  values (lower(p_email), p_user_id, true)
   on conflict (email) do update
     set user_id = excluded.user_id, is_owner = true, revoked_at = null;
 end
 $$;
 
-comment on function public.job_hunter_engine_lab_bootstrap_owner(text) is
-  'Claims the owner role for the caller, once. The app (holder of '
-  'ENGINE_LAB_OWNER_EMAIL) is the only real gate -- it calls this exactly '
-  'once its own check passes; this function''s job is only to make that '
-  'grant durable and to refuse a mismatched or repeat claim.';
+comment on function public.job_hunter_engine_lab_bootstrap_owner(uuid, text) is
+  'Claims the owner role for p_user_id, once. Callable only by a '
+  'platform-minted token carrying job_hunter_runner: true -- never by an '
+  'ordinary reviewer session -- so the database itself is the gate, not '
+  'just the app''s ENGINE_LAB_OWNER_EMAIL check that runs before it.';
 
 create or replace function public.job_hunter_engine_lab_invite(p_email text)
 returns void
