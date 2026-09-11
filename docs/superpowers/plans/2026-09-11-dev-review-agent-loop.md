@@ -36,9 +36,12 @@ These are not agent tasks. Tasks 3 and 6 check for them and stop if they are mis
 
 | Ticket | Tasks | Depends on |
 | --- | --- | --- |
-| A — Identity and enforcement | 1, 2, 3 | Task 3 needs P1, P2 |
-| B — Roles and launchers | 4, 5 | A merged |
-| C — First real run | 6 | B merged, P3 |
+| #269 (A) — Identity and enforcement | 1, 2, 3 | Task 3 needs P1, P2 |
+| #270 (B) — Roles and launchers | 4, 5 | #269 merged |
+| #271 (C) — First real run | 6 | #270 merged, P3 |
+
+Task 0 is done: the three tickets exist as sub-issues of #247, with native blocked-by edges
+(#270 by #269, #271 by #270).
 
 ---
 
@@ -245,7 +248,7 @@ Expected: every line starts with `ok`, and the exit code is 0.
 
 ```bash
 git add scripts/gh-as.sh scripts/gh-as-reviewer.sh scripts/tests/gh-as.test.sh
-git commit -m "feat(platform): run gh and git as either bot account (#<ticket A>)"
+git commit -m "feat(platform): run gh and git as either bot account (#269)"
 ```
 
 ---
@@ -393,12 +396,12 @@ and is fixed at session start, so role sessions use it for reads only. If the sc
 
 ```bash
 git add .github/CODEOWNERS .github/workflows/assign.yml .github/rulesets/protect-main.json AGENTS.md
-git commit -m "feat(platform): request both approvers and assign by role (#<ticket A>)"
+git commit -m "feat(platform): request both approvers and assign by role (#269)"
 git push -u origin <branch>
 gh pr create --title "feat(platform): bot identities and an enforced two-approval gate" --body-file /tmp/pr-a.md
 ```
 
-The PR body follows `.github/PULL_REQUEST_TEMPLATE.md` and says `Closes #<ticket A>` only if Task 3's verification is done in the same PR. Otherwise it says `Addresses #<ticket A>`.
+The PR body follows `.github/PULL_REQUEST_TEMPLATE.md` and says `Closes #269` only if Task 3's verification is done in the same PR. Otherwise it says `Addresses #269`.
 
 ---
 
@@ -650,7 +653,7 @@ Expected: two AGENTS.md lines (the Roles entry and the section rewritten in Task
 
 ```bash
 git add docs/agents/roles.md docs/agents/triage-labels.md AGENTS.md
-git commit -m "docs(platform): define the developer and reviewer roles (#<ticket B>)"
+git commit -m "docs(platform): define the developer and reviewer roles (#270)"
 ```
 
 ---
@@ -743,10 +746,10 @@ Expected after 90 seconds: `/tmp/watch-exit` contains `a=0` and `b=2`.
 
 ```bash
 git add .agents/skills/dev .agents/skills/reviewer .claude/skills/dev .claude/skills/reviewer
-git commit -m "feat(platform): add /dev and /reviewer role launchers (#<ticket B>)"
+git commit -m "feat(platform): add /dev and /reviewer role launchers (#270)"
 ```
 
-Open the PR with `Closes #<ticket B>`, quoting Step 4's and Step 5's results.
+Open the PR with `Closes #270`, quoting Step 4's and Step 5's results.
 
 ---
 
