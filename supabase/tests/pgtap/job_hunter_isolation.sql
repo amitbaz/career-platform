@@ -295,6 +295,22 @@ select unnest(array[
   'job_hunter_platform_search_usage'
 ]) as table_name;
 
+-- Engine Lab's collaborator list and measurement ledger (issue #257) hold
+-- no product user_id at all: `reviewer_id` names an Engine Lab collaborator,
+-- a concept this file's own-row-by-`auth.uid()` pattern below does not fit,
+-- because a trusted runner claim also reads across every reviewer's rows
+-- for the daily summary -- the same "different axis of isolation" reason
+-- the platform tables above are named here rather than asserted here. Their
+-- own properties (a reviewer sees only their own rows unless carrying the
+-- runner claim; nobody without an engine-lab claim reaches them at all) are
+-- asserted in job_hunter_engine_lab.sql.
+create view pg_temp.job_hunter_engine_lab_tables as
+select unnest(array[
+  'job_hunter_engine_lab_collaborators',
+  'job_hunter_engine_lab_impressions',
+  'job_hunter_engine_lab_judgements'
+]) as table_name;
+
 -- The shared tables, for the same reason in reverse. A posting (issue #174)
 -- is one advertisement in the world, not one user's copy of it; its facets
 -- (issue #175) are what that advertisement says to everybody; and a company
@@ -421,7 +437,9 @@ select table_name from pg_temp.job_hunter_platform_tables
 union all
 select table_name from pg_temp.job_hunter_shared_tables
 union all
-select table_name from pg_temp.job_hunter_ingestion_tables;
+select table_name from pg_temp.job_hunter_ingestion_tables
+union all
+select table_name from pg_temp.job_hunter_engine_lab_tables;
 
 select ok(
   exists (select 1 from pg_temp.job_hunter_tree_tables),

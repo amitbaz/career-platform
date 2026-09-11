@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 import jwt
 from jwt.algorithms import ECAlgorithm
@@ -33,12 +34,19 @@ class AccessTokenMinter:
     times rather than holding one token valid for its whole duration.
     """
 
-    def __init__(self, user_id: str, signing_key_jwk: dict) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        signing_key_jwk: dict,
+        *,
+        extra_claims: dict[str, Any] | None = None,
+    ) -> None:
         if not signing_key_jwk.get("d"):
             raise ValueError("signing key JWK has no private component ('d')")
         self._user_id = user_id
         self._kid = signing_key_jwk["kid"]
         self._key = ECAlgorithm.from_jwk(json.dumps(signing_key_jwk))
+        self._extra_claims = dict(extra_claims) if extra_claims else {}
         self._token: str | None = None
         self._expires_at = 0.0
 
@@ -61,13 +69,15 @@ class AccessTokenMinter:
 
     def _mint(self, now: float) -> None:
         expires_at = int(now) + _LIFETIME_SECONDS
+        claims = {
+            "sub": self._user_id,
+            "role": "authenticated",
+            "job_hunter_runner": True,
+            "exp": expires_at,
+            **self._extra_claims,
+        }
         self._token = jwt.encode(
-            {
-                "sub": self._user_id,
-                "role": "authenticated",
-                "job_hunter_runner": True,
-                "exp": expires_at,
-            },
+            claims,
             self._key,
             algorithm="ES256",
             headers={"kid": self._kid},
