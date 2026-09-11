@@ -204,8 +204,9 @@ revoke all on function public.job_hunter_word_set_jaccard(text, text)
 -- job_hunter_backfill_variant_groups ------------------------------------------
 --
 -- Groups every existing posting job_hunter_assign_variant_groups has not
--- yet reached, one bounded batch at a time so a corpus-sized backfill does
--- not hold one giant transaction. Idempotent and safe to re-run: a
+-- yet reached, one batch at a time -- but all batches in one call, so one
+-- transaction. At corpus scale use scripts/backfill_variant_groups.py, which
+-- commits per batch. Idempotent and safe to re-run: a
 -- completed backfill finds nothing left ungrouped and reports zero both
 -- ways, which is also how a caller confirms it is done.
 
@@ -265,24 +266,16 @@ comment on function public.job_hunter_backfill_variant_groups(integer) is
 revoke all on function public.job_hunter_backfill_variant_groups(integer)
   from public, anon, authenticated, service_role;
 
--- Run it now, on this migration, rather than leaving it as a manual step ---
+-- The corpus backfill is NOT run here ----------------------------------------
 --
--- A backfill that depends on someone remembering to run it after deploy is
--- exactly the failure this ticket's own acceptance criteria warns about:
--- until it runs, the existing corpus stays ungrouped and a newly crawled
--- variant founds a fresh group instead of joining its old siblings. The
--- migration is applied as the table owner, which is superuser for grants
--- purposes, so the revoke above does not stop this call. Logged via RAISE
--- NOTICE so the deploy output names the before/after rather than running
--- silently.
-do $$
-declare
-  v_groups_formed integer;
-  v_postings_grouped integer;
-begin
-  select groups_formed, postings_grouped
-    into v_groups_formed, v_postings_grouped
-    from public.job_hunter_backfill_variant_groups(500);
-  raise notice 'job_hunter_backfill_variant_groups: % groups formed, % postings grouped',
-    v_groups_formed, v_postings_grouped;
-end $$;
+-- This migration used to call job_hunter_backfill_variant_groups(500) in a DO
+-- block. On the live corpus (23,744 postings with an ATS board, ~222k
+-- word-set comparisons) that ran past the deploy's ~2 minute statement
+-- timeout and rolled the whole migration back, blocking every migration
+-- after it. p_batch_size does not help: batches inside one statement are
+-- still one transaction and one statement-timeout window.
+--
+-- Run apps/job-hunter/scripts/backfill_variant_groups.py right after this
+-- deploys instead. It commits one batch per transaction. Until it runs, the
+-- existing corpus stays ungrouped and a newly crawled variant founds a fresh
+-- group instead of joining its old siblings.
