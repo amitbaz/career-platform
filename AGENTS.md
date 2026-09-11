@@ -516,30 +516,26 @@ the push.
 Say so rather than working around it. Deleting, resetting or force-pushing over someone else's
 in-flight work costs more than waiting. Report what you found and let the human decide.
 
-### A reviewer session must submit its verdict as the bot account, not as you
+### Delivery runs between two bot accounts
 
-The dev and reviewer sessions both run as the repo owner by default. GitHub already refuses to
-count an author's own approval, so a reviewer session that uses the normal GitHub MCP tools or a
-plain `gh pr review` is not a real second opinion — it is either a no-op or, worse, silently
-ignored by branch protection.
+Delivery work is split between two roles, each with its own GitHub account: `amitbaz-developer`
+builds and opens PRs, and `amitbaz-reviewer` reviews them. The owner triages, does a final check
+and merges. How each role works, how they talk to each other, and when they stop and ask the
+owner is in `docs/agents/roles.md`. A session takes a role only through `/dev <issue>` or
+`/reviewer <pr>`.
 
-`main` is protected by a ruleset requiring one approval from an identity other than the author.
-That identity is the `amitbaz-reviewer` collaborator account. A reviewer session may read the
-diff and post comments however it likes, but the final verdict must go through:
+`main` is protected by the ruleset in `.github/rulesets/protect-main.json`. It requires the `test`
+check, **two approvals** (the reviewer bot's and the owner's), approval of the most recent push,
+and every review thread resolved. An approval is dismissed by any later push. GitHub never counts
+an author's approval of their own PR, which is why the developer role must author PRs as its bot:
+only then can the owner's approval count. The repository admin can bypass the rule, explicitly and
+visibly, for PRs the owner authors personally.
 
-```
-scripts/gh-as-reviewer.sh pr review <PR#> --approve --body "..."
-scripts/gh-as-reviewer.sh pr review <PR#> --request-changes --body "..."
-```
-
-This script pulls a PAT for `amitbaz-reviewer` from the local macOS Keychain
-(`security find-generic-password -a career-platform-reviewer -s career-platform-reviewer-pat`)
-and scopes it to that one `gh` invocation, so the review counts as a distinct identity regardless
-of how the session itself was launched (terminal, Superset, Claude, or Codex — the MCP GitHub
-server's own identity is fixed at session start and cannot be overridden mid-session, which is
-why this goes through a bare `gh` call instead of the MCP review tool). The Keychain entry is
-per-machine and never committed; if the script fails with "reviewer PAT not found," the human
-needs to add it, not the agent.
+Every GitHub write in a role session goes through `scripts/gh-as.sh <developer|reviewer>`, which
+takes the bot's PAT from the local macOS Keychain (`career-platform-<role>` /
+`career-platform-<role>-pat`) for that one call. The GitHub MCP server's identity is the owner's
+and is fixed at session start, so role sessions use it for reads only. If the script fails with
+"PAT not found", the owner needs to add the Keychain entry, not the agent.
 
 ## Boundaries
 
