@@ -245,6 +245,7 @@ def ats_entry_from_row(
     *,
     eligible_jobs_seen: int = 0,
     last_eligible_at: str | None = None,
+    denylist_skipped_at: str | None = None,
 ) -> AtsRegistryEntry:
     """Map a ``job_hunter_ats_boards`` PostgREST row to an `AtsRegistryEntry`.
 
@@ -259,6 +260,13 @@ def ats_entry_from_row(
     `select_ats_boards`' ranking reads `last_eligible_at` off the entries
     `list_due_ats_boards` returns, so it must carry the calling user's own
     value, not be silently dropped.
+
+    `denylist_skipped_at` (issue #226) is that same caller's own
+    `record_ats_board_denylist_skip` stamp, and is used only as a fallback
+    for `last_checked_at` when the shared column is null: it lets a
+    permanently config-denylisted board leave the never-checked ranking
+    tier for the user who excludes it, without writing anything to the
+    shared row another user's ranking reads.
     """
     return AtsRegistryEntry(
         provider=row["provider"],
@@ -267,7 +275,7 @@ def ats_entry_from_row(
         market_hint=row.get("market_hint") or "",
         first_seen_at=row["first_seen_at"],
         last_seen_at=row["last_seen_at"],
-        last_checked_at=row.get("last_checked_at"),
+        last_checked_at=row.get("last_checked_at") or denylist_skipped_at,
         last_success_at=row.get("last_success_at"),
         last_eligible_at=last_eligible_at,
         last_job_count=row.get("last_job_count", 0),

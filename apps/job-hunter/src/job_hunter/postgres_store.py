@@ -2779,6 +2779,14 @@ class PostgresJobStore:
         ranks that list by each board's *recent eligible yield*, which is
         per-user, so this merges in the caller's own
         `job_hunter_ats_registry` row for every board returned.
+
+        Also merges in `denylist_skipped_at` (issue #226): a config-denylist
+        exclusion is one user's policy, so `record_ats_board_denylist_skip`
+        never touches the shared `job_hunter_ats_boards` row, only this
+        caller's own registry row. `ats_entry_from_row` falls back to it when
+        the shared `last_checked_at` is null, so a permanently-excluded board
+        leaves this caller's never-checked ranking tier without ever
+        appearing checked to a user who has not excluded it.
         """
         timestamp = to_iso(_require_aware(now))
         rows = self._client.select(
@@ -2793,7 +2801,10 @@ class PostgresJobStore:
             (yield_row["provider"], yield_row["board_identifier"]): yield_row
             for yield_row in self._client.select(
                 "job_hunter_ats_registry",
-                params={"select": "provider,board_identifier,eligible_jobs_seen,last_eligible_at"},
+                params={
+                    "select": "provider,board_identifier,eligible_jobs_seen,"
+                    "last_eligible_at,denylist_skipped_at"
+                },
             )
         }
         entries = []
@@ -2804,6 +2815,7 @@ class PostgresJobStore:
                     row,
                     eligible_jobs_seen=yield_row.get("eligible_jobs_seen", 0),
                     last_eligible_at=yield_row.get("last_eligible_at"),
+                    denylist_skipped_at=yield_row.get("denylist_skipped_at"),
                 )
             )
         return entries
@@ -2899,6 +2911,55 @@ class PostgresJobStore:
                 provider,
                 board_identifier,
             ),
+        )
+
+    def record_ats_board_denylist_skips(
+        self, boards: list[tuple[str, str]], now: datetime
+    ) -> None:
+        """Stamp that *this user's* config denylist skipped these boards.
+
+        Issue #226: a board excluded by `learned_ats_denylist` before
+        `list_due_ats_boards` -> `select_ats_boards` ever runs never gets
+        `last_checked_at` set, so it sits in the never-checked ranking tier
+        forever and can outrank a genuinely new board on the
+        `board_identifier` tie-break.
+
+        This must never touch `job_hunter_ats_boards.rejected_reason` or any
+        other shared column -- a denylist exclusion is this user's own
+        policy, not evidence about the board (see `reject_ats_board`, which
+        owns the one case that does generalize). So the stamp lands on this
+        user's own `job_hunter_ats_registry` row instead, invisible to every
+        other user's `list_due_ats_boards` under RLS, and
+        `ats_entry_from_row` only reads it as a fallback when the shared
+        `last_checked_at` is null -- it cannot un-rank a board another user
+        has actually scanned.
+
+        Upserts rather than updates because this user may never have called
+        `upsert_ats_board` for a board they only ever saw through the shared
+        due list.
+
+        Takes every denylisted board from one run in a single call, the same
+        shape as `record_ats_eligible_jobs` and for the same reason (#151):
+        a denylist can name many boards, and every one of them is
+        re-excluded, and so re-stamped, on every single run -- one row per
+        `learned_ats_denylist` entry per run is the exact serial-round-trip
+        pattern that issue fixed for this table already.
+        """
+        if not boards:
+            return
+        timestamp = to_iso(_require_aware(now))
+        self._client.upsert(
+            "job_hunter_ats_registry",
+            [
+                {
+                    "user_id": self._client.user_id,
+                    "provider": provider.strip().lower(),
+                    "board_identifier": board_identifier.strip(),
+                    "denylist_skipped_at": timestamp,
+                }
+                for provider, board_identifier in boards
+            ],
+            on_conflict="user_id,provider,board_identifier",
         )
 
     def record_ats_eligible_jobs(
@@ -4166,6 +4227,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "clear_ats_board_rejection": None,
     "record_ats_scan_success": None,
     "record_ats_scan_failure": None,
+    "record_ats_board_denylist_skips": None,
     "record_ats_eligible_jobs": "count",
     "record_ai_usage": None,
     "set_ai_pause": None,
