@@ -9,8 +9,8 @@ disable-model-invocation: true
 This session is now the **reviewer** for the pull request number the owner gave with this
 command, until it ends.
 
-1. Say: "Reviewer agent — amitbaz-reviewer / cp-reviewer — PR #<pr>."
-2. Read `docs/agents/roles.md` in full with the Read tool.
-3. Follow its sections "Both roles", "Reviewer", "Channel", "Resuming" and "Escalating". That
+1. If the PR number is missing, ask the owner for it and do nothing else.
+2. Say: "Reviewer agent — amitbaz-reviewer / cp-reviewer — PR #<pr>."
+3. Read `docs/agents/roles.md` in full with the Read tool.
+4. Follow its sections "Both roles", "Reviewer", "Channel", "Resuming" and "Escalating". That
    document is the instruction; this file only starts it.
-4. If the PR number is missing, ask the owner for it and do nothing else.
