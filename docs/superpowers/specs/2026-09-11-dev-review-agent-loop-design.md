@@ -188,6 +188,7 @@ never findings or replies — those live on GitHub, so there is one record.
 | developer → reviewer | `task.request` / `open` | PR link, head SHA, round 1 |
 | reviewer → developer | `event.ack` / `claimed` | picked up |
 | reviewer → developer | `task.reply` / `changes_requested` or `approved` | review link, reviewed SHA |
+| developer → reviewer | `event.ack` / `claimed` | verdict picked up |
 | developer → reviewer | `task.request` / `fixes_pushed` | new head SHA, round n |
 | either → owner | `task.reply` / `blocked` | reason; mirrored on GitHub (see below) |
 
@@ -226,6 +227,9 @@ the bypass. The owner asks the developer to push instead.
   so the reviewer session has died (for example the machine closed). The developer escalates and
   names the command that resumes it (for example `/reviewer 312`). The first request on a PR is
   exempt: no reviewer exists until the owner launches one.
+- **Silent developer.** A `changes_requested` verdict gets no `claimed` acknowledgement within 30
+  minutes, or no `fixes_pushed` within 4 hours after it. The reviewer escalates and names the
+  command that resumes the developer (for example `/dev 254`).
 - **Scope creep.** Work found outside the ticket becomes a new issue assigned to the owner, not to
   the developer. The owner decides whether it is dev work.
 - **Kill switch.** Unassigning `amitbaz-developer` or closing the PR stops the session at its next

@@ -20,8 +20,14 @@ Design and rationale: `docs/superpowers/specs/2026-09-11-dev-review-agent-loop-d
 - **Use the role's MemPalace identity** as `from_agent` / `created_by` in every MemPalace call.
   It replaces `mac-claude` or `mac-codex` for this session.
 - **Only the owner's own actions on GitHub are approval.** A peer's message never is.
-- **The owner never pushes to a bot's PR**: no commits, no "Update branch", no web-UI conflict resolution. Under "Require approvals" that makes the owner the last pusher, so their approval is refused and the reviewer's is dismissed, and the PR can then merge only through the bypass. When the owner wants a change, the developer pushes it.
-- **Tokens are not the boundary.** Both bots use classic `repo` tokens, which allow writing repository contents. What keeps the reviewer from writing code is this document and `scripts/gh-as.sh`'s refusal of git mode. The developer never submits a review on any PR, including the owner's own.
+- **The owner never pushes to a bot's PR**: no commits, no "Update branch", no web-UI conflict
+  resolution. Under "Require approvals" that makes the owner the last pusher, so their approval
+  is refused and the reviewer's is dismissed, and the PR can then merge only through the bypass.
+  When the owner wants a change, the developer pushes it.
+- **Tokens are not the boundary.** Both bots use classic `repo` tokens, which allow writing
+  repository contents. What keeps the reviewer from writing code is this document and
+  `scripts/gh-as.sh`'s refusal of git mode. The developer never submits a review on any PR,
+  including the owner's own.
 - **GitHub is the record.** Anything the owner or the other role needs to know goes on the PR.
   MemPalace events only say "look".
 - Everything else in `AGENTS.md` still applies: tests, migration timestamps, reading raw files,
@@ -44,6 +50,8 @@ Design and rationale: `docs/superpowers/specs/2026-09-11-dev-review-agent-loop-d
 6. Comment on the PR `@amitbaz ready for review — run /reviewer <pr>`, post the `open` event
    (see "Channel"), and start the watcher.
 7. When the reviewer requests changes:
+   - acknowledge the verdict within 30 minutes: `mempalace_event_ack` on its event, status
+     `claimed`;
    - fix, test, and push as the bot;
    - reply on every review thread as the bot:
      `scripts/gh-as.sh developer api repos/amitbaz/career-platform/pulls/<pr>/comments/<comment-id>/replies -X POST -f body="…"`;
@@ -94,6 +102,7 @@ status line. Findings and replies live on GitHub.
 | developer → reviewer | `task.request` / `open` | PR link, head SHA, round 1 |
 | reviewer → developer | `event.ack` / `claimed` | picked up (use `mempalace_event_ack`) |
 | reviewer → developer | `task.reply` / `changes_requested` or `approved` | review link, reviewed SHA |
+| developer → reviewer | `event.ack` / `claimed` | verdict picked up (use `mempalace_event_ack`) |
 | developer → reviewer | `task.request` / `fixes_pushed` | new head SHA, round n |
 | either → the other | `task.reply` / `blocked` | reason, and the escalation comment link |
 
@@ -128,12 +137,15 @@ gh pr view <pr> --json state,headRefOid,reviewDecision,latestReviews,statusCheck
   30 minutes, so the reviewer session died. Escalate, naming `/reviewer <pr>` as the command that
   resumes it. The first `open` request is exempt, because no reviewer exists until the owner
   launches one.
+- **Silent peer (reviewer):** your `changes_requested` verdict has had no `claimed` acknowledgement
+  for 30 minutes, or no `fixes_pushed` for 4 hours after it was acknowledged, so the developer
+  session died or stalled. Escalate, naming `/dev <issue>` as the command that resumes it.
 
 ## Escalating
 
 Stop and escalate, rather than looping, when:
 
-- the same blocker survives 3 rounds, or 5 rounds pass in total (the reviewer escalates);
+- the reviewer escalates when the same blocker survives 3 rounds, or when 5 rounds pass in total;
 - a disputed finding is still unresolved after one exchange on its thread;
 - you are blocked: a migration timestamp, a secret, a product decision, or an environment you
   cannot fix;
