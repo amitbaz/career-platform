@@ -48,8 +48,9 @@ Six rules follow, and they decide most judgement calls in this repository:
    skipping two thirds of the suite and passing; the isolation guard measuring the shared
    database against one tree's list (#207); the migration ledger describing a stack it no longer
    matched (#206, #211); and the documented shared-table set drifting from the schema with
-   nothing to notice (#215). #208 makes the second fail loudly. If you are filing this under
-   "keep the docs updated", you have the wrong half of it.
+   nothing to notice (#215). #208 makes the second fail loudly; #207 takes the guard's reference
+   set from the tree's migrations, and fails saying so when it could not read them. If you are
+   filing this under "keep the docs updated", you have the wrong half of it.
 
 Use the vocabulary in [CONTEXT.md](CONTEXT.md) — in code, tests, issues and specs. The terms
 there exist because their synonyms have already caused confusion here.
@@ -194,6 +195,12 @@ supabase start          # local Supabase stack
 pnpm db:test            # pgTAP suite against that stack
 pnpm db:reset           # rebuild the local DB from migrations (destructive)
 ```
+
+Run pgTAP through `pnpm db:test`, not a bare `supabase test db`. It runs the suite through
+`scripts/pgtap_stage.py`, which stages a copy of `supabase/tests/pgtap` beside a list of the public
+tables this tree's migrations create. The isolation guard measures coverage against that list
+rather than the shared database, which also holds other branches' unmerged tables (#207). Run bare,
+the guard finds no list and fails saying so.
 
 `pnpm db:test` and `pnpm db:reset` serialise against every other session on this machine;
 `pnpm job-hunter:test` runs alongside other test runs but never alongside a reset — see

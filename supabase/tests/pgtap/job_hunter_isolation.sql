@@ -390,20 +390,72 @@ select unnest(array[
   'job_hunter_crawl_targets'
 ]) as table_name;
 
--- Guard: every job_hunter_ table in the schema is in the list under test,
--- so a table added to the migration without a test fails here.
+-- Guard: every job_hunter_ table this tree's migrations create is on one of
+-- the lists above, so a table added to a migration without a test fails here.
+--
+-- The reference set is the TREE, not the database. Do not "simplify" it back
+-- to pg_tables. The local Supabase stack is shared by every worktree on the
+-- machine, so it also holds tables from other branches' unmerged migrations,
+-- and measured against it this guard failed branches for changes they did
+-- not contain (#207). A guard that is red for somebody else's reason teaches
+-- everyone to ignore red, which is when a real coverage gap slips through.
+-- This tree makes no claim about a table its migrations do not create, so
+-- neither does the guard; its own tables stay fully enforced.
+--
+-- The list comes from scripts/pgtap_stage.py, which `pnpm db:test` runs: it
+-- derives the tree's tables on the host (pgTAP cannot read the migrations)
+-- and writes them into a staged copy of this directory, never into the tree.
+-- A bare `supabase test db` therefore finds no list -- psql reads an empty
+-- string without stopping -- and the first assertion below fails and says so.
+\set tree_public_tables `cat tree_public_tables.txt`
+
+create view pg_temp.job_hunter_tree_tables as
+select table_name
+  from regexp_split_to_table(:'tree_public_tables', '\s+') as table_name
+ where table_name like 'job\_hunter\_%';
+
+create view pg_temp.job_hunter_covered_tables as
+select table_name from pg_temp.job_hunter_tables
+union all
+select table_name from pg_temp.job_hunter_platform_tables
+union all
+select table_name from pg_temp.job_hunter_shared_tables
+union all
+select table_name from pg_temp.job_hunter_ingestion_tables;
+
+select ok(
+  exists (select 1 from pg_temp.job_hunter_tree_tables),
+  'this tree''s job_hunter_* tables were read from tree_public_tables.txt '
+  '(if not: run pnpm db:test, which derives that file from supabase/migrations)');
+
+-- A failure here lists the uncovered tables as "have", so it can be acted on
+-- without inspecting the local Supabase stack. The description also names
+-- any job_hunter_* table the database holds that this tree does not create
+-- -- another worktree's, ignored on purpose -- so the ignoring is visible,
+-- not silent.
 select is(
-  (select array_agg(tablename::text order by tablename)
-     from pg_tables where schemaname = 'public' and tablename like 'job\_hunter\_%'),
-  (select array_agg(table_name order by table_name) from (
-     select table_name from pg_temp.job_hunter_tables
-     union all
-     select table_name from pg_temp.job_hunter_platform_tables
-     union all
-     select table_name from pg_temp.job_hunter_shared_tables
-     union all
-     select table_name from pg_temp.job_hunter_ingestion_tables) as covered),
-  'every public.job_hunter_* table is covered by an isolation check');
+  (select coalesce(array_agg(t.table_name order by t.table_name), '{}')
+     from pg_temp.job_hunter_tree_tables t
+    where t.table_name not in (select table_name from pg_temp.job_hunter_covered_tables)),
+  '{}'::text[],
+  'every public.job_hunter_* table this tree''s migrations create is covered by an isolation check'
+  || coalesce(
+       ' (ignored, in the database but not created by this tree: '
+       || (select string_agg(p.tablename::text, ', ' order by p.tablename)
+             from pg_tables p
+            where p.schemaname = 'public' and p.tablename like 'job\_hunter\_%'
+              and p.tablename::text not in (select table_name from pg_temp.job_hunter_tree_tables))
+       || ')',
+       ''));
+
+-- And the reverse: a list entry this tree's migrations no longer create is a
+-- leftover, e.g. a table since dropped, and fails here by name.
+select is(
+  (select coalesce(array_agg(c.table_name order by c.table_name), '{}')
+     from pg_temp.job_hunter_covered_tables c
+    where c.table_name not in (select table_name from pg_temp.job_hunter_tree_tables)),
+  '{}'::text[],
+  'every table on the lists above is one this tree''s migrations create');
 
 select is(
   (select count(*)::int from pg_temp.job_hunter_tables), 20,
