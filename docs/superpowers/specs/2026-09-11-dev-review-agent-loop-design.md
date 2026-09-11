@@ -65,7 +65,7 @@ This generalises `scripts/gh-as-reviewer.sh`. It reads the role's PAT from the K
 
 - `scripts/gh-as.sh <role> <gh args…>` runs `gh` as that bot, as today.
 - `scripts/gh-as.sh developer git <git args…>` runs `git` with the developer's PAT as the
-  credential (through `gh auth git-credential`, which honours `GH_TOKEN`) and with
+  credential (an inline credential helper registered for `https://github.com` only, after clearing the machine's own helpers) and with
   `GIT_AUTHOR_*`/`GIT_COMMITTER_*` set to the bot's name and noreply email. Commits and pushes
   then both belong to the bot.
 
@@ -75,17 +75,19 @@ is the owner's job, never an agent's.
 
 ### 2. Ruleset "Protect Main"
 
-A `pull_request` rule is added to the existing rules (deletion, non-fast-forward, required `test`
-check):
+"Protect Main" (deletion, non-fast-forward, required `test` check, no bypass) stays exactly as
+it is. A second ruleset on `main`, "Require approvals", holds a `pull_request` rule:
 
 - two approving reviews required;
 - stale approvals dismissed on push;
 - approval of the most recent push required, so nothing lands after the last approval;
 - review threads must be resolved.
 
-A bypass entry for the repository-admin role in pull-request mode only, so PRs the owner authors
-personally (where only the reviewer bot can approve) can still merge. It is explicit and logged in
-the PR timeline.
+"Require approvals" also carries a bypass for the repository-admin role, in pull-request mode
+only, so PRs the owner authors personally (where only the reviewer bot can approve) can still
+merge. It is explicit and logged in the PR timeline. A bypass covers every rule in its ruleset,
+which is why the approvals rule lives in its own ruleset: the `test` check in "Protect Main" stays
+unbypassable. Both rulesets are kept as reviewable source in `.github/rulesets/`.
 
 ### 3. Review requests and assignment
 
@@ -199,7 +201,10 @@ the loop; it loses nothing.
 2. Launch `/dev <issue>` for it, and `/reviewer <pr>` when a PR is waiting.
 3. Final check on `@amitbaz ready for your check`: skim, approve, merge.
 
-The owner can also type into either session at any time.
+The owner can also type into either session at any time, but never pushes to a bot's PR: no
+commits, no "Update branch", no web-UI conflict resolution. The last-push rule would then refuse
+the owner's approval, and with the reviewer's approval dismissed the PR could merge only through
+the bypass. The owner asks the developer to push instead.
 
 ## Failure handling
 

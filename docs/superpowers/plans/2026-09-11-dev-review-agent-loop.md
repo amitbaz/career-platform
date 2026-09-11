@@ -407,6 +407,10 @@ The PR body follows `.github/PULL_REQUEST_TEMPLATE.md` and says `Closes #269` on
 
 ### Task 3: Apply the ruleset and verify the gate (after ticket A merges)
 
+> **Superseded.** The #269 final review changed this task. Follow "Task 3 (amended)" in
+> "Amendments after the #269 final review" at the end of this plan. The text below is kept only
+> as history.
+
 **Files:** none (applies `.github/rulesets/protect-main.json`).
 
 **Interfaces:**
@@ -761,3 +765,108 @@ Open the PR with `Closes #270`, quoting Step 4's and Step 5's results.
 - [ ] **Step 2: The owner runs `/dev <issue>`** in a new session, and later `/reviewer <pr>` when the `@amitbaz ready for review` comment arrives.
 - [ ] **Step 3: Observe verification item 7.** At least one `changes_requested` round, bot replies on the threads, a pinned re-approval, the `ready for your check` comment, and the owner's approval and merge, with every step visible on the PR.
 - [ ] **Step 4: Record the run** as a comment on ticket C: the PR link, the rounds, anything that needed the owner beyond the three touchpoints, and every gap found in `docs/agents/roles.md`. Then fix those gaps in a follow-up PR that goes through the same loop.
+
+---
+
+## Amendments after the #269 final review
+
+The whole-branch review of #269 found that a ruleset bypass covers **every** rule in its
+ruleset. Adding the admin bypass to "Protect Main" would therefore have made the `test` check
+bypassable. It also found that CODEOWNERS never requests reviews on draft PRs, and that an owner
+push to a bot PR deadlocks the two-approval rule. What changed:
+
+**Task 2 as shipped in #269:**
+- `.github/rulesets/protect-main.json` is a snapshot of the live "Protect Main" ruleset, unchanged:
+  deletion, non-fast-forward, the `test` check, and `bypass_actors: []`.
+- `.github/rulesets/require-approvals.json` is a second ruleset, "Require approvals": the
+  `pull_request` rule (2 approvals, stale approvals dismissed on push, last-push approval, threads
+  resolved), plus the admin bypass in pull-request mode.
+- AGENTS.md describes both rulesets, says "Require approvals" is not enforced until Task 3
+  applies it, and tells the owner never to push to a bot's PR.
+- `scripts/gh-as.sh` offers the bot token to `https://github.com` only, and names a failing
+  `gh api user`. The self-test proves that the machine's own helpers are cleared and that other
+  hosts get no token.
+- `assign.yml` grants permissions per job.
+
+### Task 3 (amended): apply "Require approvals" and verify the gate
+
+**Files:**
+- Modify: `AGENTS.md` (Step 7 only)
+
+**Interfaces:**
+- Consumes: `scripts/gh-as.sh` (both roles, including `developer git`),
+  `.github/rulesets/protect-main.json`, `.github/rulesets/require-approvals.json`, CODEOWNERS and
+  `assign.yml`, all on `main`, plus prerequisites P1 and P2.
+
+- [ ] **Step 1: Check the prerequisites. Stop and tell the owner if any fails.**
+
+  Run: `gh api repos/amitbaz/career-platform/collaborators/amitbaz-developer/permission --jq .permission`
+  Expected: `write`.
+
+  Run: `scripts/gh-as.sh developer api user --jq .login` and `scripts/gh-as.sh reviewer api user --jq .login`
+  Expected: `amitbaz-developer`, then `amitbaz-reviewer`.
+
+  Ask the owner to confirm, in GitHub's token settings, that the **reviewer** PAT has
+  Contents: **read** only. A fine-grained PAT's scopes cannot be read back through the API. Only
+  that scope stops the reviewer from writing code through the contents API.
+
+- [ ] **Step 2: Check that "Protect Main" has not drifted from its file**
+
+  ```bash
+  gh api repos/amitbaz/career-platform/rulesets/22383967 \
+    --jq '{name,target,enforcement,conditions,bypass_actors,rules}' | python3 -m json.tool --sort-keys > /tmp/live.json
+  python3 -m json.tool --sort-keys .github/rulesets/protect-main.json > /tmp/file.json
+  diff /tmp/live.json /tmp/file.json && echo "no drift"
+  ```
+  Expected: `no drift`. If they differ, stop and show the owner the diff. Protect Main is never
+  written by this task.
+
+- [ ] **Step 3: Ask the owner for an explicit go, then create "Require approvals"**
+
+  Run: `gh api -X POST repos/amitbaz/career-platform/rulesets --input .github/rulesets/require-approvals.json --jq '"\(.id) \([.rules[].type] | join(","))"'`
+  Expected: `<new id> pull_request`. Record the id on ticket #269.
+
+- [ ] **Step 4: Probe PR as the developer bot, not a draft (verification items 1, 2, 4 and 5)**
+
+  ```bash
+  git switch -c chore/ruleset-probe origin/main
+  scripts/gh-as.sh developer git commit --allow-empty -m "chore: ruleset probe (do not merge)"
+  scripts/gh-as.sh developer git push -u origin chore/ruleset-probe
+  scripts/gh-as.sh developer pr create --base main --head chore/ruleset-probe \
+    --title "chore: ruleset probe (do not merge)" --body "Verifies the agent-loop rulesets. Closed without merging."
+  sleep 30
+  gh pr view chore/ruleset-probe --json author,assignees,reviewRequests \
+    --jq '{a:.author.login, as:[.assignees[].login], rr:[.reviewRequests[].login]}'
+  ```
+  Expected: author `amitbaz-developer`, assignees `["amitbaz-developer"]`, and review requests
+  containing `amitbaz` and `amitbaz-reviewer`. The commits are authored by `amitbaz-developer`
+  (`git log -1 --format='%an <%ae>'`).
+
+  One approval is not enough:
+  `scripts/gh-as.sh reviewer pr review chore/ruleset-probe --approve --body "Probe approval."`, then
+  `gh pr view chore/ruleset-probe --json reviewDecision --jq .reviewDecision`
+  Expected: `REVIEW_REQUIRED`.
+
+  A push dismisses the approval:
+  `scripts/gh-as.sh developer git commit --allow-empty -m "chore: probe push" && scripts/gh-as.sh developer git push`, then
+  `gh pr view chore/ruleset-probe --json reviews --jq '[.reviews[] | select(.author.login=="amitbaz-reviewer") | .state] | last'`
+  Expected: `DISMISSED`.
+
+- [ ] **Step 5: Clean up the probe**
+
+  Run: `gh pr close chore/ruleset-probe --delete-branch --comment "Rulesets verified; closing the probe."`
+
+- [ ] **Step 6: Check new-issue assignment (verification item 4)**
+
+  Run: `n=$(gh issue create --title "probe: assignment workflow" --label area:platform --body "Verifies assign.yml. Closed immediately." | grep -o '[0-9]*$'); sleep 30; gh issue view "$n" --json assignees --jq '[.assignees[].login]'; gh issue close "$n" --reason "not planned"`
+  Expected: `["amitbaz"]`.
+
+- [ ] **Step 7: Make AGENTS.md true again**
+
+  Delete the sentence `Until #269 applies "Require approvals" to the repository, only "Protect
+  Main" is enforced and a merge needs no approval.` from the "Delivery runs between two bot
+  accounts" section. Commit and open a PR as the owner. That PR is owner-authored, so it can only
+  merge through the admin bypass, and the owner's merge of it is verification item 3.
+
+- [ ] **Step 8: Record the results** as a comment on #269, quoting each command's output, and
+  close #269.
