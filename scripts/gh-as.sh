@@ -40,16 +40,24 @@ if [ "$1" = "git" ]; then
     echo "gh-as: only the developer commits or pushes" >&2
     exit 1
   fi
-  identity="$(GH_TOKEN="$TOKEN" gh api user --jq '"\(.login)\t\(.id)+\(.login)@users.noreply.github.com"')"
+  identity="$(GH_TOKEN="$TOKEN" gh api user --jq '"\(.login)\t\(.id)+\(.login)@users.noreply.github.com"')" || {
+    echo "gh-as: could not read the developer account with its PAT" >&2
+    exit 1
+  }
   login="${identity%%$'\t'*}"
   email="${identity#*$'\t'}"
-  # The empty helper clears the machine's own helpers (osxkeychain), so the
-  # bot's token is the only credential offered and is never stored.
+  # The empty resets clear the machine's own helpers (osxkeychain) and any
+  # existing github.com-scoped helper, so the bot's token is offered only to
+  # github.com and is never stored. Every other host (a submodule, a
+  # redirect, a hostile `insteadOf`) gets no credential from us at all.
+  # GH_AS_TOKEN is exported, so git hooks and other children of this git
+  # process inherit it too (a known limitation; this repo has no hooks today).
   export GH_AS_TOKEN="$TOKEN"
   exec env GIT_AUTHOR_NAME="$login" GIT_AUTHOR_EMAIL="$email" \
     GIT_COMMITTER_NAME="$login" GIT_COMMITTER_EMAIL="$email" \
     git -c credential.helper= \
-      -c 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_AS_TOKEN"; }; f' \
+      -c credential.https://github.com.helper= \
+      -c 'credential.https://github.com.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_AS_TOKEN"; }; f' \
       "$@"
 fi
 
