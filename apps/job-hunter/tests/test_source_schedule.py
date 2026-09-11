@@ -29,10 +29,20 @@ from pathlib import Path
 
 
 def _migration_text() -> str:
+    """The migration that last defines job_hunter_reschedule_sources.
+
+    Later migrations re-create the function (#258), and the definition that
+    runs is the last one applied, so that is the one to hold against Python.
+    """
     root = Path(__file__).resolve().parents[3]
-    matches = sorted(root.glob("supabase/migrations/*_job_hunter_source_registry.sql"))
-    assert matches, "the source registry migration is missing"
-    return matches[-1].read_text(encoding="utf-8")
+    defining = [
+        text
+        for path in sorted(root.glob("supabase/migrations/*.sql"))
+        if "function public.job_hunter_reschedule_sources()"
+        in (text := path.read_text(encoding="utf-8"))
+    ]
+    assert defining, "no migration defines job_hunter_reschedule_sources"
+    return defining[-1]
 
 
 def test_the_sql_ladder_matches_the_python_one():

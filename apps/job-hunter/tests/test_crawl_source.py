@@ -490,3 +490,226 @@ def test_a_closed_posting_listed_again_is_not_short_circuited(store, ingestion_d
 
     assert [listed.source_job_id for listed in persisted[0]] == [job.source_job_id]
     assert outcome.unchanged_by_hash == 0
+
+
+# Timing and purpose (#258) ------------------------------------------------------
+
+
+def _crawl_insert(database):
+    [params] = [
+        params for sql, params in database.executed if "job_hunter_source_crawls" in sql
+    ]
+    return params
+
+
+def test_a_message_without_a_purpose_is_a_scheduled_crawl():
+    """Messages enqueued before #258 carry no purpose and must still be crawled."""
+    stage = CrawlSourceStage(
+        _FakeDatabase(), build_source=lambda key: _StubSource([]), persist=lambda jobs: None
+    )
+    assert stage(_message()).purpose == "scheduled"
+
+
+def test_a_safety_crawl_is_recorded_as_one_and_linked_to_its_run():
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _StubSource([]),
+        persist=lambda jobs: None,
+        worker_run_id="run-9",
+    )
+    message = QueueMessage(
+        stage=Stage.CRAWL_SOURCE,
+        message_id=1,
+        payload={"crawl_key": "remotive", "purpose": "safety"},
+    )
+    assert stage(message).purpose == "safety"
+    params = _crawl_insert(database)
+    assert "safety" in params
+    assert "run-9" in params
+
+
+def test_an_unknown_crawl_purpose_is_a_permanent_failure():
+    stage = CrawlSourceStage(
+        _FakeDatabase(), build_source=lambda key: _StubSource([]), persist=lambda jobs: None
+    )
+    message = QueueMessage(
+        stage=Stage.CRAWL_SOURCE,
+        message_id=1,
+        payload={"crawl_key": "remotive", "purpose": "whenever"},
+    )
+    with pytest.raises(PermanentStageFailure):
+        stage(message)
+
+
+def test_the_crawl_records_when_it_started_and_when_it_was_enqueued():
+    """started_at used to default to insert time, which is after the crawl."""
+    from datetime import datetime, timedelta, timezone
+
+    started = datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc)
+    enqueued = started - timedelta(minutes=3)
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _StubSource([]),
+        persist=lambda jobs: None,
+        now=lambda: started,
+    )
+    claimed = enqueued + timedelta(minutes=1)
+    message = QueueMessage(
+        stage=Stage.CRAWL_SOURCE,
+        message_id=1,
+        payload={"crawl_key": "remotive"},
+        enqueued_at=enqueued,
+        claimed_at=claimed,
+    )
+    outcome = stage(message)
+
+    assert (outcome.started_at, outcome.enqueued_at, outcome.claimed_at) == (
+        started,
+        enqueued,
+        claimed,
+    )
+    params = _crawl_insert(database)
+    assert started in params and enqueued in params and claimed in params
+
+
+def test_a_failure_outside_the_source_still_leaves_a_crawl_row_and_is_retried():
+    """A persist that fails used to reach the runner with no crawl row, so the
+    window evidence lost the failure. It is recorded now, and still raised so
+    the queue retries the message as before."""
+    database = _FakeDatabase()
+
+    def _persist(jobs):
+        raise RuntimeError("merge failed")
+
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _StubSource([_job("remotive", "5", "new words")]),
+        persist=_persist,
+    )
+    with pytest.raises(RuntimeError, match="merge failed"):
+        stage(_message())
+
+    params = _crawl_insert(database)
+    assert "failed" in params
+    assert any("merge failed" in str(value) for value in params)
+
+
+def test_a_source_that_cannot_be_built_still_leaves_a_crawl_row():
+    database = _FakeDatabase()
+
+    def _build(key):
+        raise KeyError(key)
+
+    stage = CrawlSourceStage(database, build_source=_build, persist=lambda jobs: None)
+    with pytest.raises(KeyError):
+        stage(_message("unknown:board"))
+
+    params = _crawl_insert(database)
+    assert params[0] == "unknown:board"
+    assert "failed" in params
+
+
+def test_the_drain_heartbeats_after_every_batch_and_measures_queue_delay(monkeypatch):
+    """Queue delay ends at the claim. The stage's clock below advances five
+    minutes per crawl, as a slow batch would, and none of it may leak into
+    the delay of the messages that waited behind the first."""
+    from datetime import datetime, timedelta, timezone
+
+    from job_hunter import crawl_source as module
+
+    enqueued = datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc)
+    messages = [
+        QueueMessage(
+            stage=Stage.CRAWL_SOURCE,
+            message_id=number,
+            payload={"crawl_key": "remotive"},
+            enqueued_at=enqueued,
+            claimed_at=enqueued + timedelta(seconds=30),
+        )
+        for number in (1, 2, 3)
+    ]
+    ticks = iter(range(100))
+
+    class _Queue:
+        def __init__(self, database):
+            self.remaining = list(messages)
+
+        def claim(self, stage, *, visibility_timeout_seconds, batch_size):
+            batch, self.remaining = (
+                self.remaining[:batch_size],
+                self.remaining[batch_size:],
+            )
+            return batch
+
+        def complete(self, message):
+            pass
+
+        def metrics(self):
+            return []
+
+    monkeypatch.setattr(module, "PostgresStageQueue", _Queue)
+    database = _FakeDatabase()
+    heartbeats: list[int] = []
+
+    drain = module.drain_crawl_source(
+        database,
+        None,
+        build_source=lambda key: _StubSource([]),
+        persist=lambda jobs: None,
+        limit=10,
+        batch_size=2,
+        on_batch=lambda progress: heartbeats.append(progress.claimed),
+        worker_run_id="run-7",
+        now=lambda: enqueued + timedelta(minutes=5 * next(ticks)),
+    )
+
+    assert heartbeats == [2, 3, 3], "one heartbeat per batch, the empty one included"
+    assert drain.stopped_because == "queue_empty"
+    assert (drain.queue_delays.total_ms, drain.queue_delays.max_ms) == (90_000, 30_000)
+    crawl_rows = [
+        params for sql, params in database.executed if "job_hunter_source_crawls" in sql
+    ]
+    assert len(crawl_rows) == 3
+    assert all("run-7" in params for params in crawl_rows)
+
+
+@pytest.mark.integration
+def test_the_crawl_row_carries_its_run_purpose_and_timing(store):
+    from datetime import datetime, timedelta, timezone
+
+    from job_hunter.crawl_source import CrawlDrain
+    from job_hunter.worker_runs import WorkerRun
+
+    run = WorkerRun(store._ingestion, "crawl_source", stale_after_seconds=900)
+    run.start()
+    crawl_key = f"remotive:test-{uuid.uuid4()}"
+    stage = CrawlSourceStage(
+        store._ingestion,
+        build_source=lambda key: _StubSource([]),
+        persist=lambda jobs: None,
+        worker_run_id=run.id,
+    )
+    stage(
+        QueueMessage(
+            stage=Stage.CRAWL_SOURCE,
+            message_id=1,
+            payload={"crawl_key": crawl_key, "purpose": "safety"},
+            enqueued_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        )
+    )
+    run.finish(CrawlDrain(claimed=1, stopped_because="queue_empty"))
+
+    with store._ingestion.connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select purpose, worker_run_id::text, "
+                "       started_at <= finished_at, "
+                "       started_at - enqueued_at >= interval '2 minutes' "
+                "  from public.job_hunter_source_crawls where source_key = %s",
+                (crawl_key,),
+            )
+            row = cursor.fetchone()
+
+    assert row == ("safety", run.id, True, True)
