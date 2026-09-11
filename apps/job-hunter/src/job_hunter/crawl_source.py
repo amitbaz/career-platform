@@ -68,11 +68,12 @@ class CrawlOutcome:
     # group (#61), read off resolve_persist's PostingBatch. Written on every
     # crawl, including zero (AGENTS.md rule 5).
     joined_variant_group: int = 0
-    # When the crawl began, when its message was enqueued, and why it ran
-    # (#258). `started_at` is taken before the crawl rather than at insert
-    # time, so `started_at - enqueued_at` is the queue-to-worker delay.
+    # When the crawl began, when its message was enqueued and claimed, and why
+    # it ran (#258). `started_at` is taken before the crawl rather than at
+    # insert time; `claimed_at - enqueued_at` is the queue-to-worker delay.
     started_at: datetime | None = None
     enqueued_at: datetime | None = None
+    claimed_at: datetime | None = None
     purpose: str = "scheduled"
 
 
@@ -133,11 +134,43 @@ class CrawlSourceStage:
         timing = {
             "started_at": self._now(),
             "enqueued_at": message.enqueued_at,
+            "claimed_at": message.claimed_at,
             "purpose": purpose,
         }
         started = time.monotonic()
         requests_before = getattr(self._http, "request_count", 0) if self._http else 0
+        try:
+            return self._crawl(source_key, timing, started, requests_before)
+        # Exception, not BaseException, for the reason given at the
+        # discover() clause below: a killed worker must propagate uncaught.
+        except Exception as error:
+            # A failure anywhere else in the attempt -- the cursor read,
+            # building the source, the probe, the unchanged-hash check, the
+            # persist -- used to reach the runner with no crawl row, so the
+            # window evidence silently lost this source's failure, cost and
+            # time. Record it, then re-raise so the queue retries the message
+            # exactly as it did before.
+            outcome = CrawlOutcome(
+                source_key=source_key,
+                **timing,
+                outcome="failed",
+                requests=self._requests_since(requests_before),
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error=str(error)[:500],
+            )
+            logger.warning(
+                "crawl_source %s failed outside the source: %s", source_key, error
+            )
+            self._record(outcome)
+            raise
 
+    def _crawl(
+        self,
+        source_key: str,
+        timing: dict[str, Any],
+        started: float,
+        requests_before: int,
+    ) -> CrawlOutcome:
         self._register_target(source_key)
         validators = self._read_cursor(source_key)
         source = self._build_source(source_key)
@@ -324,9 +357,9 @@ class CrawlSourceStage:
                         "(source_key, started_at, finished_at, outcome, fetched, "
                         " new_to_corpus, changed, unchanged_by_hash, "
                         " requests, elapsed_ms, error, purpose, enqueued_at, "
-                        " worker_run_id, joined_variant_group) "
+                        " claimed_at, worker_run_id, joined_variant_group) "
                         "values (%s, coalesce(%s, now()), now(), %s, %s, %s, %s, "
-                        "%s, %s, %s, %s, %s, %s, %s, %s)",
+                        "%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (
                             outcome.source_key,
                             outcome.started_at,
@@ -340,6 +373,7 @@ class CrawlSourceStage:
                             outcome.error,
                             outcome.purpose,
                             outcome.enqueued_at,
+                            outcome.claimed_at,
                             self._worker_run_id,
                             outcome.joined_variant_group,
                         ),
@@ -472,7 +506,7 @@ def drain_crawl_source(
         def handler(message: QueueMessage) -> CrawlOutcome:
             nonlocal seen
             seen += 1
-            drain.queue_delays.observe(message, now())
+            drain.queue_delays.observe(message)
             try:
                 outcome = stage(message)
             except QuotaExhausted:

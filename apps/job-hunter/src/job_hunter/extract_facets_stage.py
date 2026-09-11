@@ -35,7 +35,6 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from job_hunter.ai import (
@@ -56,7 +55,6 @@ from job_hunter.stage_queue import (
     Stage,
     StageRunner,
     TransientStageFailure,
-    utc_now,
 )
 
 if TYPE_CHECKING:
@@ -362,7 +360,6 @@ def drain_extract_facets(
     time_budget_seconds: float = 20 * 60,
     clock: Callable[[], float] = time.monotonic,
     on_batch: Callable[[ExtractFacetsDrain], None] | None = None,
-    now: Callable[[], datetime] = utc_now,
 ) -> ExtractFacetsDrain:
     """Drain up to `limit` due extractions, in batches, within a time budget.
 
@@ -397,7 +394,7 @@ def drain_extract_facets(
         def handler(message: QueueMessage):
             nonlocal seen
             seen += 1
-            drain.queue_delays.observe(message, now())
+            drain.queue_delays.observe(message)
             try:
                 result = stage(message)
             except QuotaExhausted:

@@ -64,7 +64,7 @@ class PostgresStageQueue:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "select q.msg_id, q.message, coalesce(a.attempt_count, 0), "
-                    "q.enqueued_at "
+                    "q.enqueued_at, now() "
                     "from pgmq.read(%s, %s, %s) q "
                     "left join public.job_hunter_stage_attempts a "
                     "on a.stage = %s and a.message_id = q.msg_id "
@@ -88,8 +88,9 @@ class PostgresStageQueue:
                 ),
                 attempt_count=int(attempt_count),
                 enqueued_at=enqueued_at,
+                claimed_at=claimed_at,
             )
-            for message_id, payload, attempt_count, enqueued_at in rows
+            for message_id, payload, attempt_count, enqueued_at, claimed_at in rows
         ]
 
     def complete(self, message: QueueMessage) -> None:

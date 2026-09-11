@@ -71,7 +71,8 @@ failure classification: its visibility timeout expires and another worker may cl
 **Worker run** — one invocation of a scheduled ingestion worker (`crawl-source`,
 `extract-facets`, `recheck-freshness`), recorded in `job_hunter_worker_runs` from start
 to finish. A worker that woke to an empty queue is a finished run with stop reason
-`queue_empty`, not a missing row. A run whose heartbeat went stale is **unfinished**; a
+`queue_empty`, not a missing row. An invocation with no database connection cannot be
+recorded, and shows as its worker missing. A run whose heartbeat went stale is **unfinished**; a
 worker with no run started in two scheduled intervals is **missing**. Both are health
 failures.
 

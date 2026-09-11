@@ -35,9 +35,13 @@ measurement". This plan records the implementation decisions the design left to 
      after finishing, logs each failure, and exits 1 if any worker is unhealthy, so a failure
      turns a Render cron run red rather than scrolling out of a log. Known gap: if every Render
      worker stops, nothing runs the check; Engine Lab (#264) reads the same function.
-3. **Queue delay** comes from pgmq's `enqueued_at`, carried on `QueueMessage`. Each drain
-   records the total and the maximum across its claimed messages. The crawl row also stores
-   `enqueued_at`, `worker_run_id`, `purpose` and a real `started_at`.
+3. **Queue delay** is the claim time minus pgmq's `enqueued_at`, both read from the database
+   clock by the claim and carried on `QueueMessage`. A batch is claimed at once and processed
+   in turn, so measuring to each handler's start would count earlier messages' work as queue
+   delay. Each drain records the total and the maximum across its claimed messages. The crawl
+   row also stores `enqueued_at`, `claimed_at`, `worker_run_id`, `purpose` and a real
+   `started_at`, and a failure anywhere in the attempt writes a `failed` row before the
+   exception reaches the queue.
 4. **Source-published-to-first-seen delay is not reported.** No adapter captures a source
    publication timestamp (`Job` has no such field), so the evidence column is always null and
    carries the reason `no_trusted_source_timestamp`. A test fails when `Job` gains a
@@ -59,9 +63,12 @@ measurement". This plan records the implementation decisions the design left to 
    are judged against their own rates. Only silent windows are reduced. A quiet window is kept.
 7. **Reduction is enforced in the enqueue, with labelled safety crawls.** The per-target cron
    command becomes `select public.job_hunter_enqueue_crawl(<payload>, <safety minutes>)`. In a
-   window currently recommended `reduce`, it enqueues only when the target has neither crawled
-   nor had a message queued within the next-slower band's interval, and the message carries
-   `purpose = 'safety'`. Safety crawls feed the same evidence, so one that finds novelty turns
+   window currently recommended `reduce`, it enqueues only when the target has not crawled in
+   that same window within the next-slower band's interval and has no safety crawl still
+   queued, and the message carries `purpose = 'safety'`. Crawls in adjacent kept windows do not
+   count. For a target on the hourly band or slower the safety interval outlasts a one-hour
+   window, so a reduced window keeps one crawl per occurrence; the reduction takes effect on
+   the fifteen-minute band. Safety crawls feed the same evidence, so one that finds novelty turns
    its window back to `keep`. `apply_reductions`, `significance` and `lookback_days` live in
    `job_hunter_ingestion_timing_config`, one row.
 8. **Worker evidence** (`job_hunter_worker_run_evidence`) is worker × ISO weekday × UTC hour:
@@ -72,7 +79,7 @@ measurement". This plan records the implementation decisions the design left to 
 
 ## Steps (test first)
 
-1. Migration `29999999025800_job_hunter_worker_runs.sql` (placeholder number) and pgTAP
+1. Migration `20260911160000_job_hunter_worker_runs.sql` and pgTAP
    `job_hunter_worker_runs.sql`, plus the table and function lists in
    `job_hunter_isolation.sql` and `job_hunter_store_functions.sql`.
 2. `QueueMessage.enqueued_at`, and the claim selects it.

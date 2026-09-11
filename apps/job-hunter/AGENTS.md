@@ -521,16 +521,21 @@ Key modules:
   `unfinished` (heartbeat older than the run's own `stale_after_seconds`, which is the
   drain's visibility timeout) or `missing` (no run started in two intervals of
   `job_hunter_worker_schedules`, which mirrors `render.yaml` and is test-pinned to it). So a
-  healthy worker going red names another in its `ingestion_health` log lines. The one gap:
-  if every worker stops, nothing runs the check. Queue delay comes from pgmq's `enqueued_at`
-  (`QueueMessage.enqueued_at`, `QueueDelays`). The crawl ledger now records a real
-  `started_at`, `enqueued_at`, `worker_run_id` and `purpose`.
+  healthy worker going red names another in its `ingestion_health` log lines. An invocation
+  with no `SUPABASE_DB_URL` cannot be recorded, so everything that can fail once the
+  connection exists (a missing platform key, a profile that will not load) happens inside
+  the recorded run. The one gap: if every worker stops, nothing runs the check. Queue delay
+  is the claim time minus pgmq's `enqueued_at`, both read from the database clock by the
+  claim (`QueueMessage.claimed_at`, `QueueDelays`), because a batch is claimed at once and
+  processed in turn. The crawl ledger now records a real `started_at`, plus `enqueued_at`,
+  `claimed_at`, `worker_run_id` and `purpose`, and writes a `failed` row for a failure
+  anywhere in the attempt, not only inside the source, before re-raising it for the queue.
   `job_hunter_crawl_window_evidence()` groups crawl yield by crawl target, ISO weekday and
   UTC hour, and gives each window `keep`, `reduce` or `insufficient_evidence`. `reduce`
   means the window found no novelty where the target's own rate makes that silence less
   likely than `significance` (0.05). `job_hunter_enqueue_crawl`, which each per-target cron
-  entry now runs, then enqueues only labelled `safety` crawls there, at the next-slower
-  band. Configuration is `job_hunter_ingestion_timing_config`. Publication-to-first-seen
+  entry now runs, then enqueues only labelled `safety` crawls there: at most one per
+  next-slower band interval, counting only crawls in that same window. Configuration is `job_hunter_ingestion_timing_config`. Publication-to-first-seen
   delay is not reported: no adapter captures a trustworthy publication time, and
   `test_no_source_publication_time_is_captured_yet` fails when `Job` gains one.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`, against the shared Supabase project): job dedup (`upsert_job`), re-evaluation gating (`needs_evaluation` — a job is only re-evaluated if it hasn't been evaluated before or its description changed), evaluation caching, and delivery tracking (`mark_delivered`). `pending_delivery_job_ids(match_score_floor)` retries undelivered Telegram work without re-calling Gemini, applying the profile's inclusive floor. Discovery persists in batches, through `upsert_logical_jobs`, `needs_evaluation_bulk`, `set_job_markets`, `set_job_statuses`, `upsert_ats_boards`, and `record_ats_eligible_jobs` — `collect_candidates` calls these instead of looping the single-job methods. Since #183 the crawl stages and enqueues its postings through `merge_posting_batch`; a bounded `resolve_persist` consumer hands each job upsert the posting the merge resolved, so `job_hunter_upsert_job` no longer resolves one per listing. The single-job methods (`upsert_job`, `needs_evaluation`, `mark_delivered`, etc.) remain for the Telegram webhook and cover-letter paths, which handle one job at a time. `collect_candidates`'s canonical-resolution tail no longer uses them: it pays only for a job whose resolution actually changed something, and those jobs' writes are collected during the loop and flushed after it as one staged posting merge plus `upsert_logical_jobs`, `set_job_markets` and `needs_evaluation_bulk` — three PostgREST round trips per resolved job (1170.8s for 1,221 of them in run 34289288702) became four calls for the whole run. The loop records its outcomes in order and a single walk afterwards decides eligibility, so deferring the writes cannot reorder what the run delivers. A job already on a supported ATS URL resolves to what it already was and writes nothing at all (#160): its row, market, board and `needs_evaluation` answer all come from the batched phases, and `discovery.py::_resolution_fingerprint` is what tells the two cases apart — a future resolution step that mutates another stored field must be added there or its change will not be written. Board registration left the tail with #160 (batched through `upsert_ats_boards`, so no board is registered twice in a run) and eligibility recording left it with #151. Those jobs still bypass the `max_canonical_resolutions_per_run` shortlist, which bounds network resolutions only. New bulk work should use the batch methods rather than looping the single-job ones.

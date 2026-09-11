@@ -288,8 +288,13 @@ def _run_with(
 def _recorded_drain(database, worker: str, stale_after_seconds: int, drain):
     """Run `drain(run)` as one recorded worker run; return `(result, healthy)`.
 
-    Every ingestion worker invocation gets a `job_hunter_worker_runs` row,
-    including one that finds its queue empty (#258). `drain` receives the run
+    Every ingestion worker invocation that can reach the database gets a
+    `job_hunter_worker_runs` row, including one that finds its queue empty
+    (#258). So everything that can fail once the connection exists -- a
+    missing key, a client or profile that will not load -- belongs inside
+    `drain`, where it becomes a failed run rather than an absent one. An
+    invocation with no SUPABASE_DB_URL cannot be recorded; health reports its
+    worker missing instead. `drain` receives the run
     so it can pass `run.heartbeat` as its `on_batch` and `run.id` to rows it
     writes itself. An exception finishes the run as an error and propagates.
     A killed process finishes nothing, and health reports the run once its
@@ -394,11 +399,11 @@ def _crawl_source(args: argparse.Namespace) -> int:
 
     http = HttpClient()
     ingestion = IngestionDatabase(dsn)
-    store = PostgresJobStore(_build_client(http), ingestion)
 
     def _drain(run: WorkerRun):
-        # Inside the recorded run, so a search profile that cannot be loaded
-        # is a failed run rather than an absent one.
+        # Inside the recorded run, so a Supabase client or search profile that
+        # cannot be loaded is a failed run rather than an absent one.
+        store = PostgresJobStore(_build_client(http), ingestion)
         settings = load_settings(store)
         search_breaker = CircuitBreaker(_SEARCH_FAILURE_THRESHOLD)
         brave_budget = build_brave_budget(settings, store.client)
@@ -431,7 +436,9 @@ def _crawl_source(args: argparse.Namespace) -> int:
             ingestion, "crawl_source", VISIBILITY_TIMEOUT_SECONDS, _drain
         )
     finally:
-        store.close()
+        # The pool is the only thing a store holds (`PostgresJobStore.close`
+        # closes exactly this), and it outlives the store so health can be read.
+        ingestion.close()
     logger.info("crawl_source complete: %s", drain.summary())
     if drain.claimed and drain.claimed == drain.outcomes.get("failed", 0):
         # Every single crawl failing is a process that cannot reach
@@ -472,20 +479,20 @@ def _extract_facets(args: argparse.Namespace) -> int:
         )
         return 1
 
-    platform_settings = load_platform_ai_settings()
-    if platform_settings is None:
-        logger.error(
-            "extract-facets needs PLATFORM_GEMINI_API_KEY: extraction spends "
-            "only the platform key, never a user's"
-        )
-        return 1
-    platform_key, platform_quota, ai_model = platform_settings
-
     http = HttpClient()
     ingestion = IngestionDatabase(dsn)
-    store = PostgresJobStore(_build_client(http), ingestion)
 
     def _drain(run: WorkerRun):
+        # Inside the recorded run: a missing platform key is a failed
+        # invocation with its reason on the row, not an absent one.
+        platform_settings = load_platform_ai_settings()
+        if platform_settings is None:
+            raise RuntimeError(
+                "extract-facets needs PLATFORM_GEMINI_API_KEY: extraction spends "
+                "only the platform key, never a user's"
+            )
+        platform_key, platform_quota, ai_model = platform_settings
+        store = PostgresJobStore(_build_client(http), ingestion)
         platform_tracker = AIUsageTracker(
             PlatformUsageLedger(store), platform_quota, ai_model, provider=PROVIDER
         )
@@ -505,7 +512,7 @@ def _extract_facets(args: argparse.Namespace) -> int:
             ingestion, "extract_facets", VISIBILITY_TIMEOUT_SECONDS, _drain
         )
     finally:
-        store.close()
+        ingestion.close()
     logger.info("extract_facets complete: %s", drain.summary())
     if drain.claimed and drain.claimed == drain.outcomes.get("failed", 0):
         logger.error(

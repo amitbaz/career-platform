@@ -20,7 +20,6 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Callable, Protocol
 
 import requests
@@ -38,7 +37,6 @@ from .stage_queue import (
     Stage,
     StageRunner,
     TransientStageFailure,
-    utc_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -488,7 +486,6 @@ def drain_recheck_freshness(
     time_budget_seconds: float = 20 * 60,
     clock: Callable[[], float] = time.monotonic,
     on_batch: Callable[[FreshnessDrain], None] | None = None,
-    now: Callable[[], datetime] = utc_now,
 ) -> FreshnessDrain:
     """Drain up to `limit` due re-checks, in batches, within a time budget.
 
@@ -529,7 +526,7 @@ def drain_recheck_freshness(
         def handler(message: QueueMessage) -> FreshnessOutcome:
             nonlocal seen
             seen += 1
-            drain.queue_delays.observe(message, now())
+            drain.queue_delays.observe(message)
             try:
                 outcome = stage(message)
             except QuotaExhausted:

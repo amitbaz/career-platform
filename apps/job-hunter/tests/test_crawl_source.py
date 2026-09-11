@@ -555,20 +555,66 @@ def test_the_crawl_records_when_it_started_and_when_it_was_enqueued():
         persist=lambda jobs: None,
         now=lambda: started,
     )
+    claimed = enqueued + timedelta(minutes=1)
     message = QueueMessage(
         stage=Stage.CRAWL_SOURCE,
         message_id=1,
         payload={"crawl_key": "remotive"},
         enqueued_at=enqueued,
+        claimed_at=claimed,
     )
     outcome = stage(message)
 
-    assert (outcome.started_at, outcome.enqueued_at) == (started, enqueued)
+    assert (outcome.started_at, outcome.enqueued_at, outcome.claimed_at) == (
+        started,
+        enqueued,
+        claimed,
+    )
     params = _crawl_insert(database)
-    assert started in params and enqueued in params
+    assert started in params and enqueued in params and claimed in params
+
+
+def test_a_failure_outside_the_source_still_leaves_a_crawl_row_and_is_retried():
+    """A persist that fails used to reach the runner with no crawl row, so the
+    window evidence lost the failure. It is recorded now, and still raised so
+    the queue retries the message as before."""
+    database = _FakeDatabase()
+
+    def _persist(jobs):
+        raise RuntimeError("merge failed")
+
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _StubSource([_job("remotive", "5", "new words")]),
+        persist=_persist,
+    )
+    with pytest.raises(RuntimeError, match="merge failed"):
+        stage(_message())
+
+    params = _crawl_insert(database)
+    assert "failed" in params
+    assert any("merge failed" in str(value) for value in params)
+
+
+def test_a_source_that_cannot_be_built_still_leaves_a_crawl_row():
+    database = _FakeDatabase()
+
+    def _build(key):
+        raise KeyError(key)
+
+    stage = CrawlSourceStage(database, build_source=_build, persist=lambda jobs: None)
+    with pytest.raises(KeyError):
+        stage(_message("unknown:board"))
+
+    params = _crawl_insert(database)
+    assert params[0] == "unknown:board"
+    assert "failed" in params
 
 
 def test_the_drain_heartbeats_after_every_batch_and_measures_queue_delay(monkeypatch):
+    """Queue delay ends at the claim. The stage's clock below advances five
+    minutes per crawl, as a slow batch would, and none of it may leak into
+    the delay of the messages that waited behind the first."""
     from datetime import datetime, timedelta, timezone
 
     from job_hunter import crawl_source as module
@@ -580,9 +626,11 @@ def test_the_drain_heartbeats_after_every_batch_and_measures_queue_delay(monkeyp
             message_id=number,
             payload={"crawl_key": "remotive"},
             enqueued_at=enqueued,
+            claimed_at=enqueued + timedelta(seconds=30),
         )
         for number in (1, 2, 3)
     ]
+    ticks = iter(range(100))
 
     class _Queue:
         def __init__(self, database):
@@ -614,12 +662,12 @@ def test_the_drain_heartbeats_after_every_batch_and_measures_queue_delay(monkeyp
         batch_size=2,
         on_batch=lambda progress: heartbeats.append(progress.claimed),
         worker_run_id="run-7",
-        now=lambda: enqueued + timedelta(seconds=90),
+        now=lambda: enqueued + timedelta(minutes=5 * next(ticks)),
     )
 
     assert heartbeats == [2, 3, 3], "one heartbeat per batch, the empty one included"
     assert drain.stopped_because == "queue_empty"
-    assert (drain.queue_delays.total_ms, drain.queue_delays.max_ms) == (270_000, 90_000)
+    assert (drain.queue_delays.total_ms, drain.queue_delays.max_ms) == (90_000, 30_000)
     crawl_rows = [
         params for sql, params in database.executed if "job_hunter_source_crawls" in sql
     ]

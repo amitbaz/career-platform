@@ -109,3 +109,21 @@ def test_a_drain_that_raises_finishes_its_run_as_an_error(worker, monkeypatch):
     [run] = _Run.instances
     assert run.events == ["start", ("fail", "stack unreachable")]
     assert database.closed
+
+
+def test_extract_facets_without_a_platform_key_is_a_recorded_failed_run(
+    worker, monkeypatch
+):
+    """The database is reachable, so the invocation is recordable: a missing
+    key must leave a failed run with its reason, not an absent one."""
+    database, _ = worker
+    monkeypatch.setattr(cli, "load_platform_ai_settings", lambda: None)
+
+    assert cli.main(["extract-facets"]) == 1
+
+    [run] = _Run.instances
+    assert run.worker == "extract_facets"
+    assert run.events[0] == "start"
+    kind, reason = run.events[1]
+    assert kind == "fail" and "PLATFORM_GEMINI_API_KEY" in reason
+    assert database.closed

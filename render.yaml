@@ -9,8 +9,8 @@
 # the Render dashboard rather than here: `sync: false` is not supported inside
 # `envVarGroups` in a Blueprint, only on a service's own `envVars`.
 #
-# Every invocation of these three workers is recorded in
-# job_hunter_worker_runs (#258), and each one exits non-zero when
+# Every invocation of these three workers that can reach the database is
+# recorded in job_hunter_worker_runs (#258), and each one exits non-zero when
 # job_hunter_worker_health() reports any worker unhealthy -- so a worker that
 # stopped running turns the others red. job_hunter_worker_schedules holds
 # the expected interval of each schedule below;

@@ -96,16 +96,23 @@ def test_queue_delay_runs_from_enqueue_to_claim():
     delays = QueueDelays()
     for seconds in (2, 5):
         delays.observe(
-            QueueMessage(Stage.CRAWL_SOURCE, seconds, {}, enqueued_at=enqueued),
-            enqueued + timedelta(seconds=seconds),
+            QueueMessage(
+                Stage.CRAWL_SOURCE,
+                seconds,
+                {},
+                enqueued_at=enqueued,
+                claimed_at=enqueued + timedelta(seconds=seconds),
+            )
         )
     assert (delays.total_ms, delays.max_ms) == (7000, 5000)
 
 
-def test_a_message_with_no_enqueue_time_is_not_measured_as_zero():
+def test_a_message_missing_either_time_is_not_measured_as_zero():
     """Zero is a measurement: counting an unknown delay as zero would drag the mean down."""
     delays = QueueDelays()
-    delays.observe(QueueMessage(Stage.CRAWL_SOURCE, 1, {}), datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    delays.observe(QueueMessage(Stage.CRAWL_SOURCE, 1, {}, claimed_at=now))
+    delays.observe(QueueMessage(Stage.CRAWL_SOURCE, 2, {}, enqueued_at=now))
     assert (delays.total_ms, delays.max_ms) == (0, 0)
 
 
@@ -328,5 +335,9 @@ def test_a_claimed_message_carries_when_it_was_enqueued(
         assert message.enqueued_at is not None
         assert message.enqueued_at.tzinfo is not None
         assert abs(datetime.now(timezone.utc) - message.enqueued_at) < timedelta(minutes=5)
+        # Read from the database clock by the claim itself, so the delay does
+        # not depend on this machine's clock agreeing with Postgres's.
+        assert message.claimed_at is not None
+        assert message.claimed_at >= message.enqueued_at
     finally:
         queue.complete(message)

@@ -1,8 +1,5 @@
 -- Every ingestion worker invocation, and crawl timing as evidence (issue #258).
 --
--- PLACEHOLDER is deliberately not a timestamp. Migration timestamps are
--- allocated at pull-request open, in merge order (AGENTS.md).
---
 -- The crawl ledger (#184) records what each crawl of each source produced.
 -- It records nothing when a Render worker wakes, finds its queue empty and
 -- exits, so the cost of the fifteen-minute drains cannot be measured, and a
@@ -60,6 +57,12 @@ comment on table public.job_hunter_worker_runs is
 
 create index job_hunter_worker_runs_recent_idx
   on public.job_hunter_worker_runs (worker, started_at desc);
+
+-- Health reads each worker's latest finished run after every invocation, so
+-- that read needs its own bounded path on a table that only ever grows.
+create index job_hunter_worker_runs_finished_idx
+  on public.job_hunter_worker_runs (worker, finished_at desc)
+  where finished_at is not null;
 
 -- Worker schedules -----------------------------------------------------------
 --
@@ -119,15 +122,19 @@ insert into public.job_hunter_ingestion_timing_config default values;
 --
 -- `started_at` has so far defaulted to insert time, and the stage inserts
 -- after the crawl, so it held the finish time. The stage now writes the real
--- start. `enqueued_at` is when pgmq received the message, so started_at minus
--- enqueued_at is the queue-to-worker delay. `purpose` tells a safety crawl in
--- a reduced window from a scheduled one.
+-- start. `enqueued_at` is when pgmq received the message and `claimed_at` when
+-- a worker claimed it, both on the database clock, so claimed_at minus
+-- enqueued_at is the queue-to-worker delay. It stops at the claim rather than
+-- at started_at because a batch is claimed at once and processed in turn:
+-- time spent on earlier messages in the batch is not queue delay. `purpose`
+-- tells a safety crawl in a reduced window from a scheduled one.
 alter table public.job_hunter_source_crawls
   add column worker_run_id uuid
     references public.job_hunter_worker_runs (id) on delete set null,
   add column purpose text not null default 'scheduled'
     check (purpose in ('scheduled', 'safety')),
-  add column enqueued_at timestamptz;
+  add column enqueued_at timestamptz,
+  add column claimed_at timestamptz;
 
 create index job_hunter_source_crawls_worker_run_idx
   on public.job_hunter_source_crawls (worker_run_id);
@@ -211,9 +218,11 @@ as $$
        limit 1
     ) latest on true
     left join lateral (
-      select max(r.finished_at) as finished_at
+      select r.finished_at
         from public.job_hunter_worker_runs r
        where r.worker = s.worker and r.finished_at <= p_now
+       order by r.finished_at desc
+       limit 1
     ) finished on true
     left join lateral (
       select r.id, r.started_at, r.heartbeat_at, r.stale_after_seconds
@@ -420,8 +429,9 @@ as $$
            sum(c.changed) as changed,
            sum(c.requests) as requests,
            sum(c.elapsed_ms) as elapsed_ms,
-           avg(extract(epoch from c.started_at - c.enqueued_at))
-             filter (where c.enqueued_at is not null) as mean_queue_delay_seconds
+           avg(extract(epoch from c.claimed_at - c.enqueued_at))
+             filter (where c.claimed_at is not null and c.enqueued_at is not null)
+             as mean_queue_delay_seconds
       from public.job_hunter_source_crawls c
       cross join bounds b
      where c.started_at > b.since
@@ -512,9 +522,13 @@ comment on function public.job_hunter_crawl_window_evidence(timestamptz, text) i
 --
 -- What each crawl target's cron entry now runs, in place of a bare pgmq.send.
 -- In a window the evidence currently says to reduce, it enqueues only when
--- the target has neither crawled nor had a message queued within
--- p_safety_minutes -- the next-slower band's interval -- and labels that
--- message a safety crawl. Safety crawls feed the same evidence, so one that
+-- the target has not crawled in that same window within p_safety_minutes --
+-- the next-slower band's interval -- and has no safety crawl still queued,
+-- and labels that message a safety crawl. Crawls in adjacent kept windows do
+-- not count: they say nothing about this window, and counting them could
+-- leave it unprobed forever. For a target on the hourly band or slower the
+-- safety interval outlasts a one-hour window, so a reduced window keeps one
+-- crawl per occurrence; the reduction takes effect on the fifteen-minute band. Safety crawls feed the same evidence, so one that
 -- finds something turns its window back to keep. Everywhere else, and when
 -- apply_reductions is off, it enqueues a scheduled crawl exactly as before.
 create or replace function public.job_hunter_enqueue_crawl(
@@ -554,10 +568,15 @@ begin
       if exists (
            select 1 from public.job_hunter_source_crawls c
             where c.source_key = v_key
-              and c.started_at > now() - make_interval(mins => p_safety_minutes))
+              and c.started_at > now() - make_interval(mins => p_safety_minutes)
+              and extract(isodow from c.started_at at time zone 'UTC')
+                  = extract(isodow from now() at time zone 'UTC')
+              and extract(hour from c.started_at at time zone 'UTC')
+                  = extract(hour from now() at time zone 'UTC'))
          or exists (
            select 1 from pgmq.q_job_hunter_crawl_source q
-            where q.message ->> 'crawl_key' = v_key) then
+            where q.message ->> 'crawl_key' = v_key
+              and q.message ->> 'purpose' = 'safety') then
         return null;
       end if;
       v_purpose := 'safety';

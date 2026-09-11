@@ -19,7 +19,7 @@ _Result = TypeVar("_Result")
 
 
 def utc_now() -> datetime:
-    """The wall clock the drains measure queue delay against, injectable in tests."""
+    """The wall clock a crawl's `started_at` is read from, injectable in tests."""
     return datetime.now(timezone.utc)
 
 
@@ -41,6 +41,10 @@ class QueueMessage:
     #: When the queue first received the message. A released or retried
     #: message keeps its original time, so its delay includes the backoff.
     enqueued_at: datetime | None = None
+    #: When this claim was made, read from the same database clock as
+    #: `enqueued_at`. A batch is claimed at once and processed in turn, so
+    #: this, not the moment a handler starts, is where queue delay ends.
+    claimed_at: datetime | None = None
 
 
 @dataclass
@@ -48,19 +52,20 @@ class QueueDelays:
     """Enqueue-to-claim delay over the messages one drain claimed (#258).
 
     The mean is `total_ms` divided by the number of messages observed, which
-    the drain already counts as `claimed`. A message with no `enqueued_at`
-    (a fake queue, or a message built by hand) is not observed at all rather
+    the drain already counts as `claimed`. A message missing either time (a
+    fake queue, or a message built by hand) is not observed at all rather
     than counted as zero, since a zero delay is a measurement.
     """
 
     total_ms: int = 0
     max_ms: int = 0
 
-    def observe(self, message: QueueMessage, claimed_at: datetime) -> None:
-        if message.enqueued_at is None:
+    def observe(self, message: QueueMessage) -> None:
+        if message.enqueued_at is None or message.claimed_at is None:
             return
         delay_ms = max(
-            0, int((claimed_at - message.enqueued_at).total_seconds() * 1000)
+            0,
+            int((message.claimed_at - message.enqueued_at).total_seconds() * 1000),
         )
         self.total_ms += delay_ms
         self.max_ms = max(self.max_ms, delay_ms)

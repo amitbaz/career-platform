@@ -161,10 +161,12 @@ insert into public.job_hunter_crawl_targets (crawl_key) values
 
 insert into public.job_hunter_source_crawls
   (source_key, outcome, fetched, new_to_corpus, changed, requests, elapsed_ms,
-   started_at, finished_at, enqueued_at)
+   started_at, finished_at, enqueued_at, claimed_at)
 select 'window-hourly', 'fetched', 4,
        case when extract(hour from t at time zone 'UTC') = 3 then 0 else 4 end,
-       0, 2, 4000, t, t, t - interval '60 seconds'
+       -- Claimed ten seconds before the crawl started: the queue delay is
+       -- enqueue to claim, and the batch's processing time is not part of it.
+       0, 2, 4000, t, t, t - interval '70 seconds', t - interval '10 seconds'
   from generate_series(timestamptz '2001-02-15 00:00Z', timestamptz '2001-02-28 23:00Z',
                        interval '1 hour') t;
 
@@ -273,25 +275,37 @@ select is(
   'reduce',
   'the enqueue scenario is reduced in the current window');
 
-select is(
-  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180),
-  null,
-  'in a reduced window, no crawl is enqueued while the target crawled within the safety interval');
-
 -- Each enqueue runs as its own statement, into a temp table: a row the
 -- function inserts is invisible to the statement that called it.
+--
+-- The target crawled in the previous hour, well inside a 180-minute safety
+-- interval, but that crawl was in a kept window and says nothing about this
+-- one. Counting it is the defect that could leave a reduced window unprobed
+-- forever.
 create temp table enqueued_safety as
-  select public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 1) as msg_id;
+  select public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180) as msg_id;
 select is(
   (select q.message ->> 'purpose' from pgmq.q_job_hunter_crawl_source q
      join enqueued_safety e on e.msg_id = q.msg_id),
   'safety',
-  'once the safety interval has passed, one crawl is enqueued and labelled a safety crawl');
+  'crawls in adjacent kept windows do not stand in for a reduced window''s safety crawl');
 
 select is(
-  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 1),
+  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180),
   null,
   'and not a second one while it is still queued');
+
+-- Once that safety crawl has run, this window is probed for the rest of its interval.
+select pgmq.delete('job_hunter_crawl_source', (select msg_id from enqueued_safety));
+insert into public.job_hunter_source_crawls
+  (source_key, outcome, fetched, new_to_corpus, changed, started_at, finished_at, purpose)
+values ('enqueue-reduced', 'fetched', 0, 0, 0,
+        greatest(date_trunc('hour', now()), now() - interval '1 minute'), now(), 'safety');
+
+select is(
+  public.job_hunter_enqueue_crawl('{"crawl_key": "enqueue-reduced"}'::jsonb, 180),
+  null,
+  'a reduced window already probed within its safety interval gets no second safety crawl');
 
 update public.job_hunter_ingestion_timing_config set apply_reductions = false;
 create temp table enqueued_unreduced as
