@@ -58,7 +58,14 @@ Migration rules:
    `job_hunter_companies` (#198), `job_hunter_posting_merges` (#176), `job_hunter_ats_boards`
    (#203), `job_hunter_sources` (#184) and `job_hunter_company_watch_health` (#204) are the
    seven Job Hunter tables shared between users: none has a `user_id`, and any
-   authenticated user may read any row of any of them. **None may be written by any user**
+   authenticated user may read any row of any of them.
+   <!-- job-hunter-shared-tables: job_hunter_postings, job_hunter_job_facets, job_hunter_companies, job_hunter_posting_merges, job_hunter_ats_boards, job_hunter_sources, job_hunter_company_watch_health -->
+   This list is checked against `pg_temp.job_hunter_shared_tables` in
+   `supabase/tests/pgtap/job_hunter_isolation.sql` by
+   `scripts/check_job_hunter_shared_tables_doc.py` (run via `pnpm job-hunter:test`),
+   which fails naming any table the two disagree on (#215) -- update the HTML
+   comment above, not just this sentence, when the set changes.
+   **None may be written by any user**
    (#179): `insert`, `update` and `delete` are revoked from `anon`, `authenticated` and
    `service_role` on all seven, the write policies are dropped (where any ever existed), and every write arrives over
    ingestion's direct Postgres connection as the privileged role. That is the pattern of
