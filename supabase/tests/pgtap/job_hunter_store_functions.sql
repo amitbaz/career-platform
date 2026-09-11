@@ -148,11 +148,13 @@ select is(
     where n.nspname = 'public'
       and p.proname like 'job\_hunter\_%'
       and p.prosecdef),
-  array['job_hunter_collapse_job_rows', 'job_hunter_find_job_by_identity',
+  array['job_hunter_collapse_job_rows',
+        'job_hunter_find_job_by_identity',
         'job_hunter_get_provider_credentials',
         'job_hunter_merge_jobs', 'job_hunter_merge_postings',
         'job_hunter_posting_display_credit', 'job_hunter_upsert_job'],
-  'credential retrieval, the identity read, the merges, the row collapse, the display credit and the job upsert are the only public.job_hunter_* security definers');
+  'credential retrieval, the identity read, the merges, the row collapse, the display credit, '
+  'and the job upsert are the only public.job_hunter_* security definers');
 
 -- The collapse is internal to the schema: no role may call it at all, which
 -- is what keeps "fold these two membership rows" reachable only as a
@@ -253,7 +255,7 @@ select is(
     'job_hunter_words',
     'job_hunter_worker_health',
     'job_hunter_worker_run_evidence'],
-  'exactly the fifty-five expected public.job_hunter_* functions exist (#258 adds four invokers: job_hunter_worker_health, job_hunter_worker_run_evidence, job_hunter_crawl_window_evidence and job_hunter_enqueue_crawl; #187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above), so the two checks above are not asserting over an empty set');
+  'exactly the fifty-five expected public.job_hunter_* functions exist (#258 adds four invokers: job_hunter_worker_health, job_hunter_worker_run_evidence, job_hunter_crawl_window_evidence and job_hunter_enqueue_crawl; #187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above; #257''s Engine Lab ledger adds no functions here -- its identity/login layer was removed, see job_hunter_engine_lab.sql''s "Superseded" note), so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

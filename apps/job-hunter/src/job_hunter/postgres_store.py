@@ -3357,6 +3357,22 @@ class PostgresJobStore:
             closed.update(row["id"] for row in rows)
         return closed
 
+    def get_posting_description_hash(self, posting_id: str) -> str | None:
+        """The advertisement's current content hash, by posting id (#257).
+
+        Engine Lab's `posting_version` is this value: it already changes
+        exactly when the posting's description does (`needs_evaluation`
+        already keys re-evaluation off it), so it needs no parallel
+        versioning scheme of its own.
+        """
+        rows = self._client.select(
+            "job_hunter_postings",
+            params={"id": f"eq.{posting_id}", "select": "description_hash"},
+        )
+        if not rows:
+            return None
+        return rows[0].get("description_hash")
+
     def complete_ai_work(self, work_type: str, job_id: str) -> None:
         """Remove a completed deferred AI-work item.
 
@@ -4244,6 +4260,9 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "delivered_job_ids",
         "pending_delivery_job_ids",
         "closed_job_ids",
+        # A posting's content hash, read for Engine Lab's `posting_version`
+        # (#257). Writes nothing.
+        "get_posting_description_hash",
         "get_company_watch",
         "list_due_company_watches",
         "list_due_ats_boards",

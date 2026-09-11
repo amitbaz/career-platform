@@ -463,7 +463,7 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 
 -- The inventory, so a definer function added later and granted to
 -- `authenticated` is a decision somebody made rather than an accident nobody
--- saw. Three remain, and none can write anything:
+-- saw. All three are read-only:
 --
 --   * job_hunter_get_provider_credentials reads the caller's own provider
 --     credentials.
@@ -477,6 +477,13 @@ select hasnt_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid'],
 --     obligation for a posting. It is definer only because job_hunter_sources'
 --     select policy is open to authenticated but the join runs from a
 --     posting, not a session; it takes no user argument either.
+--
+-- (Issue #257's Engine Lab used to add five more here -- a collaborators
+-- table and its owner-bootstrap/invite/claim security-definer functions.
+-- That identity/login layer was removed once the owner decided against a
+-- bespoke review page; see job_hunter_engine_lab.sql's "Superseded" note.
+-- The ledger tables that remain have no policies for `authenticated` at
+-- all, so nothing from #257 belongs in this list any more.)
 select is(
   (select array_agg(p.proname::text order by p.proname)
      from pg_proc p
@@ -487,7 +494,7 @@ select is(
       and has_function_privilege('authenticated', p.oid, 'execute')),
   array['job_hunter_find_job_by_identity', 'job_hunter_get_provider_credentials',
         'job_hunter_posting_display_credit'],
-  'only read-only security definers are reachable by authenticated');
+  'only the read-only security definers are reachable by authenticated');
 
 -- And the one they must not reach: the posting lookup that names whose corpus
 -- to search. A user who could call this could ask which advertisements any

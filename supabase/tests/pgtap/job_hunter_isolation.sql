@@ -295,6 +295,19 @@ select unnest(array[
   'job_hunter_platform_search_usage'
 ]) as table_name;
 
+-- Engine Lab's measurement ledger (issue #257) holds no product user_id and
+-- no per-reviewer identity at all -- `reviewer_id` is a free-form string
+-- supplied by whatever trusted tool judges a card, not an `auth.uid()`.
+-- RLS is on with no policy for any role a user can hold, the same shape as
+-- the ingestion tables below, so this file's own-row-by-`auth.uid()`
+-- pattern does not fit. Its own property (nobody but a trusted connection
+-- reaches it at all) is asserted in job_hunter_engine_lab.sql.
+create view pg_temp.job_hunter_engine_lab_tables as
+select unnest(array[
+  'job_hunter_engine_lab_impressions',
+  'job_hunter_engine_lab_judgements'
+]) as table_name;
+
 -- The shared tables, for the same reason in reverse. A posting (issue #174)
 -- is one advertisement in the world, not one user's copy of it; its facets
 -- (issue #175) are what that advertisement says to everybody; and a company
@@ -424,7 +437,9 @@ select table_name from pg_temp.job_hunter_platform_tables
 union all
 select table_name from pg_temp.job_hunter_shared_tables
 union all
-select table_name from pg_temp.job_hunter_ingestion_tables;
+select table_name from pg_temp.job_hunter_ingestion_tables
+union all
+select table_name from pg_temp.job_hunter_engine_lab_tables;
 
 select ok(
   exists (select 1 from pg_temp.job_hunter_tree_tables),
