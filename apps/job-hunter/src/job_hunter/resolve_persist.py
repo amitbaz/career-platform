@@ -29,6 +29,11 @@ class PostingBatch:
     # which is what per-source yield -- and so the crawl cadence banded on it
     # -- needs (issue #184).
     new_fingerprints: frozenset[str] = frozenset()
+    # How many of this batch's postings joined an already-existing variant
+    # group (#61), as opposed to founding a new one or carrying no ATS board
+    # to group by. crawl_source.py carries this into job_hunter_source_crawls
+    # unconditionally, including when it is zero (AGENTS.md rule 5).
+    joined_existing_group: int = 0
 
 
 class ResolvePersistStage:
@@ -48,6 +53,24 @@ class ResolvePersistStage:
                         (batch_id,),
                     )
                     rows = cursor.fetchall()
+
+                    posting_ids = sorted(
+                        {
+                            str(posting_id)
+                            for _fingerprint, posting_id, _is_new in rows
+                            if posting_id is not None
+                        }
+                    )
+                    joined_existing_group = 0
+                    if posting_ids:
+                        cursor.execute(
+                            "select posting_id, group_id, joined_existing "
+                            "from public.job_hunter_assign_variant_groups(%s)",
+                            (posting_ids,),
+                        )
+                        joined_existing_group = sum(
+                            1 for _posting_id, _group_id, joined in cursor.fetchall() if joined
+                        )
         except Exception as error:
             raise TransientStageFailure("resolve_persist failed") from error
 
@@ -61,6 +84,7 @@ class ResolvePersistStage:
             new_fingerprints=frozenset(
                 fingerprint for fingerprint, _posting_id, is_new in rows if is_new
             ),
+            joined_existing_group=joined_existing_group,
         )
 
     @staticmethod

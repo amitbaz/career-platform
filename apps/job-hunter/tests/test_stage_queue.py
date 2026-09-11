@@ -199,6 +199,7 @@ class MergeCursor:
     def __init__(self, rows):
         self.rows = rows
         self.calls: list[tuple[str, tuple]] = []
+        self._last_statement = ""
 
     def __enter__(self):
         return self
@@ -208,8 +209,13 @@ class MergeCursor:
 
     def execute(self, statement, params):
         self.calls.append((statement, params))
+        self._last_statement = statement
 
     def fetchall(self):
+        if "job_hunter_assign_variant_groups" in self._last_statement:
+            # No fixture in this file exercises variant grouping directly --
+            # resolve_persist's own reporting is covered in test_posting_batch.py.
+            return []
         return self.rows
 
 

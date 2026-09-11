@@ -239,6 +239,45 @@ def test_new_to_corpus_does_not_track_changed():
     )
 
 
+def test_joined_variant_group_comes_back_from_the_persist_call():
+    """issue #61: the batch's variant-group count survives the round trip,
+    the same way new_to_corpus does."""
+    from job_hunter.resolve_persist import PostingBatch
+
+    fresh = _job("remotive", "4", "new words")
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database,
+        build_source=lambda key: _StubSource([fresh]),
+        persist=lambda jobs: PostingBatch(
+            posting_ids={"fp": "id"}, newly_discovered=1, joined_existing_group=3
+        ),
+    )
+    outcome = stage(_message())
+    assert outcome.joined_variant_group == 3
+
+
+def test_joined_variant_group_is_zero_and_still_recorded_when_nothing_joined():
+    """AGENTS.md rule 5: an empty result must carry its reason, including a
+    variant-group count of exactly zero."""
+    database = _FakeDatabase()
+    stage = CrawlSourceStage(
+        database, build_source=lambda key: _StubSource([]), persist=lambda jobs: None
+    )
+    outcome = stage(_message())
+
+    assert outcome.joined_variant_group == 0
+    inserts = [
+        (sql, params)
+        for sql, params in database.executed
+        if "job_hunter_source_crawls" in sql
+    ]
+    assert len(inserts) == 1
+    sql, params = inserts[0]
+    assert "joined_variant_group" in sql
+    assert params[-1] == 0
+
+
 def test_a_rate_limited_source_records_rate_limited_and_does_not_raise():
     """Criterion 5. This source stalls; nothing else may be affected."""
     import requests
