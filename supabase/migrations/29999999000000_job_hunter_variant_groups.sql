@@ -143,6 +143,15 @@ begin
       continue;
     end if;
 
+    -- Serialize per (provider, board, title): without this, two concurrent
+    -- batches ingesting variants of the same position at once each see no
+    -- existing group under read committed and each found their own -- a
+    -- split this function's own "only touch variant_group_id is null" rule
+    -- then never repairs, because both rows already have a group. Held for
+    -- the rest of this transaction, which is one resolve_persist batch.
+    perform pg_advisory_xact_lock(
+      hashtextextended(v_provider || ':' || v_board || ':' || v_title, 0));
+
     v_best_group := null;
     v_best_score := null;
 
@@ -255,3 +264,25 @@ comment on function public.job_hunter_backfill_variant_groups(integer) is
 
 revoke all on function public.job_hunter_backfill_variant_groups(integer)
   from public, anon, authenticated, service_role;
+
+-- Run it now, on this migration, rather than leaving it as a manual step ---
+--
+-- A backfill that depends on someone remembering to run it after deploy is
+-- exactly the failure this ticket's own acceptance criteria warns about:
+-- until it runs, the existing corpus stays ungrouped and a newly crawled
+-- variant founds a fresh group instead of joining its old siblings. The
+-- migration is applied as the table owner, which is superuser for grants
+-- purposes, so the revoke above does not stop this call. Logged via RAISE
+-- NOTICE so the deploy output names the before/after rather than running
+-- silently.
+do $$
+declare
+  v_groups_formed integer;
+  v_postings_grouped integer;
+begin
+  select groups_formed, postings_grouped
+    into v_groups_formed, v_postings_grouped
+    from public.job_hunter_backfill_variant_groups(500);
+  raise notice 'job_hunter_backfill_variant_groups: % groups formed, % postings grouped',
+    v_groups_formed, v_postings_grouped;
+end $$;

@@ -4,13 +4,25 @@
 -- Re-created from 20260910150000 with one change: rows are ranked and
 -- scored exactly as before, then folded by variant group (a posting with no
 -- group is its own group of one, via coalesce(variant_group_id, posting_id))
--- before the final ordering. Within a group the best-scored membership row
--- the caller holds represents it -- deterministic tie-break, same ordering
--- as the un-folded ranking -- and carries the open locations of every
--- variant in that group the caller holds a row for (closed postings and
--- rejected/closed membership rows are already excluded by `rows`, so a
--- closed variant drops out of its group's locations on its own, and a group
--- whose every variant is closed never produces a row at all).
+-- before the final ordering.
+--
+-- The representative is not simply the top score. A row this call cannot
+-- act on today -- no facets read yet, or blocked by a hard blocker -- must
+-- not shadow a sibling variant that could be scored, or the whole group
+-- would silently disappear (unread) or read as blocked (blocked) even when
+-- another location in the same group is neither. So within a group the
+-- ranking prefers an eligible row (has facets, no hard blockers) over score
+-- alone, and only falls back to score among rows that are all equally
+-- ineligible. Deterministic tie-break either way, same ordering as the
+-- un-folded ranking.
+--
+-- Locations follow the same logic: a location the caller is hard-blocked
+-- from (the salary floor is per location, via
+-- job_hunter_salary_floor_for_job, so blockers can differ between variants
+-- in one group) must not ride along next to the representative's apply URL.
+-- group_locations is the group's open, unblocked locations, falling back to
+-- every open location only when every variant is blocked -- so a fully
+-- blocked group still reports where it exists rather than an empty list.
 --
 -- This deliberately reads locations only from the rows the caller's own
 -- `rows` CTE already produced, not from every posting in the group
@@ -139,17 +151,36 @@ as $$
       end as row_hard_blockers
     from rows
   ),
-  grouped_locations as (
+  -- Every open location in the group, and the subset the caller is not
+  -- hard-blocked from -- coalesced below so a fully blocked group still
+  -- reports where it exists rather than an empty list.
+  grouped_locations_all as (
     select row_group_key,
-           array_agg(distinct row_location order by row_location) as group_locations
+           array_agg(distinct row_location order by row_location) as locations
       from scored
      group by row_group_key
+  ),
+  grouped_locations_unblocked as (
+    select row_group_key,
+           array_agg(distinct row_location order by row_location) as locations
+      from scored
+     where cardinality(row_hard_blockers) = 0
+     group by row_group_key
+  ),
+  grouped_locations as (
+    select a.row_group_key,
+           coalesce(u.locations, a.locations) as group_locations
+      from grouped_locations_all a
+      left join grouped_locations_unblocked u on u.row_group_key = a.row_group_key
   ),
   ranked as (
     select s.*,
            row_number() over (
              partition by s.row_group_key
-             order by s.row_score desc, lower(s.row_company), lower(s.row_title), s.row_job_id
+             -- An eligible row (facets read, nothing blocking it) outranks a
+             -- higher score this call cannot act on -- see header.
+             order by (s.row_has_facets and cardinality(s.row_hard_blockers) = 0) desc,
+                      s.row_score desc, lower(s.row_company), lower(s.row_title), s.row_job_id
            ) as row_rank
       from scored s
   )
@@ -171,7 +202,10 @@ comment on function public.job_hunter_match_jobs(text[], text[], text[], text[],
   'open, non-rejected membership row the caller holds, ranked by '
   'ranking.profile_priority_score''s SQL port and flagged with '
   'hard_blockers.hard_blockers_from_facets''s, then reduced to one row per '
-  'variant group -- the group''s best-ranked row, carrying every open '
-  'location in the group the caller holds a row for. A posting with no '
-  'variant group is its own group of one. RLS-scoped by auth.uid(); the '
-  'caller bounds how many unblocked, has_facets rows it sends to the model.';
+  'variant group -- the group''s best-ranked row THAT IS ELIGIBLE (has '
+  'facets, no hard blockers) when one exists, else its best-ranked row, '
+  'carrying every open location in the group the caller is not '
+  'hard-blocked from (or, if every variant is blocked, every open '
+  'location). A posting with no variant group is its own group of one. '
+  'RLS-scoped by auth.uid(); the caller bounds how many unblocked, '
+  'has_facets rows it sends to the model.';
