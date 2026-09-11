@@ -123,10 +123,15 @@ insert into public.job_hunter_postings
   (id, fingerprint, source, ats_provider, ats_board, company, title, location,
    description, description_hash, content_confidence, first_seen_at, last_seen_at)
 values (
+  -- last_seen_at = now(), not a fixed 2026-01-02 (#243): this posting is
+  -- read below with no job_hunter_jobs row for its user, via
+  -- job_hunter_match_jobs's freshest-first bounded candidate scan, which a
+  -- fixed old date cannot reliably win a place in on a stack that keeps
+  -- accumulating other postings.
   'e1000000-0000-0000-0000-000000000024'::uuid, 'variant-fp-kira-24',
   'ashby', 'ashby', 'bjakcareer', 'KIRA', 'Lead Software Engineer', 'City 24',
   'about kira we build fintech infra location loc24', '', 'official_ats',
-  '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z'
+  '2026-01-02T00:00:00Z', now()
 );
 
 select groups_formed, postings_grouped from public.job_hunter_backfill_variant_groups() \gset backfill_
@@ -182,8 +187,16 @@ select is(
 select is(
   (select array_length(locations, 1) from public.job_hunter_match_jobs()
     where posting_id in (select id from public.job_hunter_postings where fingerprint like 'variant-fp-kira-%')),
-  23,
-  'match_jobs: the single result carries every open location in the group'
+  -- 24, not 23: the backfill above (job_hunter_backfill_variant_groups, this
+  -- file's earlier section) joined posting 'variant-fp-kira-24' to this same
+  -- group, but this user was never given a job_hunter_jobs row for it (only
+  -- 1-23 were inserted above). Since #243 the group's open locations are
+  -- read from every open posting in the group, not only ones this caller
+  -- holds a membership row for -- so an undiscovered group-mate still
+  -- supplements the group's answer, matching the same open-corpus reading
+  -- match_jobs now gives every row.
+  24,
+  'match_jobs: the single result carries every open location in the group, including an undiscovered group-mate (#243)'
 );
 
 select pg_temp.become_postgres();
@@ -194,7 +207,7 @@ select pg_temp.authenticate_as('cccccccc-2222-0000-0000-000000000001'::uuid);
 select is(
   (select array_length(locations, 1) from public.job_hunter_match_jobs()
     where posting_id in (select id from public.job_hunter_postings where fingerprint like 'variant-fp-kira-%')),
-  22,
+  23,
   'match_jobs: a closed variant drops out of the group''s open locations (#61, #186)'
 );
 

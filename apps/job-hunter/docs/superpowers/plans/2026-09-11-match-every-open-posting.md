@@ -55,12 +55,24 @@ silent when they overlap), then implement.
 `supabase/tests/pgtap/job_hunter_store_functions.sql` (pin the new function name — read it
 first to see the exact assertion shape before editing).
 
+**`security invoker`, not definer.** `job_hunter_jobs` is not one of the seven shared
+tables #179 moved behind the privileged connection — it is per-user, already RLS-scoped
+(`insert_own`/`update_own` to `authenticated`, from its original migration), and
+`job_hunter_upsert_job(jsonb, uuid)` only moved to the privileged path because *that*
+function also resolves/merges shared postings in the same call (confirmed: no
+`job_hunter_jobs`-specific RLS revocation anywhere in
+`20260909220000_job_hunter_shared_table_writers.sql`, which is the migration that revoked
+`upsert_job`). This function touches only `job_hunter_jobs`, so it follows
+`job_hunter_set_job_markets`'s precedent
+(`202609070003_job_hunter_batch_discovery_writes.sql:97-108`) — plain `security invoker`,
+no grant/revoke boilerplate, RLS does the authorization:
+
 ```sql
 create or replace function public.job_hunter_ensure_job_membership(
   p_posting_id uuid, p_market_id text default ''
 ) returns uuid
 language plpgsql
-security definer
+security invoker
 set search_path = ''
 as $$
 declare
@@ -68,10 +80,6 @@ declare
   v_now timestamptz := clock_timestamp();
   v_job_id uuid;
 begin
-  if v_uid is null then
-    raise exception 'job_hunter_ensure_job_membership requires an authenticated user';
-  end if;
-
   insert into public.job_hunter_jobs as ins
     (user_id, posting_id, market_id, status, first_seen_at, last_seen_at, created_at)
   values (v_uid, p_posting_id, coalesce(p_market_id, ''), 'new', v_now, v_now, v_now)
@@ -86,19 +94,14 @@ begin
 
   return v_job_id;
 end $$;
-
-revoke all on function public.job_hunter_ensure_job_membership(uuid, text)
-  from public, anon, service_role;
-grant execute on function public.job_hunter_ensure_job_membership(uuid, text) to authenticated;
 ```
 
 pgtap: calling it twice for the same posting returns the same id and does not update
 `last_seen_at` on the second call (unlike `upsert_job`, this is a pure "make sure it exists"
 call, not a re-sighting) — assert this explicitly, since it's the one deliberate behavioral
 difference from `job_hunter_upsert_job`'s insert-or-touch. RLS: a second user gets their own
-row for the same posting. Add it to `job_hunter_shared_writes.sql`'s definer-function
-inventory if that test enumerates definer functions reachable by `authenticated` — check the
-test file first.
+row for the same posting; an unauthenticated/other-user call cannot create or return a row
+that is not theirs.
 
 ## Task 4: rewrite `job_hunter_match_jobs` and add `job_hunter_match_state_counts`
 
@@ -202,10 +205,9 @@ Run: `pytest apps/job-hunter/tests/test_matching.py -q` after each, then the ful
 4. Self-review the diff with `Read`/`Grep`, never `git diff` (AGENTS.md: the hook
    paraphrases raw file output).
 5. Confirm `supabase/tests/pgtap/job_hunter_isolation.sql` /
-   `job_hunter_shared_writes.sql` still pass unmodified in intent — the new function is
-   `security definer` writing only to `job_hunter_jobs`, a table `authenticated` could
-   already reach through `job_hunter_upsert_job`, so no new write surface should need
-   documenting, but confirm rather than assume.
+   `job_hunter_shared_writes.sql` still pass unmodified — `job_hunter_ensure_job_membership`
+   is `security invoker` and writes only `job_hunter_jobs`, which already grants
+   `insert_own`/`update_own` to `authenticated`; it opens no new write surface.
 6. Rename every placeholder-timestamped migration to a real `YYYYMMDDHHMMSS` at PR time,
    after checking `main` and every other in-flight worktree for the highest timestamp
    either carries (AGENTS.md's migration-numbering rule).

@@ -125,18 +125,42 @@ desc, score desc, ...)` idiom the variant-group fold already uses one level up. 
 (there is only one candidate row per posting after this reduction, so "ineligible" is simply
 "the winning candidate is still blocked").
 
-A user with zero configured markets gets the single synthetic no-market candidate, and the
-work-mode hard constraint does not fire for it (fails open) — a deliberate difference from
-the existing "market_currency is null" fallback inside `job_hunter_hard_blockers`'s
-salary-floor branch, which this ticket does not touch for already-attributed rows.
+A user with zero configured markets gets the single synthetic no-market candidate, using the
+same `market_currency is null` fallback the salary-floor branch already had (remote required,
+relocation not allowed) — unchanged from pre-#243, on purpose. An earlier draft of this design
+made the work-mode check fail open for exactly this case, on the reasoning that an absent
+market is missing evidence and AC's "unknown facts cannot create a hard exclusion" should
+apply; that turned out to be a real, unrelated behavior change once implemented — the
+still-active legacy pipeline (`pipeline.py`, `discovery.py`'s pre-market `SearchPolicy`-only
+tests) depends on the stricter fallback to keep blocking a market-less user's non-remote/
+relocation-required postings without a scoring call, and several of its own tests caught the
+regression. The fallback is a pre-existing threshold-input default from #187, not a posting
+*fact* the new hiring-region/facet checks are about, so reverting it is the correct, in-scope
+choice — "keep unrelated refactoring out of the change."
 
 **Bounding the work.** Returning the whole ranked, classified corpus on every call is what
 AC10 ("corpus growth cannot create an unbounded synchronous request") rules out — today's
 function returns every one of the caller's own (small, crawl-filtered) membership rows, but
 once the driving table is every open posting in the shared corpus that stops being small.
-`job_hunter_match_jobs` gains a `p_limit integer` parameter and returns at most that many
-**qualified** rows, ranked. Reporting on the other two states is a separate, cheap aggregate
-query — see next section — not a second copy of the full ranked set.
+`job_hunter_match_jobs` gains a `p_limit integer` parameter (default 100) and returns every
+row the caller already holds a membership row for (unbounded — that set was already small
+and is unchanged by this ticket) plus at most `p_limit` never-discovered rows, ranked.
+Reporting on the `ineligible`/`unresolved` states is a separate, cheap aggregate query — see
+next section — not a second copy of the full ranked set.
+
+Measured against a real ~61k-open-posting corpus, `LIMIT p_limit` on the *final* result was
+not enough on its own: Postgres still has to compute the seven ranking functions
+(`job_hunter_role_seniority_fit`, `signal_coverage`, `market_location_fit`, `source_quality`,
+`company_fit`, the two penalty functions) for every candidate row before it can sort and trim
+— measured at roughly 1.4ms/row, which is 12-14 seconds at full corpus size regardless of
+`p_limit`, comfortably past PostgREST's statement timeout. The candidate set itself has to be
+bounded *before* scoring, not after: a new `candidate_postings` CTE selects the caller's known
+rows (unbounded, as above) unioned with `p_limit * 5` never-discovered open postings ordered
+by `last_seen_at desc` — an index-and-anti-join operation measured at ~35ms regardless of
+corpus size, because it does none of the expensive per-row scoring. `last_seen_at desc` is a
+proxy for "worth ranking today", not a quality claim; #260's ready pool is what actually
+decides quality over time. With this, `job_hunter_match_jobs()` at its default `p_limit`
+measured at ~220ms against the same corpus.
 
 ## Reporting counts and reasons (rule 5: an empty result must carry its reason)
 
@@ -153,11 +177,19 @@ has a "here's why" a caller can render, per AC9.
 
 `job_hunter_jobs` keeps its current shape (`user_id, posting_id, market_id, status,
 first_seen_at, last_seen_at` — see `20260909210000_job_hunter_job_membership.sql:423-444`).
-A new, narrow SECURITY DEFINER function, `job_hunter_ensure_job_membership(p_posting_id
-uuid, p_market_id text default '')`, does exactly the insert-or-touch
-`job_hunter_upsert_job` already does at lines 940-953 of that migration, without the
-identity-resolution machinery `upsert_job` needs for a freshly-discovered listing — matching
-already knows the exact `posting_id` from its own ranking, so there is nothing to resolve.
+A new, narrow function, `job_hunter_ensure_job_membership(p_posting_id uuid, p_market_id
+text default '')`, does the same insert-or-touch `job_hunter_upsert_job` does at lines
+940-953 of that migration, without the identity-resolution machinery `upsert_job` needs for
+a freshly-discovered listing — matching already knows the exact `posting_id` from its own
+ranking, so there is nothing to resolve. It is `security invoker`, not definer:
+`job_hunter_jobs` is not one of the seven shared tables #179 moved behind the privileged
+connection (it is per-user and already RLS-scoped), and `upsert_job`'s move to the
+privileged path was specifically about the shared-posting identity resolution/merge it also
+performs in the same call — confirmed by `20260909220000_job_hunter_shared_table_writers.sql`
+revoking nothing on `job_hunter_jobs` itself. This function touches only `job_hunter_jobs`,
+so it follows `job_hunter_set_job_markets`'s precedent
+(`202609070003_job_hunter_batch_discovery_writes.sql:97-108`): plain invoker, RLS does the
+authorization.
 
 `matching.match_jobs`'s row loop is patched, not rewritten: `row["job_id"]` is `None` for a
 posting with no prior membership. The delivered/existing-evaluation bulk lookups and the
@@ -177,10 +209,13 @@ Additive only, so every existing assertion on the current fields keeps passing:
 - `MatchedJob` gains nothing (a `MatchedJob` is already only ever an `ineligible`/`qualified`
   decision — the SQL surfaces `unresolved` separately, mirroring the current
   `skipped_without_facets_job_ids` field).
-- `MatchResult` gains `skipped_without_facets_posting_ids: list[str]` (posting ids always
-  exist; the existing `skipped_without_facets_job_ids` stays job-id-keyed for backward
-  compatibility and is empty for a posting that never had a membership row) and
-  `state_counts: dict[str, int]` from the new counts function.
+- `MatchResult` gains `skipped_without_facets_posting_ids: list[str]`, the posting-id form of
+  the existing `skipped_without_facets_job_ids` for the same rows. Both stay scoped to rows
+  `store.match_jobs` actually returns — a never-discovered posting with no facets is
+  `unresolved` and is never returned there at all (only a bounded, has-facets "new" row is;
+  see "Bounding the work"), so neither field can name one. `store.match_state_counts` is
+  where that state is visible instead, via the new `state_counts`/`state_reasons` fields
+  (also gained here) — see "Reporting counts and reasons".
 
 ## Tests
 

@@ -258,21 +258,20 @@ def test_pipeline_failed_navigator_send_keeps_jobs_pending(store):
     assert job_id in store.pending_delivery_job_ids(settings.policy.match_score_floor)
 
 
-def test_pipeline_with_no_deliverable_jobs_sends_nothing(store):
+def test_pipeline_no_deliverable_jobs_still_sends_nothing_when_the_run_finds_none(store):
+    """Renamed from ...with_no_deliverable_jobs...: the fixture it used
+    ("Junior QA Tester") is no longer an example of a job with nothing to
+    deliver, since #243 removes the profession-title gate that used to keep
+    it unscored -- it now scores and delivers like any other job (see
+    test_pipeline_no_longer_prefilters_non_matching_jobs). This test keeps
+    the *shape* being proven (a run that discovers nothing sends nothing at
+    all) with a fixture that actually has nothing to deliver: no sources."""
     settings = _settings()
     telegram = NavigatorTelegram()
-    irrelevant = Job(
-        source="ashby",
-        source_job_id="irrelevant",
-        title="Junior QA Tester",
-        company="Nope",
-        location="Berlin",
-        description="manual testing",
-    )
 
     run_pipeline(
         settings,
-        sources=[FakeSource([irrelevant])],
+        sources=[FakeSource([])],
         store=store,
         ai=FakeGemini(),
         telegram=telegram,

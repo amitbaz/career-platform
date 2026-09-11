@@ -1641,8 +1641,16 @@ def test_pipeline_keeps_richer_public_job_and_filters_staged_gmail_duplicate(sto
     assert store.count_jobs() == 1
 
 
-def test_pipeline_prefilters_non_matching_jobs(store, settings):
-    irrelevant_job = _job(
+def test_pipeline_no_longer_prefilters_non_matching_jobs(store, settings):
+    """#243 removes the profession-specific title gate from what matching may
+    see: prefilter_job (discovery.py) still runs and still records its own
+    verdict on the membership row, but job_hunter_match_jobs no longer reads
+    that status, so it can no longer suppress delivery. Root AGENTS.md's
+    2026-09-10 standing rule voids "what the user receives is unchanged" as
+    an acceptance criterion for this legacy digest -- this test's old name
+    and assertions described exactly that criterion, so they are replaced
+    here rather than kept passing by accident."""
+    formerly_filtered_job = _job(
         source_job_id="job-3",
         title="Junior QA Tester",
         description="manual testing",
@@ -1650,11 +1658,12 @@ def test_pipeline_prefilters_non_matching_jobs(store, settings):
     gemini = FakeGemini()
     telegram = FakeTelegram()
 
-    summary = run_pipeline(settings, sources=[FakeSource([irrelevant_job])], store=store, ai=gemini, telegram=telegram)
+    summary = run_pipeline(
+        settings, sources=[FakeSource([formerly_filtered_job])], store=store, ai=gemini, telegram=telegram
+    )
 
-    assert summary.ready_to_apply == 0
-    assert summary.skipped == 1
-    assert gemini.eval_calls == 0
+    assert gemini.eval_calls == 1
+    assert summary.ready_to_apply == 1
 
 
 class ExplodingHttp:
@@ -3438,28 +3447,27 @@ def test_a_changed_description_triggers_re_extraction(store, settings):
     assert gemini.facet_calls == 2
 
 
-def test_a_job_the_non_ai_filters_reject_is_never_scored(store, settings):
-    # "junior" is a blocked title keyword, so the prefilter drops this before
-    # anything reaches the scorer. Scoring must sit behind that gate: it is
-    # what keeps the user-funded workload at tens of jobs rather than
-    # hundreds.
-    #
-    # Extraction no longer sits behind it, and that is #185's design rather
-    # than a leak. Facets are shared and candidate-blind, so a posting one
-    # user's prefilter rejects is still worth reading once for everybody --
-    # and the queue this now runs through is drained *after* the run's own
-    # shortlist, with whatever is left of `max_jobs_per_run`. The order is
-    # what protects the user: nothing here can take a read away from a job
-    # they were going to be shown. Before #179 forced ingestion on in this
-    # fixture, no pipeline test exercised that queue at all, and this
-    # assertion still described the pre-#185 inline pass.
-    rejected = _job(title="Junior Product Engineer", source_job_id="junior-1")
+def test_a_job_blocked_title_keyword_no_longer_prevents_scoring(store, settings):
+    # "junior" is a blocked title keyword: prefilter_job (discovery.py) still
+    # sets this membership row's status to 'rejected' for it, exactly as
+    # before. What changed (#243) is that job_hunter_match_jobs no longer
+    # reads that status at all -- it cannot tell "rejected for the removed
+    # profession gate" apart from "rejected for this user's own keyword",
+    # since neither was ever persisted as a distinguishable reason, so the
+    # SQL's per-user status filter had to go entirely, not selectively. The
+    # issue text is explicit that this is intended, not a gap: "titles ...
+    # remain preferences unless the user explicitly creates a rule", and
+    # explicit-rule enforcement is #263's mechanism, not built yet. This
+    # test used to prove the opposite; see
+    # test_pipeline_no_longer_prefilters_non_matching_jobs for the sibling
+    # case (the removed profession gate itself).
+    formerly_blocked = _job(title="Junior Product Engineer", source_job_id="junior-1")
     gemini = FakeGemini()
 
-    run_pipeline(settings, sources=[FakeSource([rejected])], store=store, ai=gemini,
+    run_pipeline(settings, sources=[FakeSource([formerly_blocked])], store=store, ai=gemini,
                  telegram=FakeTelegram())
 
-    assert gemini.eval_calls == 0
+    assert gemini.eval_calls == 1
 
 
 def test_facet_extraction_cannot_see_the_person_being_matched(store, settings):
