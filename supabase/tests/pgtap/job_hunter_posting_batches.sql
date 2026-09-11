@@ -254,6 +254,49 @@ select is(
   false,
   'and remote takes the first listing that stated anything at all');
 
+-- One ATS job, two source labels (#249) -----------------------------------------
+--
+-- job_hunter/normalize.py's job_fingerprint now keys on the ATS triple when
+-- it is present, so a board crawled directly (`ashby`) and the same job
+-- rediscovered through a company watch (`watch:ashby`) stage under the same
+-- fingerprint here -- that is the application-level half of the fix, and
+-- this is its persistence-level consequence: the fold below is the same
+-- fold `jhpb-dup` above already exercises, run on listings whose only
+-- difference is the source label that discovered them.
+
+select pg_temp.stage('11111111-0000-0000-0000-00000000000a', 0, 'jhpb-two-labels',
+                     p_source => 'ashby', p_source_job_id => 'ashby-job-1',
+                     p_url => 'https://jobs.ashbyhq.com/bjak/ashby-job-1',
+                     p_company => 'Bjak', p_title => 'Backend Engineer',
+                     p_description => 'seen directly on the board',
+                     p_content_confidence => 'official_ats',
+                     p_ats_provider => 'ashby', p_ats_board => 'bjak', p_ats_job_id => 'ashby-job-1');
+select pg_temp.stage('11111111-0000-0000-0000-00000000000a', 1, 'jhpb-two-labels',
+                     p_source => 'watch:ashby', p_source_job_id => 'ashby-job-1',
+                     p_url => 'https://jobs.ashbyhq.com/bjak/ashby-job-1',
+                     p_company => 'Bjak', p_title => 'Backend Engineer',
+                     p_description => 'rediscovered through a company watch',
+                     p_content_confidence => 'official_ats',
+                     p_ats_provider => 'ashby', p_ats_board => 'bjak', p_ats_job_id => 'ashby-job-1');
+
+create temp table two_labels_result as
+select * from public.job_hunter_merge_posting_batch('11111111-0000-0000-0000-00000000000a'::uuid);
+
+select is(
+  (select count(*)::int from two_labels_result),
+  1,
+  'the same ATS job arriving under two source labels reports one fingerprint');
+
+select is(
+  (select count(*)::int from public.job_hunter_postings where fingerprint = 'jhpb-two-labels'),
+  1,
+  'and one posting is what the table holds -- whichever source label discovered it');
+
+select is(
+  (select p.source from public.job_hunter_postings p where p.fingerprint = 'jhpb-two-labels'),
+  'ashby',
+  'the posting keeps the first source label that reached it');
+
 -- A batch resolved against a posting that already exists -----------------------
 
 select pg_temp.stage('11111111-0000-0000-0000-000000000003', 0, 'jhpb-dup',

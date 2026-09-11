@@ -102,9 +102,17 @@ making the merge itself posting-level, so the surviving posting now carries the 
 link and the folded identity. Match on the posting; decide currency from the posting.
 
 **Merge** — collapsing two postings that are the same advertisement into one survivor.
-The fingerprint is source-scoped, so an advertisement seen on an aggregator and on the
-employer's ATS board is two postings until something resolves them; merging them is a
-decision about the world, so it is made once and recorded once, in
+The fingerprint prefers the ATS triple (`ats_provider`/`ats_board`/`ats_job_id`) over
+`(source, source_job_id)` when it is present and trustworthy (#249) — trustworthy meaning
+`source_job_id` is either absent or agrees with `ats_job_id`, the property every known ATS
+adapter guarantees at the moment it reads a listing. That collapses a board crawled
+directly and the same board rediscovered through a company watch relabel at ingestion,
+before a decision is ever needed: two sightings of one triple are one fingerprint, so it
+is deduplication, not merge. What the trust condition holds back is an aggregator's own
+numbering (`source_job_id` naming the aggregator's id, not the ATS job's) and a listing
+whose `ats_job_id` disagrees with its own `source_job_id` (#254) — both still hash
+source-scoped and so are still two postings until something resolves them; merging them
+is a decision about the world, so it is made once and recorded once, in
 `job_hunter_posting_merges` (#176). Every affected user's job row is re-pointed at the
 survivor, whether or not that user merged anything, and a caller holding a merged-away
 posting id resolves to the survivor through `job_hunter_resolve_posting`. The merged-away

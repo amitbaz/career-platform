@@ -2476,6 +2476,15 @@ def test_logical_upsert_merges_all_exact_matches_into_global_history_survivor(
             source_url=job.url,
         )
 
+    # The two ATS rows (`ats-application`, `ats-delivery`) name the same
+    # `(ats_provider, ats_board, ats_job_id)` but different `source_job_id`
+    # values ("ats-1", "ats-2") that neither agrees with the shared
+    # ats_job_id ("abc"). normalize.job_fingerprint (#249, #254) only trusts
+    # the ATS triple when source_job_id is absent or agrees with it, so this
+    # fixture -- deliberately shaped to test the *deferred* identity
+    # resolution below, not eager fingerprint collapsing -- still produces
+    # four distinct postings here, exactly as before #249: each of the three
+    # lookups below still finds two ambiguous candidates and returns None.
     assert store.find_job_by_canonical_url(canonical_url) is None
     assert store.find_job_by_ats("lever", "acme", "abc") is None
     assert store.find_job_by_identity(
