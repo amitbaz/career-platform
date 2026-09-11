@@ -524,12 +524,20 @@ and merges. How each role works, how they talk to each other, and when they stop
 owner is in `docs/agents/roles.md`. A session takes a role only through `/dev <issue>` or
 `/reviewer <pr>`.
 
-`main` is protected by the ruleset in `.github/rulesets/protect-main.json`. It requires the `test`
-check, **two approvals** (the reviewer bot's and the owner's), approval of the most recent push,
-and every review thread resolved. An approval is dismissed by any later push. GitHub never counts
-an author's approval of their own PR, which is why the developer role must author PRs as its bot:
-only then can the owner's approval count. The repository admin can bypass the rule, explicitly and
-visibly, for PRs the owner authors personally.
+`main` is protected by two rulesets, both kept as reviewable source in `.github/rulesets/`.
+"Protect Main" (`protect-main.json`) blocks deletion and force-pushes and requires the `test`
+check, and nobody can bypass it. "Require approvals" (`require-approvals.json`) requires **two
+approvals** (the reviewer bot's and the owner's), approval of the most recent push, and every
+review thread resolved, and any later push dismisses an approval. Until #269 applies "Require
+approvals" to the repository, only "Protect Main" is enforced and a merge needs no approval.
+GitHub never counts an author's approval of their own PR, which is why the developer role must
+author PRs as its bot: only then can the owner's approval count. The repository admin can bypass
+"Require approvals", but never "Protect Main", explicitly and visibly; that is meant for PRs the
+owner authors personally.
+
+Never push to a bot's PR yourself: no commits, no "Update branch", no conflict resolution in the
+web UI. The last-push rule would then refuse the owner's approval, and the PR could merge only
+through the bypass. Ask the developer to push instead.
 
 Every GitHub write in a role session goes through `scripts/gh-as.sh <developer|reviewer>`, which
 takes the bot's PAT from the local macOS Keychain (`career-platform-<role>` /
