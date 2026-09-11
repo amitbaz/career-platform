@@ -245,6 +245,88 @@ def test_embedded_supported_ats_url_resolves_at_095():
     assert result.method == "embedded"
 
 
+def test_embedded_ambiguous_multiple_ats_links_does_not_pick_first_blindly():
+    # Hardening, not a #254 repro: a page can embed more than one employer
+    # job's ATS anchor -- a careers page listing several open roles, or a
+    # "similar jobs" widget -- and the first one is not necessarily this
+    # job's own. Picking it blindly could cross-contaminate this job's ats
+    # identity with an unrelated posting's. (#254's actual corruption was
+    # traced to job_hunter_upsert_job's legacy per-job merge, not here --
+    # see #254.) Two distinct Greenhouse postings at one employer, shaped
+    # like #254's live pairs for illustration only (different job ids, same
+    # board).
+    http = _Http(
+        _Response(
+            url="https://board.test/careers",
+            text=(
+                '<a href="https://boards.greenhouse.io/acme/jobs/8612482002">Other Role</a>'
+                '<a href="https://boards.greenhouse.io/acme/jobs/8648918002">Frontend Engineer</a>'
+            ),
+        )
+    )
+    resolver = CanonicalResolver(
+        http,
+        search_candidates=lambda job: [
+            Job(
+                source="duckduckgo",
+                title="Frontend Engineer",
+                company="Acme",
+                url="https://boards.greenhouse.io/acme/jobs/8648918002",
+            )
+        ],
+        watch_target=lambda company: None,
+    )
+
+    result = resolver.resolve(
+        Job(
+            source="board",
+            title="Frontend Engineer",
+            company="Acme",
+            url="https://board.test/careers",
+        )
+    )
+
+    assert result is not None
+    # Must not attribute the *other* role's ats identity just because its
+    # anchor happened to come first on the page.
+    assert result.ats.job_id != "8612482002"
+    assert result.url == "https://boards.greenhouse.io/acme/jobs/8648918002"
+    assert result.method == "targeted_search"
+
+
+def test_embedded_single_ats_link_among_non_ats_anchors_still_resolves():
+    # A page can have plenty of non-ATS anchors (nav, footer, "Careers home")
+    # alongside exactly one ATS-host link -- that single candidate is still
+    # unambiguous and should resolve as before.
+    http = _Http(
+        _Response(
+            url="https://board.test/job",
+            text=(
+                '<a href="https://board.test/about">About</a>'
+                '<a href="https://jobs.ashbyhq.com/acme/abc">Apply</a>'
+                '<a href="https://board.test/careers">Careers</a>'
+            ),
+        )
+    )
+    resolver = CanonicalResolver(
+        http, search_candidates=lambda job: [], watch_target=lambda company: None
+    )
+
+    result = resolver.resolve(
+        Job(
+            source="board",
+            title="Frontend Engineer",
+            company="Acme",
+            url="https://board.test/job",
+        )
+    )
+
+    assert result is not None
+    assert result.url == "https://jobs.ashbyhq.com/acme/abc"
+    assert result.confidence == 0.95
+    assert result.method == "embedded"
+
+
 def test_targeted_search_exact_match_resolves_at_090():
     http = _Http(_Response(url="https://board.test/job", text="<html></html>"))
     resolver = CanonicalResolver(
