@@ -2457,11 +2457,10 @@ def test_collect_candidates_measures_every_source_type_comparably(store, policy)
     """Every kind of source in use is measured, and none is merged into another.
 
     One instance of each shape the pipeline actually runs -- a feed, two
-    boards of the same ATS provider, a targeted search, a watchlist source
-    and staged email -- so that a source type cannot go silently unmeasured.
+    boards of the same ATS provider, a targeted search, and a watchlist
+    source -- so that a source type cannot go silently unmeasured.
     """
     from job_hunter.sources.company_watch import CompanyWatchSource
-    from job_hunter.sources.gmail_staged import GmailStagedSource
     from job_hunter.sources.learned_ats import LearnedAtsSource
     from job_hunter.sources.lever import LeverSource
     from job_hunter.sources.remotive import RemotiveSource
@@ -2476,7 +2475,6 @@ def test_collect_candidates_measures_every_source_type_comparably(store, policy)
         TargetedSearchSource(SilentSearchBackend(), ["senior product engineer"]),
         CompanyWatchSource(store, http),
         LearnedAtsSource(store, http, limit=5, market_order=[]),
-        GmailStagedSource(store),
     ]
 
     result = collect_candidates(sources, store, http, policy, clock=clock)
@@ -2488,7 +2486,6 @@ def test_collect_candidates_measures_every_source_type_comparably(store, policy)
         "targeted_search",
         "company_watch",
         "learned_ats",
-        "gmail",
     }
     assert set(result.stats.requests_by_source) == set(result.stats.elapsed_by_source)
     # The three adapters that fetch over the shared client are the three that

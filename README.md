@@ -55,21 +55,15 @@ from the repository root so it picks up `supabase/`.
 
 ## Deployment
 
-Job Hunter deploys from this repository as a Vercel project. Its **Root Directory** must point
-at the app:
-
-| Vercel project | Root Directory     | Notes                                            |
-| -------------- | ------------------ | ------------------------------------------------ |
-| Job Hunter     | `apps/job-hunter`  | Flask webhook via `apps/job-hunter/vercel.json`.  |
-
-The engine's ingestion and enrichment stages run as Render cron services defined in
+The engine runs on Render. Its ingestion and enrichment stages are cron services defined in
 [`render.yaml`](render.yaml).
 
-The Telegram webhook dispatches GitHub workflows through `GITHUB_REPOSITORY`, which must now
-be set to `amitbaz/career-platform`.
+Nothing in this repository deploys to Vercel. The only Vercel project was the Flask webhook
+that served the Telegram bot, and it was deleted with the bot; the `job-hunter-bot` Vercel
+project itself can go once that deletion is on `main`.
 
-The configuration steps still outstanding from the repository consolidation — Actions secrets,
-Vercel project settings, the Telegram webhook — are tracked in
-[docs/monorepo-migration.md](docs/monorepo-migration.md). The Job Hunter state artifact is no
-longer among them: Job Hunter's state lives in Postgres, and both workflows stopped uploading
-that artifact. See the cutover runbook in [apps/job-hunter/README.md](apps/job-hunter/README.md).
+The repository consolidation that brought this code here is finished, and most of what it
+configured has since been deleted or moved to Render. Its runbook,
+[docs/monorepo-migration.md](docs/monorepo-migration.md), is kept as a record of what moved and
+how, with each superseded step marked. Job Hunter's state lives in Postgres; see the cutover
+runbook in [apps/job-hunter/README.md](apps/job-hunter/README.md).

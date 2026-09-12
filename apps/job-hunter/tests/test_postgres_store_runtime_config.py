@@ -3,7 +3,6 @@ import logging
 import pytest
 
 from job_hunter.config import SupabaseSettings
-from job_hunter.gmail_models import GmailSettings
 from job_hunter.models import (
     AIQuotaSettings,
     ProviderCredentials,
@@ -82,8 +81,6 @@ def test_runtime_models_do_not_reveal_secrets_in_representations():
         policy=SearchPolicy([], [], [], 90_000, {}),
         ai_quota=AIQuotaSettings(rpm=10, tpm=250_000, rpd=500),
         brave_search_api_key="brave-secret",
-        telegram_bot_token="telegram-secret",
-        telegram_chat_id="private-chat-id",
     )
 
     combined_repr = repr(credentials) + repr(settings)
@@ -93,23 +90,8 @@ def test_runtime_models_do_not_reveal_secrets_in_representations():
         "brave-secret",
         "private-cv",
         "private-cover-letter",
-        "telegram-secret",
-        "private-chat-id",
     ):
         assert secret not in combined_repr
-
-
-def test_gmail_settings_do_not_reveal_secrets_in_representations():
-    settings = GmailSettings(
-        client_id="gmail-client-id",
-        client_secret="gmail-client-secret",
-        refresh_token="gmail-refresh-token",
-        ai_api_key="gemini-secret",
-        ai_quota=AIQuotaSettings(rpm=10, tpm=250_000, rpd=500),
-    )
-
-    for secret in ("gmail-client-secret", "gmail-refresh-token", "gemini-secret"):
-        assert secret not in repr(settings)
 
 
 def test_get_provider_credentials_maps_runner_rpc_rows():

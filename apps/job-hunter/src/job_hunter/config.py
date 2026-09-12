@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from .ai.limits import free_tier_quota
-from .gmail_models import GmailSettings
 from .normalize import ats_board_key
 from .models import (
     DEFAULT_BACKEND_HEAVY_SIGNALS,
@@ -45,14 +44,6 @@ _DEFAULT_AI_MODEL = "gemini-3.5-flash-lite"
 _REMOTE_POLICIES = {"preferred", "required", "allowed"}
 _RELOCATION_POLICIES = {"none", "selective", "allowed"}
 _SPONSORSHIP_POLICIES = {"not_required", "required"}
-
-
-@dataclass(slots=True, frozen=True)
-class WebhookSettings:
-    telegram_bot_token: str
-    telegram_webhook_secret: str
-    github_repository: str
-    github_dispatch_token: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -92,23 +83,6 @@ def _load_required_documents(store: "PostgresJobStore") -> tuple[str, str]:
     return documents.get("cv", ""), documents.get("cover_letter", "")
 
 
-def load_gmail_settings(store: "PostgresJobStore") -> GmailSettings:
-    credentials = load_provider_credentials(store)
-    if not credentials.gemini_api_key:
-        raise RuntimeConfigurationError(
-            "Missing per-user Job Hunter configuration: gemini"
-        )
-    ai_model = _ai_model()
-    return GmailSettings(
-        client_id=_require_env("GMAIL_CLIENT_ID"),
-        client_secret=_require_env("GMAIL_CLIENT_SECRET"),
-        refresh_token=_require_env("GMAIL_REFRESH_TOKEN"),
-        ai_api_key=credentials.gemini_api_key,
-        ai_quota=_ai_quota(ai_model),
-        ai_model=ai_model,
-    )
-
-
 def load_settings(store: "PostgresJobStore") -> Settings:
     result = store.get_search_profile()
     if result is None:
@@ -135,13 +109,6 @@ def load_settings(store: "PostgresJobStore") -> Settings:
             f"Missing per-user Job Hunter configuration: {', '.join(missing)}"
         )
     dry_run = os.environ.get("JOB_HUNTER_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
-
-    if not dry_run:
-        telegram_bot_token = _require_env("TELEGRAM_BOT_TOKEN")
-        telegram_chat_id = _require_env("TELEGRAM_CHAT_ID")
-    else:
-        telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
     policy = SearchPolicy(
         target_titles=data.get("target_titles", []),
@@ -207,8 +174,6 @@ def load_settings(store: "PostgresJobStore") -> Settings:
         platform_ai_quota=_platform_ai_quota(ai_model),
         brave_search_api_key=credentials.brave_search_api_key,
         dry_run=dry_run,
-        telegram_bot_token=telegram_bot_token,
-        telegram_chat_id=telegram_chat_id,
         ai_model=ai_model,
         output_dir=os.environ.get("JOB_HUNTER_OUTPUT_DIR", "var"),
     )
@@ -248,15 +213,6 @@ def _profile_row_to_legacy_dict(
         for row in market_rows
     ]
     return data
-
-
-def load_webhook_settings() -> WebhookSettings:
-    return WebhookSettings(
-        telegram_bot_token=_require_env("TELEGRAM_BOT_TOKEN"),
-        telegram_webhook_secret=_require_env("TELEGRAM_WEBHOOK_SECRET"),
-        github_repository=_require_env("GITHUB_REPOSITORY"),
-        github_dispatch_token=_require_env("GITHUB_DISPATCH_TOKEN"),
-    )
 
 
 def load_supabase_settings() -> SupabaseSettings:

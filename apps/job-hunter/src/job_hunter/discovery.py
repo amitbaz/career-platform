@@ -1019,14 +1019,13 @@ def collect_candidates(
     # Design step 7 (prefilter and count): mostly pure -- the only I/O left
     # here is collecting the terminal-status pairs for jobs rejected this
     # run, flushed once after the loop.
-    # That write must survive: job_hunter_gmail_candidate_complete
-    # (20260907104935_job_hunter_gmail_candidate_eligibility.sql) treats a
-    # job whose status is "rejected" or "closed" as complete regardless of
-    # whether it has an evaluation, which is what stops a rejected public
-    # job's Gmail twin being re-emitted as an inbound candidate forever.
-    # (It is NOT read by needs_evaluation/needs_evaluation_bulk, which only
-    # look at the evaluations table -- a rejected job with no evaluation row
-    # still answers needs=True next run and is correctly re-evaluated.)
+    # That write is the job row's terminal status, and it is what
+    # `closed_job_ids`-style reads and the freshness/recovery stages key off.
+    # Its other historical reader, job_hunter_gmail_candidate_complete, is
+    # gone: #287 deleted Gmail intake and dropped that function with it.
+    # (The status is NOT read by needs_evaluation/needs_evaluation_bulk, which
+    # only look at the evaluations table -- a rejected job with no evaluation
+    # row still answers needs=True next run and is correctly re-evaluated.)
     with ledger.phase(PHASE_PREFILTER):
         status_updates: list[tuple[str, str]] = []
         for job_id, job, _observed_market_id in persisted:

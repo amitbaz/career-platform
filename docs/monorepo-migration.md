@@ -21,6 +21,19 @@ and cover letter text into `source_documents`, both per user and read at run tim
 confirming no workflow passes them and no code reads them. Do not re-add them: the runtime
 would not look at them, and a stale key in two places is worse than a key in one.
 
+A second thing has changed direction since, and it is larger: **most of what this runbook
+configured no longer exists.** #286 deleted Relay, #287 deleted the Telegram surfaces, Gmail
+intake and cover-letter generation, and #297 retired the monolithic daily run along with the
+workflow that carried it. What ran on a schedule in GitHub Actions now runs as Render cron
+services (`render.yaml`), reading the `caddie-engine` environment group rather than Actions
+secrets.
+
+The practical consequence: `SUPABASE_DB_URL`, used by `supabase-migrations.yml`, is the only
+repository secret any workflow still reads. Every variable in §1 and every secret in §2 is dead
+in Actions, §4 and §6 describe systems that are gone, and §7's schedule no longer has a
+workflow to call. The sections are kept as the record they were always meant to be; each now
+carries a note saying what replaced it.
+
 ---
 
 The code move (issue #1) landed in this repository. The work the sections below cover was the
@@ -32,7 +45,11 @@ to confirm that part of the setup is intact.
 
 ---
 
-## 1. GitHub Actions variables — done
+## 1. GitHub Actions variables — done (no longer read)
+
+> Since #297 no workflow reads these five. The engine's Gemini and Brave limits come from the
+> `caddie-engine` environment group on Render. They are harmless where they are; delete them
+> when convenient.
 
 The five non-secret variables were copied from `amitbaz/job-hunter-bot`:
 
@@ -48,21 +65,33 @@ Check: `gh variable list --repo amitbaz/career-platform`
 
 ---
 
-## 2. GitHub Actions secrets — done
+## 2. GitHub Actions secrets — done (only `SUPABASE_DB_URL` is still read)
+
+> The four Supabase/user secrets below were read by the daily run, which #297 retired. The
+> engine reads the same values from Render's `caddie-engine` environment group now.
+> `supabase-migrations.yml` reads `SUPABASE_DB_URL`, which this section never listed; that one
+> secret is the whole of what Actions needs today.
 
 Secret values cannot be read back out of GitHub, so these had to be re-entered by hand.
 
 | Secret                       | Used by                          | Still a GitHub secret?                   |
 | ---------------------------- | -------------------------------- | ---------------------------------------- |
-| `TELEGRAM_BOT_TOKEN`         | daily run, cover letter          | yes                                      |
-| `TELEGRAM_CHAT_ID`           | daily run, cover letter          | yes                                      |
-| `GMAIL_CLIENT_ID`            | daily Gmail sync                 | yes                                      |
-| `GMAIL_CLIENT_SECRET`        | daily Gmail sync                 | yes                                      |
-| `GMAIL_REFRESH_TOKEN`        | daily Gmail sync                 | yes                                      |
-| `GEMINI_API_KEY`             | daily run, cover letter          | no — Supabase Vault, per user (#72)      |
+| `TELEGRAM_BOT_TOKEN`         | nothing — Telegram deleted (#287)| no longer used; safe to delete           |
+| `TELEGRAM_CHAT_ID`           | nothing — Telegram deleted (#287)| no longer used; safe to delete           |
+| `GMAIL_CLIENT_ID`            | nothing — Gmail deleted (#287)   | no longer used; safe to delete           |
+| `GMAIL_CLIENT_SECRET`        | nothing — Gmail deleted (#287)   | no longer used; safe to delete           |
+| `GMAIL_REFRESH_TOKEN`        | nothing — Gmail deleted (#287)   | no longer used; safe to delete           |
+| `GEMINI_API_KEY`             | daily run                        | no — Supabase Vault, per user (#72)      |
 | `BRAVE_SEARCH_API_KEY`       | daily run                        | no — Supabase Vault, per user (#72)      |
-| `CANDIDATE_PROFILE_B64`      | daily run, cover letter          | no — `source_documents`, per user (#72)  |
-| `COVER_LETTER_TEMPLATE_B64`  | daily run, cover letter          | no — `source_documents`, per user (#72)  |
+| `CANDIDATE_PROFILE_B64`      | daily run                        | no — `source_documents`, per user (#72)  |
+| `COVER_LETTER_TEMPLATE_B64`  | nothing — cover letters deleted  | no — `source_documents`, per user (#72)  |
+
+The five Telegram and Gmail secrets are dead as of #287: nothing reads them, and the workflow
+that did is deleted. They are left listed rather than removed from this record so it stays a
+true account of what the migration moved. Delete them from the repository when convenient —
+`gh secret delete TELEGRAM_BOT_TOKEN --repo amitbaz/career-platform`, and the same for the
+other four — and revoke the Gmail OAuth client while you are there, since a refresh token that
+nothing uses is a credential nobody is watching.
 
 The Postgres store added four more that the workflows do read from the environment:
 `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64` and
@@ -81,42 +110,47 @@ If you keep them in a local `.env`, this loop sets the current set at once:
 
 ```bash
 cd ~/career-platform   # wherever your populated .env lives
-for k in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID \
-         GMAIL_CLIENT_ID GMAIL_CLIENT_SECRET GMAIL_REFRESH_TOKEN \
-         SUPABASE_URL SUPABASE_PUBLISHABLE_KEY SUPABASE_SIGNING_KEY_B64 JOB_HUNTER_USER_ID; do
+for k in SUPABASE_URL SUPABASE_PUBLISHABLE_KEY SUPABASE_SIGNING_KEY_B64 JOB_HUNTER_USER_ID; do
   v=$(grep "^$k=" .env | cut -d= -f2-)
   [ -n "$v" ] && printf '%s' "$v" | gh secret set "$k" --repo amitbaz/career-platform && echo "set $k"
 done
 ```
 
-The Gemini and Brave keys and the two documents are deliberately absent from that loop. They
-are saved per user in Relay — **Profile → Replace source information** for the documents,
-**Provider credentials** for the keys — and read from Postgres at run time.
+The five Telegram and Gmail secrets were in that loop until #287 deleted the code that read
+them; it now sets only the four the Postgres store needs. The Gemini and Brave keys and the two
+documents are deliberately absent as well: they are saved per user and read from Postgres at run
+time. (They were entered through Relay, which #286 deleted; a surface for that is part of the
+product still to be built.)
 
-Check: `gh secret list --repo amitbaz/career-platform` shows those nine names and none of the
-four that moved.
+Check: `gh secret list --repo amitbaz/career-platform` shows the four above, and none of the
+four that moved to Postgres.
 
 ---
 
 ## 3. Local development env
 
-Both apps read their own env file; neither reads the repository root.
-
 `apps/job-hunter/.env` — copy from `apps/job-hunter/.env.example`. Beyond the secrets above
 it needs `GEMINI_MODEL` and `BRAVE_MONTHLY_QUERY_LIMIT` (the `GEMINI_FREE_*` limits became
-optional overrides in #73 — the published limits per model are defaults in code), and — only
-if you run the Telegram webhook locally —
-`TELEGRAM_WEBHOOK_SECRET`, `GITHUB_REPOSITORY`, `GITHUB_STATE_TOKEN`, `GITHUB_DISPATCH_TOKEN`.
-The Gemini and Brave keys and the CV and cover letter are not env vars: a local run reads them
-from Postgres for `JOB_HUNTER_USER_ID`, exactly as the scheduled run does.
+optional overrides in #73 — the published limits per model are defaults in code). The Gemini
+and Brave keys and the CV are not env vars: a local run reads them from Postgres for
+`JOB_HUNTER_USER_ID`, exactly as the scheduled run does.
 
-`apps/relay/.env.local` — copy from `apps/relay/.env.example`:
-`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `GEMINI_API_KEY`,
-`GEMINI_MODEL`.
+The Telegram webhook variables this section used to list — `TELEGRAM_WEBHOOK_SECRET`,
+`GITHUB_REPOSITORY`, `GITHUB_STATE_TOKEN`, `GITHUB_DISPATCH_TOKEN` — are gone with the webhook
+(#287), and so is the `apps/relay/.env.local` it described (#286). `apps/job-hunter` is the
+only app with an env file today.
 
 ---
 
-## 4. Vercel — manual
+## 4. Vercel — manual (SUPERSEDED)
+
+> **Superseded by #286 and #287.** Neither project exists as a deployment target any more:
+> Relay was deleted, and the Flask webhook the Job Hunter project served was deleted with the
+> Telegram surfaces. Nothing in this repository builds on Vercel, so this step cannot be
+> performed and the `job-hunter-bot` Vercel project should be deleted from the dashboard once
+> #298 is on `main`. The engine deploys to Render instead (`render.yaml`). The
+> `GITHUB_STATE_TOKEN` and `GITHUB_DISPATCH_TOKEN` PATs described below have no remaining
+> reader and should be revoked. The rest of this section is kept as a record of what was done.
 
 Two projects currently build from the old repositories:
 
@@ -194,7 +228,13 @@ Artifacts expire after 90 days, so do this before the old repository's artifacts
 
 ---
 
-## 6. Telegram webhook — manual
+## 6. Telegram webhook — manual (SUPERSEDED)
+
+> **Superseded by #287.** The bot, the webhook and `scripts/set_telegram_webhook.py` are all
+> deleted; Telegram is not part of the product. Unregister the webhook at Telegram's end —
+> `curl "https://api.telegram.org/bot<TOKEN>/deleteWebhook"` — and revoke the bot token with
+> BotFather, so nothing is left pointing at a URL that no longer answers. The rest of this
+> section is kept as a record of what was done.
 
 The webhook only needs re-registering if the Job Hunter deployment URL changed. Repointing an
 existing Vercel project keeps its domain, so usually there is nothing to do.
@@ -212,7 +252,11 @@ no `last_error_message`.
 
 ---
 
-## 7. Scheduling — cron-job.org
+## 7. Scheduling — cron-job.org (SUPERSEDED)
+
+> **Superseded by #297.** `job-hunter-daily.yml` is deleted, so the URL below returns 404 and
+> the cron-job.org job should be deleted along with the PAT it authenticates with. Scheduling
+> lives in `render.yaml` now, as one cron service per stage.
 
 The daily run is scheduled externally by cron-job.org, which calls the GitHub
 `workflow_dispatch` API. `job-hunter-daily.yml` therefore has **no `schedule:` trigger** — that
@@ -250,6 +294,9 @@ gh workflow disable generate-cover-letter.yml --repo amitbaz/job-hunter-bot
 
 Cover-letter buttons in Telegram stay broken until the Vercel webhook is repointed at
 `career-platform` (§4), since the webhook dispatches to whatever `GITHUB_REPOSITORY` names.
+
+> No longer applies: #287 deleted the buttons, the webhook and cover-letter generation. Both
+> old repositories can now be archived outright rather than kept with disabled workflows.
 
 ---
 

@@ -524,8 +524,6 @@ class Settings:
     platform_ai_quota: AIQuotaSettings | None = None
     brave_search_api_key: str | None = field(default=None, repr=False)
     dry_run: bool = False
-    telegram_bot_token: str | None = field(default=None, repr=False)
-    telegram_chat_id: str | None = field(default=None, repr=False)
     ai_model: str = "gemini-3.5-flash-lite"
     output_dir: str = "var"
 
@@ -534,71 +532,3 @@ class Settings:
 class ProviderCredentials:
     gemini_api_key: str | None = field(default=None, repr=False)
     brave_search_api_key: str | None = field(default=None, repr=False)
-
-
-@dataclass(slots=True)
-class DigestItem:
-    job_id: str
-    company: str
-    title: str
-    score: int
-    decision: str
-    url: str
-    hard_blockers: list
-    location: str = ""
-    market_id: str = ""
-    market_note: str = ""
-    availability_note: str = ""
-    #: A licensed source's required text credit and link (#184, read by
-    #: #188) -- e.g. "Jobs by Adzuna" / "https://...". Empty means the
-    #: posting's source imposes no obligation, matching
-    #: `job_hunter_posting_display_credit`'s own `null` for that case. Never
-    #: a badge/logo: Telegram's `sendMessage` cannot render one in a
-    #: multi-posting digest, so only the text half of a licensed source's
-    #: obligation is representable here.
-    display_credit_text: str = ""
-    display_credit_url: str = ""
-
-
-@dataclass(slots=True, frozen=True)
-class NavigationCard:
-    job_id: str
-    title: str
-    company: str
-    location: str
-    score: int
-    url: str
-    market_id: str = ""
-    market_note: str = ""
-    availability_note: str = ""
-    #: See `DigestItem.display_credit_text`/`display_credit_url` (#184,
-    #: #188) -- the navigation-card surface is the digest's other delivery
-    #: path and carries the same obligation.
-    display_credit_text: str = ""
-    display_credit_url: str = ""
-
-
-@dataclass(slots=True, frozen=True)
-class NavigationSession:
-    session_id: str
-    cards: list[NavigationCard]
-    telegram_message_id: str | None
-    created_at: str
-    expires_at: str
-
-
-@dataclass(slots=True)
-class ReviewItem:
-    """Compact, privacy-minimized representation of unresolved Gmail activity."""
-
-    event_id: int
-    company: str
-    role_title: str
-    occurred_at: str
-    subject: str
-    rationale: str
-    event_type: str
-    source_message_id: str
-    source_thread_id: str | None
-
-

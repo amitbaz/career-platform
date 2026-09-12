@@ -23,7 +23,6 @@ from .company_watch import CompanyWatchSource
 from .devjobs import DevJobsSource
 from .duckduckgo import DuckDuckGoSource
 from .greenhouse import GreenhouseSource
-from .gmail_staged import GmailStagedSource
 from .hackernews import HackerNewsHiringSource
 from .himalayas import HimalayasSource
 from .jobicy import JobicySource
@@ -46,7 +45,6 @@ __all__ = [
     "ArbeitnowSource",
     "JobicySource",
     "HimalayasSource",
-    "GmailStagedSource",
     "CompanyWatchSource",
     "DuckDuckGoSource",
     "TargetedSearchSource",

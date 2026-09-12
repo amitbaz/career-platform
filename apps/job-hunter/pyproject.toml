@@ -10,9 +10,6 @@ dependencies = [
     "requests>=2.31",
     "beautifulsoup4>=4.12",
     "PyYAML>=6.0",
-    "reportlab>=4.1",
-    "google-auth>=2.40",
-    "google-auth-oauthlib>=1.2",
     "PyJWT[crypto]>=2.8",
     "pydantic>=2.7",
     # Ingestion's direct, pooled Postgres connection (#182). Everything
@@ -27,9 +24,6 @@ test = [
     "pytest-mock>=3.12",
     "pytest-xdist>=3.6",
 ]
-webhook = [
-    "Flask>=3.1,<4",
-]
 lint = [
     "import-linter>=2.15",
 ]
@@ -39,6 +33,3 @@ testpaths = ["tests"]
 markers = [
     "integration: needs a running Supabase stack; skipped when none is reachable",
 ]
-
-[tool.vercel]
-entrypoint = "main:app"

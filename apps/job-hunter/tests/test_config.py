@@ -4,7 +4,6 @@ from job_hunter.config import (
     ProfileNotFoundError,
     RuntimeConfigurationError,
     _parse_manual_company_watch,
-    load_gmail_settings,
     load_settings,
 )
 from job_hunter.models import (
@@ -201,23 +200,17 @@ def test_load_settings_accepts_missing_brave_key(monkeypatch):
     assert settings.brave_search_api_key is None
 
 
-def test_loaders_receive_identical_gemini_free_tier_quota(monkeypatch):
+def test_load_settings_reads_the_gemini_free_tier_quota(monkeypatch):
     _set_runtime_env(monkeypatch)
-    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
-    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
 
-    store = _store_for(_profile())
-    bot_settings = load_settings(store)
-    gmail_settings = load_gmail_settings(store)
+    settings = _load(_profile())
 
-    assert bot_settings.ai_quota == gmail_settings.ai_quota
-    assert bot_settings.ai_quota.rpm == 10
-    assert bot_settings.ai_quota.tpm == 250000
-    assert bot_settings.ai_quota.rpd == 500
-    assert bot_settings.ai_quota.ceiling_ratio == 0.80
-    assert bot_settings.ai_quota.core_reserve_ratio == 0.25
-    assert bot_settings.ai_quota.rate_pause_seconds == 90
+    assert settings.ai_quota.rpm == 10
+    assert settings.ai_quota.tpm == 250000
+    assert settings.ai_quota.rpd == 500
+    assert settings.ai_quota.ceiling_ratio == 0.80
+    assert settings.ai_quota.core_reserve_ratio == 0.25
+    assert settings.ai_quota.rate_pause_seconds == 90
 
 
 def test_a_run_starts_with_an_api_key_alone_and_takes_the_published_limits(
@@ -309,44 +302,8 @@ def test_a_free_tier_override_that_was_typed_on_purpose_must_be_usable(
         _load(_profile())
 
 
-def test_load_gmail_settings_reads_gemini_from_store_without_loading_documents(
-    monkeypatch,
-):
-    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
-    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
-    store = _store_for(_profile())
-
-    settings = load_gmail_settings(store)
-
-    assert settings.ai_api_key == "stored-gemini"
-    assert store.document_reads == 0
-
-
-def test_load_gmail_settings_does_not_require_candidate_documents(monkeypatch):
-    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
-    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
-    store = _store_for(_profile(), documents={})
-
-    settings = load_gmail_settings(store)
-
-    assert settings.client_id == "client"
-    assert store.document_reads == 0
-
-
-def test_load_gmail_settings_requires_refresh_token(monkeypatch):
-    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
-    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
-    monkeypatch.delenv("GMAIL_REFRESH_TOKEN", raising=False)
-    with pytest.raises(ValueError, match="GMAIL_REFRESH_TOKEN"):
-        load_gmail_settings(_store_for(_profile()))
-
-
 def test_load_settings_reads_private_sources(monkeypatch):
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
 
     settings = _load(_profile(max_jobs_per_run=25))
     assert settings.candidate_profile == "stored profile"
@@ -357,25 +314,13 @@ def test_load_settings_reads_private_sources(monkeypatch):
 
 def test_load_settings_dry_run_env_zero_is_false(monkeypatch):
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "0")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
 
     settings = _load(_profile(max_jobs_per_run=25))
     assert settings.dry_run is False
 
 
-def test_load_settings_requires_telegram_in_non_dry_run(monkeypatch):
-    monkeypatch.delenv("JOB_HUNTER_DRY_RUN", raising=False)
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    with pytest.raises((ValueError, KeyError)):
-        _load(_profile(max_jobs_per_run=25))
-
-
 def test_load_settings_discovery_config(monkeypatch):
     monkeypatch.setenv("JOB_HUNTER_DRY_RUN", "1")
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
 
     settings = _load(
         _profile(

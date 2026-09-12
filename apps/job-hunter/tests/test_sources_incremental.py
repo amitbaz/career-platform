@@ -28,7 +28,6 @@ from job_hunter.search_backend import SearchHit, SearchResponse
 from job_hunter.sources.arbeitnow import ArbeitnowSource
 from job_hunter.sources.base import JobSource
 from job_hunter.sources.company_watch import CompanyWatchSource
-from job_hunter.sources.gmail_staged import GmailStagedSource
 from job_hunter.sources.learned_ats import LearnedAtsSource
 from job_hunter.sources.targeted_search import TargetedSearchSource
 from job_hunter.sources.wellfound import WellfoundListing, WellfoundSource
@@ -413,40 +412,6 @@ def test_company_watch_does_not_check_the_second_watch_until_the_first_is_consum
 
     assert list(jobs) == []
     assert store.successes == [1, 2]
-
-
-class _FakeInboundStore:
-    def __init__(self, rows: list[dict]) -> None:
-        self._rows = rows
-        self.reads = 0
-
-    def list_eligible_inbound_jobs(self):
-        self.reads += 1
-        return list(self._rows)
-
-
-def _inbound_row(key: str) -> dict:
-    return {
-        "source_platform": "linkedin",
-        "source_candidate_key": key,
-        "title": "Acme hiring Senior Product Engineer in Berlin | LinkedIn",
-        "company": "",
-        "location": "",
-        "url": f"https://www.linkedin.com/jobs/view/{key}",
-        "description": "React",
-        "remote": True,
-    }
-
-
-def test_gmail_staged_reads_nothing_until_the_first_job_is_pulled():
-    store = _FakeInboundStore([_inbound_row("a"), _inbound_row("b")])
-
-    jobs = GmailStagedSource(store).discover()
-    assert store.reads == 0
-
-    assert next(jobs).source_job_id == "a"
-    assert store.reads == 1
-    assert next(jobs).source_job_id == "b"
 
 
 # --- discovery's per-source failure isolation --------------------------------

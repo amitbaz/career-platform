@@ -31,7 +31,7 @@ jobs:
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
       - uses: ./.github/actions/supabase-local-stack
-      - run: pip install -e '.[test,webhook]'
+      - run: pip install -e '.[test]'
       - name: Run the test suite
         working-directory: .
         run: |
@@ -60,7 +60,7 @@ jobs:
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
       - uses: ./.github/actions/supabase-local-stack
-      - run: pip install -e '.[test,webhook]'
+      - run: pip install -e '.[test]'
       - name: Run the isolation test
         working-directory: .
         run: |
