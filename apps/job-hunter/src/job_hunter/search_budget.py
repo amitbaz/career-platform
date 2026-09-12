@@ -7,17 +7,16 @@ PostgREST has no equivalent -- there is no session-scoped transaction to hold
 open across a `select` and a later `upsert`. `try_record` below is a plain
 read-then-write: two concurrent callers can each read "under the cap" and
 both write, overshooting the daily/monthly limit by the number of racing
-callers. What protects this in practice is not application logic but
-deployment shape: every workflow that can call `try_record`
-(`job-hunter-daily.yml`, `job-hunter-generate-cover-letter.yml`) shares
-`concurrency: group: job-hunter-state` with `cancel-in-progress: false`, so
-at most one writer is ever *running* against the ledger at a time
--- a second run in that group, including a manually-triggered
-`workflow_dispatch` of either workflow, queues behind the first rather than
-overlapping it. The real escape hatch is anything outside GitHub Actions
-entirely: a local `cli.py` invocation on the owner's machine runs with no
-concurrency group at all and can call `try_record` while an Actions run is
-in flight, reintroducing the race this docstring describes.
+callers.
+
+`crawl-source` (render.yaml) is the only caller left since #189 retired the
+monolithic run and its `job-hunter-daily.yml` workflow -- the GitHub Actions
+`concurrency: group: job-hunter-state` guard that used to serialize every
+writer against this ledger no longer exists anywhere. Render's own cron
+scheduling has not been made to guarantee non-overlapping runs the way that
+guard did; a `crawl-source` invocation that outlives its 15-minute schedule
+and a local `cli.py` invocation on the owner's machine can both call
+`try_record` at once, reintroducing the race this docstring describes.
 """
 
 from __future__ import annotations

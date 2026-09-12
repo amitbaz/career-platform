@@ -1,15 +1,11 @@
-from pathlib import Path
-
 from job_hunter.config import load_gmail_settings as load_database_gmail_settings
 from job_hunter.gmail_models import GmailSettings, GmailSyncSummary
 from job_hunter.models import (
     AIQuotaSettings,
     ProviderCredentials,
-    RunSummary,
     SearchPolicy,
     Settings,
 )
-from job_hunter.ai.usage import PlatformUsageLedger
 from job_hunter.postgres_store import DryRunStore
 from job_hunter import cli
 
@@ -52,148 +48,6 @@ def _settings(tmp_path, **overrides):
     )
     defaults.update(overrides)
     return Settings(**defaults)
-
-
-def test_run_scheduled_skips_outside_target_hour(monkeypatch, tmp_path, caplog):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    monkeypatch.setattr(cli, "should_run_scheduled", lambda now, tz, hour: False)
-    _patch_build_client(monkeypatch)
-
-    called = []
-    monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: called.append(s) or RunSummary())
-
-    with caplog.at_level("INFO"):
-        exit_code = cli.main(["run", "--scheduled"])
-
-    assert exit_code == 0
-    assert called == []
-    assert any("skipped" in record.message.lower() for record in caplog.records)
-
-
-def test_run_scheduled_proceeds_at_target_hour(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    monkeypatch.setattr(cli, "should_run_scheduled", lambda now, tz, hour: True)
-    _patch_build_client(monkeypatch)
-
-    called = []
-    monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: called.append(s) or RunSummary(ready_to_apply=1))
-
-    exit_code = cli.main(["run", "--scheduled"])
-
-    assert exit_code == 0
-    assert called == [settings]
-
-
-def test_run_manual_always_proceeds_without_time_guard(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    _patch_build_client(monkeypatch)
-
-    def _boom(*args, **kwargs):
-        raise AssertionError("should_run_scheduled must not be called for manual runs")
-
-    monkeypatch.setattr(cli, "should_run_scheduled", _boom)
-
-    called = []
-    monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: called.append(s) or RunSummary())
-
-    exit_code = cli.main(["run"])
-
-    assert exit_code == 0
-    assert called == [settings]
-
-
-def test_run_loads_settings_from_the_constructed_store(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    captured = {}
-
-    class Store:
-        def __init__(self, client, ingestion=None):
-            captured["store"] = self
-
-        def close(self):
-            pass
-
-    def load_from_store(store):
-        captured["settings_store"] = store
-        return settings
-
-    monkeypatch.setattr(cli, "PostgresJobStore", Store)
-    monkeypatch.setattr(cli, "load_settings", load_from_store)
-    monkeypatch.setattr(cli, "run_pipeline", lambda *args, **kwargs: RunSummary())
-    _patch_build_client(monkeypatch)
-
-    assert cli.main(["run"]) == 0
-    assert captured["settings_store"] is captured["store"]
-
-
-def test_run_creates_output_parent_directory(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    monkeypatch.setattr(cli, "run_pipeline", lambda s, **kwargs: RunSummary())
-    _patch_build_client(monkeypatch)
-
-    assert not (Path(settings.output_dir) / "cover_letters").exists()
-
-    cli.main(["run"])
-
-    assert (Path(settings.output_dir) / "cover_letters").exists()
-
-
-def test_run_unhandled_exception_returns_nonzero(monkeypatch, tmp_path):
-    def _raise(path):
-        raise RuntimeError("config broke")
-
-    monkeypatch.setattr(cli, "load_settings", _raise)
-
-    exit_code = cli.main(["run"])
-
-    assert exit_code == 1
-
-
-def test_run_fails_when_every_evaluation_this_run_failed(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    _patch_build_client(monkeypatch)
-    monkeypatch.setattr(
-        cli,
-        "run_pipeline",
-        lambda s, **kwargs: RunSummary(errors=3, evaluation_attempted=3, evaluated=0),
-    )
-
-    exit_code = cli.main(["run"])
-
-    assert exit_code == 1
-
-
-def test_run_succeeds_when_some_evaluations_this_run_succeeded(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    _patch_build_client(monkeypatch)
-    monkeypatch.setattr(
-        cli,
-        "run_pipeline",
-        lambda s, **kwargs: RunSummary(errors=1, evaluation_attempted=2, evaluated=1),
-    )
-
-    exit_code = cli.main(["run"])
-
-    assert exit_code == 0
-
-
-def test_run_succeeds_when_no_evaluation_was_needed(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    _patch_build_client(monkeypatch)
-    monkeypatch.setattr(
-        cli, "run_pipeline", lambda s, **kwargs: RunSummary(evaluation_attempted=0, evaluated=0)
-    )
-
-    exit_code = cli.main(["run"])
-
-    assert exit_code == 0
 
 
 def test_parser_accepts_sync_gmail_dry_run():
@@ -430,89 +284,6 @@ class _CapturingProvider:
         self.platform_api_key = platform_api_key
         self.platform_tracker = platform_tracker
         type(self).instances.append(self)
-
-
-def test_run_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):
-    settings = _settings(tmp_path)
-    pipeline_kwargs = {}
-
-    def _run_pipeline(s, **kwargs):
-        pipeline_kwargs.update(kwargs)
-        return RunSummary()
-
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    monkeypatch.setattr(cli, "run_pipeline", _run_pipeline)
-    monkeypatch.setattr(cli, "AIUsageTracker", _CapturingTracker)
-    monkeypatch.setattr(cli, "build_gemini_provider", _CapturingProvider)
-    _patch_build_client(monkeypatch)
-    _CapturingTracker.instances.clear()
-    _CapturingProvider.instances.clear()
-
-    assert cli.main(["run"]) == 0
-
-    assert len(_CapturingTracker.instances) == 1
-    assert len(_CapturingProvider.instances) == 1
-    tracker = _CapturingTracker.instances[0]
-    provider = _CapturingProvider.instances[0]
-    assert tracker.provider == "gemini"
-    assert tracker.model == settings.ai_model
-    assert tracker.quota == settings.ai_quota
-    assert provider.tracker is tracker
-    # The run reports what it spent from the same ledger the provider writes
-    # to; reaching into the provider for it is what silently broke once.
-    assert pipeline_kwargs["usage"] is tracker
-    # No platform key is configured here, so extraction has neither a
-    # credential nor a ledger -- and the user's are not offered in their place.
-    assert provider.platform_api_key is None
-    assert provider.platform_tracker is None
-    assert pipeline_kwargs["platform_usage"] is None
-
-
-def test_run_gives_extraction_the_platform_key_and_its_own_ledger(monkeypatch, tmp_path):
-    """The two halves are funded and metered apart (#128).
-
-    The user's tracker and the platform's are distinct objects over distinct
-    ledgers, so neither run's spend can be counted against the other's
-    ceiling, and the provider is handed the platform key for the class that
-    the user's key may never fund.
-    """
-    settings = _settings(
-        tmp_path,
-        platform_ai_api_key="platform-key",
-        platform_ai_quota=AIQuotaSettings(
-            rpm=10, tpm=250000, rpd=500, core_reserve_ratio=0.0
-        ),
-    )
-    pipeline_kwargs = {}
-
-    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
-    monkeypatch.setattr(
-        cli, "run_pipeline", lambda s, **kwargs: pipeline_kwargs.update(kwargs) or RunSummary()
-    )
-    monkeypatch.setattr(cli, "AIUsageTracker", _CapturingTracker)
-    monkeypatch.setattr(cli, "build_gemini_provider", _CapturingProvider)
-    _patch_build_client(monkeypatch)
-    _CapturingTracker.instances.clear()
-    _CapturingProvider.instances.clear()
-
-    assert cli.main(["run"]) == 0
-
-    user_tracker, platform_tracker = _CapturingTracker.instances
-    provider = _CapturingProvider.instances[0]
-
-    assert provider.api_key == "key"
-    assert provider.platform_api_key == "platform-key"
-    assert provider.tracker is user_tracker
-    assert provider.platform_tracker is platform_tracker
-    assert user_tracker is not platform_tracker
-    # The platform ledger is a different store entirely, not the user's with a
-    # flag on it: that is what makes the two allowances separately readable.
-    assert isinstance(platform_tracker.store, PlatformUsageLedger)
-    assert not isinstance(user_tracker.store, PlatformUsageLedger)
-    assert platform_tracker.quota is settings.platform_ai_quota
-
-    assert pipeline_kwargs["usage"] is user_tracker
-    assert pipeline_kwargs["platform_usage"] is platform_tracker
 
 
 def test_sync_gmail_constructs_one_tracked_provider_sharing_the_user_ledger(monkeypatch, tmp_path):

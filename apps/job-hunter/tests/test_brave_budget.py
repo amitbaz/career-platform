@@ -2,9 +2,7 @@ import itertools
 from datetime import datetime, timedelta, timezone
 
 import job_hunter.search_budget as search_budget
-from job_hunter.circuit_breaker import CircuitBreaker
-from job_hunter.models import Job, SearchQuery
-from job_hunter.pipeline import _targeted_canonical_candidates
+from job_hunter.models import SearchQuery
 from job_hunter.search_budget import (
     SearchUsageLedger,
     brave_queries_available_today,
@@ -196,73 +194,3 @@ def test_brave_query_selection_round_robins_across_markets():
         "israel_remote",
     ]
     assert [query.text for query in fallback] == ["germany-3"]
-
-
-class _Response:
-    status_code = 200
-
-    def __init__(self, text: str = "", payload=None):
-        self.text = text
-        self._payload = payload
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._payload
-
-
-class _Http:
-    def __init__(self):
-        self.urls = []
-
-    def get(self, url, **kwargs):
-        self.urls.append(url)
-        if "api.search.brave.com" in url:
-            return _Response(
-                payload={
-                    "web": {
-                        "results": [
-                            {
-                                "title": "Founding Software Engineer",
-                                "url": "https://jobs.ashbyhq.com/hera/123",
-                            }
-                        ]
-                    }
-                }
-            )
-        return _Response(
-            '<a class="result__a" href="https://jobs.ashbyhq.com/hera/123">Founding Software Engineer</a>'
-        )
-
-
-def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
-    supabase_client, brave_ledger_window
-):
-    year, month, month_start, next_month = brave_ledger_window
-    now = datetime(year, month, 30, 12, 0, tzinfo=UTC)
-    ledger = SearchUsageLedger(supabase_client)
-    budget = search_budget.BraveRequestBudget(
-        ledger, monthly_limit=1, now=lambda: now
-    )
-    http = _Http()
-    job = Job(
-        source="test",
-        company="Hera",
-        title="Founding Software Engineer",
-        url="https://example.com/job",
-    )
-
-    _targeted_canonical_candidates(
-        http, job, CircuitBreaker(5), "configured-and-budgeted", budget
-    )
-    _targeted_canonical_candidates(
-        http, job, CircuitBreaker(5), "configured-and-budgeted", budget
-    )
-
-    brave_calls = [url for url in http.urls if "api.search.brave.com" in url]
-    ddg_calls = [url for url in http.urls if "duckduckgo.com" in url]
-    assert len(brave_calls) == 1
-    assert len(ddg_calls) == 1
-
-    assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 1

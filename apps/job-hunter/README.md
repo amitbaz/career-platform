@@ -6,13 +6,15 @@ The search-and-match engine, which is the product
 into one shared corpus, extracts objective facts from each posting once, and matches postings
 against each user's profile on demand.
 
-**It is mid-restructure.** Ingestion and enrichment run as queued stages (#181): three Render
-cron services defined in [`render.yaml`](../../render.yaml) drain the crawl, facet-extraction and
-freshness queues. Matching is one operation, `match_jobs` (#187). The older single-process daily
-run (`.github/workflows/job-hunter-daily.yml`), which crawls, scores and delivers a Telegram
-digest in one pass, is being retired (#189), and Telegram is not part of the product. **Much of
-the rest of this README still describes that older run** and is rewritten when #189 lands;
-where it disagrees with the code or [`AGENTS.md`](AGENTS.md), trust those.
+**It is mid-restructure.** Ingestion and enrichment run as queued stages (#181): four Render
+cron services defined in [`render.yaml`](../../render.yaml) drain the crawl, facet-extraction,
+freshness and posting-recovery queues. Matching is one operation, `match_jobs` (#187). The older
+single-process daily run and its `.github/workflows/job-hunter-daily.yml` workflow, which crawled,
+scored and delivered a Telegram digest in one pass, are retired (#189) along with that delivery --
+Telegram is not part of the product, and nothing today replaces matching-and-delivery until
+#260/#261 build the mobile app's own read of the corpus. **Much of the rest of this README still
+describes the retired run and Telegram surfaces #287 has not deleted yet.** Where it disagrees
+with the code or [`AGENTS.md`](AGENTS.md), trust those.
 
 The engine **never submits applications**. It prepares material for the user to review and send
 themselves — see [v1 safety boundary](#v1-safety-boundary) below.
@@ -51,7 +53,7 @@ Cover letter generation + PDF rendering happens on demand, not as part of the da
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`: dedup, evaluation cache, delivery tracking) against the shared Supabase project.
 - `src/job_hunter/telegram.py` — outbound-only Telegram Bot API delivery (digest message + PDF documents).
 - `src/job_hunter/gmail_sync.py` — read-only Gmail intake that classifies job signals and stages discovered jobs or review-needed events in the shared Postgres state.
-- `src/job_hunter/pipeline.py` / `cli.py` — orchestration and the `python -m job_hunter run` and `python -m job_hunter sync-gmail` entrypoints.
+- `src/job_hunter/cli.py` — entrypoints for the ingestion stages (`crawl-source`, `extract-facets`, `recheck-freshness`, `recover-posting`), `sync-gmail`, and the on-demand `generate-cover-letter`. There is no `run` entrypoint any more (#189): nothing drives crawl-to-delivery as one process.
 State now lives in Postgres (the shared Supabase project), not on the Actions runner, so `scripts/restore_state.py` and the artifact restore/upload steps it describes no longer exist.
 
 ### R2 automated discovery and company watch
@@ -207,9 +209,9 @@ This bot is designed to run entirely on the Gemini API free tier, at €0 cost. 
 
 ## Local dry run
 
-Copy `.env.example` to `.env` and set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery (Telegram credentials are not required in dry-run mode). `.env.example` is grouped by the surface each variable serves, and a dry run needs one of those groups: the Supabase group listed below. The three Gemini free-tier limits have code defaults and need not be set at all — see [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup). Leave the "Optional overrides" group blank: each of those takes the code default stated in its comment, so copying a default into a value there only creates something to drift. The webhook group is for the Vercel deployment and is not read by a run.
-
-Your Gemini key and your CV and cover letter text are read from Relay for `JOB_HUNTER_USER_ID`, not from `.env`:
+There is no single `run` command any more (#189): drive one ingestion stage directly, against
+the Postgres connection its own docstring in `cli.py` names. Copy `.env.example` to `.env` for
+the Supabase group of variables and load it into your shell:
 
 ```bash
 python -m venv .venv
@@ -218,10 +220,12 @@ pip install -e '.[test,webhook]'
 cp .env.example .env
 # edit .env with your values, then:
 set -a; source .env; set +a
-python -m job_hunter run
+python -m job_hunter crawl-source --limit 5
 ```
 
-This runs discovery, profile extraction, source-diverse shortlisting, and evaluation against Postgres (the shared Supabase project — `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`, and `JOB_HUNTER_USER_ID` must be set) without sending anything to Telegram. Cover letter/PDF generation is a separate on-demand step (`python -m job_hunter generate-cover-letter --job-id <id>`), not part of this run.
+Swap `crawl-source` for `extract-facets`, `recheck-freshness` or `recover-posting` to run that
+stage instead; each is independent and bounded by its own `--limit`. Cover letter/PDF generation
+is a separate on-demand step (`python -m job_hunter generate-cover-letter --job-id <id>`).
 
 ## Gmail intelligence setup
 
@@ -248,21 +252,15 @@ python -m job_hunter sync-gmail --force-backfill
 
 The first successful Gmail setup performs a 120-day historical backfill. Historical processing is resumable and intentionally bounded to 100 previously unprocessed messages per sync invocation, so a large mailbox may need multiple workflow runs to finish. Successfully processed message IDs are stored in Postgres and skipped on later runs. In GitHub Actions the Gmail step also has a 10-minute fail-open timeout; if it reaches that safety limit, the normal Job Hunter pipeline continues and the next run resumes the remaining Gmail backlog.
 
-## Manual GitHub Actions dispatch
+## Ingestion stage schedules
 
-Go to **Actions -> Daily Job Hunter -> Run workflow** to trigger an on-demand run using the current `main` branch and configured secrets. A manual dispatch always runs the full pipeline (`python -m job_hunter run`, no scheduled-hour gate).
-
-## Schedule and state persistence
-
-The repository workflow exposes `workflow_dispatch` only. Daily execution is expected to come from the configured external scheduler, which dispatches **Daily Job Hunter** at the desired local time; GitHub Actions itself has no cron trigger. Every external or manual dispatch runs the full pipeline directly, including the fail-open Gmail sync followed by `python -m job_hunter run`.
-
-State lives in Postgres (the shared Supabase project), not on the Actions runner, so there is
-nothing to restore before the run or upload afterward:
-1. The workflow runs the read-only Gmail intelligence sync before the normal job pipeline. This step is fail-open, so Gmail setup or service failures do not prevent the public-source job run.
-2. `python -m job_hunter run` reads and writes Postgres directly via `PostgresJobStore` for the
-   duration of the run. `concurrency: group: job-hunter-state` is still set on this workflow to
-   keep runs from overlapping, since several read-then-update sequences (company watch, ATS
-   registry, search budget) assume a single writer.
+There is no daily workflow and no manual GitHub Actions dispatch for ingestion any more (#189):
+`crawl-source`, `extract-facets`, `recheck-freshness` and `recover-posting` are Render cron
+services defined in [`render.yaml`](../../render.yaml), each on its own schedule, each reading and
+writing Postgres directly via `PostgresJobStore` for the duration of its own drain. There is no
+single writer lock across them the way `concurrency: group: job-hunter-state` used to provide for
+the old single-process run; see `search_budget.py`'s module docstring for the one place that gap
+is known to matter.
 
 ## Adding ATS board slugs
 

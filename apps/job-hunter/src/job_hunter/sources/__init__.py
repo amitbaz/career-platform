@@ -95,8 +95,8 @@ def build_brave_budget(
     """Build the run's shared persisted Brave budget when Brave is configured.
 
     `SearchUsageLedger` is Postgres-backed (issue #70 task 12), so building a
-    budget needs a `SupabaseClient`. `run_pipeline` derives one from the
-    `PostgresJobStore` it is given (issue #70 task 14b). `client` stays
+    budget needs a `SupabaseClient`. `cli.py`'s `_crawl_source` derives one
+    from the `PostgresJobStore` it is given (issue #70 task 14b). `client` stays
     optional because `build_sources` is also called directly by tests that
     have no client; passing `None` disables Brave search (as if it were
     unconfigured) rather than crashing.

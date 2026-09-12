@@ -460,12 +460,11 @@ def drain_crawl_source(
     """Drain up to `limit` due crawls, in batches, within a time budget.
 
     Its own process on its own schedule (`python -m job_hunter crawl-source`),
-    sharing nothing with the daily digest, so a slow or rate-limited source
-    cannot delay it. One `CrawlSourceStage` serves the whole drain, so
+    sharing nothing with any other stage, so a slow or rate-limited source
+    cannot delay them. One `CrawlSourceStage` serves the whole drain, so
     `build_source`/`persist` and whatever they close over (a `Settings`, a
     `PostgresJobStore`, a Brave budget) are built once per process and reused
-    across every message it claims -- the same reuse `pipeline.py` already
-    relies on for one run's worth of sources.
+    across every message it claims.
 
     Modeled directly on `recheck_freshness_stage.drain_recheck_freshness`:
     failures take the queue's common path (`stage_queue.StageRunner`), the
