@@ -321,13 +321,13 @@ class PostgresJobStore:
     def client(self) -> SupabaseClient:
         """Expose the underlying `SupabaseClient`.
 
-        `run_pipeline` needs this to build a `SearchUsageLedger`/
+        `cli.py`'s `_crawl_source` needs this to build a `SearchUsageLedger`/
         `BraveRequestBudget` for Brave source-discovery -- see
         `build_brave_budget`'s docstring. Deriving the client from the store
         it is already given (rather than adding a separate
-        `supabase_client` parameter to `run_pipeline` that every caller
-        would have to remember to pass) is what keeps Brave from silently
-        going dark again the way issue #70 task 12 left it.
+        `supabase_client` parameter that every caller would have to
+        remember to pass) is what keeps Brave from silently going dark
+        again the way issue #70 task 12 left it.
         """
         return self._client
 
@@ -2145,14 +2145,11 @@ class PostgresJobStore:
         An automatic promotion returns None, skipping the write entirely,
         when `can_write_shared_rows` is False. Before #204 this call wrote
         the per-user `job_hunter_company_watch` over PostgREST, which needs
-        no privileged connection and so kept working in the degraded,
-        no-`SUPABASE_DB_URL` mode `run_pipeline` otherwise still scores and
-        delivers in. Since the automatic pool is now the shared,
-        privileged-connection-only `job_hunter_company_watch_health`,
-        attempting it there would raise `SharedWriteUnavailable` on every
-        promotable evaluation -- caught by `pipeline.py`'s broad `except
-        Exception` around this call, but counted as a run error on every
-        one, which is a regression from a silent, working write. A manual
+        no privileged connection and so kept working without one. Since the
+        automatic pool is now the shared, privileged-connection-only
+        `job_hunter_company_watch_health`, attempting it there would raise
+        `SharedWriteUnavailable` on every promotable evaluation instead --
+        this early return is what a caller relies on to avoid that. A manual
         promotion is unaffected: it never touches the privileged
         connection.
         """
@@ -4470,8 +4467,9 @@ class DryRunStore:
         # `.client` hands back the live, fully write-capable SupabaseClient,
         # bypassing every write wrapper above. A dry run must never reach
         # it -- callers that need Supabase-backed behaviour (e.g. Brave
-        # source discovery's persisted budget in `run_pipeline`) must not be
-        # given a DryRunStore, or must be changed to not need `.client`.
+        # source discovery's persisted budget, built in `cli.py`'s
+        # `_crawl_source`) must not be given a DryRunStore, or must be
+        # changed to not need `.client`.
         raise AssertionError("a dry run must not reach the client")
 
     #: The privileged connection is withheld from a dry run.

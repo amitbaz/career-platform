@@ -552,6 +552,19 @@ the push.
   accommodate one that has none — move the one with nothing written.
 - **An abandoned number stays empty.** Timestamps must be ordered, not contiguous; re-using a
   freed number recreates the hazard that freed it.
+- **A placeholder must never reach `main`.** Renumber it to the allocated timestamp before the
+  PR merges — the placeholder exists to be replaced, and merging one is not a cosmetic slip.
+  `29999999000000` (#282) and `29999999000243` (#284) merged with their placeholders intact and
+  were applied to production under those versions. Every real `YYYYMMDDHHMMSS` number sorts
+  before them, so from that point `supabase db push` refused every migration that followed:
+  #296's posting-recovery schema reached `main` on 2026-09-12 and never reached production,
+  and nothing failed loudly enough for anyone to notice for a day. The versions cannot be
+  renumbered out of the way afterwards, because the remote has applied them. The recovery was
+  `--include-all` in `.github/workflows/supabase-migrations.yml`, which gives up the ordering
+  guard for good; do not spend it a second time.
+- **A merge that touches `supabase/migrations/` is not done until its apply run is green.**
+  `gh run list --workflow=supabase-migrations.yml --limit 5`. A red run there means production
+  is running a schema older than `main`, which every local check in this file will call clean.
 
 ### When another session is in your way
 

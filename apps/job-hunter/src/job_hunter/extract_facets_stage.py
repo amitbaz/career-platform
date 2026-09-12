@@ -113,9 +113,8 @@ class FacetExtractionOutcome:
     """What draining one message from the queue did, for the run log.
 
     `parse_failure` is set only when the provider answered with something
-    `extract_facets` could not read -- the same bucket `pipeline.py`'s inline
-    reads count as `extraction_parse_failures`. A vanished posting or a
-    storage failure is a failure but not a parse failure.
+    `extract_facets` could not read. A vanished posting or a storage
+    failure is a failure but not a parse failure.
 
     `skipped` is a message drained without a provider call, because the
     posting already had current facets. It is neither an attempt nor a

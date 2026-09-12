@@ -444,7 +444,7 @@ def test_the_stage_module_imports_nothing_user_scoped():
     probe = (
         "import sys, job_hunter.recover_posting_stage; "
         "loaded = [m for m in ('job_hunter.postgres_store', 'job_hunter.supabase_client', "
-        "'job_hunter.config', 'job_hunter.pipeline', 'job_hunter.evaluation', "
+        "'job_hunter.config', 'job_hunter.matching', 'job_hunter.cover_letter', 'job_hunter.evaluation', "
         "'job_hunter.sources') "
         "if m in sys.modules]; "
         "print(','.join(loaded))"

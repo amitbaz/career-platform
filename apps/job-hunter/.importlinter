@@ -79,7 +79,6 @@ forbidden_modules=
     job_hunter.navigation_repository
     job_hunter.normalize
     job_hunter.pdf
-    job_hunter.pipeline
     job_hunter.postgres_stage_queue
     job_hunter.postgres_store
     job_hunter.preferences
@@ -126,7 +125,6 @@ ignore_imports=
     job_hunter.cli -> job_hunter.ai.gemini
     job_hunter.cli -> job_hunter.ai.usage
     job_hunter.config -> job_hunter.ai.limits
-    job_hunter.pipeline -> job_hunter.ai.usage
 
 [importlinter:contract:sources-api-only]
 name = job_hunter.sources's internals are reached only through its public interface (api.py-only rule)
@@ -155,7 +153,6 @@ allowed_importers=
     job_hunter.sources
 ignore_imports=
     job_hunter.discovery -> job_hunter.sources.base
-    job_hunter.pipeline -> job_hunter.sources.learned_ats
     job_hunter.canonical -> job_hunter.sources.ashby
     job_hunter.canonical -> job_hunter.sources.greenhouse
     job_hunter.canonical -> job_hunter.sources.lever

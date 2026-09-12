@@ -487,3 +487,37 @@ class AIUsageTracker:
             start.isoformat(), end.isoformat(), provider=self._provider, model=self._model
         )
         return [row for row in rows if row["status"] != "blocked_budget"]
+
+
+def format_ai_usage_log(summary: AIUsageSummary, account: str) -> str:
+    """One structured log line for a ledger's usage as of a `snapshot` call.
+
+    `account` names which key the numbers are about -- `user` for the one the
+    person running a stage owns, `platform` for the shared key that funds
+    objective extraction (#128). Every ingestion worker that spends AI budget
+    logs its own account here rather than a single process reporting all of
+    them together, since #189 retired the one process that used to see every
+    ledger in the same run.
+
+    Every number here is the ledger's running total for the calendar day, not
+    this invocation's own spend -- `calls_today` says so in its name because
+    the stages that log it now run many times a day (extract-facets every 15
+    minutes), and reading a monotonically growing daily total as "what this
+    drain cost" would overstate every invocation but the first.
+    """
+    purposes = ",".join(
+        f"{purpose}:{summary.purpose_counts[purpose]}"
+        for purpose in AI_PURPOSES
+        if purpose in summary.purpose_counts
+    )
+    return (
+        f"ai_usage account={account} "
+        f"calls_today={summary.requests_today} "
+        f"rpd_pct={summary.rpd_percent:.1f} "
+        f"rpm_peak_pct={summary.rpm_peak_percent:.1f} "
+        f"tpm_peak_pct={summary.tpm_peak_percent:.1f} "
+        f"input={summary.input_tokens_today} "
+        f"output={summary.output_tokens_today} "
+        f"thinking={summary.thinking_tokens_today} "
+        f"purposes={purposes}"
+    )

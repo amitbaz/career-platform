@@ -1,7 +1,9 @@
 # Render Blueprint (https://render.com/docs/blueprint-spec) for job-hunter's
-# ingestion stages (#189). Matching/delivery stays on Vercel + GitHub Actions
-# -- see #114's "Locked decisions" -- so only stages with no request-response
-# shape (crawling, extraction, freshness re-checks) live here.
+# ingestion stages: crawling, objective extraction, freshness re-checks and
+# posting recovery, none of which has a request-response shape. #189 retired
+# the monolithic run these replaced, GitHub Actions along with it -- matching
+# and delivery are not a stage here or anywhere else: they have no owner
+# until #260/#261 build the mobile app's own read of the corpus.
 #
 # envVarGroups.caddie-engine holds the secrets these services share
 # (SUPABASE_DB_URL, JOB_HUNTER_USER_ID, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY,
@@ -9,7 +11,7 @@
 # the Render dashboard rather than here: `sync: false` is not supported inside
 # `envVarGroups` in a Blueprint, only on a service's own `envVars`.
 #
-# Every invocation of these three workers that can reach the database is
+# Every invocation of these four workers that can reach the database is
 # recorded in job_hunter_worker_runs (#258), and each one exits non-zero when
 # job_hunter_worker_health() reports any worker unhealthy -- so a worker that
 # stopped running turns the others red. job_hunter_worker_schedules holds

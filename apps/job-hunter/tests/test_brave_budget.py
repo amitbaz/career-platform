@@ -2,9 +2,7 @@ import itertools
 from datetime import datetime, timedelta, timezone
 
 import job_hunter.search_budget as search_budget
-from job_hunter.circuit_breaker import CircuitBreaker
-from job_hunter.models import Job, SearchQuery
-from job_hunter.pipeline import _targeted_canonical_candidates
+from job_hunter.models import SearchQuery
 from job_hunter.search_budget import (
     SearchUsageLedger,
     brave_queries_available_today,
@@ -198,71 +196,44 @@ def test_brave_query_selection_round_robins_across_markets():
     assert [query.text for query in fallback] == ["germany-3"]
 
 
-class _Response:
-    status_code = 200
-
-    def __init__(self, text: str = "", payload=None):
-        self.text = text
-        self._payload = payload
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._payload
-
-
-class _Http:
-    def __init__(self):
-        self.urls = []
-
-    def get(self, url, **kwargs):
-        self.urls.append(url)
-        if "api.search.brave.com" in url:
-            return _Response(
-                payload={
-                    "web": {
-                        "results": [
-                            {
-                                "title": "Founding Software Engineer",
-                                "url": "https://jobs.ashbyhq.com/hera/123",
-                            }
-                        ]
-                    }
-                }
-            )
-        return _Response(
-            '<a class="result__a" href="https://jobs.ashbyhq.com/hera/123">Founding Software Engineer</a>'
-        )
-
-
-def test_canonical_lookup_uses_shared_brave_budget_then_falls_back_to_ddg(
-    supabase_client, brave_ledger_window
+def test_brave_reservation_is_one_atomic_database_call(
+    supabase_client, brave_ledger_window, monkeypatch
 ):
-    year, month, month_start, next_month = brave_ledger_window
-    now = datetime(year, month, 30, 12, 0, tzinfo=UTC)
+    """The cap check and the write must reach Postgres as a single statement.
+
+    Nothing else in this file can tell the fix from the bug it replaced: a
+    client-side count-then-insert returns exactly the same answers to a single
+    caller, and only diverges when two callers overlap -- which a test cannot
+    stage deterministically. What is checkable is the shape. `try_record` must
+    delegate to `job_hunter_reserve_search_request`, which holds a per-provider
+    advisory lock across the count and the insert (see the module docstring);
+    a reservation that issues a `select` or an `upsert` from here has gone back
+    to reading and writing over two requests with nothing holding the slot in
+    between.
+    """
+    year, month, _, _ = brave_ledger_window
+    client_type = type(supabase_client)
+    seen: list[str] = []
+
+    def spy_on(name: str) -> None:
+        original = getattr(client_type, name)
+
+        def wrapper(self, *args, **kwargs):
+            seen.append(name)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(client_type, name, wrapper)
+
+    for method in ("select", "insert", "upsert", "update", "rpc"):
+        spy_on(method)
+
     ledger = SearchUsageLedger(supabase_client)
-    budget = search_budget.BraveRequestBudget(
-        ledger, monthly_limit=1, now=lambda: now
-    )
-    http = _Http()
-    job = Job(
-        source="test",
-        company="Hera",
-        title="Founding Software Engineer",
-        url="https://example.com/job",
+    granted = ledger.try_record(
+        provider="brave",
+        occurred_at=datetime(year, month, 3, 9, 0, tzinfo=UTC),
+        monthly_limit=5,
+        daily_limit=5,
     )
 
-    _targeted_canonical_candidates(
-        http, job, CircuitBreaker(5), "configured-and-budgeted", budget
-    )
-    _targeted_canonical_candidates(
-        http, job, CircuitBreaker(5), "configured-and-budgeted", budget
-    )
-
-    brave_calls = [url for url in http.urls if "api.search.brave.com" in url]
-    ddg_calls = [url for url in http.urls if "duckduckgo.com" in url]
-    assert len(brave_calls) == 1
-    assert len(ddg_calls) == 1
-
-    assert ledger.count(provider="brave", start_at=month_start, end_at=next_month) == 1
+    assert granted is True
+    assert seen == ["rpc"]

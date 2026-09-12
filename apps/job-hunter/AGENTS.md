@@ -183,14 +183,13 @@ Migration rules:
    individual postings failing rather than one that says it cannot write.
 
    **The connection is not optional for writing (#179).** Since the shared tables are
-   writable only by the privileged role, a deployment with no `SUPABASE_DB_URL` cannot
-   discover or enrich at all: `run_pipeline` asks `store.can_write_shared_rows` and skips
-   ingestion and enrichment entirely rather than paying for a crawl the database will refuse.
-   It still starts and still delivers, from the postings that already exist, and it says so —
-   `cli.py` warns at startup and the run summary reports `postings_written=0` alongside the
-   facet counters, because a stale corpus and a quiet job market are otherwise the same log
-   line. Do not read this as the pre-#179 fallback: that one was slower and converged on the
-   same state, this one is scoring-only over a corpus that cannot change.
+   writable only by the privileged role, none of the four ingestion stages can do anything
+   useful without `SUPABASE_DB_URL`: each of `crawl-source`, `extract-facets`,
+   `recheck-freshness` and `recover-posting` checks `load_ingestion_dsn()` itself at the top
+   of its `cli.py` command, logs why, and returns 1 rather than starting a drain the database
+   will refuse to persist. There is no degraded "scoring-only" mode any more (that belonged to
+   the retired `run_pipeline`, #189, alongside the delivery it fed) -- a stage without this
+   connection simply does not run.
    `tests/integration/test_supabase_isolation.py` proves those policies hold by writing and
    deleting a throwaway row in a local stack.
 
@@ -291,16 +290,20 @@ pip install -e '.[test,webhook]'   # webhook extra too: the full suite imports f
 
 pytest -q                          # run full test suite, serially
 pytest -q -n auto --dist=loadgroup # what `pnpm job-hunter:test` and CI actually run (#236)
-pytest tests/test_pipeline.py -q   # single file
-pytest tests/test_pipeline.py::test_name -q  # single test
+pytest tests/test_cli.py -q        # single file
+pytest tests/test_cli.py::test_name -q  # single test
 
-python -m job_hunter run                       # full pipeline run
-python -m job_hunter run --scheduled           # only runs at the scheduled_hour in the user's search profile
+# There is no single `run` command (#189 retired it, along with the daily
+# GitHub Actions workflow that invoked it). Each ingestion stage is its own
+# bounded, independently schedulable CLI command -- see render.yaml for how
+# they're actually run in production:
+python -m job_hunter crawl-source --limit 200
+python -m job_hunter extract-facets --limit 200
+python -m job_hunter recheck-freshness --limit 2000
+python -m job_hunter recover-posting --limit 500
 ```
 
-Local dry run (skips Telegram, no Telegram creds needed): copy `.env.example` to `.env`, then `set -a; source .env; set +a` before running. `.env.example` is grouped by the surface each variable serves; a dry run needs the Supabase group (`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`). The three free-tier limits (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`) are optional overrides: the published limits per model are defaults in code (`src/job_hunter/ai/limits.py`). Everything under "Optional overrides" can stay blank — each takes the code default stated in its comment, so never copy a default into a value there. The webhook group is not needed for a run.
-
-Set `JOB_HUNTER_DRY_RUN=1` to skip Telegram delivery; truthy values are `1/true/yes` (case-insensitive), anything else is treated as unset/false. The Gemini key and the CV and cover letter text are not env vars: they are saved in Relay's Profile view for `JOB_HUNTER_USER_ID` and read from Postgres at run time.
+Local dry run of one stage: copy `.env.example` to `.env`, then `set -a; source .env; set +a` before running. `.env.example` is grouped by the surface each variable serves; a stage needs the Supabase group (`JOB_HUNTER_USER_ID`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64`, `SUPABASE_DB_URL`). The three free-tier limits (`GEMINI_FREE_RPM`, `GEMINI_FREE_TPM`, `GEMINI_FREE_RPD`) are optional overrides: the published limits per model are defaults in code (`src/job_hunter/ai/limits.py`). Everything under "Optional overrides" can stay blank — each takes the code default stated in its comment, so never copy a default into a value there. The webhook group is not needed here.
 
 CI (`.github/workflows/job-hunter-ci.yml`) runs `pytest -q -n auto --dist=loadgroup` on Python 3.12 — no lint step configured. It triggers on every pull request, and on pushes to `main` only. The push trigger is deliberately scoped to `main`: without it, a commit on a pull request branch starts both workflows against the same commit and costs twice the Actions minutes, which matters while the repository is private and subject to the monthly cap.
 
@@ -323,7 +326,7 @@ outright. Two tests sharing an identity — the same `source_job_id`, the same c
 to `upsert_company_watch(..., promotion_source="automatic")`, or the same calendar month passed
 to the Brave search-usage ledger — resolve to one row, and the second test's assertions describe
 whatever the first (or a concurrently running third, under `-n auto`) left there. Build the
-identity from a `uuid.uuid4()` (`_company_name()` in `test_pipeline.py`/`test_watchlist.py` is
+identity from a `uuid.uuid4()` (`_company_name()` in `test_watchlist.py` is
 the established helper for a company) unless the test is specifically about two payloads
 resolving to the same row; `test_brave_budget.py`'s `brave_ledger_window` fixture does the
 equivalent for the search-usage ledger, where the identity has to be a whole calendar month
@@ -342,22 +345,34 @@ already isolated by the seed-user pool, so a literal name there is fine (#236).
 
 ## Architecture
 
-Pipeline, in `pipeline.py::run_pipeline`:
+**There is no single pipeline any more (#189 deleted `pipeline.py` and `run_pipeline`).**
+Ingestion is four independent, queue-drained Render cron stages, each its own `cli.py`
+entrypoint and each bounded by its own `--limit`:
 
 ```
-all sources -> enrich/dedupe -> profession gate + prefilter -> deterministic or profile-aware rank
-  -> source-diverse top <=max_jobs_per_run shortlist (stable-ranking fallback on error)
-  -> per job: objective facet extraction if the posting has not been read yet
-     (facets.py, once per posting ever, candidate-blind)
-     then facet-decided hard blockers (hard_blockers.py, per user, no provider call)
-     then subjective scoring from those facets for whatever they did not settle
-     (evaluation.py, per user, never sees the description)
-  -> decision classification -> match_score_floor -> daily_offer_limit -> score-sorted Telegram
-  -> facet backfill over what scoring did not need (rediscovered jobs + the shortlist tail)
-  -> Telegram digest delivery (telegram.py)
+crawl-source      -> discover, drop unchanged, persist raw postings (crawl_source.py)
+extract-facets    -> objective facet extraction, once per posting, candidate-blind
+                     (extract_facets_stage.py -> facets.py)
+recheck-freshness -> close postings that are gone, refresh the changed (recheck_freshness_stage.py)
+recover-posting   -> upgrade a thin/missing description via free canonical tiers
+                     (recover_posting_stage.py, #259)
 ```
 
-Cover letter generation + PDF rendering (`cover_letter.py`/`pdf.py`) is not part of the daily pipeline above — it runs on demand, one job at a time, when "Gen CL" is tapped on that job's Telegram card. This fires a `repository_dispatch` event that runs `.github/workflows/generate-cover-letter.yml` (`python -m job_hunter generate-cover-letter --job-id <id>`).
+`matching.match_jobs` (#187/#243) is one operation that reads the whole open corpus --
+facet-decided hard blockers (`hard_blockers.py`, no provider call), then subjective scoring
+from those facets for whatever they did not settle (`evaluation.py`, never sees the
+description) -- but nothing schedules it and nothing delivers its result today. That gap
+(matching-and-delivery, plus everything the retired run used to do around it: decision
+classification against a score floor, a daily offer limit, Telegram) is intentionally open
+until #260/#261 build the mobile app's own read of the corpus. Do not treat the paragraphs
+below (largely written for the retired run) as a spec for what that will look like --
+check the current product-vision doc first.
+
+Cover letter generation + PDF rendering (`cover_letter.py`/`pdf.py`) is on demand only, one
+job at a time, when "Gen CL" is tapped on a job's Telegram card. This fires a
+`repository_dispatch` event that runs `.github/workflows/job-hunter-generate-cover-letter.yml`
+(`python -m job_hunter generate-cover-letter --job-id <id>`), independent of every ingestion
+stage above.
 
 Key modules:
 - `src/job_hunter/sources/` — one adapter per job source, all implementing a common `discover()` interface (`base.py`), which **yields jobs as it finds them** rather than returning a finished list. Built-ins now include Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, and DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source **fails open**: an exception during discovery is caught in `discovery.py::_iter_source_jobs`, logged, and the rest of that source is abandoned — the jobs it had already yielded are kept, and later sources still run. `LearnedAtsSource` and `CompanyWatchSource` fetch a whole board / a whole watch at a time, because their aggregator verdict is computed over the entire board; every other source yields per posting, page or query. Their postings are still yielded one at a time, so a caller can stop inside a board — which is why their health writes (`record_ats_scan_success`, `record_watch_success`) and their raw counts happen **after** the postings have been handed over, not before. Writing them first would stamp `last_checked_at` on a board that was never finished, demoting it in the oldest-first ranking, and claim a harvest nothing received. An unfinished board is left untouched and comes up again next run. Each source is also bounded by a wall-clock budget (`JOB_HUNTER_SOURCE_TIME_BUDGET_SECONDS`, default 1800s): `_iter_source_jobs` checks it *between* those units and never mid-request, so a source that overruns is cut off at a unit boundary, the jobs it already yielded are kept and flow through the pipeline normally, and later sources still run. A source whose own unit outlasts the whole budget cannot be bounded by it — the request timeout is what bounds that one — and `discovery.budget_applied` derives that from the source's longest observed unit rather than from a per-adapter declaration, so it stays true for an adapter nobody annotated.
@@ -388,15 +403,13 @@ Key modules:
   so an edited advertisement costs one re-read rather than one per user — compared against
   `description_hash_at_extraction`, the same mechanism that gates re-evaluation. There is no
   second notion of a changed posting. The extraction itself still reads the text on the job
-  row it was dispatched for; #177 moves that read onto the posting too. Extraction is run from
-  `pipeline.py::_extract_facets_for_run`, over this run's shortlist and retry queue first and
-  then rediscovered jobs, every one of which survived the non-AI filters; it is bounded per run
-  by `max_jobs_per_run` minus whatever the run's own inline reads already spent, which is
-  what makes the existing corpus drain over consecutive runs with no migration script.
-  A failure of any kind leaves the job unenriched with **no** marker, so a later run
-  retries it — never record a placeholder, and never let a failure mark a posting
-  permanently bad. Failures are counted in `RunSummary.facet_extraction_failed`, apart
-  from scoring's own counters, and reported on the `facet_extraction` log line.
+  row it was dispatched for; #177 moves that read onto the posting too. Extraction is run by
+  `extract_facets_stage.py`'s `ExtractFacetsStage`, draining the `extract_facets` pgmq queue
+  on its own Render cron schedule (`python -m job_hunter extract-facets --limit N`, #189) --
+  not tied to any user's run, since a posting's facets serve every user alike. A failure of
+  any kind leaves the job unenriched with **no** marker, so a later drain retries it — never
+  record a placeholder, and never let a failure mark a posting permanently bad. Outcomes are
+  tallied per drain (`ExtractFacetsDrain.outcomes`) and reported on its own summary log line.
   The read declares `CallClass.SHARED_EXTRACTION`, which is what funds it from the
   **platform key** and meters it in the platform ledger rather than the user's (#128).
   There is no path by which it can reach a user's credential — not on an exhausted
@@ -561,24 +574,28 @@ Key modules:
   no core module changes. The paper review behind the interface's shape is
   `docs/superpowers/specs/2026-09-08-ai-provider-port-paper-review.md`.
 - `src/job_hunter/config.py` — loads the user's search profile, provider credentials and source documents (all from Postgres, via `load_settings(store)`) plus the remaining env vars into a `Settings`/`SearchPolicy` (see `models.py`). The Gemini key, the Brave key, the candidate profile and the cover letter template are per-user rows read through RLS and held in memory only — never write them to the repo or logs. A missing Gemini key, CV or cover letter raises `RuntimeConfigurationError` before any provider call. The **platform** key is the one credential that is *not* per-user: it comes from `PLATFORM_GEMINI_API_KEY` in the environment, because it funds work that belongs to no user (#128). Leaving it unset is supported — the run then extracts no facets — and is never a reason to fall back to the user's key.
-- `src/job_hunter/cli.py` — `python -m job_hunter run` entrypoint. `--scheduled` gates execution on `should_run_scheduled` (pipeline.py), comparing current local hour in `settings.timezone` against `settings.scheduled_hour`.
-- `src/job_hunter/preferences.py` extracts a compact preference profile from the candidate profile. When that succeeds, `pipeline.py` uses `rank_jobs(..., preferences)` plus `select_diverse_candidates()` to enforce profile-aware ranking with per-source diversity. The shortlist knobs are `max_jobs_per_run` (code default 35, set to 100 in the user's search profile), `source_minimum_per_run` (0) and `source_max_share` (0.5) — the user's search profile (stored in Postgres) is what a real run uses, so read the values there rather than the code defaults. If preference extraction or shortlist selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
-- Delivery policy is applied after decision classification, so it never changes what `high_priority`, `package_match`, or `possible_match` mean. `match_score_floor` (50 through 95; default 80) withholds lower-scored jobs before they become digest items or consume delivery budget. It withholds every tier, not just offers: a `blocked` job under the floor no longer reaches the "Needs review / blockers" group either, where the old hardcoded floor of 60 would have let it through. Only a withheld *offer* increments `withheld_by_score_floor` — a withheld `skip` or `blocked` stays on `summary.skipped`, because the point of the counter is to show that the floor is set too high, and a job that was never going to be an offer says nothing about that. `daily_offer_limit` (5, 10 or 20; default 10) is the delivery budget on top of that floor: `run_pipeline` walks the selected candidates in rank order and stops evaluating once that many offers — ready-to-apply plus possible-match — have been produced, so Gemini spend follows what the user asked for. Candidates never reached are left unevaluated and are neither queued nor discarded; they rank again on the next run. The `evaluation_capacity` log line reports `match_score_floor`, `withheld_by_score_floor`, `daily_offer_limit`, `delivered_offers`, and `deferred_by_offer_cap` separately from `deferred_by_budget`, because a floor-limited, cap-limited, and market-limited run need telling apart.
-- Per-job failures are caught individually inside the loop (not fail-open at the run level) so one bad job doesn't abort the run; each increments `summary.errors`. That guard covers the whole per-job unit of work, not just the Gemini call: persisting the evaluation, promoting the company, building the digest item and recording the delivery are all inside it, because a store write that escaped the loop once killed a run part-way through and discarded its digest (#145).
-- A job selected for evaluation can be **merged away before its evaluation is written**: discovery merges duplicates while it is still building the shortlist, and `job_hunter_merge_jobs` deletes the duplicate row. `job_hunter_job_merges` records where it went, `PostgresJobStore.resolve_merged_job_id` reads that, and `save_evaluation`/`mark_delivered` retry against the survivor when a write hits SQLSTATE 23503 — so the clean case still costs one request. `save_evaluation` returns the id it actually wrote against; everything downstream in the loop must use that id rather than the selected one.
-- Cover letter + PDF generation is not part of the daily pipeline. It is triggered on demand, one job at a time, by tapping "Gen CL" on that job's Telegram card (`generate-cover-letter.yml` -> `python -m job_hunter generate-cover-letter --job-id <id>`), regardless of decision.
+- `src/job_hunter/cli.py` — one entrypoint per ingestion stage (`crawl-source`, `extract-facets`, `recheck-freshness`, `recover-posting`), plus `sync-gmail` and the on-demand `generate-cover-letter`. There is no `run` entrypoint and no `--scheduled` gate: #189 deleted `pipeline.py`, `run_pipeline` and `should_run_scheduled` along with the single-process daily run and its GitHub Actions workflow. **`sync-gmail` lost its only caller with that workflow and has no replacement schedule** — it is not a Render cron service and not in `job_hunter_worker_schedules`, so nothing runs it and nothing reports it missing. Gmail intake is hand-run until something schedules it; do not read "no new application events" as a quiet inbox.
+- Everything that used to happen after discovery in that retired run -- profile-aware ranking and diversity selection (`preferences.py` + `rank_jobs`/`select_diverse_candidates`), delivery policy (`match_score_floor`, `daily_offer_limit`), per-job failure containment, and following a merge redirect before writing an evaluation -- had no home anywhere else and was deleted with it. Matching itself is still one operation, `matching.match_jobs` (#187/#243), reading the whole open corpus rather than a per-run shortlist; nothing calls it on a schedule or delivers its result today. That gap is intentional and open until #260/#261 build the mobile app's own read of the corpus -- do not read this file's git history as a spec for what to rebuild without checking the current product-vision doc first.
+- Cover letter + PDF generation is on demand only, one job at a time (`generate-cover-letter.yml` -> `python -m job_hunter generate-cover-letter --job-id <id>`), and lives in `cover_letter.py` (moved there from the retired `pipeline.py` by #189). It does not depend on any ingestion stage or on matching having run.
 
 ## State persistence
 
 State now lives in Postgres (the shared Supabase project), not on the ephemeral Actions runner.
 There is no artifact to restore or upload: `store.py`, `github_state.py`, and
 `scripts/restore_state.py` were deleted along with the SQLite path, and neither workflow uploads
-or restores a `job-hunter-state` artifact any more. `concurrency: group: job-hunter-state` is
-still kept in both workflows deliberately — it no longer guards a file, but the read-then-update
-pairs (company watch, ATS registry, search budget) assume a single writer, and that assumption is
-now the only thing behind it.
+or restores a `job-hunter-state` artifact any more. `concurrency: group: job-hunter-state` survives
+only in `job-hunter-generate-cover-letter.yml`; #189 deleted the daily workflow that carried the
+other copy, and with it the single-writer guarantee that the store's read-then-update pairs were
+relying on. Ingestion now runs as Render crons that can overlap (see README, "Ingestion stage
+schedules").
 
-The daily workflow fires on two cron triggers (`5 7 * * *` and `5 8 * * *` UTC) to cover both sides of the `Europe/Berlin` DST transition; `--scheduled` makes only one of them actually run the pipeline on any given day.
+The search budget was the pair where that mattered, because what it protects is a monthly quota
+drawn against the API key: it is now reserved inside `job_hunter_reserve_search_request`, one
+transaction behind a per-provider advisory lock, and does not depend on there being a single
+writer. Company watch and the ATS registry still do. **Do not add a new read-then-update pair
+over shared state and assume something upstream serialises it** — nothing does any more. If the
+value being protected is a quota, a cap or a counter, put the check and the write in one database
+function and take a lock, as that migration does.
 
 ## Required secrets/env
 

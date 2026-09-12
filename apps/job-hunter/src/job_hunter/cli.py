@@ -13,19 +13,14 @@ from job_hunter.config import (
     load_supabase_settings,
 )
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
-from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger
+from job_hunter.ai.usage import AIUsageTracker, format_ai_usage_log
 from job_hunter.circuit_breaker import CircuitBreaker
+from job_hunter.cover_letter import cover_letter_output_dir, generate_cover_letter_on_demand
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
 from job_hunter.gmail_client import GmailClient
 from job_hunter.gmail_sync import GmailSyncService
 from job_hunter.http import HttpClient
 from job_hunter.pg import IngestionDatabase
-from job_hunter.pipeline import (
-    cover_letter_output_dir,
-    generate_cover_letter_on_demand,
-    run_pipeline,
-    should_run_scheduled,
-)
 from job_hunter.postgres_store import DryRunStore, PostgresJobStore
 from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient
@@ -35,7 +30,7 @@ from job_hunter.worker_runs import WorkerRun, report_worker_health
 logger = logging.getLogger(__name__)
 
 #: Consecutive canonical-resolution search failures before a drain stops
-#: paying for more of them this process. Same threshold `pipeline.py` uses.
+#: paying for more of them this process.
 _SEARCH_FAILURE_THRESHOLD = 5
 
 
@@ -53,9 +48,6 @@ def _build_client(http: HttpClient) -> SupabaseClient:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="job_hunter")
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    run_parser = subparsers.add_parser("run", help="Discover, evaluate, and deliver jobs")
-    run_parser.add_argument("--scheduled", action="store_true", help="Only proceed at the configured scheduled hour")
 
     sync_parser = subparsers.add_parser("sync-gmail", help="Read Gmail job signals into shared state")
     sync_parser.add_argument(
@@ -139,163 +131,29 @@ def main(argv: list[str] | None = None) -> int:
             return _extract_facets(args)
         if args.command == "recover-posting":
             return _recover_posting(args)
-        return _run(args)
+        raise AssertionError(f"unhandled command: {args.command}")
     except Exception:
         logger.exception("job hunter run failed")
         return 1
 
 
-def _build_ingestion_database() -> IngestionDatabase | None:
-    """Ingestion's direct Postgres connection, where one is configured.
+def _log_ai_usage(tracker, account: str) -> None:
+    """Log one ledger's day-to-date AI spend, and never fail the caller for it.
 
-    Only the daily pipeline builds one. The webhook and the on-demand cover
-    letter do no ingestion, and a privileged connection they would never use
-    is a privileged connection nobody is watching.
+    #189 retired the single process that printed every ledger together, so
+    each command that spends AI budget reports its own account: `platform`
+    for the shared key extraction runs against (#128), `user` for the key the
+    person running the command owns. Reporting what the work cost must never
+    cost the work its own success -- a drain that read every posting it
+    claimed, or a cover letter that was delivered, must not turn red because
+    the ledger read came back empty.
     """
-    dsn = load_ingestion_dsn()
-    if dsn is None:
-        logger.warning(
-            "no SUPABASE_DB_URL is configured: this run cannot write shared rows "
-            "(postings, their facets, company facts, ATS board health), so it will "
-            "skip discovery and enrichment entirely and deliver from the postings "
-            "that already exist. The corpus will not change until it is configured."
-        )
-        return None
     try:
-        return IngestionDatabase(dsn)
+        logger.info(
+            format_ai_usage_log(tracker.snapshot(datetime.now(timezone.utc)), account)
+        )
     except Exception:
-        # Since #179 this is no longer "the fast path is unavailable, take the
-        # slow one": the shared corpus is writable only over this connection,
-        # so a run without it delivers from what it already has and adds
-        # nothing. Still not a reason to refuse to start -- a degraded day is
-        # better than an outage -- but it is a warning, not a note.
-        logger.exception(
-            "SUPABASE_DB_URL is set but ingestion could not open a direct "
-            "Postgres connection; this run will skip discovery and enrichment and "
-            "deliver from the postings that already exist"
-        )
-        return None
-
-
-def _run(args: argparse.Namespace) -> int:
-    http = HttpClient()
-    store = PostgresJobStore(_build_client(http), _build_ingestion_database())
-    try:
-        return _run_with(args, http, store)
-    finally:
-        # The pool holds real server connections. Closing it is the store's
-        # job, and doing it here means a run that raises releases them too.
-        store.close()
-
-
-def _run_with(
-    args: argparse.Namespace, http: HttpClient, store: PostgresJobStore
-) -> int:
-    settings = load_settings(store)
-
-    if args.scheduled:
-        now = datetime.now(timezone.utc)
-        if not should_run_scheduled(now, settings.timezone, settings.scheduled_hour):
-            logger.info(
-                "Scheduled run skipped: current time is not the configured %s:00 %s slot "
-                "(this is the DST duplicate cron trigger).",
-                settings.scheduled_hour,
-                settings.timezone,
-            )
-            return 0
-
-    cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
-
-    tracker = AIUsageTracker(
-        store, settings.ai_quota, settings.ai_model, provider=PROVIDER
-    )
-    # The platform key funds shared objective extraction and is metered in its
-    # own global ledger (#128). Both are built here or neither is: a key with
-    # no ledger would spend an allowance nobody is watching, and a ledger with
-    # no key would meter calls that never happen. Where the deployment has no
-    # platform key, extraction is simply off for the run -- the user's key is
-    # never offered in its place.
-    platform_key = None
-    platform_tracker = None
-    if settings.platform_ai_api_key and settings.platform_ai_quota is not None:
-        platform_key = settings.platform_ai_api_key
-        platform_tracker = AIUsageTracker(
-            PlatformUsageLedger(store),
-            settings.platform_ai_quota,
-            settings.ai_model,
-            provider=PROVIDER,
-        )
-    else:
-        # Loud, because the consequence is larger than "no enrichment". Since
-        # #126 a job cannot be scored before its posting has been read, so
-        # without a platform key every job that has no stored facets yet --
-        # which is every newly discovered job -- goes unscored. A deployment
-        # that never sets PLATFORM_GEMINI_API_KEY delivers only what earlier
-        # runs already enriched, and then nothing. It is still not a reason to
-        # reach for the user's key.
-        logger.warning(
-            "no platform AI key is configured (PLATFORM_GEMINI_API_KEY): no posting "
-            "will be read this run, so no job without stored facets can be scored. "
-            "The user's own key is not used in its place."
-        )
-    ai = build_gemini_provider(
-        settings.ai_api_key,
-        settings.ai_model,
-        http,
-        tracker=tracker,
-        platform_api_key=platform_key,
-        platform_tracker=platform_tracker,
-    )
-
-    summary = run_pipeline(
-        settings,
-        store=store,
-        ai=ai,
-        usage=tracker,
-        platform_usage=platform_tracker,
-        http=http,
-    )
-    logger.info(
-        "Run complete: ready_to_apply=%d possible_matches=%d skipped=%d errors=%d "
-        "blocked_by_facets=%d postings_written=%d facets_extracted=%d "
-        "facets_reused=%d facets_failed=%d",
-        summary.ready_to_apply,
-        summary.possible_matches,
-        summary.skipped,
-        summary.errors,
-        # Jobs the stored facets disqualified without a scoring call (#127):
-        # the saving this run made against the user's own provider quota.
-        summary.blocked_by_facets,
-        # What this run added to the shared corpus (#179). Reported next to
-        # the facet counters because the two zeroes together are the
-        # signature of a run with no direct Postgres connection: it scored
-        # and delivered from postings that already existed and could add
-        # nothing. Without this number that run reads exactly like a quiet
-        # week, which is the failure mode rule 5 in AGENTS.md is about.
-        summary.postings_written,
-        # Facet extraction is shared, best-effort work: it is reported here so
-        # a run whose enrichment is quietly failing is visible, but it never
-        # decides the exit code -- a run that delivered its digest succeeded.
-        summary.facet_extraction_attempted - summary.facet_extraction_failed,
-        # Postings this run scored against without reading them: facets an
-        # earlier run stored, whoever paid for it (#175).
-        summary.facets_reused,
-        summary.facet_extraction_failed,
-    )
-    if summary.evaluation_attempted and summary.evaluated == 0:
-        # Isolated source/job failures stay non-fatal (see summary.errors above),
-        # but if every fresh evaluation this run failed to produce a decision,
-        # the core pipeline is unusable -- fail the run so GitHub Actions goes
-        # red instead of quietly reporting success on a run that produced
-        # nothing.
-        logger.error(
-            "core evaluation catastrophically unsuccessful: %d attempted, 0 evaluated "
-            "(errors=%d)",
-            summary.evaluation_attempted,
-            summary.errors,
-        )
-        return 1
-    return 0
+        logger.exception("could not read %s AI usage for this invocation", account)
 
 
 def _recorded_drain(database, worker: str, stale_after_seconds: int, drain):
@@ -560,9 +418,15 @@ def _extract_facets(args: argparse.Namespace) -> int:
             platform_api_key=platform_key,
             platform_tracker=platform_tracker,
         )
-        return drain_extract_facets(
+        result = drain_extract_facets(
             ingestion, ai, limit=args.limit, on_batch=run.heartbeat
         )
+        # The engine's per-day AI cost report, now that #189 retired the one
+        # process that used to print every ledger together: each stage that
+        # spends AI budget logs its own account, here the shared platform key
+        # extraction runs against (#128).
+        _log_ai_usage(platform_tracker, "platform")
+        return result
 
     try:
         drain, healthy = _recorded_drain(
@@ -599,6 +463,11 @@ def _generate_cover_letter(args: argparse.Namespace) -> int:
         settings, args.job_id, store=store, ai=ai, telegram=telegram
     )
     logger.info("on-demand cover letter for job_id=%s: delivered=%s", args.job_id, delivered)
+    # Spends the user's own key, so it reports the user ledger -- the other
+    # half of the report `extract-facets` prints for the platform ledger.
+    # Without it, #189 would have left the user's key with no cost report at
+    # all now that the run that printed one is gone.
+    _log_ai_usage(tracker, "user")
     return 0 if delivered else 1
 
 
@@ -651,4 +520,9 @@ def _sync_gmail(args: argparse.Namespace) -> int:
             "those messages will retry on the next sync.",
             summary.errors,
         )
+    # Also the user's own key. `tracker_store` is a DryRunStore under
+    # --dry-run, so this reads the discarded dry-run ledger rather than the
+    # live one -- which is the same store every guardrail in this command
+    # already consults, and keeps --dry-run's "persists nothing" promise.
+    _log_ai_usage(tracker, "user")
     return 0

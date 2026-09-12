@@ -43,9 +43,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-#: The delivery kind that marks a job as already told to the user. The one
-#: kind `run_pipeline` writes today (`mark_delivered(..., "telegram_message")`),
-#: named here rather than threaded in as a parameter: every caller of
+#: The delivery kind that marks a job as already told to the user
+#: (`mark_delivered(..., "telegram_message")`). Nothing writes this kind
+#: today -- #189 retired the run that did, and delivery has no successor
+#: yet -- but rows an earlier run already wrote still carry it, and this
+#: name is what keeps `match_jobs` reading them correctly. Named here
+#: rather than threaded in as a parameter: every caller of
 #: `match_jobs` -- today's digest, a future dashboard or search -- means the
 #: same "have I already shown this user this job" question, and a caller that
 #: could name a different kind could silently defeat the no-reappear rule.
@@ -92,8 +95,8 @@ class MatchResult:
     `failed_job_ids` is the #145 guarantee carried into this operation: a
     scoring call that raises an ordinary (non-quota) exception costs that one
     row its turn, logged and skipped, and never the rest of the batch. A
-    caller that tracks per-run health (`RunSummary.errors`, in `pipeline.py`)
-    reads its length; a caller that does not is free to ignore it.
+    caller that tracks its own health reads its length; a caller that does
+    not is free to ignore it.
     """
 
     matched: list[MatchedJob]
@@ -101,8 +104,8 @@ class MatchResult:
     #: The subset of `failed_job_ids` whose model response could not be
     #: parsed at all (`evaluation.EvaluationError`), as opposed to a
     #: transient failure (a network error, a malformed-but-parseable reply).
-    #: Kept apart because it is what `RunSummary.scoring_parse_failures`
-    #: reports -- a caller's health signal, not this operation's own.
+    #: Kept apart because it is a caller's own health signal to report,
+    #: not this operation's own.
     parse_failure_job_ids: list[str]
     #: Ranked rows left undecided this call because there was nothing
     #: current to block or score against -- no facets row at all, or one a
@@ -364,8 +367,8 @@ def match_jobs(
         except EvaluationError:
             # The response came back but could not be read as an evaluation
             # -- distinct from an ordinary failure below in exactly the way
-            # the pre-#188 pipeline distinguished them
-            # (`RunSummary.scoring_parse_failures`).
+            # the pre-#188 pipeline distinguished them (its own
+            # parse-failure counter, separate from its general error count).
             logger.exception("evaluation response could not be parsed for job_id=%s", job_id)
             failed_job_ids.append(job_id)
             parse_failure_job_ids.append(job_id)
