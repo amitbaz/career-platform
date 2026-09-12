@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import pytest
 
@@ -162,13 +163,24 @@ def _settings():
 
 
 def _job(source_job_id, company, location):
+    # source_job_id is a caller-chosen label for readability, not the real
+    # identity: three tests in this file all called this with the literal
+    # "1"/"Acme"/"Berlin", which fingerprints to one shared job_hunter_postings
+    # row. On the shared local stack that row (and, since the seed pool
+    # claims one user for a whole worker's run, the per-user job_hunter_jobs
+    # row over it) outlives the test that created it, so whichever of the
+    # three ran second or third found needs_evaluation already false and
+    # delivered nothing -- a real, order-dependent flake, not a #259 one.
+    # uuid.uuid4() is the established fix (see AGENTS.md "Give a store-backed
+    # test a fingerprint nobody else uses").
+    unique_source_job_id = f"{source_job_id}-{uuid.uuid4()}"
     return Job(
         source="ashby",
-        source_job_id=source_job_id,
+        source_job_id=unique_source_job_id,
         title="Senior Product Engineer",
         company=company,
         location=location,
-        url=f"https://example.test/{source_job_id}",
+        url=f"https://example.test/{unique_source_job_id}",
         remote=True,
         description="React TypeScript product engineering role",
         content_confidence="official_ats",
@@ -311,7 +323,13 @@ def test_pipeline_sends_gmail_activity_before_job_navigator(store):
 
 def test_pipeline_failed_gmail_activity_send_keeps_review_pending(store):
     settings = _settings()
-    event_id = _seed_pending_activity(store)
+    # A distinct message_id from test_pipeline_sends_gmail_activity_before_
+    # job_navigator's default: both tests share the seed pool's one user for
+    # the whole worker run, and job_hunter_gmail_messages/job_hunter_
+    # application_events are never cleared between tests, so two tests
+    # seeding the same "gmail-review-1" identity resolve to one shared row --
+    # whichever ran second found it already reviewed and sent nothing.
+    event_id = _seed_pending_activity(store, message_id="gmail-review-2")
     telegram = NavigatorTelegram(message_result=None)
 
     run_pipeline(
