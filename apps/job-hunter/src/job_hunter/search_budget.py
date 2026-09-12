@@ -1,22 +1,30 @@
 """Metered external search API budget, backed by `job_hunter_platform_search_usage`.
 
-**The one weakening this port accepts:** the SQLite original serialized its
-read-check-insert reservation inside `BEGIN IMMEDIATE`, so two overlapping
-callers could never both observe the same under-the-cap slot and both insert.
-PostgREST has no equivalent -- there is no session-scoped transaction to hold
-open across a `select` and a later `upsert`. `try_record` below is a plain
-read-then-write: two concurrent callers can each read "under the cap" and
-both write, overshooting the daily/monthly limit by the number of racing
-callers.
+The reservation is atomic, and it has to be here rather than in this file. The
+SQLite original serialized its read-check-insert inside `BEGIN IMMEDIATE`, so
+two overlapping callers could never both observe the same under-the-cap slot
+and both insert. PostgREST offers nothing equivalent from the client side --
+there is no session-scoped transaction to hold open across a `select` and a
+later `upsert` -- so `try_record` below delegates the whole check-and-insert
+to `job_hunter_reserve_search_request`, which runs it in one transaction
+behind a per-provider advisory lock.
 
-`crawl-source` (render.yaml) is the only caller left since #189 retired the
-monolithic run and its `job-hunter-daily.yml` workflow -- the GitHub Actions
-`concurrency: group: job-hunter-state` guard that used to serialize every
-writer against this ledger no longer exists anywhere. Render's own cron
-scheduling has not been made to guarantee non-overlapping runs the way that
-guard did; a `crawl-source` invocation that outlives its 15-minute schedule
-and a local `cli.py` invocation on the owner's machine can both call
-`try_record` at once, reintroducing the race this docstring describes.
+That guarantee used to come from somewhere else. Until #189 retired
+`job-hunter-daily.yml`, the GitHub Actions `concurrency: group:
+job-hunter-state` guard serialized every writer that touched this ledger, and
+a plain read-then-write here was safe because there was only ever one writer.
+`crawl-source` (render.yaml) is the only caller left, and Render's cron
+scheduling does not promise one invocation finishes before the next starts: a
+drain that outlives its fifteen-minute slot, or a local `cli.py` run while the
+cron fires, puts two callers on this path at once. The lock is what makes that
+harmless.
+
+Pacing is a separate, deliberately softer thing. `BraveRequestBudget` computes
+the day's target share (`_brave_daily_limit`) from unlocked reads before
+calling `try_record`, so two racing callers can pass slightly different
+`daily_limit` values into the same reservation. That only moves a query
+between days; the monthly cap, which is the one drawn against the API key, is
+counted inside the lock and is exact.
 """
 
 from __future__ import annotations
@@ -83,29 +91,31 @@ class SearchUsageLedger:
     ) -> bool:
         """Reserve one request without exceeding persisted limits.
 
-        Not atomic against a concurrent caller -- see the module docstring
-        for what protects this in production. `count` reads the current
-        usage, and if both caps still allow one more request, `record`
-        writes it; a race between two callers can let both through.
+        The count and the insert happen inside
+        `job_hunter_reserve_search_request`, one transaction behind a
+        per-provider advisory lock, so two overlapping callers cannot both
+        claim the last slot under the cap. Doing it here instead would need
+        a transaction held open across two PostgREST requests, which does
+        not exist -- see the module docstring.
+
+        Safe to retry: the reservation is keyed by `(provider, occurred_at)`,
+        so a repeated call for the same instant converges on the row it
+        already wrote rather than spending a second slot.
         """
         if monthly_limit <= 0 or daily_limit <= 0:
             return False
 
         occurred_at = _normalize_utc(occurred_at)
-        month_start = occurred_at.replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
+        granted = self._client.rpc(
+            "job_hunter_reserve_search_request",
+            {
+                "p_provider": provider,
+                "p_occurred_at": to_iso(occurred_at),
+                "p_monthly_limit": monthly_limit,
+                "p_daily_limit": daily_limit,
+            },
         )
-        next_month = _next_month_start(occurred_at)
-        day_start = occurred_at.replace(hour=0, minute=0, second=0, microsecond=0)
-        next_day = day_start + timedelta(days=1)
-
-        used_month = self.count(provider=provider, start_at=month_start, end_at=next_month)
-        used_day = self.count(provider=provider, start_at=day_start, end_at=next_day)
-        if used_month >= monthly_limit or used_day >= daily_limit:
-            return False
-
-        self.record(provider=provider, occurred_at=occurred_at)
-        return True
+        return bool(granted and granted[0])
 
 
 def _normalize_utc(value: datetime) -> datetime:

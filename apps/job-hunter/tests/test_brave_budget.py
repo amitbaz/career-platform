@@ -194,3 +194,46 @@ def test_brave_query_selection_round_robins_across_markets():
         "israel_remote",
     ]
     assert [query.text for query in fallback] == ["germany-3"]
+
+
+def test_brave_reservation_is_one_atomic_database_call(
+    supabase_client, brave_ledger_window, monkeypatch
+):
+    """The cap check and the write must reach Postgres as a single statement.
+
+    Nothing else in this file can tell the fix from the bug it replaced: a
+    client-side count-then-insert returns exactly the same answers to a single
+    caller, and only diverges when two callers overlap -- which a test cannot
+    stage deterministically. What is checkable is the shape. `try_record` must
+    delegate to `job_hunter_reserve_search_request`, which holds a per-provider
+    advisory lock across the count and the insert (see the module docstring);
+    a reservation that issues a `select` or an `upsert` from here has gone back
+    to reading and writing over two requests with nothing holding the slot in
+    between.
+    """
+    year, month, _, _ = brave_ledger_window
+    client_type = type(supabase_client)
+    seen: list[str] = []
+
+    def spy_on(name: str) -> None:
+        original = getattr(client_type, name)
+
+        def wrapper(self, *args, **kwargs):
+            seen.append(name)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(client_type, name, wrapper)
+
+    for method in ("select", "insert", "upsert", "update", "rpc"):
+        spy_on(method)
+
+    ledger = SearchUsageLedger(supabase_client)
+    granted = ledger.try_record(
+        provider="brave",
+        occurred_at=datetime(year, month, 3, 9, 0, tzinfo=UTC),
+        monthly_limit=5,
+        daily_limit=5,
+    )
+
+    assert granted is True
+    assert seen == ["rpc"]
