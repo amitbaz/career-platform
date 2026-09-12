@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+from engine.models import Job
+from engine.normalize import canonicalize_url
+
+from .base import logger, strip_html
+
+_URL = "https://himalayas.app/jobs/api"
+
+
+class HimalayasSource:
+
+    # One board, one URL -- paginated from the same URL where it pages at
+    # all -- so a 304 answers for the whole source (issue #184).
+    crawl_is_one_resource = True
+    source_label = "himalayas"
+
+    def __init__(self, http, max_pages: int = 2) -> None:
+        self._http = http
+        self._max_pages = max_pages
+
+    def discover(self) -> Iterator[Job]:
+        """Yield each page's jobs before requesting the page after it."""
+        cursor: str | None = None
+
+        for page in range(self._max_pages):
+            params = {"cursor": cursor} if cursor else None
+            try:
+                data = self._http.get_json(_URL, params=params) if params else self._http.get_json(_URL)
+            except Exception:
+                logger.warning("himalayas discovery failed", exc_info=True)
+                return
+
+            for item in data.get("jobs", []):
+                job = self._to_job(item)
+                if job is not None:
+                    yield job
+
+            cursor = data.get("nextCursor")
+            if not cursor:
+                return
+
+    def _to_job(self, item) -> Job | None:
+        if not isinstance(item, dict):
+            return None
+
+        source_job_id = (item.get("guid") or "").strip()
+        title = (item.get("title") or "").strip()
+        company = (item.get("companyName") or "").strip()
+        url = canonicalize_url((item.get("applicationLink") or "").strip())
+
+        if not source_job_id or not title or not company or not url:
+            return None
+
+        locations = item.get("locationRestrictions") or []
+        if isinstance(locations, list):
+            location = ", ".join(str(value).strip() for value in locations if str(value).strip())
+        else:
+            location = str(locations).strip()
+
+        return Job(
+            source="himalayas",
+            source_job_id=source_job_id,
+            title=title,
+            company=company,
+            location=location,
+            url=url,
+            description=strip_html(item.get("description", "")),
+            remote=True,
+        )

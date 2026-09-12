@@ -17,7 +17,7 @@ The lock has two modes, because two kinds of work share the stack:
 
 `--shared` is for work that only reads and writes its own rows -- a store-
 backed test run, which claims its own pair of seed users from the pool in
-`apps/job-hunter/tests/seed_pool.py` and is isolated from other runs by
+`engine/tests/seed_pool.py` and is isolated from other runs by
 RLS. Several of those may hold the lock at once, which is the point: they
 no longer have to take turns.
 

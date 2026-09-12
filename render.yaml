@@ -1,4 +1,4 @@
-# Render Blueprint (https://render.com/docs/blueprint-spec) for job-hunter's
+# Render Blueprint (https://render.com/docs/blueprint-spec) for the engine's
 # ingestion stages: crawling, objective extraction, freshness re-checks and
 # posting recovery, none of which has a request-response shape. #189 retired
 # the monolithic run these replaced, GitHub Actions along with it -- matching
@@ -23,9 +23,9 @@ services:
     runtime: python
     plan: starter
     region: frankfurt # fixed at creation; must match Supabase's eu-west-1
-    rootDir: apps/job-hunter
-    buildCommand: pip install -e .
-    startCommand: python -m job_hunter crawl-source --limit 200
+    rootDir: engine
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run python -m engine crawl-source --limit 200
     # The fastest yield-derived band job_hunter_reschedule_sources() uses
     # (source_schedule.py BANDS[0] = 15 minutes) -- pg_cron enqueues due
     # crawls independently of this schedule; this just drains often enough
@@ -39,9 +39,9 @@ services:
     runtime: python
     plan: starter
     region: frankfurt
-    rootDir: apps/job-hunter
-    buildCommand: pip install -e .
-    startCommand: python -m job_hunter extract-facets --limit 200
+    rootDir: engine
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run python -m engine extract-facets --limit 200
     # Paced by the platform allowance, not a source cadence -- no band
     # concept applies to extraction, so this just drains often enough that
     # a freshly-crawled or freshly-changed posting isn't read stale for long.
@@ -54,9 +54,9 @@ services:
     runtime: python
     plan: starter
     region: frankfurt
-    rootDir: apps/job-hunter
-    buildCommand: pip install -e .
-    startCommand: python -m job_hunter recheck-freshness --limit 2000
+    rootDir: engine
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run python -m engine recheck-freshness --limit 2000
     # Same cadence as the GitHub Actions workflow it replaces: pg_cron
     # decides what is due every 30 minutes, four drains a day is enough
     # because the shortest re-check interval is six hours.
@@ -69,9 +69,9 @@ services:
     runtime: python
     plan: starter
     region: frankfurt
-    rootDir: apps/job-hunter
-    buildCommand: pip install -e .
-    startCommand: python -m job_hunter recover-posting --limit 500
+    rootDir: engine
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run python -m engine recover-posting --limit 500
     # Matches job_hunter_enqueue_due_recover_posting's own five-minute tick
     # (#259): the aggressive default interval is 20 minutes, so draining less
     # often than postings are enqueued would just let the queue build up.

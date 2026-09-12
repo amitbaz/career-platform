@@ -75,14 +75,14 @@ its reasoning; this is the summary CI actually enforces.
   source, the AI provider, the clock) or a second real implementation — not "in case" for code
   with one implementation today.
 
-**Enforcement.** `apps/job-hunter/.importlinter` runs `import-linter` in CI (job `import-lint` in
-`.github/workflows/job-hunter-ci.yml`) with contracts for the rules above that already have a
-structural signal to check: the `job_hunter.ai` and `job_hunter.sources` packages are
+**Enforcement.** `engine/.importlinter` runs `import-linter` in CI (job `import-lint` in
+`.github/workflows/engine-ci.yml`) with contracts for the rules above that already have a
+structural signal to check: the `engine.ai` and `engine.sources` packages are
 protected so their internals are reached only through their `__init__.py`, source adapters are
 independent of each other, and core (`config.py`, `http.py`, `pg.py`, `circuit_breaker.py`,
 `availability.py`) imports no other module. Every contract's `ignore_imports` is today's baseline
 of existing violations — **it may only shrink**; a restructure ticket that fixes one deletes its
-entry, and a new violation anywhere else fails the build. The `job_hunter` package is still flat
+entry, and a new violation anywhere else fails the build. The `engine` package is still flat
 (no `core/`, `ingestion/`, `enrichment/`, `matching/` sub-packages yet — that split is step D of
 the ADR's sequencing), so the `ingestion → enrichment → matching` direction has no import graph to
 check yet and is not encoded as a contract that would silently pass without checking anything.
@@ -102,20 +102,20 @@ A single monorepo holding the whole career platform:
 
 | Path                | What it is                          | Toolchain                  |
 | ------------------- | ----------------------------------- | -------------------------- |
-| `apps/job-hunter`   | Job Hunter service (the engine)     | Python 3.12+, pytest       |
+| `engine`            | The search-and-match engine         | Python 3.12+, uv, pytest   |
 | `supabase`          | Shared schema: migrations, SQL tests| Supabase CLI               |
 
 Relay, an early Next.js proof of concept, was deleted (issue #286); nothing from it was kept,
 code or schema ([product-vision.md](docs/product-vision.md) D5).
 
-A platform change that spans Job Hunter and the schema belongs in **one branch and one PR
+A platform change that spans the engine and the schema belongs in **one branch and one PR
 here** — that is the reason this repository exists.
 
 ## Per-app guidance
 
 Read the app-level guide before changing an app; it holds the real conventions:
 
-- `apps/job-hunter/AGENTS.md`
+- `engine/AGENTS.md`
 
 ## Agent skills
 
@@ -227,7 +227,7 @@ Run from the repository root:
 
 ```bash
 pnpm install            # JS workspace install (pnpm only; never npm/yarn)
-pnpm job-hunter:test    # Job Hunter tests
+pnpm engine:test        # engine tests
 pnpm test               # same thing today; kept as the whole-repo entry point
 
 pnpm db:key             # one-time: create the local stack's signing key
@@ -235,7 +235,7 @@ supabase start          # local Supabase stack
 pnpm db:test            # pgTAP suite against that stack
 pnpm db:reset           # rebuild the local DB from migrations (destructive)
 
-cd apps/job-hunter && lint-imports --config .importlinter   # import contracts (ADR-0002)
+cd engine && uv run lint-imports --config .importlinter   # import contracts (ADR-0002)
 ```
 
 Run pgTAP through `pnpm db:test`, not a bare `supabase test db`. It runs the suite through
@@ -245,7 +245,7 @@ rather than the shared database, which also holds other branches' unmerged table
 the guard finds no list and fails saying so.
 
 `pnpm db:test` and `pnpm db:reset` serialise against every other session on this machine;
-`pnpm job-hunter:test` runs alongside other test runs but never alongside a reset — see
+`pnpm engine:test` runs alongside other test runs but never alongside a reset — see
 [Working alongside other sessions](#working-alongside-other-sessions).
 
 `supabase start` will not boot until `supabase/signing_keys.json` exists, because `config.toml`
@@ -253,13 +253,13 @@ sets `signing_keys_path`. The file is generated per machine and git-ignored, so 
 to run `pnpm db:key` once. It is a throwaway key for localhost; never put the hosted project's
 signing key there.
 
-Job Hunter's Python environment is independent of pnpm. Install it with
-`pip install -e '.[test]'` from `apps/job-hunter`.
+The engine's Python environment is independent of pnpm and managed by `uv`. Install it with
+`uv sync --extra test` from `engine`.
 
-### A green Job Hunter run is only evidence if the store tests ran
+### A green engine run is only evidence if the store tests ran
 
 Every test that touches the database asks for the `_stack_env` fixture. At session start,
-`apps/job-hunter/tests/conftest.py` now requires all four core stack variables. If all are absent,
+`engine/tests/conftest.py` now requires all four core stack variables. If all are absent,
 pytest stops once before collection and names them; if only some are present, it does the same and
 names the missing ones. A partial environment is a configuration error even when an opt-out is
 present, because silently accepting a typo would recreate the original false pass.
@@ -273,8 +273,8 @@ the same failure class this guard exists to stop.
 A deliberate non-database run has to say so explicitly. Either form is supported:
 
 ```bash
-JOB_HUNTER_ALLOW_MISSING_STACK=1 pnpm job-hunter:test
-pnpm job-hunter:test --allow-missing-stack
+JOB_HUNTER_ALLOW_MISSING_STACK=1 pnpm engine:test
+pnpm engine:test --allow-missing-stack
 ```
 
 Both opt-outs are honored only when none of `SUPABASE_TEST_URL`,
@@ -291,7 +291,7 @@ one layer down — both otherwise produce a green run that is not evidence.
 
 **Reverting your source proves much less here than it would elsewhere.** Most of this store is
 SQL — `job_hunter_merge_jobs`, `job_hunter_upsert_job` and their siblings are database functions,
-not Python. `git checkout HEAD~1 -- apps/job-hunter/src apps/job-hunter/tests` reverts one half of
+not Python. `git checkout HEAD~1 -- engine/src engine/tests` reverts one half of
 the system under test and leaves the other half exactly as the local stack has it. "I reverted my
 changes and it still fails" is therefore not the claim it sounds like, and it has already been
 mistaken once for a defect on `main`.
@@ -405,7 +405,7 @@ per-worktree.
 Two runs can nonetheless use it at the same time, because they are isolated by `user_id` rather
 than by taking turns. RLS scopes every Job Hunter query by `user_id`, so a run that owns different
 users cannot see — or delete — another run's rows. `supabase/seed.sql` creates a pool of eight user
-pairs; `apps/job-hunter/tests/seed_pool.py` claims one pair for the length of a run and releases it
+pairs; `engine/tests/seed_pool.py` claims one pair for the length of a run and releases it
 at the end. Ownership is an `flock` on `~/.cache/career-platform/seed-slots/slot-N.lock`, so a
 crashed or killed run's slot comes back on its own, with no stale claim to clear by hand.
 
@@ -416,7 +416,7 @@ safe:
 
 - `pnpm db:reset` and `pnpm db:test` take the lock **exclusively**. A reset drops the database out
   from under every run regardless of whose users they hold.
-- `pnpm job-hunter:test` takes it **shared**. Any number of suites may hold it at once; none of
+- `pnpm engine:test` takes it **shared**. Any number of suites may hold it at once; none of
   them can overlap a reset.
 
 A reset that is waiting holds a second, "intent" lockfile beside the first, so suites started
@@ -427,7 +427,7 @@ The lockfile lives at `~/.cache/career-platform/stack.lock` — outside every wo
 inside the tree would give each worktree its own lock and defeat the point. So does the slot
 directory, for the same reason.
 
-- **Use the pnpm scripts, not the bare commands.** `.venv/bin/python -m pytest` and
+- **Use the pnpm scripts, not the bare commands.** `uv run pytest` and
   `supabase db reset` bypass the lock, so a bare pytest run can be wiped mid-suite by someone
   else's reset. If you need a bare invocation, wrap it:
   `python3 scripts/stack_lock.py --shared <command>` (or without `--shared` if it is destructive).
@@ -449,12 +449,12 @@ directory, for the same reason.
   `supabase_migrations.schema_migrations` against `ls supabase/migrations`: a version present in
   one and not the other names the cause in a single look. It catches the other direction too,
   where a peer's migration *is* applied and turns unrelated tests red.
-- **A green run can be wrong as easily as a red one.** A workspace without its own `.venv` runs
-  against a different source tree entirely, so the suite passes while testing code you did not
-  write. This is why `pnpm job-hunter:test` is mandatory rather than a convenience: it resolves
-  the interpreter for the tree it is run from. Create the `.venv` in every new checkout and every
-  new worktree before the first test run, and never conclude anything from a green suite you have
-  not confirmed is the right tree.
+- **A green run can be wrong as easily as a red one.** Before `uv`, a workspace without its own
+  `.venv` ran against a different source tree entirely, so the suite passed while testing code you
+  did not write. `pnpm engine:test` runs through `uv run`, which syncs the checkout's own `.venv`
+  from `uv.lock` on demand rather than resolving whatever interpreter happens to be ambient, so
+  this failure mode no longer exists — but still use the pnpm script rather than a bare invocation,
+  for the lock reason above.
 
 Raising the pool size means editing both `seed_pool.POOL_SIZE` and `supabase/seed.sql`, then
 applying the seed to every stack that already exists — test writes go through PostgREST with a
@@ -589,6 +589,6 @@ request with `test` green, and the owner merges it.
 - Supabase migrations are platform-owned. Add new migrations under `supabase/migrations`, not
   inside an app.
 - No Turborepo/Nx. pnpm workspaces is deliberately the only monorepo tooling.
-- Paths are load-bearing: GitHub workflows use `defaults.run.working-directory: apps/job-hunter`.
-  Neither Job Hunter workflow uploads or restores an artifact any more — Job Hunter's persistent
+- Paths are load-bearing: GitHub workflows use `defaults.run.working-directory: engine`.
+  Neither engine workflow uploads or restores an artifact any more — the engine's persistent
   state lives in Postgres, not on the runner.

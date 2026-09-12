@@ -1,0 +1,276 @@
+"""Row <-> model mapping helpers for the Postgres-backed job store.
+
+Every later `PostgresJobStore` method reads and writes through these
+functions, so the two type conversions PostgREST forces on the SQLite
+original live in exactly one place:
+
+- Timestamps are ``timestamptz`` in Postgres, not SQLite's naive TEXT.
+  ``to_iso``/``from_iso`` always carry an explicit UTC offset so a
+  timestamp is never compared as a bare string.
+- ``remote`` is a nullable boolean. SQLite gave ``1``/``0``/``None``;
+  Postgres (via PostgREST) gives ``True``/``False``/``None``. Both must
+  map to the same Python value.
+
+``touch()`` exists because ticket #66 deliberately added no database
+trigger to maintain ``updated_at``: Python must set it on every write to
+the tables that carry the column. Verified directly against
+``supabase/migrations/202609060002_job_hunter_discovery_state.sql``, that
+list is ``job_hunter_company_watch``, ``job_hunter_ai_quota_state``, and
+``job_hunter_pending_ai_work`` --
+*not* ``job_hunter_ats_registry``, which has no ``updated_at`` column at
+all. (An earlier draft of the task brief named ``job_hunter_ats_registry``
+instead of ``job_hunter_ai_quota_state``; the migration is the source of
+truth here.)
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from engine.models import (
+    AtsRegistryEntry,
+    CompanyFacets,
+    Compensation,
+    Evaluation,
+    Job,
+    JobFacets,
+    Material,
+)
+
+
+def to_iso(value: datetime | None) -> str | None:
+    """Render a datetime as UTC-normalised ISO-8601 with an explicit offset.
+
+    A naive datetime is treated as already being UTC (matching the SQLite
+    original's convention) rather than raising or guessing the local zone.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat()
+
+
+def from_iso(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 string (as PostgREST returns for timestamptz) to UTC."""
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
+
+
+def touch(values: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``values`` with ``updated_at`` set to now (UTC, ISO-8601).
+
+    Callers writing to ``job_hunter_company_watch``, ``job_hunter_ai_quota_state``,
+    or ``job_hunter_pending_ai_work`` must route every insert/update through
+    this -- there is no trigger doing it for them.
+    """
+    result = dict(values)
+    result["updated_at"] = to_iso(datetime.now(timezone.utc))
+    return result
+
+
+def _to_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def posting_facts(row: dict[str, Any]) -> dict[str, Any]:
+    """Return whichever half of ``row`` states the advertisement's own facts.
+
+    A row selected with ``posting:job_hunter_postings(...)`` embedded carries
+    the advertisement's facts under ``posting`` and the caller's own facts --
+    ``market_id``, ``status``, the two timestamps -- at the top level. The
+    posting is the record of the advertisement (issues #177, #178), so it
+    answers every question about what the advertisement says.
+
+    Every key the posting carries wins, including an empty or false one:
+    ``company = ''`` and ``remote = false`` are answers, not absences, and a
+    per-field truthiness fallback would let a missing embed override them.
+    A key the posting was not asked for falls through to the row, so a
+    column added to the select on one side only reads as itself rather than
+    silently as ``""`` -- but a posting-level column belongs in
+    ``_POSTING_FACT_EMBED``'s list, which is what makes the posting answer it.
+
+    A row whose ``posting`` key was not selected -- or a mapping built by a
+    caller that never asked for the embed -- falls through unchanged. Since
+    #178 there is no duplicate copy behind it: ``job_hunter_jobs.posting_id``
+    is ``not null``, and a select that omits the embed simply does not
+    describe the advertisement at all.
+    """
+    posting = row.get("posting")
+    return {**row, **posting} if isinstance(posting, dict) else row
+
+
+def job_from_row(row: dict[str, Any]) -> Job:
+    """Map a ``job_hunter_jobs`` PostgREST row to a `Job`.
+
+    Composed from the posting plus the caller's membership row: everything
+    the advertisement itself says comes from `posting_facts`, and what the
+    job row alone knows comes from the job row. The `Job` is identical in
+    content to the one the same select produced before the posting existed.
+
+    ``market_id`` is the one field that comes from the job row, because it is
+    the one field that is about this user rather than about the
+    advertisement: which of *their* markets the posting was attributed to.
+
+    ``url`` used to come from the job row too. #177 kept it there because a
+    merged job row was the only row that had seen every posting behind it, so
+    its ``url`` was the only link resolved across all of them, and reading a
+    single posting's ``url`` could have put an aggregator link in the digest
+    where the employer's was known. #176 moved merging onto the posting and
+    #178 took the column off the job row: the surviving posting now carries
+    the resolved link, so reading it here is the same answer, arrived at
+    once for everyone instead of once per user.
+
+    ``original_url``, ``market_hint``, ``source_page_html``, and
+    ``availability`` are not persisted columns -- they stay at the `Job`
+    dataclass defaults.
+    """
+    facts = posting_facts(row)
+    return Job(
+        source=facts.get("source") or "",
+        title=facts.get("title") or "",
+        company=facts.get("company") or "",
+        location=facts.get("location") or "",
+        url=facts.get("url") or "",
+        description=facts.get("description") or "",
+        source_job_id=facts.get("source_job_id"),
+        remote=_to_optional_bool(facts.get("remote")),
+        canonical_url=facts.get("canonical_url") or "",
+        ats_provider=facts.get("ats_provider"),
+        ats_board=facts.get("ats_board"),
+        ats_job_id=facts.get("ats_job_id"),
+        market_id=row.get("market_id") or None,
+        content_confidence=facts.get("content_confidence") or "",
+    )
+
+
+def evaluation_from_row(row: dict[str, Any]) -> Evaluation:
+    """Map a ``job_hunter_evaluations`` PostgREST row to an `Evaluation`.
+
+    ``job_id`` is the row's uuid string, not a SQLite integer.
+    """
+    return Evaluation(
+        job_id=row["job_id"],
+        total_score=row.get("total_score", 0),
+        scores=row.get("scores_json") or {},
+        decision=row.get("decision") or "",
+        hard_blockers=row.get("hard_blockers_json") or [],
+        strengths=row.get("strengths_json") or [],
+        gaps=row.get("gaps_json") or [],
+        salary_note=row.get("salary_note") or "",
+        location_note=row.get("location_note") or "",
+        rationale=row.get("rationale") or "",
+        model=row.get("model") or "",
+        status=row.get("status") or "ok",
+        market_id=row.get("market_id") or "",
+        content_confidence=row.get("content_confidence_at_eval") or "",
+        requirements=row.get("requirements_json") or {},
+        raw_model_score=row.get("raw_model_score", 0),
+    )
+
+
+def job_facets_from_row(row: dict[str, Any]) -> JobFacets:
+    """Map a ``job_hunter_job_facets`` PostgREST row to a `JobFacets`.
+
+    ``hiring_regions``, ``stack`` and ``source_supplied`` are ``text[]``
+    columns, which PostgREST hands back as JSON arrays; ``requirements_json``
+    is jsonb and comes back already decoded. Compensation is split across
+    five columns so it stays filterable, and is reassembled here.
+    """
+    return JobFacets(
+        seniority=row.get("seniority") or "unknown",
+        remote_policy=row.get("remote_policy") or "unknown",
+        relocation_policy=row.get("relocation_policy") or "unknown",
+        hiring_regions=list(row.get("hiring_regions") or []),
+        stack=list(row.get("stack") or []),
+        compensation=Compensation(
+            disclosed=bool(row.get("compensation_disclosed")),
+            currency=row.get("compensation_currency") or "",
+            minimum=row.get("compensation_min"),
+            maximum=row.get("compensation_max"),
+            period=row.get("compensation_period") or "",
+        ),
+        requirements=list(row.get("requirements_json") or []),
+        source_supplied=list(row.get("source_supplied") or []),
+        description_hash_at_extraction=row.get("description_hash_at_extraction") or "",
+        model=row.get("model") or "",
+    )
+
+
+def company_facets_from_row(row: dict[str, Any]) -> CompanyFacets:
+    """Map a ``job_hunter_companies`` PostgREST row to a `CompanyFacets`.
+
+    Every dimension falls back to ``"unknown"`` rather than to an empty
+    string: an absent value here means "not established", which is a real
+    first-class value the ranking and the prompt both read, and an empty
+    string is not one of them.
+    """
+    return CompanyFacets(
+        identity=row.get("identity") or "",
+        display_name=row.get("display_name") or "",
+        industry=row.get("industry") or "unknown",
+        business_model=row.get("business_model") or "unknown",
+        stage=row.get("stage") or "unknown",
+        size_band=row.get("size_band") or "unknown",
+        headquarters_region=row.get("headquarters_region") or "unknown",
+        source_supplied=list(row.get("source_supplied") or []),
+        model=row.get("model") or "",
+    )
+
+
+def material_from_row(row: dict[str, Any]) -> Material:
+    """Map a ``job_hunter_materials`` PostgREST row to a `Material`."""
+    return Material(
+        job_id=row["job_id"],
+        cover_letter_text=row.get("cover_letter_text") or "",
+    )
+
+
+def ats_entry_from_row(
+    row: dict[str, Any],
+    *,
+    eligible_jobs_seen: int = 0,
+    last_eligible_at: str | None = None,
+) -> AtsRegistryEntry:
+    """Map a ``job_hunter_ats_boards`` PostgREST row to an `AtsRegistryEntry`.
+
+    `AtsRegistryEntry`'s timestamp fields are typed ``str`` (matching the
+    SQLite original's TEXT columns), so PostgREST's ISO-8601 strings pass
+    through unchanged -- no `from_iso` conversion needed here.
+
+    Since #203, `job_hunter_ats_boards` (board identity and health) and
+    `job_hunter_ats_registry` (per-user eligible-job yield) are two tables.
+    `eligible_jobs_seen`/`last_eligible_at` are that caller's own yield
+    against this board, looked up separately and passed in here --
+    `select_ats_boards`' ranking reads `last_eligible_at` off the entries
+    `list_due_ats_boards` returns, so it must carry the calling user's own
+    value, not be silently dropped.
+    """
+    return AtsRegistryEntry(
+        provider=row["provider"],
+        board_identifier=row["board_identifier"],
+        company_name=row.get("company_name") or "",
+        market_hint=row.get("market_hint") or "",
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        last_checked_at=row.get("last_checked_at"),
+        last_success_at=row.get("last_success_at"),
+        last_eligible_at=last_eligible_at,
+        last_job_count=row.get("last_job_count", 0),
+        eligible_jobs_seen=eligible_jobs_seen,
+        consecutive_failures=row.get("consecutive_failures", 0),
+        active=bool(row.get("active", True)),
+        paused_until=row.get("paused_until"),
+        rejected_reason=row.get("rejected_reason"),
+    )

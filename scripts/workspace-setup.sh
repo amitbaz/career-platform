@@ -3,7 +3,7 @@
 #
 # Everything copied here is git-ignored, so a new worktree has none of it:
 #
-#   apps/job-hunter/.env           Job Hunter's local environment
+#   engine/.env                    the engine's local environment
 #   supabase/signing_keys.json     without it `supabase start` will not boot at all,
 #                                  because config.toml sets signing_keys_path
 #
@@ -11,9 +11,9 @@
 # `kid`, and the integration tests then 401 against a stack booted with the other one.
 # Copy the main checkout's key, which is what this script does.
 #
-# The Python virtualenv is per-checkout on purpose: `pnpm job-hunter:test` runs
-# `.venv/bin/python`, so a worktree without its own .venv silently tests whichever
-# source tree the ambient interpreter resolves to, and reports it green.
+# `pnpm engine:test` runs through `uv run`, which syncs the checkout's own `.venv`
+# from `uv.lock` on demand -- so a worktree can no longer silently test whichever
+# source tree the ambient interpreter resolves to.
 #
 # SOURCE_ROOT defaults to Superset's SUPERSET_ROOT_PATH when set, so this works both
 # as a workspace setup command and when run by hand from a plain clone.
@@ -41,7 +41,7 @@ copy() {
 }
 
 pnpm install
-copy apps/job-hunter/.env
+copy engine/.env
 copy supabase/signing_keys.json
 
 # supabase/.temp is deliberately NOT copied. It carries the link to the live project,
@@ -50,5 +50,5 @@ copy supabase/signing_keys.json
 # applied, can permanently block a migration sitting on another branch. Migrations are
 # applied from CI when they reach main (#190); a worktree never pushes.
 
-pnpm job-hunter:install
+pnpm engine:install
 echo "workspace-setup: done"

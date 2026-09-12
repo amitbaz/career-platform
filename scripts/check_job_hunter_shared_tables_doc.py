@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Guard that `apps/job-hunter/AGENTS.md` names exactly the shared tables.
+"""Guard that `engine/AGENTS.md` names exactly the shared tables.
 
     python3 scripts/check_job_hunter_shared_tables_doc.py
 
 `supabase/tests/pgtap/job_hunter_isolation.sql` maintains the enforced list
 of Job Hunter tables with no `user_id` -- `pg_temp.job_hunter_shared_tables`
 -- and fails a test whenever that list stops matching the grants pgTAP
-observes. `apps/job-hunter/AGENTS.md` restates that same set in prose, for
+observes. `engine/AGENTS.md` restates that same set in prose, for
 whoever reads the doc before touching a migration, but nothing tied the two
 together (#215): #198 added `job_hunter_companies` to the pgTAP list and to
 `CONTEXT.md`, not to this prose, and git produced no conflict because the
@@ -29,7 +29,7 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
 PGTAP_FILE = _REPO / "supabase" / "tests" / "pgtap" / "job_hunter_isolation.sql"
-AGENTS_FILE = _REPO / "apps" / "job-hunter" / "AGENTS.md"
+AGENTS_FILE = _REPO / "engine" / "AGENTS.md"
 
 _PGTAP_VIEW = re.compile(
     r"create\s+view\s+pg_temp\.job_hunter_shared_tables\s+as\s*"

@@ -1,0 +1,122 @@
+name: Engine CI
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'engine/**'
+      - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - '.github/workflows/engine-ci.yml'
+  pull_request:
+    paths:
+      - 'engine/**'
+      - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - '.github/workflows/engine-ci.yml'
+defaults:
+  run:
+    working-directory: engine
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - uses: ./.github/actions/supabase-local-stack
+      - run: uv sync --frozen --extra test
+      - name: Run the test suite
+        working-directory: .
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          export SUPABASE_TEST_URL="$API_URL"
+          export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+          # Ingestion's direct, privileged connection (#182), and required
+          # since #179: the shared tables are writable only by that role, so a
+          # run without it cannot persist a posting at all. conftest.py fails
+          # the session when it is missing rather than skipping quietly.
+          export SUPABASE_TEST_DB_URL="$DB_URL"
+          # The keys file is an array; the minter wants the single JWK object.
+          export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
+          cd engine
+          uv run pytest -q -n auto --dist=loadgroup
+
+  isolation:
+    # Proves a per-user token cannot cross users, against real policies on a
+    # throwaway local Supabase stack. Nothing touches the hosted project.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - uses: ./.github/actions/supabase-local-stack
+      - run: uv sync --frozen --extra test
+      - name: Run the isolation test
+        working-directory: .
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          export SUPABASE_TEST_URL="$API_URL"
+          export SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY"
+          # Ingestion's direct, privileged connection (#182), and required
+          # since #179: the shared tables are writable only by that role, so a
+          # run without it cannot persist a posting at all. conftest.py fails
+          # the session when it is missing rather than skipping quietly.
+          export SUPABASE_TEST_DB_URL="$DB_URL"
+          # The keys file is an array; the minter wants the single JWK object.
+          export SUPABASE_TEST_SIGNING_KEY_B64="$(python3 -c "import json,base64;print(base64.b64encode(json.dumps(json.load(open('supabase/signing_keys.json'))[0]).encode()).decode())")"
+          cd engine
+          uv run pytest tests/integration -v --junit-xml=/tmp/isolation-results.xml
+          python3 -c "
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse('/tmp/isolation-results.xml').getroot()
+          suite = root if root.tag == 'testsuite' else root.find('testsuite')
+          tests = int(suite.get('tests', 0))
+          skipped = int(suite.get('skipped', 0))
+          failures = int(suite.get('failures', 0))
+          errors = int(suite.get('errors', 0))
+          print(f'isolation suite results: tests={tests} skipped={skipped} failures={failures} errors={errors}')
+          ok = tests > 0 and skipped == 0 and failures == 0 and errors == 0
+          if not ok: print(f'::error::Isolation suite did not run clean ({tests} tests, {skipped} skipped, {failures} failures, {errors} errors). A skipped or uncollected test usually means the Supabase env vars never reached pytest -- that would be a false pass, not proof of isolation.')
+          sys.exit(0 if ok else 1)
+          "
+
+  import-lint:
+    # Import-linter contracts for the engine's module borders (ADR-0002,
+    # issue #286). engine/.importlinter's baseline is today's known
+    # violations; a new one anywhere else fails here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - run: uv sync --frozen --extra lint
+      - run: uv run lint-imports --config .importlinter
+
+  pgtap:
+    # The platform's pgTAP suite, moved here from the deleted Relay CI
+    # (issue #286): it tests supabase/, not Relay, and had never belonged in
+    # Relay's workflow. Runs against a throwaway local Supabase stack;
+    # nothing touches the hosted project.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: ./.github/actions/supabase-local-stack
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm db:test
+        working-directory: .

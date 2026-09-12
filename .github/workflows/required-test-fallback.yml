@@ -1,13 +1,13 @@
-# `test` is a required status check on main, but job-hunter-ci.yml (the only
+# `test` is a required status check on main, but engine-ci.yml (the only
 # workflow that defines a job called `test`) is path-filtered. A pull request
 # touching none of those paths — a docs, tooling or config change — therefore
 # produces no `test` run at all, and GitHub blocks the merge waiting for a
 # check that can never report.
 #
-# This workflow closes that gap: it runs precisely when job-hunter-ci.yml does
+# This workflow closes that gap: it runs precisely when engine-ci.yml does
 # not, and reports the same `test` context so the rule is satisfied.
 #
-# Keep `paths-ignore` below in sync with job-hunter-ci.yml's `pull_request.paths`
+# Keep `paths-ignore` below in sync with engine-ci.yml's `pull_request.paths`
 # filter. A path listed here that is not listed there means some PRs get no
 # `test` check and block; a path listed there that is missing here only means
 # both a real and a no-op `test` run for that PR, which is harmless — the real
@@ -17,12 +17,12 @@ name: Required test fallback
 on:
   pull_request:
     paths-ignore:
-      - 'apps/job-hunter/**'
+      - 'engine/**'
       - 'supabase/**'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - 'package.json'
-      - '.github/workflows/job-hunter-ci.yml'
+      - '.github/workflows/engine-ci.yml'
 
 jobs:
   test:
@@ -30,5 +30,5 @@ jobs:
     steps:
       - name: Report that no test suite covers these paths
         run: |
-          echo "No path in this pull request is covered by Job Hunter CI."
+          echo "No path in this pull request is covered by Engine CI."
           echo "Reporting the required 'test' check as passed so the merge is not blocked."
