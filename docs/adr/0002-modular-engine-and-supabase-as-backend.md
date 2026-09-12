@@ -265,6 +265,19 @@ be written before the product has a surface that needs it.
 makes the engine aware of surfaces, and adds latency to the stack D1 wants served in under two
 seconds. A precomputed ready pool read through the api layer does the same job.
 
+**GraphQL instead of the generated REST API.** Rejected for now, and cheap to revisit. Supabase
+serves GraphQL through the `pg_graphql` extension, which respects SQL grants and row-level
+security and, since version 1.4, can call Postgres functions — so this is a real option, not a
+missing feature. It is not taken because the contract here is a short list of operations rather
+than a graph to traverse: a surface asks for today's stack, records a swipe, opens the bucket.
+GraphQL earns its cost when clients we do not control compose arbitrary nested queries. Against
+that, one POST endpoint gives up HTTP caching, query depth and cost limits become necessary, and
+clients need codegen and a normalising cache. `pg_graphql` also generates its schema from the
+tables and functions, so it would be a second generated surface over the same SQL contract rather
+than a designed one. Revisit when a client we do not own consumes the api layer, or when a screen
+genuinely needs deep nested reads in one round trip; because each app reaches data through a
+single module, the change stays local.
+
 **Keep the flat package, add rules only.** Rejected. Rules without borders to enforce them are
 guidance an agent cannot check; the baseline would never shrink.
 

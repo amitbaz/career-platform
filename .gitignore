@@ -64,15 +64,8 @@ apps/relay/data/
 .superpowers/
 .vscode/
 
-# .agents/ is Codex's skill root, ignored by default with the same exception as
-# .claude/skills/ below: the dev and reviewer role launchers (#270). Git will not
-# descend into an ignored directory, so every parent has to be re-included before
-# the leaf.
-.agents/*
-!.agents/skills/
-.agents/skills/*
-!.agents/skills/dev/
-!.agents/skills/reviewer/
+# .agents/ is Codex's skill root: local state, with nothing tracked here.
+.agents/
 
 # .claude/ is local state (settings.local.json, caches) with exceptions: the
 # skills that encode this repository's own process. Git will not descend into an
@@ -81,8 +74,6 @@ apps/relay/data/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/make-repo-contribution/
-!.claude/skills/dev
-!.claude/skills/reviewer
 
 # design generation logs
 designs/**/*.log

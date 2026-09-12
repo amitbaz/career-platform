@@ -194,5 +194,4 @@ four known cohort names and left-joins counts onto them rather than the other wa
 
 Anything about ranking quality, real why-line grounding, or the Analytics page (#264) is a
 different ticket. What tool actually calls into this ledger, and how, is #283's to decide.
-Work found outside #257 while building this becomes a new issue assigned to the owner, per
-`docs/agents/roles.md`.
+Work found outside #257 while building this becomes a new issue assigned to the owner.
