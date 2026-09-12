@@ -574,7 +574,7 @@ Key modules:
   no core module changes. The paper review behind the interface's shape is
   `docs/superpowers/specs/2026-09-08-ai-provider-port-paper-review.md`.
 - `src/job_hunter/config.py` — loads the user's search profile, provider credentials and source documents (all from Postgres, via `load_settings(store)`) plus the remaining env vars into a `Settings`/`SearchPolicy` (see `models.py`). The Gemini key, the Brave key, the candidate profile and the cover letter template are per-user rows read through RLS and held in memory only — never write them to the repo or logs. A missing Gemini key, CV or cover letter raises `RuntimeConfigurationError` before any provider call. The **platform** key is the one credential that is *not* per-user: it comes from `PLATFORM_GEMINI_API_KEY` in the environment, because it funds work that belongs to no user (#128). Leaving it unset is supported — the run then extracts no facets — and is never a reason to fall back to the user's key.
-- `src/job_hunter/cli.py` — one entrypoint per ingestion stage (`crawl-source`, `extract-facets`, `recheck-freshness`, `recover-posting`), plus `sync-gmail` and the on-demand `generate-cover-letter`. There is no `run` entrypoint and no `--scheduled` gate: #189 deleted `pipeline.py`, `run_pipeline` and `should_run_scheduled` along with the single-process daily run and its GitHub Actions workflow.
+- `src/job_hunter/cli.py` — one entrypoint per ingestion stage (`crawl-source`, `extract-facets`, `recheck-freshness`, `recover-posting`), plus `sync-gmail` and the on-demand `generate-cover-letter`. There is no `run` entrypoint and no `--scheduled` gate: #189 deleted `pipeline.py`, `run_pipeline` and `should_run_scheduled` along with the single-process daily run and its GitHub Actions workflow. **`sync-gmail` lost its only caller with that workflow and has no replacement schedule** — it is not a Render cron service and not in `job_hunter_worker_schedules`, so nothing runs it and nothing reports it missing. Gmail intake is hand-run until something schedules it; do not read "no new application events" as a quiet inbox.
 - Everything that used to happen after discovery in that retired run -- profile-aware ranking and diversity selection (`preferences.py` + `rank_jobs`/`select_diverse_candidates`), delivery policy (`match_score_floor`, `daily_offer_limit`), per-job failure containment, and following a merge redirect before writing an evaluation -- had no home anywhere else and was deleted with it. Matching itself is still one operation, `matching.match_jobs` (#187/#243), reading the whole open corpus rather than a per-run shortlist; nothing calls it on a schedule or delivers its result today. That gap is intentional and open until #260/#261 build the mobile app's own read of the corpus -- do not read this file's git history as a spec for what to rebuild without checking the current product-vision doc first.
 - Cover letter + PDF generation is on demand only, one job at a time (`generate-cover-letter.yml` -> `python -m job_hunter generate-cover-letter --job-id <id>`), and lives in `cover_letter.py` (moved there from the retired `pipeline.py` by #189). It does not depend on any ingestion stage or on matching having run.
 
@@ -583,12 +583,19 @@ Key modules:
 State now lives in Postgres (the shared Supabase project), not on the ephemeral Actions runner.
 There is no artifact to restore or upload: `store.py`, `github_state.py`, and
 `scripts/restore_state.py` were deleted along with the SQLite path, and neither workflow uploads
-or restores a `job-hunter-state` artifact any more. `concurrency: group: job-hunter-state` is
-still kept in both workflows deliberately — it no longer guards a file, but the read-then-update
-pairs (company watch, ATS registry, search budget) assume a single writer, and that assumption is
-now the only thing behind it.
+or restores a `job-hunter-state` artifact any more. `concurrency: group: job-hunter-state` survives
+only in `job-hunter-generate-cover-letter.yml`; #189 deleted the daily workflow that carried the
+other copy, and with it the single-writer guarantee that the store's read-then-update pairs were
+relying on. Ingestion now runs as Render crons that can overlap (see README, "Ingestion stage
+schedules").
 
-The daily workflow fires on two cron triggers (`5 7 * * *` and `5 8 * * *` UTC) to cover both sides of the `Europe/Berlin` DST transition; `--scheduled` makes only one of them actually run the pipeline on any given day.
+The search budget was the pair where that mattered, because what it protects is a monthly quota
+drawn against the API key: it is now reserved inside `job_hunter_reserve_search_request`, one
+transaction behind a per-provider advisory lock, and does not depend on there being a single
+writer. Company watch and the ATS registry still do. **Do not add a new read-then-update pair
+over shared state and assume something upstream serialises it** — nothing does any more. If the
+value being protected is a quota, a cap or a counter, put the check and the write in one database
+function and take a lock, as that migration does.
 
 ## Required secrets/env
 

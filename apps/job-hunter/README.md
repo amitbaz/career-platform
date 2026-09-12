@@ -250,7 +250,9 @@ python -m job_hunter sync-gmail --force-backfill
 
 `--dry-run` classifies and extracts without advancing the Gmail cursor or persisting Gmail-derived state. `--force-backfill` repeats the 120-day backfill idempotently and is non-destructive. A completed sync with individual message errors keeps its cursor so those messages retry on the next sync; setup, authorization, profile, or listing failures return a nonzero status.
 
-The first successful Gmail setup performs a 120-day historical backfill. Historical processing is resumable and intentionally bounded to 100 previously unprocessed messages per sync invocation, so a large mailbox may need multiple workflow runs to finish. Successfully processed message IDs are stored in Postgres and skipped on later runs. In GitHub Actions the Gmail step also has a 10-minute fail-open timeout; if it reaches that safety limit, the normal Job Hunter pipeline continues and the next run resumes the remaining Gmail backlog.
+The first successful Gmail setup performs a 120-day historical backfill. Historical processing is resumable and intentionally bounded to 100 previously unprocessed messages per sync invocation, so a large mailbox may need multiple sync invocations to finish. Successfully processed message IDs are stored in Postgres and skipped on later runs, so the next invocation resumes the remaining backlog.
+
+> **`sync-gmail` has no scheduler.** `.github/workflows/job-hunter-daily.yml` was the only thing that invoked it, and #189 deleted that workflow without adding a replacement: it is not one of the Render cron services in [`render.yaml`](../../render.yaml), and it is not in `job_hunter_worker_schedules`, so worker health will not report it missing either. Until something schedules it, Gmail intake only happens when someone runs `python -m job_hunter sync-gmail` by hand — and an empty inbox of application events looks exactly like a quiet week.
 
 ## Ingestion stage schedules
 
@@ -259,8 +261,16 @@ There is no daily workflow and no manual GitHub Actions dispatch for ingestion a
 services defined in [`render.yaml`](../../render.yaml), each on its own schedule, each reading and
 writing Postgres directly via `PostgresJobStore` for the duration of its own drain. There is no
 single writer lock across them the way `concurrency: group: job-hunter-state` used to provide for
-the old single-process run; see `search_budget.py`'s module docstring for the one place that gap
-is known to matter.
+the old single-process run, and Render does not promise that one cron invocation finishes before
+the next one starts.
+
+The metered search budget no longer depends on that missing lock: reserving a Brave call goes
+through `job_hunter_reserve_search_request`, which counts the ledger and inserts the reservation
+in one transaction behind a per-provider advisory lock (see `search_budget.py`'s module
+docstring). The remaining read-then-update pairs — company watch and the ATS registry — still
+assume a single writer. They are per-row rather than per-key, so overlapping drains collide only
+on the same source, and the cost of losing is a reordered retry rather than an overspent API
+quota; unlike the search cap, nothing bills for it.
 
 ## Adding ATS board slugs
 
