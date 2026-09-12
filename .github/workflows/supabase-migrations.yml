@@ -14,6 +14,25 @@
 # IPv4 add-on. Transaction mode (port 6543) is also wrong here -- migrations need session
 # mode for advisory locks and multi-statement transactions. The password inside it must be
 # percent-encoded.
+#
+# `--include-all` is load-bearing, not a convenience. Two migrations reached main with their
+# `29999999*` placeholder prefixes intact (#282, #284) and were applied to production under
+# those versions. Every real `YYYYMMDDHHMMSS` timestamp sorts before them, so from #284
+# onwards `db push` refused every migration that followed -- "Found local migration files to
+# be inserted before the last migration on remote database" -- and #296's posting-recovery
+# schema sat on main, unapplied, until #297. The two placeholder versions cannot be renumbered
+# out of the way: the remote has already applied them under those numbers.
+#
+# So this workflow applies out-of-order migrations rather than refusing them, which is the
+# remedy the CLI itself names in that error. What is lost is a guard against applying a
+# migration whose number sorts before one already applied; what it was guarding against has
+# already happened, and refusing now only keeps production behind main. Migrations here are
+# independent DDL files and `supabase db reset` applies them in filename order locally, so
+# discovery order and version order agree everywhere it matters.
+#
+# The cause is a process failure, not a CLI one: a placeholder must be renumbered to a real
+# timestamp before its PR merges. See AGENTS.md, "Migration filenames are allocated across
+# the whole repository".
 name: Apply Supabase migrations
 
 on:
@@ -58,7 +77,7 @@ jobs:
         run: bash supabase/local-signing-key.sh
 
       - name: Show what would be applied
-        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all --dry-run
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
@@ -68,7 +87,7 @@ jobs:
       # connection secret without writing to production. A push to main always applies.
       - name: Apply
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run == false }}
-        run: supabase db push --db-url "$SUPABASE_DB_URL" --yes
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all --yes
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
