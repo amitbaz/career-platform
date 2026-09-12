@@ -18,9 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -32,7 +30,6 @@ from job_hunter.extract_facets_stage import (
     FacetsAlreadyCurrent,
 )
 from job_hunter.facets import FacetExtractionError
-from job_hunter.gmail_models import AUTO_CONFIDENCE_THRESHOLD, ExtractedJob
 from job_hunter.job_identity import normalize_company_name
 from job_hunter.models import (
     AtsRegistryEntry,
@@ -42,7 +39,6 @@ from job_hunter.models import (
     Job,
     JobFacets,
     Material,
-    NavigationSession,
     ProviderCredentials,
 )
 from job_hunter.normalize import job_fingerprint
@@ -64,7 +60,6 @@ from job_hunter.store_mapping import (
     job_facets_from_row,
     job_from_row,
     material_from_row,
-    navigation_session_from_row,
     posting_facts,
     to_iso,
     touch,
@@ -144,10 +139,6 @@ _POSTING_FACT_EMBED = f"posting:job_hunter_postings({_ADVERTISEMENT_COLUMNS})"
 # what makes "the evaluation is current" mean the same thing on both sides.
 _DESCRIPTION_STATE_COLUMNS = "description_hash,content_confidence"
 _DESCRIPTION_STATE_EMBED = f"posting:job_hunter_postings({_DESCRIPTION_STATE_COLUMNS})"
-
-# The columns `list_jobs_for_matching` hands the Gmail matcher, which reads
-# them flat. Everything but the timestamps is the advertisement's.
-_MATCHING_POSTING_COLUMNS = "source_job_id,url,company,title"
 
 # Every id list that travels in a query-string filter (`id=in.(...)`,
 # `message_id=in.(...)`) is chunked at this many ids per request. A message
@@ -239,17 +230,25 @@ def _quoted_in_list(values: list[str]) -> str:
     return ",".join('"' + value.replace('"', '""') + '"' for value in values)
 
 
-def _is_legacy_poisoned_linkedin_job(company: str, title: str) -> bool:
-    """Translates `gmail_linkedin_cleanup.py`'s (deleted) same-named helper.
+# `current_application_state`'s own confidence floor: an application-event
+# derived from a source whose confidence is below this is not trusted enough
+# to decide the state on its own. Relocated here (#287) from `gmail_models.py`,
+# which was Gmail intake's own module and is now deleted along with Gmail;
+# the events themselves outlive Gmail as `job_hunter_application_events` (a
+# general, single-writer-per-row table any future intake source may write).
+_AUTO_CONFIDENCE_THRESHOLD = 0.90
 
-    A job is safe to release only if it is entirely blank or carries the
-    known ``Sign in`` poison title left by historical LinkedIn login-page
-    scraping.
-    """
-    if company.strip():
-        return False
-    normalized_title = title.strip().casefold()
-    return normalized_title in {"", "sign in"}
+# Same relocation as `_AUTO_CONFIDENCE_THRESHOLD` above: the tie-break order
+# `current_application_state` uses when two eligible events share the same
+# `occurred_at`. Higher number wins.
+_APPLICATION_STATE_TIE_PRECEDENCE = {
+    "APPLIED": 1,
+    "RECRUITER_CONTACT": 2,
+    "INTERVIEW": 3,
+    "TECHNICAL": 4,
+    "REJECTED": 5,
+    "OFFER": 6,
+}
 
 
 # Translates store.py's `_SUPPORTED_ATS_PROVIDERS` and
@@ -508,10 +507,9 @@ class PostgresJobStore:
         `posting_batch` is the batch this job's advertisement was already
         merged in, where there was one (#182). Without it the call resolves
         its own posting, which is what a caller that does not stage a batch
-        first -- the Gmail paths, the webhook -- gets. Since #179 there is
-        no longer a "no direct connection" case here: without one there is
-        no job upsert at all, because the posting it would write is a
-        shared row.
+        first gets. Since #179 there is no longer a "no direct connection"
+        case here: without one there is no job upsert at all, because the
+        posting it would write is a shared row.
         """
         payload = self._batch_job_payload(job, posting_batch)
         job_id, is_new, description_changed = self._upsert_job_rpc(payload)
@@ -1158,35 +1156,6 @@ class PostgresJobStore:
         """Translates store.py:1662-1664."""
         rows = self._client.select("job_hunter_jobs", params={"select": "id"})
         return len(rows)
-
-    def list_jobs_for_matching(self) -> list[dict[str, Any]]:
-        """Translates store.py:1666-1673.
-
-        Ids are random uuids now, so `created_at` (with `select`'s
-        `id.asc` tie-breaker) replaces `ORDER BY id` as the insertion-order
-        proxy.
-
-        Four of the seven keys are the advertisement's and come from the
-        posting (#178); the rows are flattened here so `gmail_matching` keeps
-        reading one mapping per job rather than learning the shape of the
-        embed.
-        """
-        rows = self._client.select(
-            "job_hunter_jobs",
-            params={
-                "select": (
-                    "id,first_seen_at,last_seen_at,"
-                    f"posting:job_hunter_postings({_MATCHING_POSTING_COLUMNS})"
-                ),
-                "order": "created_at.asc",
-            },
-        )
-        flattened = []
-        for row in rows:
-            facts = dict(posting_facts(row))
-            facts.pop("posting", None)
-            flattened.append(facts)
-        return flattened
 
     def get_job(self, job_id: str) -> Job | None:
         """Translates store.py:2147-2169."""
@@ -3561,162 +3530,6 @@ class PostgresJobStore:
             )
         return profile_id
 
-    # ------------------------------------------------------------------
-    # Gmail sync and staging operations
-    # ------------------------------------------------------------------
-
-    def has_processed_gmail_message(self, message_id: str) -> bool:
-        """Translates store.py:1679-1684."""
-        rows = self._client.select(
-            "job_hunter_gmail_messages",
-            params={"message_id": f"eq.{message_id}", "select": "id", "limit": "1"},
-        )
-        return len(rows) > 0
-
-    def record_gmail_message(
-        self,
-        *,
-        message_id: str,
-        thread_id: str | None,
-        sender: str,
-        subject: str,
-        occurred_at: str,
-        classification: str,
-        confidence: float,
-        rationale: str,
-    ) -> None:
-        """Record a classified Gmail message once, never reclassifying it.
-
-        Translates store.py:1686-1717. The original's `INSERT OR IGNORE`
-        leaves an already-recorded message untouched by a later call with a
-        different classification; `SupabaseClient.upsert` always overwrites on
-        conflict, so this checks for an existing row first and returns without
-        writing when one is found, same pattern as `record_job_source`. A
-        genuinely new message is inserted through `upsert` (rather than plain
-        `insert`) so a retried POST on a transient 5xx converges instead of
-        duplicating.
-        """
-        existing = self._client.select(
-            "job_hunter_gmail_messages",
-            params={"message_id": f"eq.{message_id}", "select": "id", "limit": "1"},
-        )
-        if existing:
-            return
-        self._client.upsert(
-            "job_hunter_gmail_messages",
-            [
-                {
-                    "user_id": self._client.user_id,
-                    "message_id": message_id,
-                    "thread_id": thread_id,
-                    "sender": sender,
-                    "subject": subject,
-                    "occurred_at": occurred_at,
-                    "classification": classification,
-                    "confidence": confidence,
-                    "rationale": rationale,
-                    "processed_at": to_iso(datetime.now(timezone.utc)),
-                }
-            ],
-            on_conflict="user_id,message_id",
-        )
-
-    def get_gmail_sync_state(self, account_id: str) -> dict[str, Any] | None:
-        """Translates store.py:1719-1728.
-
-        The SQLite original checked `sqlite_master` first because the table
-        could be missing on an old database file; `job_hunter_gmail_sync_state`
-        always exists under Postgres (migrations own the schema now), so that
-        guard has no equivalent here.
-        """
-        rows = self._client.select(
-            "job_hunter_gmail_sync_state",
-            params={"account_id": f"eq.{account_id}", "limit": "1"},
-        )
-        return rows[0] if rows else None
-
-    def save_gmail_sync_state(
-        self,
-        account_id: str,
-        history_id: str | None,
-        last_successful_sync_at: str | None,
-        backfill_completed_at: str | None,
-    ) -> None:
-        """Translates store.py:1730-1759.
-
-        Upserts against `(user_id, account_id)`. `created_at` is left out of
-        the payload, same reasoning as `enqueue_ai_work`. `touch()` sets
-        `updated_at`.
-        """
-        self._client.upsert(
-            "job_hunter_gmail_sync_state",
-            [
-                touch(
-                    {
-                        "user_id": self._client.user_id,
-                        "account_id": account_id,
-                        "history_id": history_id,
-                        "last_successful_sync_at": last_successful_sync_at,
-                        "backfill_completed_at": backfill_completed_at,
-                    }
-                )
-            ],
-            on_conflict="user_id,account_id",
-        )
-
-    def stage_inbound_job(
-        self,
-        source_message_id: str,
-        source_candidate_key: str,
-        job: ExtractedJob,
-    ) -> str:
-        """Insert or refresh the last-seen time of one staged inbound candidate.
-
-        Translates store.py:1761-1803. Upserts against `(user_id, origin,
-        source_message_id, source_candidate_key)`. `created_at` is left out of
-        the payload -- the original's `ON CONFLICT ... DO UPDATE SET` only
-        ever touched `last_seen_at`, and omitting the column here reproduces
-        that: the table default fills it on first insert, and a repeat call's
-        merge-duplicates upsert leaves it alone. Returns the row's id directly
-        from the upsert response rather than a follow-up `SELECT`.
-
-        This is a deliberate divergence from the SQLite original beyond
-        `created_at`: this `resolution=merge-duplicates` upsert overwrites
-        every other column too -- `source_platform`, `source_job_id`, `url`,
-        `company`, `title`, `location`, `remote`, and `description` -- on
-        conflict, where the original's `DO UPDATE SET` only ever wrote
-        `last_seen_at`. This is accepted because a restage of the same
-        message and candidate key always carries the same extraction, so
-        overwriting those columns with identical values is a no-op in
-        practice.
-        """
-        written = self._client.upsert(
-            "job_hunter_inbound_job_candidates",
-            [
-                {
-                    "user_id": self._client.user_id,
-                    "origin": "gmail",
-                    "source_message_id": source_message_id,
-                    "source_candidate_key": source_candidate_key,
-                    "source_platform": job.source_platform,
-                    "source_job_id": job.source_job_id,
-                    "url": job.url or "",
-                    "company": job.company or "",
-                    "title": job.title or "",
-                    "location": job.location or "",
-                    "remote": job.remote,
-                    "description": "",
-                    "last_seen_at": to_iso(datetime.now(timezone.utc)),
-                }
-            ],
-            on_conflict="user_id,origin,source_message_id,source_candidate_key",
-        )
-        return written[0]["id"]
-
-    def list_eligible_inbound_jobs(self) -> list[dict[str, Any]]:
-        """Return recent Gmail candidates whose matching job still needs work."""
-        return self._client.rpc("job_hunter_eligible_inbound_jobs", {})
-
     def set_job_status(self, job_id: str, status: str) -> None:
         """Persist a terminal discovery status for a caller-owned logical job."""
         if status not in {"rejected", "closed"}:
@@ -3772,8 +3585,7 @@ class PostgresJobStore:
         `INSERT OR IGNORE` then re-`SELECT`ed by `source_message_id` regardless
         of whether the insert happened, always returning whichever row (new or
         pre-existing) owns that identity. This checks for an existing row
-        first and returns its id unchanged rather than overwriting it, same
-        pattern as `record_gmail_message`.
+        first and returns its id unchanged rather than overwriting it.
         """
         existing = self._client.select(
             "job_hunter_application_events",
@@ -3820,353 +3632,29 @@ class PostgresJobStore:
     def current_application_state(self, job_id: str) -> str | None:
         """Translates store.py:1902-1905.
 
-        Imported lazily, same as the original, to avoid a module-level import
-        cycle between this module and `gmail_matching`.
+        Derives the state from this job's own application-event history
+        (`list_application_events`) rather than importing the logic from
+        `gmail_matching`, which #287 deleted along with the rest of Gmail
+        intake -- the events themselves outlive their original source as
+        `job_hunter_application_events`, so the derivation stays here.
         """
-        from job_hunter.gmail_matching import derive_application_state
-
-        return derive_application_state(self.list_application_events(job_id))
-
-    def pending_review_events(self) -> list[dict[str, Any]]:
-        """Return undelivered events needing human review, with their subject.
-
-        Translates store.py:1907-1931 into a single call to
-        `job_hunter_pending_review_events`, which reimplements the join
-        against `job_hunter_gmail_messages` (for `subject`) and the anti-join
-        against `job_hunter_review_deliveries` entirely in SQL. It `returns
-        setof jsonb`, so `rpc` hands back a plain list of decoded event dicts
-        (each already carrying `subject`) -- no key to unwrap.
-        """
-        return self._client.rpc(
-            "job_hunter_pending_review_events",
-            {"p_confidence_threshold": AUTO_CONFIDENCE_THRESHOLD},
-        )
-
-    def mark_review_delivered(
-        self, event_ids: list[str], telegram_message_id: str
-    ) -> None:
-        """Translates store.py:1933-1946.
-
-        Upserts against `(user_id, event_id)` rather than the original's
-        `INSERT OR IGNORE` -- a repeat delivery of the same event with a
-        different `telegram_message_id` overwrites it, but a retried POST on
-        one call converges instead of duplicating, and no caller ever marks
-        the same event delivered twice with different arguments in practice.
-        """
-        if not event_ids:
-            return
-        now = to_iso(datetime.now(timezone.utc))
-        self._client.upsert(
-            "job_hunter_review_deliveries",
-            [
-                {
-                    "user_id": self._client.user_id,
-                    "event_id": event_id,
-                    "delivered_at": now,
-                    "telegram_message_id": telegram_message_id,
-                }
-                for event_id in event_ids
-            ],
-            on_conflict="user_id,event_id",
-        )
-
-    def release_legacy_gmail_semantic_failures(self) -> int:
-        """Remove only legacy synthetic technical reviews so Gmail can retry them.
-
-        Translates store.py:1948-1993. Three deletes replace the original's
-        single transaction (no cross-statement transaction exists over
-        PostgREST): review deliveries and application events for the affected
-        message ids are removed first (children before the parent), then the
-        gmail messages themselves. Because these are three separate requests
-        rather than one transaction, an intermediate state is observable --
-        if the second delete fails after the first succeeded, legacy
-        application events survive with their review-delivery records
-        already gone, and a concurrent run of the review-delivery CLI could
-        re-send a Telegram review card for an event that is about to be
-        deleted here. Every step is individually idempotent (re-running this
-        method again converges), so a subsequent run repairs the gap; there
-        is no data-loss window, only a re-notify window.
-
-        `LEGACY_SEMANTIC_FAILURE_RATIONALE` message ids are threaded through
-        a PostgREST `in.(...)` filter; there being no matching messages
-        short-circuits before any delete runs. The id lists are chunked at
-        `_URL_FILTER_CHUNK_SIZE` ids per request -- see that constant's
-        comment for why an unchunked `in.(...)` list is unsafe for a legacy
-        backlog.
-        """
-        from job_hunter.gmail_models import LEGACY_SEMANTIC_FAILURE_RATIONALE
-
-        rationale = LEGACY_SEMANTIC_FAILURE_RATIONALE
-        messages = self._client.select(
-            "job_hunter_gmail_messages",
-            params={
-                "classification": "eq.REVIEW_NEEDED",
-                "rationale": f"eq.{rationale}",
-                "select": "message_id",
-            },
-        )
-        message_ids = [row["message_id"] for row in messages]
-        if not message_ids:
-            return 0
-
-        event_ids: list[str] = []
-        for chunk in _chunked(message_ids, _URL_FILTER_CHUNK_SIZE):
-            events = self._client.select(
-                "job_hunter_application_events",
-                params={
-                    "source": "eq.gmail",
-                    "event_type": "eq.REVIEW_NEEDED",
-                    "rationale": f"eq.{rationale}",
-                    "source_message_id": f"in.({','.join(chunk)})",
-                    "select": "id",
-                },
-            )
-            event_ids.extend(row["id"] for row in events)
-
-        for chunk in _chunked(event_ids, _URL_FILTER_CHUNK_SIZE):
-            self._client.delete(
-                "job_hunter_review_deliveries",
-                params={"event_id": f"in.({','.join(chunk)})"},
-            )
-            self._client.delete(
-                "job_hunter_application_events",
-                params={"id": f"in.({','.join(chunk)})"},
-            )
-
-        for chunk in _chunked(message_ids, _URL_FILTER_CHUNK_SIZE):
-            self._client.delete(
-                "job_hunter_gmail_messages",
-                params={"message_id": f"in.({','.join(chunk)})"},
-            )
-        return len(message_ids)
-
-    def _job_has_dependencies(self, job_id: str) -> bool:
-        """Translates `gmail_linkedin_cleanup.py`'s (deleted) `_job_has_dependencies`.
-
-        One `select ... limit 1` per dependent table replaces the original's
-        single-connection loop over the same four tables.
-
-        `job_hunter_company_watch.discovered_from_job_id` used to belong on
-        this list: that foreign key (migration 202609060002:128) had no `on
-        delete cascade`, so a job that seeded a watch row would otherwise
-        pass every check here and then fail the DELETE with a 409 mid-loop,
-        after that message's other candidate rows were already deleted.
-        Since #204 there is nothing left to protect against: the column is
-        dropped from the per-user table entirely (only manual watches live
-        there now, and a manual watch never carries a discovered-from job),
-        and the shared `job_hunter_company_watch_health` keeps the column
-        only as unenforced provenance -- no foreign key at all -- so a job
-        delete can never fail on it.
-        """
-        for table, column in (
-            ("job_hunter_evaluations", "job_id"),
-            ("job_hunter_materials", "job_id"),
-            ("job_hunter_deliveries", "job_id"),
-            ("job_hunter_application_events", "job_id"),
-        ):
-            rows = self._client.select(
-                table, params={column: f"eq.{job_id}", "select": "id", "limit": "1"}
-            )
-            if rows:
-                return True
-        return False
-
-    def release_legacy_blank_linkedin_jobs(self) -> int:
-        """Release only safe blank/poisoned LinkedIn Gmail artifacts for reprocessing.
-
-        Translates `gmail_linkedin_cleanup.py`'s (deleted)
-        `release_legacy_blank_linkedin_jobs`. The original ran one SQL query
-        with a correlated `NOT EXISTS` anti-join to find messages whose
-        LinkedIn candidates are *all* blank; PostgREST cannot express a
-        correlated anti-join in one request, so this fetches every gmail/
-        LinkedIn candidate row once and does the blank/populated split in
-        Python instead (`trim(...) = ''` becomes `.strip()`, `lower(...) =
-        'linkedin'` becomes an `ilike` exact-match filter: without a `*`
-        wildcard it's case-insensitive exact-match for the literal
-        `linkedin`, true here because that string has no `_` in it -- `_`
-        is still a single-character LIKE wildcard even with no `*` present,
-        as Task 10 already ruled on for `clear_ats_board_rejection`).
-
-        A message is still only released when every step confirms safety:
-        its gmail message exists and is classified `JOB_ALERT`, every
-        matching `job_hunter_jobs` row is blank or carries the known
-        ``Sign in`` poison title, and none of those jobs has a dependent
-        evaluation, material, delivery, or application event. As with
-        `release_legacy_gmail_semantic_failures`, there is no cross-request
-        transaction: each message's deletes (candidates, then jobs, then the
-        gmail message) run as separate idempotent requests, so a failure
-        partway through is repaired by a subsequent run rather than left
-        half-applied indefinitely.
-        """
-        candidates = self._client.select(
-            "job_hunter_inbound_job_candidates",
-            params={
-                "origin": "eq.gmail",
-                "source_platform": "ilike.linkedin",
-                "select": "id,source_message_id,source_candidate_key,company,title",
-            },
-        )
-
-        blank_by_message: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        populated_messages: set[str] = set()
-        for row in candidates:
-            message_id = row["source_message_id"]
-            if (row.get("company") or "").strip() or (row.get("title") or "").strip():
-                populated_messages.add(message_id)
-            else:
-                blank_by_message[message_id].append(row)
-
-        candidate_message_ids = [
-            message_id
-            for message_id in blank_by_message
-            if message_id not in populated_messages
+        eligible_events = [
+            event
+            for event in self.list_application_events(job_id)
+            if event["job_id"] is not None
+            and event["confidence"] >= _AUTO_CONFIDENCE_THRESHOLD
+            and event["event_type"] in _APPLICATION_STATE_TIE_PRECEDENCE
         ]
-        if not candidate_message_ids:
-            return 0
-
-        job_alert_messages: set[str] = set()
-        for chunk in _chunked(candidate_message_ids, _URL_FILTER_CHUNK_SIZE):
-            rows = self._client.select(
-                "job_hunter_gmail_messages",
-                params={
-                    "classification": "eq.JOB_ALERT",
-                    "message_id": f"in.({','.join(chunk)})",
-                    "select": "message_id",
-                },
-            )
-            job_alert_messages.update(row["message_id"] for row in rows)
-
-        released = 0
-        for message_id in candidate_message_ids:
-            if message_id not in job_alert_messages:
-                continue
-
-            message_candidates = blank_by_message[message_id]
-            job_ids: list[str] = []
-            safe = True
-            for candidate in message_candidates:
-                jobs = self._client.select(
-                    "job_hunter_jobs",
-                    params={
-                        "posting.source": "eq.gmail:linkedin",
-                        "posting.source_job_id": f"eq.{candidate['source_candidate_key']}",
-                        "select": "id,posting:job_hunter_postings!inner(company,title)",
-                    },
-                )
-                for job in jobs:
-                    facts = posting_facts(job)
-                    if not _is_legacy_poisoned_linkedin_job(
-                        facts.get("company") or "", facts.get("title") or ""
-                    ):
-                        safe = False
-                        break
-                    if self._job_has_dependencies(job["id"]):
-                        safe = False
-                        break
-                    job_ids.append(job["id"])
-                if not safe:
-                    break
-
-            if not safe:
-                continue
-
-            self._client.delete(
-                "job_hunter_inbound_job_candidates",
-                params={
-                    "id": f"in.({','.join(candidate['id'] for candidate in message_candidates)})"
-                },
-            )
-            for chunk in _chunked(job_ids, _URL_FILTER_CHUNK_SIZE):
-                self._client.delete("job_hunter_jobs", params={"id": f"in.({','.join(chunk)})"})
-            self._client.delete(
-                "job_hunter_gmail_messages",
-                params={"message_id": f"eq.{message_id}", "classification": "eq.JOB_ALERT"},
-            )
-            released += 1
-
-        return released
-
-    # ------------------------------------------------------------------
-    # Navigation sessions
-    # ------------------------------------------------------------------
-
-    def create_navigation_session(self, session: NavigationSession) -> None:
-        """Persist a Telegram navigation session's card list.
-
-        Translates `navigation_store.py`'s (deleted) `create_navigation_session`.
-        Upserts on `(user_id, session_id)` -- the table's unique constraint
-        (migration 202609060002) -- so a retried POST converges instead of
-        duplicating, and re-creating an existing session_id overwrites its
-        cards cleanly. `cards_json` is a jsonb column; a plain list of
-        `asdict(card)` dicts serializes correctly without a manual
-        `json.dumps` -- PostgREST/`requests` encode it as a JSON array.
-        `ensure_navigation_schema` (the SQLite original's lazy `CREATE TABLE
-        IF NOT EXISTS`) has no equivalent here: migrations own the schema.
-        """
-        self._client.upsert(
-            "job_hunter_telegram_navigation_sessions",
-            [
-                {
-                    "user_id": self._client.user_id,
-                    "session_id": session.session_id,
-                    "cards_json": [asdict(card) for card in session.cards],
-                    "telegram_message_id": session.telegram_message_id,
-                    "created_at": session.created_at,
-                    "expires_at": session.expires_at,
-                }
-            ],
-            on_conflict="user_id,session_id",
-        )
-
-    def attach_navigation_message_id(self, session_id: str, message_id: str) -> bool:
-        """Record the Telegram message id a navigation session was sent under.
-
-        Translates `navigation_store.py`'s (deleted)
-        `attach_navigation_message_id`. The SQLite original reported success
-        via `cursor.rowcount`; PostgREST's `update` (default
-        `return=representation`) hands back the updated rows instead, so
-        "did a session with this id exist" becomes "is the list non-empty".
-        """
-        rows = self._client.update(
-            "job_hunter_telegram_navigation_sessions",
-            {"telegram_message_id": message_id},
-            params={"session_id": f"eq.{session_id}"},
-        )
-        return len(rows) > 0
-
-    def get_navigation_session(self, session_id: str) -> NavigationSession | None:
-        """Translates `navigation_store.py`'s (deleted) `get_navigation_session`.
-
-        The SQLite original caught "no such table" as "no session yet"
-        because its schema was created lazily on first write. There is no
-        such case here -- migrations always create the table -- so a
-        missing session is simply an empty result set.
-        """
-        rows = self._client.select(
-            "job_hunter_telegram_navigation_sessions",
-            params={"session_id": f"eq.{session_id}", "limit": "1"},
-        )
-        if not rows:
+        if not eligible_events:
             return None
-        return navigation_session_from_row(rows[0])
-
-    def prune_navigation_sessions(self, now_iso: str) -> int:
-        """Delete expired navigation sessions and report how many were removed.
-
-        Translates `navigation_store.py`'s (deleted)
-        `prune_navigation_sessions`. `delete`'s default
-        `return=representation` hands back the deleted rows, so the count is
-        their length rather than a driver-level `rowcount`. `HttpClient`
-        retries a DELETE on 5xx, so a first attempt that commits and then
-        returns a 502 makes the retry see nothing left to delete and report
-        0 instead of the true count. Harmless today -- every caller discards
-        the return value -- but worth knowing if that ever changes.
-        """
-        rows = self._client.delete(
-            "job_hunter_telegram_navigation_sessions",
-            params={"expires_at": f"lt.{now_iso}"},
-        )
-        return len(rows)
+        return max(
+            eligible_events,
+            key=lambda event: (
+                event["occurred_at"],
+                _APPLICATION_STATE_TIE_PRECEDENCE[event["event_type"]],
+                event["id"],
+            ),
+        )["event_type"]
 
 
 # ----------------------------------------------------------------------------
@@ -4240,16 +3728,7 @@ _POSTGRES_JOB_STORE_WRITE_METHODS: dict[str, str | tuple[str, ...] | None] = {
     "save_candidate_context": None,
     "enqueue_ai_work": None,
     "complete_ai_work": None,
-    "record_gmail_message": None,
-    "save_gmail_sync_state": None,
-    "stage_inbound_job": "id",
     "save_application_event": "id",
-    "mark_review_delivered": None,
-    "release_legacy_gmail_semantic_failures": "count",
-    "release_legacy_blank_linkedin_jobs": "count",
-    "create_navigation_session": None,
-    "attach_navigation_message_id": "bool",
-    "prune_navigation_sessions": "count",
     "save_search_profile": "id",
     # Per-user membership as an output of matching, not a precondition
     # (#243): idempotent insert-or-touch of one job_hunter_jobs row.
@@ -4303,7 +3782,6 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "find_job_by_ats",
         "find_job_by_identity",
         "count_jobs",
-        "list_jobs_for_matching",
         # SQL ranking and hard blocking over the caller's whole corpus (#187):
         # no write, so a dry run answers it exactly as a real run would.
         "match_jobs",
@@ -4338,13 +3816,8 @@ _POSTGRES_JOB_STORE_READ_METHODS: frozenset[str] = frozenset(
         "get_platform_ai_pause",
         "get_candidate_context",
         "list_pending_ai_work",
-        "has_processed_gmail_message",
-        "get_gmail_sync_state",
-        "list_eligible_inbound_jobs",
         "list_application_events",
         "current_application_state",
-        "pending_review_events",
-        "get_navigation_session",
         "get_provider_credentials",
         "get_search_profile",
         "get_source_documents",

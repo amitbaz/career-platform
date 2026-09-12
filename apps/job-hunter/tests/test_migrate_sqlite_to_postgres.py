@@ -489,67 +489,6 @@ def build_legacy_db(
     return db_path
 
 
-def test_navigation_cards_get_their_job_ids_remapped(tmp_path, supabase_client: SupabaseClient, ingestion_database):
-    sqlite_path = build_legacy_db(
-        tmp_path,
-        jobs=[{"id": 41, "fingerprint": "fp-a", "title": "Dev"}],
-        sessions=[
-            {
-                "session_id": "s1",
-                "cards_json": json.dumps(
-                    [
-                        {
-                            "job_id": 41,
-                            "title": "Dev",
-                            "company": "Acme",
-                            "location": "",
-                            "score": 88,
-                            "url": "https://x",
-                        }
-                    ]
-                ),
-                "telegram_message_id": "77",
-                "created_at": "2026-09-01T00:00:00+00:00",
-                "expires_at": "2026-10-01T00:00:00+00:00",
-            }
-        ],
-    )
-
-    migrate(sqlite_path, supabase_client, ingestion_database)
-
-    stored = supabase_client.select(
-        "job_hunter_telegram_navigation_sessions", params={"session_id": "eq.s1"}
-    )[0]
-    migrated_job = _membership_for(supabase_client, "fp-a")
-    assert stored["cards_json"][0]["job_id"] == migrated_job["id"]
-    assert stored["cards_json"][0]["job_id"] != 41
-
-
-def test_cards_whose_job_did_not_migrate_are_dropped(tmp_path, supabase_client: SupabaseClient, ingestion_database):
-    sqlite_path = build_legacy_db(
-        tmp_path,
-        jobs=[],
-        sessions=[
-            {
-                "session_id": "s2",
-                "cards_json": json.dumps(
-                    [{"job_id": 999, "title": "Gone", "company": "", "location": "", "score": 10, "url": ""}]
-                ),
-                "telegram_message_id": None,
-                "created_at": "2026-09-01T00:00:00+00:00",
-                "expires_at": "2026-10-01T00:00:00+00:00",
-            }
-        ],
-    )
-
-    migrate(sqlite_path, supabase_client, ingestion_database)
-
-    stored = supabase_client.select(
-        "job_hunter_telegram_navigation_sessions", params={"session_id": "eq.s2"}
-    )
-    assert stored == [] or stored[0]["cards_json"] == []
-
-
 def test_migration_is_rerunnable(tmp_path, supabase_client: SupabaseClient, ingestion_database):
     sqlite_path = build_legacy_db(tmp_path, jobs=[{"id": 1, "fingerprint": "fp-x", "title": "Dev"}])
     first = migrate(sqlite_path, supabase_client, ingestion_database)
@@ -654,34 +593,6 @@ def test_company_watch_nulls_dangling_discovered_from_job_id(
         },
     )[0]
     assert row["discovered_from_job_id"] is None
-
-
-def test_review_delivery_event_id_is_remapped(tmp_path, supabase_client: SupabaseClient, ingestion_database):
-    sqlite_path = build_legacy_db(
-        tmp_path,
-        application_events=[
-            {
-                "id": 7,
-                "event_type": "applied",
-                "source_message_id": "msg-7",
-                "occurred_at": "2026-08-01T00:00:00+00:00",
-                "created_at": "2026-08-01T00:00:00+00:00",
-                "confidence": 0.9,
-            }
-        ],
-        review_deliveries=[{"event_id": 7, "delivered_at": "2026-08-02T00:00:00+00:00"}],
-    )
-
-    migrate(sqlite_path, supabase_client, ingestion_database)
-
-    event = supabase_client.select(
-        "job_hunter_application_events", params={"source_message_id": "eq.msg-7"}
-    )[0]
-    review = supabase_client.select(
-        "job_hunter_review_deliveries", params={"event_id": f"eq.{event['id']}"}
-    )
-    assert len(review) == 1
-    assert review[0]["event_id"] != 7
 
 
 def test_review_delivery_is_dropped_when_its_event_did_not_migrate(

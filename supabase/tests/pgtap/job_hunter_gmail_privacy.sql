@@ -1,50 +1,24 @@
--- Job Hunter reads the user's Gmail inbox but must only ever persist
--- metadata and derived judgements about a message or extraction -- never
--- the raw email body, and never a raw LLM prompt/response that could carry
--- quoted email text. This file pins the exact column list of every table
--- that could be tempted to grow such a column. Any future column added to
--- one of these tables fails this suite until a human consciously adds it
--- to the list below and, in doing so, re-affirms the privacy decision.
+-- Job Hunter must only ever persist metadata and derived judgements about a
+-- message or extraction -- never a raw email body, and never a raw LLM
+-- prompt/response that could carry quoted email text. This file pins the
+-- exact column list of every table that could be tempted to grow such a
+-- column. Any future column added to one of these tables fails this suite
+-- until a human consciously adds it to the list below and, in doing so,
+-- re-affirms the privacy decision.
+--
+-- Gmail intake itself is deleted (#287); `job_hunter_gmail_messages` and
+-- `job_hunter_inbound_job_candidates`, its two body-shaped tables, are
+-- dropped with it (20260912140000) and their checks below go with them.
+-- `job_hunter_application_events` outlives Gmail as a general
+-- application-lifecycle table (see that migration's comment) and keeps its
+-- privacy pin here.
 --
 -- Column lists are taken from the CREATE TABLE statements in
 -- supabase/migrations/202609060002_job_hunter_discovery_state.sql (no
 -- later migration alters these tables' columns).
 
 begin;
-select plan(4);
-
-select columns_are('public', 'job_hunter_gmail_messages', array[
-  'id',
-  'user_id',
-  'message_id',
-  'thread_id',
-  'sender',
-  'subject',
-  'occurred_at',
-  'classification',
-  'confidence',
-  'rationale',
-  'processed_at',
-  'created_at'
-], 'job_hunter_gmail_messages carries no body/email_body column');
-
-select columns_are('public', 'job_hunter_inbound_job_candidates', array[
-  'id',
-  'user_id',
-  'origin',
-  'source_message_id',
-  'source_candidate_key',
-  'source_platform',
-  'source_job_id',
-  'url',
-  'company',
-  'title',
-  'location',
-  'remote',
-  'description',
-  'last_seen_at',
-  'created_at'
-], 'job_hunter_inbound_job_candidates carries no body/email_body column');
+select plan(2);
 
 select columns_are('public', 'job_hunter_application_events', array[
   'id',

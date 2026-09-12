@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from job_hunter.config import (
-    load_gmail_settings,
     load_ingestion_dsn,
     load_platform_ai_settings,
     load_settings,
@@ -15,16 +14,11 @@ from job_hunter.config import (
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
 from job_hunter.ai.usage import AIUsageTracker, format_ai_usage_log
 from job_hunter.circuit_breaker import CircuitBreaker
-from job_hunter.cover_letter import cover_letter_output_dir, generate_cover_letter_on_demand
-from job_hunter.gmail_auth import GoogleOAuthTokenProvider
-from job_hunter.gmail_client import GmailClient
-from job_hunter.gmail_sync import GmailSyncService
 from job_hunter.http import HttpClient
 from job_hunter.pg import IngestionDatabase
-from job_hunter.postgres_store import DryRunStore, PostgresJobStore
+from job_hunter.postgres_store import PostgresJobStore
 from job_hunter.supabase_auth import AccessTokenMinter
 from job_hunter.supabase_client import SupabaseClient
-from job_hunter.telegram import TelegramClient
 from job_hunter.worker_runs import WorkerRun, report_worker_health
 
 logger = logging.getLogger(__name__)
@@ -48,23 +42,6 @@ def _build_client(http: HttpClient) -> SupabaseClient:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="job_hunter")
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    sync_parser = subparsers.add_parser("sync-gmail", help="Read Gmail job signals into shared state")
-    sync_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Classify/extract without persisting Gmail-derived state",
-    )
-    sync_parser.add_argument(
-        "--force-backfill",
-        action="store_true",
-        help="Repeat the 120-day backfill idempotently",
-    )
-
-    gen_parser = subparsers.add_parser(
-        "generate-cover-letter", help="Generate (or resend) a cover letter for one job on demand"
-    )
-    gen_parser.add_argument("--job-id", type=str, required=True)
 
     recheck_parser = subparsers.add_parser(
         "recheck-freshness",
@@ -119,10 +96,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "sync-gmail":
-            return _sync_gmail(args)
-        if args.command == "generate-cover-letter":
-            return _generate_cover_letter(args)
         if args.command == "recheck-freshness":
             return _recheck_freshness(args)
         if args.command == "crawl-source":
@@ -444,85 +417,3 @@ def _extract_facets(args: argparse.Namespace) -> int:
         return 1
     return _health_exit_code("extract_facets", healthy)
 
-
-def _generate_cover_letter(args: argparse.Namespace) -> int:
-    http = HttpClient()
-    store = PostgresJobStore(_build_client(http))
-    settings = load_settings(store)
-    cover_letter_output_dir(settings).mkdir(parents=True, exist_ok=True)
-
-    tracker = AIUsageTracker(
-        store, settings.ai_quota, settings.ai_model, provider=PROVIDER
-    )
-    ai = build_gemini_provider(
-        settings.ai_api_key, settings.ai_model, http, tracker=tracker
-    )
-    telegram = TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id, http)
-
-    delivered = generate_cover_letter_on_demand(
-        settings, args.job_id, store=store, ai=ai, telegram=telegram
-    )
-    logger.info("on-demand cover letter for job_id=%s: delivered=%s", args.job_id, delivered)
-    # Spends the user's own key, so it reports the user ledger -- the other
-    # half of the report `extract-facets` prints for the platform ledger.
-    # Without it, #189 would have left the user's key with no cost report at
-    # all now that the run that printed one is gone.
-    _log_ai_usage(tracker, "user")
-    return 0 if delivered else 1
-
-
-def _sync_gmail(args: argparse.Namespace) -> int:
-    http = HttpClient()
-    real_store = PostgresJobStore(_build_client(http))
-    settings = load_gmail_settings(real_store)
-    if args.dry_run:
-        # An AIUsageTracker WRITES usage/pause rows, and `store` below is
-        # a DryRunStore precisely so --dry-run can never persist anything
-        # live. A dry run still makes real provider calls (see
-        # GmailSyncService.process_message), so the guardrails must still be
-        # active for it -- just against a store that discards every write,
-        # so the "never persists" guarantee for --dry-run holds regardless
-        # of how much quota history a real (non-dry-run) process has
-        # already written today.
-        store = DryRunStore(real_store)
-        tracker_store = DryRunStore(real_store)
-    else:
-        store = real_store
-        tracker_store = store
-
-    gmail = GmailClient(http, GoogleOAuthTokenProvider(settings))
-    tracker = AIUsageTracker(
-        tracker_store, settings.ai_quota, settings.ai_model, provider=PROVIDER
-    )
-    ai = build_gemini_provider(
-        settings.ai_api_key, settings.ai_model, http, tracker=tracker
-    )
-    service = GmailSyncService(gmail=gmail, ai=ai, store=store)
-    summary = service.sync(
-        datetime.now(timezone.utc),
-        dry_run=args.dry_run,
-        force_backfill=args.force_backfill,
-    )
-    logger.info(
-        "Gmail sync complete: fetched=%d processed=%d job_alerts=%d "
-        "application_events=%d review_needed=%d irrelevant=%d errors=%d",
-        summary.fetched,
-        summary.processed,
-        summary.job_alerts,
-        summary.application_events,
-        summary.review_needed,
-        summary.irrelevant,
-        summary.errors,
-    )
-    if summary.errors:
-        logger.warning(
-            "Gmail sync completed with %d per-message errors; the cursor was retained and "
-            "those messages will retry on the next sync.",
-            summary.errors,
-        )
-    # Also the user's own key. `tracker_store` is a DryRunStore under
-    # --dry-run, so this reads the discarded dry-run ledger rather than the
-    # live one -- which is the same store every guardrail in this command
-    # already consults, and keeps --dry-run's "persists nothing" promise.
-    _log_ai_usage(tracker, "user")
-    return 0

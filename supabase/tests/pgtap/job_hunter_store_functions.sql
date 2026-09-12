@@ -1,4 +1,6 @@
--- Behaviour and isolation for the six Job Hunter store functions.
+-- Behaviour and isolation for four of the Job Hunter store functions.
+-- (#287 deletes the other two this file covered, job_hunter_pending_review_events
+-- and job_hunter_eligible_inbound_jobs, along with the rest of Gmail intake.)
 --
 -- Each function replaces a multi-statement SQLite query in
 -- apps/job-hunter/src/job_hunter/store.py that PostgREST cannot express in
@@ -87,12 +89,8 @@ select has_function('public', 'job_hunter_upsert_posting', array['jsonb'],
   'job_hunter_upsert_posting exists');
 select has_function('public', 'job_hunter_pending_delivery_jobs', array['integer'],
   'job_hunter_pending_delivery_jobs exists');
-select has_function('public', 'job_hunter_pending_review_events', array['double precision'],
-  'job_hunter_pending_review_events exists');
 select has_function('public', 'job_hunter_merge_jobs', array['uuid', 'uuid', 'uuid'],
   'job_hunter_merge_jobs exists');
-select has_function('public', 'job_hunter_eligible_inbound_jobs', array[]::text[],
-  'job_hunter_eligible_inbound_jobs exists');
 select has_function('public', 'job_hunter_find_job_by_identity', array['text', 'text', 'text'],
   'job_hunter_find_job_by_identity exists');
 select has_function('public', 'job_hunter_find_posting_by_identity',
@@ -211,7 +209,6 @@ select is(
     'job_hunter_confidence_rank',
     'job_hunter_content_confidence_sufficient',
     'job_hunter_crawl_window_evidence',
-    'job_hunter_eligible_inbound_jobs',
     'job_hunter_enqueue_crawl',
     'job_hunter_enqueue_due_freshness',
     'job_hunter_enqueue_due_recover_posting',
@@ -220,7 +217,6 @@ select is(
     'job_hunter_find_posting_by_identity',
     'job_hunter_freshness_interval',
     'job_hunter_get_provider_credentials',
-    'job_hunter_gmail_candidate_complete',
     'job_hunter_hard_blockers',
     'job_hunter_locations_compatible',
     'job_hunter_market_location_fit',
@@ -235,7 +231,6 @@ select is(
     'job_hunter_normalize_tokens',
     'job_hunter_normalized_phrases',
     'job_hunter_pending_delivery_jobs',
-    'job_hunter_pending_review_events',
     'job_hunter_posting_display_credit',
     'job_hunter_posting_recovery_schedule',
     'job_hunter_preferred_description',
@@ -263,7 +258,7 @@ select is(
     'job_hunter_words',
     'job_hunter_worker_health',
     'job_hunter_worker_run_evidence'],
-  'exactly the sixty-three expected public.job_hunter_* functions exist (#258 adds four invokers: job_hunter_worker_health, job_hunter_worker_run_evidence, job_hunter_crawl_window_evidence and job_hunter_enqueue_crawl; #187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above; #257''s Engine Lab ledger adds no functions here -- its identity/login layer was removed, see job_hunter_engine_lab.sql''s "Superseded" note; #243 adds three invokers: job_hunter_regions_for_locations, job_hunter_ensure_job_membership and job_hunter_match_state_counts, and extends job_hunter_hard_blockers and job_hunter_match_jobs in place rather than adding new names; #259 adds four invokers -- job_hunter_recovery_interval, job_hunter_posting_recovery_schedule (the recovery-scheduling trigger function), job_hunter_enqueue_due_recover_posting and job_hunter_recovery_backlog -- and redefines job_hunter_schedule_stage_enqueue and job_hunter_stage_queue_metrics in place to know about the recover_posting stage, adding no new names; #297 adds one invoker, job_hunter_reserve_search_request, which took the search ledger''s read-then-write reservation into the database when the GitHub Actions concurrency group that used to serialise it was retired), so the two checks above are not asserting over an empty set');
+  'exactly the sixty expected public.job_hunter_* functions exist (#258 adds four invokers: job_hunter_worker_health, job_hunter_worker_run_evidence, job_hunter_crawl_window_evidence and job_hunter_enqueue_crawl; #187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above; #257''s Engine Lab ledger adds no functions here -- its identity/login layer was removed, see job_hunter_engine_lab.sql''s "Superseded" note; #243 adds three invokers: job_hunter_regions_for_locations, job_hunter_ensure_job_membership and job_hunter_match_state_counts, and extends job_hunter_hard_blockers and job_hunter_match_jobs in place rather than adding new names; #259 adds four invokers -- job_hunter_recovery_interval, job_hunter_posting_recovery_schedule (the recovery-scheduling trigger function), job_hunter_enqueue_due_recover_posting and job_hunter_recovery_backlog -- and redefines job_hunter_schedule_stage_enqueue and job_hunter_stage_queue_metrics in place to know about the recover_posting stage, adding no new names; #297 adds one invoker, job_hunter_reserve_search_request, which took the search ledger''s read-then-write reservation into the database when the GitHub Actions concurrency group that used to serialise it was retired; #287 removes three -- job_hunter_eligible_inbound_jobs, job_hunter_gmail_candidate_complete and job_hunter_pending_review_events, Gmail intake''s own functions, deleted with the rest of Gmail), so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 
@@ -345,15 +340,6 @@ insert into public.job_hunter_deliveries (user_id, job_id, delivery_type, delive
 values ('11111111-0000-0000-0000-00000000000a', '10000000-0000-0000-0000-000000000003',
         'telegram_message', '2026-01-03T00:00:00Z');
 
-insert into public.job_hunter_gmail_messages
-  (user_id, message_id, subject, occurred_at, classification, confidence, processed_at)
-values
-  ('11111111-0000-0000-0000-00000000000a', 'm1', 'Subject One', '2026-02-01T00:00:00Z', 'review', 0.9, now()),
-  ('11111111-0000-0000-0000-00000000000a', 'm2', 'Subject Two', '2026-02-02T00:00:00Z', 'applied', 0.2, now()),
-  ('11111111-0000-0000-0000-00000000000a', 'm3', 'Subject Three', '2026-02-03T00:00:00Z', 'applied', 0.99, now()),
-  ('11111111-0000-0000-0000-00000000000a', 'm4', 'Subject Four', '2026-02-04T00:00:00Z', 'review', 0.9, now()),
-  ('11111111-0000-0000-0000-00000000000a', 'm5', 'Subject Five', '2026-02-05T00:00:00Z', 'applied', 0.99, now());
-
 insert into public.job_hunter_application_events
   (id, user_id, job_id, event_type, occurred_at, source_message_id, confidence)
 values
@@ -367,24 +353,6 @@ values
    'REVIEW_NEEDED', '2026-02-04T00:00:00Z', 'm4', 0.99),
   ('30000000-0000-0000-0000-000000000005', '11111111-0000-0000-0000-00000000000a',
    '10000000-0000-0000-0000-000000000006', 'APPLIED', '2026-02-05T00:00:00Z', 'm5', 0.99);
-
--- Already surfaced, so it must not come back.
-insert into public.job_hunter_review_deliveries (user_id, event_id, delivered_at)
-values ('11111111-0000-0000-0000-00000000000a', '30000000-0000-0000-0000-000000000004', now());
-
-insert into public.job_hunter_inbound_job_candidates
-  (id, user_id, source_message_id, source_candidate_key, source_platform,
-   url, company, title, location, last_seen_at)
-values
-  -- excluded: a job already carries source 'gmail:greenhouse' + this key
-  ('40000000-0000-0000-0000-000000000001', '11111111-0000-0000-0000-00000000000a',
-   'm1', 'cand-key-1', 'greenhouse', '', 'Inbound Matched Co', 'Inbound Engineer', 'Salzburg', now()),
-  -- returned: nothing materialized matches it
-  ('40000000-0000-0000-0000-000000000002', '11111111-0000-0000-0000-00000000000a',
-   'm2', 'cand-key-2', 'lever', 'https://fresh.example/j/2', 'Fresh Startup', 'Platform Engineer', 'Remote', now()),
-  -- excluded by URL alone: the tracking parameter must be canonicalized away
-  ('40000000-0000-0000-0000-000000000003', '11111111-0000-0000-0000-00000000000a',
-   'm3', 'cand-key-3', '', 'https://acme.example/jobs/9?utm_source=newsletter#apply', '', '', '', now());
 
 insert into public.job_hunter_job_sources
   (user_id, job_id, source, source_job_id, source_url, identity_key, first_seen_at, last_seen_at)
@@ -431,21 +399,6 @@ insert into public.job_hunter_evaluations (user_id, job_id, total_score, decisio
 values ('22222222-0000-0000-0000-00000000000b', '20000000-0000-0000-0000-000000000001',
         88, 'package_match', '2026-01-02T00:00:00Z');
 
-insert into public.job_hunter_gmail_messages
-  (user_id, message_id, subject, occurred_at, classification, confidence, processed_at)
-values ('22222222-0000-0000-0000-00000000000b', 'bm1', 'B Subject', '2026-02-01T00:00:00Z', 'review', 0.9, now());
-
-insert into public.job_hunter_application_events
-  (id, user_id, job_id, event_type, occurred_at, source_message_id, confidence)
-values ('30000000-0000-0000-0000-0000000000b1', '22222222-0000-0000-0000-00000000000b', null,
-        'REVIEW_NEEDED', '2026-02-01T00:00:00Z', 'bm1', 0.99);
-
-insert into public.job_hunter_inbound_job_candidates
-  (id, user_id, source_message_id, source_candidate_key, source_platform,
-   url, company, title, location, last_seen_at)
-values ('40000000-0000-0000-0000-0000000000b1', '22222222-0000-0000-0000-00000000000b',
-        'bm1', 'b-cand-1', 'lever', 'https://b.example/cand/1', 'B Fresh Co', 'B Platform Engineer', 'Remote', now());
-
 -- 1. job_hunter_pending_delivery_jobs -----------------------------------------------
 -- store.py:2126-2141. Only the LATEST evaluation counts, "latest" is now
 -- newest evaluated_at rather than highest autoincrement id.
@@ -477,48 +430,7 @@ select results_eq(
   $$ values ('20000000-0000-0000-0000-000000000001'::text) $$,
   'pending_delivery_jobs: B gets only its own job, never A''s');
 
--- 2. job_hunter_pending_review_events ------------------------------------------------
--- store.py:1907-1932.
-
-select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
-
-select results_eq(
-  $$ select (e->>'id') from public.job_hunter_pending_review_events(0.8) e $$,
-  $$ values ('30000000-0000-0000-0000-000000000001'::text),
-            ('30000000-0000-0000-0000-000000000002'::text) $$,
-  'pending_review_events: A gets the unreviewed events, ordered by occurred_at');
-
-select is(
-  (select e->>'subject' from public.job_hunter_pending_review_events(0.8) e
-    where e->>'id' = '30000000-0000-0000-0000-000000000001'),
-  'Subject One',
-  'pending_review_events: the joined gmail subject travels with the event');
-
-select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
-select results_eq(
-  $$ select (e->>'id') from public.job_hunter_pending_review_events(0.8) e $$,
-  $$ values ('30000000-0000-0000-0000-0000000000b1'::text) $$,
-  'pending_review_events: B gets only its own event, never A''s');
-
--- 3. job_hunter_eligible_inbound_jobs -------------------------------------------------
--- store.py:1805-1822.
-
-select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
-
-select results_eq(
-  $$ select (c->>'id') from public.job_hunter_eligible_inbound_jobs() c $$,
-  $$ values ('40000000-0000-0000-0000-000000000001'::text),
-            ('40000000-0000-0000-0000-000000000002'::text),
-            ('40000000-0000-0000-0000-000000000003'::text) $$,
-  'eligible_inbound_jobs: unevaluated materialized candidates remain eligible');
-
-select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
-select results_eq(
-  $$ select (c->>'id') from public.job_hunter_eligible_inbound_jobs() c $$,
-  $$ values ('40000000-0000-0000-0000-0000000000b1'::text) $$,
-  'eligible_inbound_jobs: B gets only its own candidate, never A''s');
-
--- 4. job_hunter_find_job_by_identity --------------------------------------------------
+-- 2. job_hunter_find_job_by_identity --------------------------------------------------
 -- store.py:1180-1222. Normalization drops a safe legal suffix, collapses
 -- punctuation and whitespace, and compares locations as whole words.
 
@@ -542,7 +454,7 @@ select is_empty(
   $$ select * from public.job_hunter_find_job_by_identity('acme', 'Senior Backend Engineer', 'Berlin') $$,
   'find_job_by_identity: B never sees A''s job');
 
--- 5. job_hunter_upsert_job -------------------------------------------------------------
+-- 3. job_hunter_upsert_job -------------------------------------------------------------
 -- store.py:649-743 and 744-905.
 
 select pg_temp.authenticate_as('11111111-0000-0000-0000-00000000000a');
@@ -691,7 +603,7 @@ select is(
   1,
   'upsert_job: the second user added no second posting');
 
--- 6. job_hunter_merge_jobs ---------------------------------------------------------------
+-- 4. job_hunter_merge_jobs ---------------------------------------------------------------
 -- store.py:906-1090. Run last: it deletes a fixture job.
 
 select pg_temp.authenticate_as('22222222-0000-0000-0000-00000000000b');
@@ -775,7 +687,7 @@ select throws_ok(
   null, null,
   'merge_jobs: a missing job raises rather than silently half-merging');
 
--- 7. merge redirects (#145) --------------------------------------------------------------
+-- 5. merge redirects (#145) --------------------------------------------------------------
 -- The deleted duplicate's id has to keep resolving: a run that selected it
 -- before the merge is still holding it when it writes the evaluation.
 

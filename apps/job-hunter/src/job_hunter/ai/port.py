@@ -1,8 +1,8 @@
 """The AI provider port: the only AI vocabulary core modules may know.
 
-Core modules (`pipeline`, `evaluation`, `candidate_context`, `cover_letter`,
-`facets`, `gmail_classifier`, `preferences`) talk to *an* AI provider through
-`AIProvider` and catch the errors defined here. Nothing outside
+Core modules (`evaluation`, `candidate_context`, `facets`, `preferences`)
+talk to *an* AI provider through `AIProvider` and catch the errors defined
+here. Nothing outside
 `job_hunter.ai.gemini` names Gemini, so a second adapter is a new file rather
 than an edit to every call site.
 

@@ -10,10 +10,10 @@ against each user's profile on demand.
 cron services defined in [`render.yaml`](../../render.yaml) drain the crawl, facet-extraction,
 freshness and posting-recovery queues. Matching is one operation, `match_jobs` (#187). The older
 single-process daily run and its `.github/workflows/job-hunter-daily.yml` workflow, which crawled,
-scored and delivered a Telegram digest in one pass, are retired (#189) along with that delivery --
-Telegram is not part of the product, and nothing today replaces matching-and-delivery until
-#260/#261 build the mobile app's own read of the corpus. **Much of the rest of this README still
-describes the retired run and Telegram surfaces #287 has not deleted yet.** Where it disagrees
+scored and delivered a Telegram digest in one pass, are retired (#189) along with that delivery.
+Telegram, Gmail intake and on-demand cover-letter/PDF generation are deleted outright (#287) --
+none of them is part of the product -- and nothing today replaces matching-and-delivery until
+#260/#261 build the mobile app's own read of the corpus. Where the rest of this README disagrees
 with the code or [`AGENTS.md`](AGENTS.md), trust those.
 
 The engine **never submits applications**. It prepares material for the user to review and send
@@ -36,24 +36,17 @@ corpus they write is shared and has no per-user dimension.
 all public sources (Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, DuckDuckGo, ATS boards)
   -> enrich + dedupe -> profession gate + prefilter -> deterministic ranking or profile-aware ranking
   -> diversity-constrained top-N shortlist (stable-ranking fallback on error) -> Gemini evaluation
-  -> Telegram digest delivery
 ```
-
-Cover letter generation + PDF rendering happens on demand, not as part of the daily run: tapping "Gen CL" on a job's Telegram card fires a `repository_dispatch` GitHub Actions workflow that generates (or resends) that job's cover letter and PDF.
 
 - `src/job_hunter/sources/` — public job discovery adapters: Remotive, Arbeitnow, Jobicy, Himalayas, Remote OK, We Work Remotely, Hacker News, DuckDuckGo query expansion, plus optional Ashby/Lever/Greenhouse ATS boards. Each source fails open: if one adapter errors, the run continues with the rest.
 - The user's search profile (stored in Postgres) supports role families, query templates, ATS domains, and `max_search_queries_per_run`; DuckDuckGo queries expand each role/template pair across the configured ATS domains before deduping.
 - Only software/product-engineering professions reach Gemini. The default evaluation budget is 35 jobs per run, with source-diverse selection (`source_minimum_per_run: 2`, `source_max_share: 0.5`) when profile extraction succeeds.
-- `src/job_hunter/preferences.py` extracts a compact preference profile from the CV stored in Relay Profile; `src/job_hunter/ranking.py` then uses preferred roles, seniority, must-have signals, location fit, avoid signals, and source quality to rank eligible jobs before Gemini. If profile extraction or diversity selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
-- `skip` evaluations are persisted but never sent to Telegram. Telegram sections are ordered by effective match score descending, unknown decisions are omitted, and only scores strictly greater than 60 are eligible for digest or retry delivery.
+- `src/job_hunter/preferences.py` extracts a compact preference profile from the stored CV; `src/job_hunter/ranking.py` then uses preferred roles, seniority, must-have signals, location fit, avoid signals, and source quality to rank eligible jobs before Gemini. If profile extraction or diversity selection fails, the pipeline falls back to the stable deterministic global ranking and logs the fallback without exposing private profile text.
 - `src/job_hunter/prefilter.py` — cheap deterministic filtering before spending Gemini calls.
 - `src/job_hunter/evaluation.py` — model-based scoring and rationale, through the AI provider port.
 - `src/job_hunter/ai/` — the AI provider port: `port.py` (the vocabulary core modules use, including the call class that decides which credential and quota fund a call), `credentials.py`, `usage.py` (quota ledger and 429 circuit breaker), `limits.py` (published free-tier limits per model), and `gemini.py` — the only module that knows Gemini exists.
-- `src/job_hunter/cover_letter.py` / `pdf.py` — cover letter drafting and PDF rendering, triggered on demand per job via the "Gen CL" Telegram button.
 - `src/job_hunter/postgres_store.py` — Postgres persistence (`PostgresJobStore`: dedup, evaluation cache, delivery tracking) against the shared Supabase project.
-- `src/job_hunter/telegram.py` — outbound-only Telegram Bot API delivery (digest message + PDF documents).
-- `src/job_hunter/gmail_sync.py` — read-only Gmail intake that classifies job signals and stages discovered jobs or review-needed events in the shared Postgres state.
-- `src/job_hunter/cli.py` — entrypoints for the ingestion stages (`crawl-source`, `extract-facets`, `recheck-freshness`, `recover-posting`), `sync-gmail`, and the on-demand `generate-cover-letter`. There is no `run` entrypoint any more (#189): nothing drives crawl-to-delivery as one process.
+- `src/job_hunter/cli.py` — one entrypoint per ingestion stage (`crawl-source`, `extract-facets`, `recheck-freshness`, `recover-posting`). There is no `run` entrypoint any more (#189): nothing drives crawl-to-delivery as one process.
 State now lives in Postgres (the shared Supabase project), not on the Actions runner, so `scripts/restore_state.py` and the artifact restore/upload steps it describes no longer exist.
 
 ### R2 automated discovery and company watch
@@ -61,7 +54,7 @@ State now lives in Postgres (the shared Supabase project), not on the Actions ru
 R2 adds source-independent job identity, public canonical resolution, provenance, and a lightweight company-watch loop while keeping the existing filter, rank, evaluation, and delivery boundaries intact:
 
 ```text
-Gmail + existing sources + YC + specialist-domain search + company watch
+existing sources + YC + specialist-domain search + company watch
   -> canonical resolution + provenance/dedupe
   -> existing filter/rank/evaluate/deliver
   -> high_priority/package_match may promote company
@@ -69,7 +62,7 @@ Gmail + existing sources + YC + specialist-domain search + company watch
 
 Every discovered source copy is retained as provenance in Postgres before one logical job proceeds through deduplication. Canonical resolution uses public URLs and may recognize direct ATS listings, public redirects or embedded links, a known watch ATS target, or one targeted public search result. An unresolved lookup keeps the original candidate rather than blocking the run.
 
-Gmail contributes only staged job signals from the read-only intake; its message bodies are not logged by the R2 discovery flow. YC uses public job pages. Wellfound, Welcome to the Jungle, and configured portfolio domains are reached through public targeted search queries. R2 does not perform authenticated scraping, sign into job platforms, or bypass access controls.
+YC uses public job pages. Wellfound, Welcome to the Jungle, and configured portfolio domains are reached through public targeted search queries. R2 does not perform authenticated scraping, sign into job platforms, or bypass access controls.
 
 An evaluated job can promote its company to a watch only when its final decision is `high_priority` or `package_match`, it has no hard blockers, and it satisfies the configured package threshold. Promotion helps find future public postings; it never submits an application.
 
@@ -120,20 +113,15 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 
 | Secret | Purpose |
 | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
-| `TELEGRAM_CHAT_ID` | Telegram chat id to deliver the digest/PDFs to |
-| `GMAIL_CLIENT_ID` | OAuth client ID used only by the Gmail intelligence sync |
-| `GMAIL_CLIENT_SECRET` | OAuth client secret used only by the Gmail intelligence sync |
-| `GMAIL_REFRESH_TOKEN` | Refresh token printed by the local Gmail OAuth bootstrap |
-| `JOB_HUNTER_USER_ID` | UUID of the platform user a run acts for. Required — the pipeline and webhook read/write Postgres as this user. |
+| `JOB_HUNTER_USER_ID` | UUID of the platform user a run acts for. Required — every stage reads/writes Postgres as this user. |
 | `SUPABASE_URL` | Base URL of the Supabase project. Required. |
 | `SUPABASE_PUBLISHABLE_KEY` | Supabase project's publishable API key, sent as the `apikey` header. Public by design, but required. |
 | `SUPABASE_SIGNING_KEY_B64` | Base64-encoded private ES256 JWK used to mint per-user access tokens. It can mint a token for any user — treat it as the platform's most sensitive secret. Required. |
 | `PLATFORM_GEMINI_API_KEY` | The platform's own Gemini key, which funds shared objective facet extraction for every user (issue #128). Not a user credential, and deliberately not in Relay Profile. **Effectively required for a useful run:** scoring is fed a posting's facets rather than its description (#126), so with this unset no posting is ever read and no newly discovered job can be scored — a run then delivers only what earlier runs already enriched, and soon nothing. It is unset-safe rather than optional: the run completes, logs a warning, queues the jobs it could not read, and never falls back to a user's key. |
 
-**As of this writing the four Supabase secrets above do not exist yet in either GitHub repository settings or
-the Vercel project.** Both the workflows and the Telegram webhook are non-functional until an
-operator creates them — see [Cutover runbook](#cutover-runbook-order-matters) below.
+**As of this writing the four Supabase secrets above do not exist yet in GitHub repository
+settings.** The workflows are non-functional until an operator creates them — see
+[Cutover runbook](#cutover-runbook-order-matters) below.
 
 The Gemini API key, the Brave Search API key, and your CV and cover letter text are **not** repository secrets. They are per-user values read from Postgres at run time — see [CV, cover letter, and provider keys](#cv-cover-letter-and-provider-keys).
 
@@ -145,9 +133,8 @@ The Gemini API key, the Brave Search API key, and your CV and cover letter text 
 > before steps 1-5 are done and verified.
 
 1. Create the four Supabase secrets — `JOB_HUNTER_USER_ID`, `SUPABASE_URL`,
-   `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64` — in **both** GitHub repository settings
-   and the Vercel project. Merge order relative to this step is irrelevant, but the migration
-   below cannot run without them.
+   `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SIGNING_KEY_B64` — in GitHub repository settings. Merge
+   order relative to this step is irrelevant, but the migration below cannot run without them.
 2. Apply migrations to the hosted Supabase project: `supabase db push`.
 3. Download the latest `job-hunter-state` artifact (from the most recent successful workflow run,
    before it expires) and run `apps/job-hunter/scripts/migrate_sqlite_to_postgres.py` against it.
@@ -187,13 +174,6 @@ Relay's Profile screen; Relay is deleted (issue #286) and nothing has replaced t
 - **CV and cover letter.** Same story: the last text saved through Relay is still what a run
   reads, but there is no UI to replace it until the new app rebuilds that screen.
 
-## Telegram bot setup
-
-1. In Telegram, message **@BotFather** and send `/newbot`. Follow the prompts to name your bot; BotFather returns a bot token — this is `TELEGRAM_BOT_TOKEN`.
-2. Send any message to your new bot (or add it to a group/channel you want the digest posted to).
-3. Find your chat id without exposing the token in git: call `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser or with `curl` locally (substitute your real token only in that local command, never in a committed file), and read the `chat.id` field from the JSON response for your message.
-4. Store the bot token and chat id as the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` GitHub secrets above. Do not put either value in the user's search profile, `.env`, or any committed file.
-
 ## Gemini API key and free-tier quota setup
 
 This bot is designed to run entirely on the Gemini API free tier, at €0 cost. Follow this sequence exactly, in order, both on first setup and any time you change the Gemini project or model:
@@ -204,8 +184,8 @@ This bot is designed to run entirely on the Gemini API free tier, at €0 cost. 
 4. That is the whole required setup. The free-tier limits for `GEMINI_MODEL` (defaulting to `gemini-3.5-flash-lite` if unset) come from the table in `src/job_hunter/ai/limits.py`, and a model missing from it runs under the most conservative known limits with a warning in the log. The 429 circuit breaker below is the real safety net either way.
 5. Optional: if your project's limits differ from the published ones, open **Rate Limits** in AI Studio for the same project and model, read off RPM (requests/minute), input TPM (tokens/minute) and RPD (requests/day), and set whichever of `GEMINI_FREE_RPM`, `GEMINI_FREE_TPM` and `GEMINI_FREE_RPD` you need as GitHub Actions **variables** (see [Optional GitHub Actions variables](#optional-github-actions-variables)). Each overrides only its own dimension.
 6. Whenever the Gemini project or `GEMINI_MODEL` changes, re-check any override you set — a stale, too-high value would let the app under-protect itself against the real provider limit. Overrides you have not set need no attention: they follow the model.
-7. Each normal bot run logs one structured `ai_usage` line (RPD/RPM peak/TPM peak percentages, call count, and token totals) to the GitHub Actions run output. Those percentages are of the provider quota in force (the model's defaults, or your overrides), not of some smaller internal number — read them directly against 100%. Because the app stops itself at 80% of quota and the Gemini project stays unbilled, this line is diagnostic only; there is no matching Telegram message.
-8. If Gemini returns HTTP 429 (quota exceeded), the bot does not retry that call automatically and does not fall back to any paid path. It records a pause, defers or skips the affected work for the rest of that run, and Telegram carries a warning; the deferred work is picked up again on a later run once the provider's quota window has reset. Free tier is the only mode this bot runs in — a 429 means "wait," never "switch to paid."
+7. Each normal bot run logs one structured `ai_usage` line (RPD/RPM peak/TPM peak percentages, call count, and token totals) to the GitHub Actions run output. Those percentages are of the provider quota in force (the model's defaults, or your overrides), not of some smaller internal number — read them directly against 100%. Because the app stops itself at 80% of quota and the Gemini project stays unbilled, this line is diagnostic only.
+8. If Gemini returns HTTP 429 (quota exceeded), the bot does not retry that call automatically and does not fall back to any paid path. It records a pause and defers or skips the affected work for the rest of that run; the deferred work is picked up again on a later run once the provider's quota window has reset. Free tier is the only mode this bot runs in — a 429 means "wait," never "switch to paid."
 
 ## Local dry run
 
@@ -216,7 +196,7 @@ the Supabase group of variables and load it into your shell:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[test,webhook]'
+pip install -e '.[test]'
 cp .env.example .env
 # edit .env with your values, then:
 set -a; source .env; set +a
@@ -224,35 +204,7 @@ python -m job_hunter crawl-source --limit 5
 ```
 
 Swap `crawl-source` for `extract-facets`, `recheck-freshness` or `recover-posting` to run that
-stage instead; each is independent and bounded by its own `--limit`. Cover letter/PDF generation
-is a separate on-demand step (`python -m job_hunter generate-cover-letter --job-id <id>`).
-
-## Gmail intelligence setup
-
-Gmail intelligence reads job-related messages into the shared Postgres state before normal job discovery. It uses the Gmail read-only OAuth scope: Gmail is never modified, and full email bodies are not stored. The sync stores only the privacy-minimized message metadata and extracted job/application signals needed by the bot.
-
-Create an OAuth client for the Gmail API, then run the local bootstrap with the client credentials available only in your shell:
-
-```bash
-export GMAIL_CLIENT_ID='...'
-export GMAIL_CLIENT_SECRET='...'
-python scripts/gmail_oauth_bootstrap.py
-```
-
-The bootstrap opens the Google consent flow and prints a refresh token. Store that printed value as the GitHub Actions secret `GMAIL_REFRESH_TOKEN`; also add `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` as GitHub secrets. Never commit any of these values.
-
-The Gmail OAuth variables stay environment-backed; only they are needed in your shell. The sync's Gemini calls use the Gemini key stored in Relay Profile for `JOB_HUNTER_USER_ID`, the same key the main pipeline uses. Use the following local commands after loading the Gmail variables:
-
-```bash
-python -m job_hunter sync-gmail --dry-run
-python -m job_hunter sync-gmail --force-backfill
-```
-
-`--dry-run` classifies and extracts without advancing the Gmail cursor or persisting Gmail-derived state. `--force-backfill` repeats the 120-day backfill idempotently and is non-destructive. A completed sync with individual message errors keeps its cursor so those messages retry on the next sync; setup, authorization, profile, or listing failures return a nonzero status.
-
-The first successful Gmail setup performs a 120-day historical backfill. Historical processing is resumable and intentionally bounded to 100 previously unprocessed messages per sync invocation, so a large mailbox may need multiple sync invocations to finish. Successfully processed message IDs are stored in Postgres and skipped on later runs, so the next invocation resumes the remaining backlog.
-
-> **`sync-gmail` has no scheduler.** `.github/workflows/job-hunter-daily.yml` was the only thing that invoked it, and #189 deleted that workflow without adding a replacement: it is not one of the Render cron services in [`render.yaml`](../../render.yaml), and it is not in `job_hunter_worker_schedules`, so worker health will not report it missing either. Until something schedules it, Gmail intake only happens when someone runs `python -m job_hunter sync-gmail` by hand — and an empty inbox of application events looks exactly like a quiet week.
+stage instead; each is independent and bounded by its own `--limit`.
 
 ## Ingestion stage schedules
 
@@ -303,11 +255,7 @@ You remain responsible for reviewing and submitting every application yourself.
 
 ### Gemini quota / rate limits
 
-The pipeline does not implement a Gemini-quota circuit breaker. Each daily run uses one compact profile-extraction call, then up to `max_jobs_per_run` (default 35) independent evaluation calls. A separate on-demand cover-letter call happens only when "Gen CL" is tapped for a given job. If quota or rate limits interrupt the run, each affected job fails independently and can be retried on the next run without blocking the rest. If you see repeated Gemini failures in the Actions log, check your API key's quota/rate limit in Google AI Studio.
-
-### Telegram delivery errors
-
-A failed Telegram send (bad token, bot not started, wrong chat id, message too large) is logged and does not crash the run or discard evaluation results. The job stays evaluated and marked undelivered in Postgres, and later runs retry only the missing Telegram deliveries without re-calling Gemini. Retry eligibility follows the search profile's inclusive `match_score_floor` (default 80), so changing the floor changes new deliveries and retries consistently, and ready-to-apply jobs retry both the digest message and PDF until both succeed. Verify `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are correct and that you've sent at least one message to the bot (see [Telegram bot setup](#telegram-bot-setup)).
+The pipeline does not implement a Gemini-quota circuit breaker. Each daily run uses one compact profile-extraction call, then up to `max_jobs_per_run` (default 35) independent evaluation calls. If quota or rate limits interrupt the run, each affected job fails independently and can be retried on the next run without blocking the rest. If you see repeated Gemini failures in the Actions log, check your API key's quota/rate limit in Google AI Studio.
 
 ### Flaky web sources
 

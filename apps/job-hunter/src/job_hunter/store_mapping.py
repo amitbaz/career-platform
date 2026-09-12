@@ -15,8 +15,8 @@ original live in exactly one place:
 trigger to maintain ``updated_at``: Python must set it on every write to
 the tables that carry the column. Verified directly against
 ``supabase/migrations/202609060002_job_hunter_discovery_state.sql``, that
-list is ``job_hunter_company_watch``, ``job_hunter_ai_quota_state``,
-``job_hunter_pending_ai_work``, and ``job_hunter_gmail_sync_state`` --
+list is ``job_hunter_company_watch``, ``job_hunter_ai_quota_state``, and
+``job_hunter_pending_ai_work`` --
 *not* ``job_hunter_ats_registry``, which has no ``updated_at`` column at
 all. (An earlier draft of the task brief named ``job_hunter_ats_registry``
 instead of ``job_hunter_ai_quota_state``; the migration is the source of
@@ -36,8 +36,6 @@ from job_hunter.models import (
     Job,
     JobFacets,
     Material,
-    NavigationCard,
-    NavigationSession,
 )
 
 
@@ -72,9 +70,8 @@ def touch(values: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``values`` with ``updated_at`` set to now (UTC, ISO-8601).
 
     Callers writing to ``job_hunter_company_watch``, ``job_hunter_ai_quota_state``,
-    ``job_hunter_pending_ai_work``, or ``job_hunter_gmail_sync_state`` must
-    route every insert/update through this -- there is no trigger doing it
-    for them.
+    or ``job_hunter_pending_ai_work`` must route every insert/update through
+    this -- there is no trigger doing it for them.
     """
     result = dict(values)
     result["updated_at"] = to_iso(datetime.now(timezone.utc))
@@ -276,33 +273,4 @@ def ats_entry_from_row(
         active=bool(row.get("active", True)),
         paused_until=row.get("paused_until"),
         rejected_reason=row.get("rejected_reason"),
-    )
-
-
-def navigation_session_from_row(row: dict[str, Any]) -> NavigationSession:
-    """Map a ``job_hunter_telegram_navigation_sessions`` PostgREST row.
-
-    ``cards_json`` is a jsonb column; PostgREST hands it back already
-    decoded as a list of dicts.
-    """
-    cards = [
-        NavigationCard(
-            job_id=card["job_id"],
-            title=card.get("title") or "",
-            company=card.get("company") or "",
-            location=card.get("location") or "",
-            score=card.get("score", 0),
-            url=card.get("url") or "",
-            market_id=card.get("market_id") or "",
-            market_note=card.get("market_note") or "",
-            availability_note=card.get("availability_note") or "",
-        )
-        for card in row.get("cards_json") or []
-    ]
-    return NavigationSession(
-        session_id=row["session_id"],
-        cards=cards,
-        telegram_message_id=row.get("telegram_message_id"),
-        created_at=row["created_at"],
-        expires_at=row["expires_at"],
     )
