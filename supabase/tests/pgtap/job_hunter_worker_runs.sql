@@ -87,11 +87,13 @@ insert into public.job_hunter_worker_runs
 values
   ('crawl_source', '2002-01-01 11:50Z', '2002-01-01 11:51Z', '2002-01-01 11:51Z', 900, 'queue_empty'),
   ('extract_facets', '2002-01-01 11:50Z', '2002-01-01 11:51Z', '2002-01-01 11:51Z', 300, 'queue_empty'),
-  ('recheck_freshness', '2002-01-01 06:00Z', '2002-01-01 06:10Z', '2002-01-01 06:10Z', 900, 'limit');
+  ('recheck_freshness', '2002-01-01 06:00Z', '2002-01-01 06:10Z', '2002-01-01 06:10Z', 900, 'limit'),
+  ('recover_posting', '2002-01-01 11:58Z', '2002-01-01 11:58:30Z', '2002-01-01 11:58:30Z', 300, 'queue_empty');
 
 select results_eq(
   $$ select worker, status from public.job_hunter_worker_health('2002-01-01 12:00Z') $$,
-  $$ values ('crawl_source', 'ok'), ('extract_facets', 'ok'), ('recheck_freshness', 'ok') $$,
+  $$ values ('crawl_source', 'ok'), ('extract_facets', 'ok'), ('recheck_freshness', 'ok'),
+            ('recover_posting', 'ok') $$,
   'every worker that ran on schedule is healthy');
 
 -- A run in progress, heartbeating within its own stale window, is not a failure.

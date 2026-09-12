@@ -1,4 +1,5 @@
--- Durable queue substrate for the four engine stages (issue #183).
+-- Durable queue substrate for the engine's queue-coupled stages (issue #183;
+-- #259 adds the fifth, recover_posting).
 --
 -- These checks stay at the database seam: queue visibility, scheduling,
 -- privileged access, and operational depth are properties of Postgres, not
@@ -21,6 +22,7 @@ select results_eq(
        ('job_hunter_crawl_source'::text),
        ('job_hunter_extract_facets'::text),
        ('job_hunter_recheck_freshness'::text),
+       ('job_hunter_recover_posting'::text),
        ('job_hunter_resolve_persist'::text) $$,
   'each engine stage has exactly one durable queue');
 
@@ -253,13 +255,14 @@ select results_eq(
        ('crawl_source'::text, 0::bigint),
        ('extract_facets'::text, 0::bigint),
        ('recheck_freshness'::text, 0::bigint),
+       ('recover_posting'::text, 0::bigint),
        ('resolve_persist'::text, 1::bigint) $$,
   'dead-letter depth is observable per stage');
 
 select is(
   (select count(*)::int from public.job_hunter_stage_queue_metrics()),
-  4,
-  'queue depth is observable for all four stages');
+  5,
+  'queue depth is observable for all five stages');
 
 select * from finish();
 rollback;

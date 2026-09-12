@@ -403,7 +403,11 @@ select unnest(array[
   'job_hunter_crawl_targets',
   'job_hunter_worker_runs',
   'job_hunter_worker_schedules',
-  'job_hunter_ingestion_timing_config'
+  'job_hunter_ingestion_timing_config',
+  -- Recovery scheduling configuration (#259), the same shape as
+  -- job_hunter_ingestion_timing_config above: one privileged-only row, no
+  -- user, RLS on with no policy, every grant revoked.
+  'job_hunter_recovery_config'
 ]) as table_name;
 
 -- Guard: every job_hunter_ table this tree's migrations create is on one of

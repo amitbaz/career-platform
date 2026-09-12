@@ -61,3 +61,18 @@ services:
     schedule: "23 */6 * * *"
     envVarGroups:
       - caddie-engine
+
+  - type: cron
+    name: job-hunter-recover-posting
+    runtime: python
+    plan: starter
+    region: frankfurt
+    rootDir: apps/job-hunter
+    buildCommand: pip install -e .
+    startCommand: python -m job_hunter recover-posting --limit 500
+    # Matches job_hunter_enqueue_due_recover_posting's own five-minute tick
+    # (#259): the aggressive default interval is 20 minutes, so draining less
+    # often than postings are enqueued would just let the queue build up.
+    schedule: "*/5 * * * *"
+    envVarGroups:
+      - caddie-engine

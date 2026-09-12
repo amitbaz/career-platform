@@ -13,6 +13,7 @@ _QUEUE_NAMES = {
     Stage.RESOLVE_PERSIST: "job_hunter_resolve_persist",
     Stage.EXTRACT_FACETS: "job_hunter_extract_facets",
     Stage.RECHECK_FRESHNESS: "job_hunter_recheck_freshness",
+    Stage.RECOVER_POSTING: "job_hunter_recover_posting",
 }
 
 
