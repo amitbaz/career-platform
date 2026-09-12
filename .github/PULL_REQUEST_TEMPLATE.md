@@ -7,7 +7,6 @@
 <!-- Check every area this PR touches -->
 
 - [ ] `apps/job-hunter`
-- [ ] `apps/relay`
 - [ ] `supabase` (migrations / schema)
 - [ ] CI / workflows / tooling
 - [ ] Docs only
@@ -17,7 +16,6 @@
 <!-- Commands you ran and their result. See AGENTS.md for the full command list. -->
 
 ```
-pnpm relay:test        # if apps/relay changed
 pnpm job-hunter:test    # if apps/job-hunter changed
 ```
 
