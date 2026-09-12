@@ -128,12 +128,22 @@ class RecoverPostingStage:
             # No fetch needed; the trigger clears the schedule.
             return self._finish(posting.id, RECOVERED, content=None)
 
-        ats = posting.known_ats or parse_supported_ats_url(posting.url)
-        target_url = posting.canonical_url or posting.url
-        if ats is None and posting.url:
-            found = self._resolve_from_page(posting)
-            if found is not None:
-                ats, target_url = found
+        if posting.known_ats is not None:
+            ats: AtsReference | None = posting.known_ats
+            target_url = posting.canonical_url or posting.url
+        else:
+            # The `direct` tier: posting.url itself is the ATS reference, so
+            # it -- not a possibly stale canonical_url left over from an
+            # earlier, unrelated attempt -- is what actually matched and
+            # must be fetched (#259 review; matches
+            # CanonicalResolver.resolve's own direct tier, which returns
+            # job.url rather than job.canonical_url for the same reason).
+            ats = parse_supported_ats_url(posting.url)
+            target_url = posting.url
+            if ats is None and posting.url:
+                found = self._resolve_from_page(posting)
+                if found is not None:
+                    ats, target_url = found
 
         if ats is None:
             return self._finish(posting.id, UNRESOLVED, content=None)

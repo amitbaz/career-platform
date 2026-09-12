@@ -179,6 +179,42 @@ def test_a_posting_already_on_a_supported_ats_host_is_recovered_directly(
     assert _extraction_messages(ingestion_database, posting_id) == 1
 
 
+def test_a_direct_ats_url_is_matched_by_itself_not_a_stale_canonical_url(
+    ingestion_database,
+):
+    """A posting can carry a canonical_url left over from an earlier,
+    unrelated resolution attempt that never matched anything. The direct
+    tier's match came from posting.url, so that -- not the stale
+    canonical_url -- must be what gets fetched against the board (#259
+    review)."""
+    board_url = "https://jobs.lever.co/acme/abc-123"
+    posting_id = _insert_posting(
+        ingestion_database,
+        url=board_url,
+        canonical_url="https://careers.example.test/stale-unrelated-page",
+    )
+    http, web = _http(
+        {
+            "https://api.lever.co/v0/postings/acme?mode=json": _Response(
+                200,
+                payload=[
+                    {
+                        "hostedUrl": board_url,
+                        "descriptionPlain": "A full official description.",
+                    }
+                ],
+            )
+        }
+    )
+
+    outcome = RecoverPostingStage(ingestion_database, http)(_message(posting_id))
+
+    assert outcome.outcome == RECOVERED
+    posting = _posting(ingestion_database, posting_id)
+    assert posting["description"] == "A full official description."
+    assert posting["canonical_url"] == board_url
+
+
 def test_a_redirect_to_a_supported_ats_host_is_recovered(ingestion_database):
     original_url = f"https://boards.example.test/{uuid.uuid4()}"
     board_url = "https://jobs.ashbyhq.com/acme/def-456"
