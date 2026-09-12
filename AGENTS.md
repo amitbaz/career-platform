@@ -85,11 +85,6 @@ GitHub Issues (repo: amitbaz/career-platform), via `gh` CLI. See `docs/agents/is
 
 Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 
-### Roles
-
-Delivery is split between a developer bot and a reviewer bot, started with `/dev <issue>` and
-`/reviewer <pr>`. The owner triages, checks and merges. See `docs/agents/roles.md`.
-
 ### Issue areas
 
 Every open issue carries **exactly one** `area:*` label saying which part of the product it
@@ -521,33 +516,16 @@ the push.
 Say so rather than working around it. Deleting, resetting or force-pushing over someone else's
 in-flight work costs more than waiting. Report what you found and let the human decide.
 
-### Delivery runs between two bot accounts
+### Branch protection
 
-Delivery work is split between two roles, each with its own GitHub account: `amitbaz-developer`
-builds and opens PRs, and `amitbaz-reviewer` reviews them. The owner triages, does a final check
-and merges. How each role works, how they talk to each other, and when they stop and ask the
-owner is in `docs/agents/roles.md`. A session takes a role only through `/dev <issue>` or
-`/reviewer <pr>`.
+`main` is protected by one ruleset, kept as reviewable source in `.github/rulesets/`: "Protect
+Main" (`protect-main.json`) blocks deletion and force-pushes and requires the `test` check.
+Nobody can bypass it, including the repository admin.
 
-`main` is protected by two rulesets, both kept as reviewable source in `.github/rulesets/`.
-"Protect Main" (`protect-main.json`) blocks deletion and force-pushes and requires the `test`
-check, and nobody can bypass it. "Require approvals" (`require-approvals.json`) requires **two
-approvals** (the reviewer bot's and the owner's), approval of the most recent push, and every
-review thread resolved, and any later push dismisses an approval.
-GitHub never counts an author's approval of their own PR, which is why the developer role must
-author PRs as its bot: only then can the owner's approval count. The repository admin can bypass
-"Require approvals", but never "Protect Main", explicitly and visibly; that is meant for PRs the
-owner authors personally.
-
-Never push to a bot's PR yourself: no commits, no "Update branch", no conflict resolution in the
-web UI. The last-push rule would then refuse the owner's approval, and the PR could merge only
-through the bypass. Ask the developer to push instead.
-
-Every GitHub write in a role session goes through `scripts/gh-as.sh <developer|reviewer>`, which
-takes the bot's PAT from the local macOS Keychain (`career-platform-<role>` /
-`career-platform-<role>-pat`) for that one call. The GitHub MCP server's identity is the owner's
-and is fixed at session start, so role sessions use it for reads only. If the script fails with
-"PAT not found", the owner needs to add the Keychain entry, not the agent.
+There is no approval requirement. A second ruleset, "Require approvals", demanded two approvals
+and existed only for a two-bot delivery experiment; the owner ended that experiment and both the
+ruleset and its file were removed on 2026-09-12. Every change still arrives through a pull
+request with `test` green, and the owner merges it.
 
 ## Boundaries
 

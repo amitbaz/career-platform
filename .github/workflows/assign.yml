@@ -1,12 +1,9 @@
-# Assignment conventions (docs/agents/roles.md): every new issue belongs to the
-# owner, who decides at triage whether the developer bot builds it; a PR the
-# developer bot opens is assigned to it. Review requests come from CODEOWNERS.
+# Every new issue is assigned to the owner, who decides at triage what happens
+# to it. Review requests come from CODEOWNERS.
 name: Assign
 
 on:
   issues:
-    types: [opened]
-  pull_request:
     types: [opened]
 
 permissions: {}
@@ -24,16 +21,3 @@ jobs:
           GH_REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
         run: gh issue edit "$NUMBER" --add-assignee amitbaz
-
-  pull-request:
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'amitbaz-developer'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Assign the developer bot's PR to it
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.pull_request.number }}
-        run: gh pr edit "$NUMBER" --add-assignee amitbaz-developer
