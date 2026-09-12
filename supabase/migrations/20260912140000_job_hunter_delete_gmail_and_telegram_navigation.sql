@@ -31,8 +31,12 @@
 -- Drop order: functions before the tables they read, since
 -- `job_hunter_gmail_candidate_complete` reads `job_hunter_evaluations` (kept)
 -- rather than a dropped table and would otherwise survive as a broken
--- function. The four tables carry no foreign key to or from any table this
--- migration does not also drop, so their own relative order is unconstrained.
+-- function. No kept table carries a foreign key *to* any of the five dropped
+-- tables, so nothing survives pointing at a gap; the one reference across the
+-- boundary runs the other way (`job_hunter_review_deliveries.event_id` ->
+-- the kept `job_hunter_application_events`), and dropping the child of a kept
+-- parent is always safe. Among themselves the five reference nothing, so
+-- their relative order is unconstrained.
 
 drop function if exists public.job_hunter_pending_review_events(double precision);
 drop function if exists public.job_hunter_eligible_inbound_jobs();

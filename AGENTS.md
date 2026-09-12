@@ -254,7 +254,7 @@ to run `pnpm db:key` once. It is a throwaway key for localhost; never put the ho
 signing key there.
 
 Job Hunter's Python environment is independent of pnpm. Install it with
-`pip install -e '.[test,webhook]'` from `apps/job-hunter`.
+`pip install -e '.[test]'` from `apps/job-hunter`.
 
 ### A green Job Hunter run is only evidence if the store tests ran
 
