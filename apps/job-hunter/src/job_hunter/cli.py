@@ -13,7 +13,7 @@ from job_hunter.config import (
     load_supabase_settings,
 )
 from job_hunter.ai.gemini import PROVIDER, build_gemini_provider
-from job_hunter.ai.usage import AIUsageTracker, PlatformUsageLedger, format_ai_usage_log
+from job_hunter.ai.usage import AIUsageTracker, format_ai_usage_log
 from job_hunter.circuit_breaker import CircuitBreaker
 from job_hunter.cover_letter import cover_letter_output_dir, generate_cover_letter_on_demand
 from job_hunter.gmail_auth import GoogleOAuthTokenProvider
@@ -135,6 +135,25 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         logger.exception("job hunter run failed")
         return 1
+
+
+def _log_ai_usage(tracker, account: str) -> None:
+    """Log one ledger's day-to-date AI spend, and never fail the caller for it.
+
+    #189 retired the single process that printed every ledger together, so
+    each command that spends AI budget reports its own account: `platform`
+    for the shared key extraction runs against (#128), `user` for the key the
+    person running the command owns. Reporting what the work cost must never
+    cost the work its own success -- a drain that read every posting it
+    claimed, or a cover letter that was delivered, must not turn red because
+    the ledger read came back empty.
+    """
+    try:
+        logger.info(
+            format_ai_usage_log(tracker.snapshot(datetime.now(timezone.utc)), account)
+        )
+    except Exception:
+        logger.exception("could not read %s AI usage for this invocation", account)
 
 
 def _recorded_drain(database, worker: str, stale_after_seconds: int, drain):
@@ -405,17 +424,8 @@ def _extract_facets(args: argparse.Namespace) -> int:
         # The engine's per-day AI cost report, now that #189 retired the one
         # process that used to print every ledger together: each stage that
         # spends AI budget logs its own account, here the shared platform key
-        # extraction runs against (#128). Never allowed to cost the drain its
-        # own success -- a drain that read every posting it claimed must not
-        # fail because reporting what that cost came back empty.
-        try:
-            logger.info(
-                format_ai_usage_log(
-                    platform_tracker.snapshot(datetime.now(timezone.utc)), "platform"
-                )
-            )
-        except Exception:
-            logger.exception("could not read platform AI usage for this drain")
+        # extraction runs against (#128).
+        _log_ai_usage(platform_tracker, "platform")
         return result
 
     try:
@@ -453,6 +463,11 @@ def _generate_cover_letter(args: argparse.Namespace) -> int:
         settings, args.job_id, store=store, ai=ai, telegram=telegram
     )
     logger.info("on-demand cover letter for job_id=%s: delivered=%s", args.job_id, delivered)
+    # Spends the user's own key, so it reports the user ledger -- the other
+    # half of the report `extract-facets` prints for the platform ledger.
+    # Without it, #189 would have left the user's key with no cost report at
+    # all now that the run that printed one is gone.
+    _log_ai_usage(tracker, "user")
     return 0 if delivered else 1
 
 
@@ -505,4 +520,9 @@ def _sync_gmail(args: argparse.Namespace) -> int:
             "those messages will retry on the next sync.",
             summary.errors,
         )
+    # Also the user's own key. `tracker_store` is a DryRunStore under
+    # --dry-run, so this reads the discarded dry-run ledger rather than the
+    # live one -- which is the same store every guardrail in this command
+    # already consults, and keeps --dry-run's "persists nothing" promise.
+    _log_ai_usage(tracker, "user")
     return 0
