@@ -30,15 +30,7 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
-      - name: Generate a throwaway signing key
-        working-directory: .
-        run: bash supabase/local-signing-key.sh
-      - name: Start Supabase
-        working-directory: .
-        run: supabase start
+      - uses: ./.github/actions/supabase-local-stack
       - run: pip install -e '.[test,webhook]'
       - name: Run the test suite
         working-directory: .
@@ -67,15 +59,7 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: apps/job-hunter/pyproject.toml
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
-      - name: Generate a throwaway signing key
-        working-directory: .
-        run: bash supabase/local-signing-key.sh
-      - name: Start Supabase
-        working-directory: .
-        run: supabase start
+      - uses: ./.github/actions/supabase-local-stack
       - run: pip install -e '.[test,webhook]'
       - name: Run the isolation test
         working-directory: .
@@ -134,15 +118,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
-      - name: Generate a throwaway signing key
-        working-directory: .
-        run: bash supabase/local-signing-key.sh
-      - name: Start Supabase
-        working-directory: .
-        run: supabase start
+      - uses: ./.github/actions/supabase-local-stack
       - run: pnpm install --frozen-lockfile
         working-directory: .
       - run: pnpm db:test

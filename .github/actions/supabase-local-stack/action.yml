@@ -1,0 +1,18 @@
+name: Start local Supabase stack
+description: >
+  Install the Supabase CLI, generate a throwaway signing key, and start the
+  local stack. Nothing here touches the hosted project. Runs from the repo
+  root regardless of the calling job's default working directory, matching
+  the `working-directory: .` every caller used before this was extracted.
+runs:
+  using: composite
+  steps:
+    - uses: supabase/setup-cli@v1
+      with:
+        version: latest
+    - name: Generate a throwaway signing key
+      shell: bash
+      run: bash supabase/local-signing-key.sh
+    - name: Start Supabase
+      shell: bash
+      run: supabase start

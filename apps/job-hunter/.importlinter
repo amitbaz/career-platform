@@ -34,6 +34,14 @@ source_modules=
     job_hunter.pg
     job_hunter.circuit_breaker
     job_hunter.availability
+# job_hunter.ai is deliberately absent from forbidden_modules below. ADR-0002
+# section 3 lists the "AI client" itself as part of core ("core/ config,
+# database connection, http, AI client, clock, errors"), so config.py ->
+# job_hunter.ai (the package's own public interface) would be core importing
+# core, not core reaching into business logic. What config.py does today,
+# `from .ai.limits import free_tier_quota`, is a deep import into ai's
+# internals rather than its public interface -- that is caught by the
+# ai-api-only contract below instead, which is the rule it actually breaks.
 forbidden_modules=
     job_hunter.__main__
     job_hunter.aggregator_detection
