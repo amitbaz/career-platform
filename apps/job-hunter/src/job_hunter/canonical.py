@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from job_hunter.ats_hosts import SUPPORTED_ATS_HOSTS
@@ -147,28 +147,9 @@ class CanonicalResolver:
                 method="redirect",
             )
 
-        try:
-            links = extract_job_page_links(response_text, response_url or job.url)
-        except Exception:
-            links = []
-        # An embedded link has no company or title check behind it: it is
-        # trustworthy only when the page names exactly one distinct ATS
-        # posting. A page listing more than one -- a careers page with
-        # several open roles, a "similar jobs" widget -- makes "the first
-        # anchor" an arbitrary pick among them, which could misattribute
-        # this job's identity to a different advertisement. Hardening only:
-        # #254's actual corruption was traced to job_hunter_upsert_job's
-        # legacy per-job merge (weak company/title/location identity match
-        # overwriting ats_* while leaving source_job_id alone), not this
-        # branch -- see #254 for the confirmed root cause. Two links to the
-        # same posting (a duplicated anchor) still count as one candidate.
-        embedded_candidates: dict[tuple[str, str, str], tuple[str, AtsReference]] = {}
-        for url in links:
-            ats = parse_supported_ats_url(url)
-            if ats is not None:
-                embedded_candidates.setdefault((ats.provider, ats.board, ats.job_id), (url, ats))
-        if len(embedded_candidates) == 1:
-            (url, ats) = next(iter(embedded_candidates.values()))
+        embedded = resolve_embedded_ats_link(response_text, response_url or job.url)
+        if embedded is not None:
+            url, ats = embedded
             return CanonicalResolution(
                 url=url,
                 ats=ats,
@@ -239,15 +220,46 @@ def _same_ats_board(left: AtsReference | None, right: AtsReference) -> bool:
     return left is not None and (left.provider, left.board) == (right.provider, right.board)
 
 
-def fetch_authoritative_description(
-    ats: AtsReference, target_url: str, http: "HttpClient"
-) -> str | None:
-    """Fetch the full official description for a resolved ATS posting.
+def resolve_embedded_ats_link(
+    response_text: str, base_url: str
+) -> tuple[str, AtsReference] | None:
+    """The one distinct ATS posting embedded on a fetched page, if any.
 
-    Non-fatal by design, matching the rest of this module: a fetch failure
-    here should never take down canonical resolution.
+    Pure -- no I/O -- so both `CanonicalResolver.resolve` (which has already
+    fetched the page under its own fail-open rules) and
+    `recover_posting_stage.RecoverPostingStage` (which fetches under its own
+    rate-limit-aware rules) can share this matching logic without sharing
+    fetch semantics that must differ between them (#259 review).
 
-    The adapter imports below are deliberately local rather than module-level:
+    An embedded link has no company or title check behind it: it is
+    trustworthy only when the page names exactly one distinct ATS posting. A
+    page listing more than one -- a careers page with several open roles, a
+    "similar jobs" widget -- makes "the first anchor" an arbitrary pick among
+    them, which could misattribute a job's identity to a different
+    advertisement. Hardening only: #254's actual corruption was traced to
+    job_hunter_upsert_job's legacy per-job merge (weak company/title/location
+    identity match overwriting ats_* while leaving source_job_id alone), not
+    this branch -- see #254 for the confirmed root cause. Two links to the
+    same posting (a duplicated anchor) still count as one candidate.
+    """
+    try:
+        links = extract_job_page_links(response_text, base_url)
+    except Exception:
+        links = []
+    candidates: dict[tuple[str, str, str], tuple[str, AtsReference]] = {}
+    for url in links:
+        ats = parse_supported_ats_url(url)
+        if ats is not None:
+            candidates.setdefault((ats.provider, ats.board, ats.job_id), (url, ats))
+    if len(candidates) == 1:
+        return next(iter(candidates.values()))
+    return None
+
+
+def description_adapter_for(provider: str) -> Any | None:
+    """The module that fetches a supported ATS provider's full descriptions.
+
+    The import below is deliberately local rather than module-level:
     job_hunter.sources imports job_hunter.ats_registry, which imports
     parse_supported_ats_url from this module, so importing job_hunter.sources
     at module scope here creates a circular import.
@@ -256,12 +268,27 @@ def fetch_authoritative_description(
     from job_hunter.sources import greenhouse as greenhouse_source
     from job_hunter.sources import lever as lever_source
 
-    description_fetchers = {
+    return {
         "ashby": ashby_source,
         "lever": lever_source,
         "greenhouse": greenhouse_source,
-    }
-    adapter = description_fetchers.get(ats.provider)
+    }.get(provider)
+
+
+def fetch_authoritative_description(
+    ats: AtsReference, target_url: str, http: "HttpClient"
+) -> str | None:
+    """Fetch the full official description for a resolved ATS posting.
+
+    Non-fatal by design, matching the rest of this module: a fetch failure
+    here should never take down canonical resolution. This is the right
+    contract for the legacy pipeline this was written for, and the wrong one
+    for a queue stage that needs to actually back off on a rate limit or
+    server error rather than silently recording "no description found" --
+    recover_posting_stage.py calls description_adapter_for directly instead
+    of this wrapper for exactly that reason (#259 review).
+    """
+    adapter = description_adapter_for(ats.provider)
     if adapter is None:
         return None
     try:

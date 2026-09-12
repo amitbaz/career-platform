@@ -107,6 +107,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Most extractions to drain in this run",
     )
 
+    recover_parser = subparsers.add_parser(
+        "recover-posting",
+        help="Drain due posting recovery: try to turn a thin description into a trustworthy one",
+    )
+    recover_parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Most recovery attempts to drain in this run",
+    )
+
     return parser
 
 
@@ -126,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
             return _crawl_source(args)
         if args.command == "extract-facets":
             return _extract_facets(args)
+        if args.command == "recover-posting":
+            return _recover_posting(args)
         return _run(args)
     except Exception:
         logger.exception("job hunter run failed")
@@ -373,6 +386,50 @@ def _recheck_freshness(args: argparse.Namespace) -> int:
         )
         return 1
     return _health_exit_code("recheck_freshness", healthy)
+
+
+def _recover_posting(args: argparse.Namespace) -> int:
+    """Drain the recover_posting queue (#259).
+
+    User-free end to end, exactly like recheck-freshness: whether a thin
+    description can be upgraded to a trustworthy one is the same answer for
+    everyone. Without the direct connection it cannot write a posting at
+    all, so it fails rather than reporting a quiet day.
+    """
+    from job_hunter.recover_posting_stage import (
+        FAILED,
+        VISIBILITY_TIMEOUT_SECONDS,
+        drain_recover_posting,
+    )
+
+    dsn = load_ingestion_dsn()
+    if dsn is None:
+        logger.error(
+            "recover-posting needs SUPABASE_DB_URL: a recovery attempt writes "
+            "postings, which only ingestion's direct connection may do"
+        )
+        return 1
+    database = IngestionDatabase(dsn)
+    try:
+        drain, healthy = _recorded_drain(
+            database,
+            "recover_posting",
+            VISIBILITY_TIMEOUT_SECONDS,
+            lambda run: drain_recover_posting(
+                database, HttpClient(), limit=args.limit, on_batch=run.heartbeat
+            ),
+        )
+    finally:
+        database.close()
+    logger.info("recover_posting complete: %s", drain.summary())
+    if drain.claimed and drain.completed == 0 and drain.outcomes[FAILED]:
+        logger.error(
+            "recover_posting completed no attempt: %d claimed, %d failed",
+            drain.claimed,
+            drain.outcomes[FAILED],
+        )
+        return 1
+    return _health_exit_code("recover_posting", healthy)
 
 
 def _crawl_source(args: argparse.Namespace) -> int:

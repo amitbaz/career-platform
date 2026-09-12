@@ -214,6 +214,7 @@ select is(
     'job_hunter_eligible_inbound_jobs',
     'job_hunter_enqueue_crawl',
     'job_hunter_enqueue_due_freshness',
+    'job_hunter_enqueue_due_recover_posting',
     'job_hunter_ensure_job_membership',
     'job_hunter_find_job_by_identity',
     'job_hunter_find_posting_by_identity',
@@ -236,8 +237,11 @@ select is(
     'job_hunter_pending_delivery_jobs',
     'job_hunter_pending_review_events',
     'job_hunter_posting_display_credit',
+    'job_hunter_posting_recovery_schedule',
     'job_hunter_preferred_description',
     'job_hunter_record_ats_eligible_jobs',
+    'job_hunter_recovery_backlog',
+    'job_hunter_recovery_interval',
     'job_hunter_regexp_escape',
     'job_hunter_regions_for_locations',
     'job_hunter_reschedule_sources',
@@ -258,7 +262,7 @@ select is(
     'job_hunter_words',
     'job_hunter_worker_health',
     'job_hunter_worker_run_evidence'],
-  'exactly the fifty-eight expected public.job_hunter_* functions exist (#258 adds four invokers: job_hunter_worker_health, job_hunter_worker_run_evidence, job_hunter_crawl_window_evidence and job_hunter_enqueue_crawl; #187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above; #257''s Engine Lab ledger adds no functions here -- its identity/login layer was removed, see job_hunter_engine_lab.sql''s "Superseded" note; #243 adds three invokers: job_hunter_regions_for_locations, job_hunter_ensure_job_membership and job_hunter_match_state_counts, and extends job_hunter_hard_blockers and job_hunter_match_jobs in place rather than adding new names), so the two checks above are not asserting over an empty set');
+  'exactly the sixty-two expected public.job_hunter_* functions exist (#258 adds four invokers: job_hunter_worker_health, job_hunter_worker_run_evidence, job_hunter_crawl_window_evidence and job_hunter_enqueue_crawl; #187 adds fifteen: the SQL port of ranking.profile_priority_score and hard_blockers.hard_blockers_from_facets, the job_hunter_match_jobs entry point, and the job_hunter_regexp_escape helper the salary-floor phrase match uses; #61 adds three more: job_hunter_assign_variant_groups, job_hunter_backfill_variant_groups and job_hunter_word_set_jaccard; #249 adds job_hunter_backfill_ats_triple_dupes, invoker so it does not join the security-definer count above; #257''s Engine Lab ledger adds no functions here -- its identity/login layer was removed, see job_hunter_engine_lab.sql''s "Superseded" note; #243 adds three invokers: job_hunter_regions_for_locations, job_hunter_ensure_job_membership and job_hunter_match_state_counts, and extends job_hunter_hard_blockers and job_hunter_match_jobs in place rather than adding new names; #259 adds four invokers -- job_hunter_recovery_interval, job_hunter_posting_recovery_schedule (the recovery-scheduling trigger function), job_hunter_enqueue_due_recover_posting and job_hunter_recovery_backlog -- and redefines job_hunter_schedule_stage_enqueue and job_hunter_stage_queue_metrics in place to know about the recover_posting stage, adding no new names), so the two checks above are not asserting over an empty set');
 
 -- Fixtures for user A ------------------------------------------------------------
 

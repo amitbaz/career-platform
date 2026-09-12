@@ -25,9 +25,9 @@ from typing import Any, Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
-#: The three scheduled ingestion workers, as `job_hunter_worker_runs.worker`
-#: and `job_hunter_worker_schedules.worker` name them.
-WORKERS = ("crawl_source", "extract_facets", "recheck_freshness")
+#: The scheduled ingestion workers, as `job_hunter_worker_runs.worker` and
+#: `job_hunter_worker_schedules.worker` name them. #259 adds recover_posting.
+WORKERS = ("crawl_source", "extract_facets", "recheck_freshness", "recover_posting")
 
 #: Why a drain stops on its own. Anything else is recorded as an error.
 STOP_REASONS = ("queue_empty", "limit", "time_budget")

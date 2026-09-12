@@ -24,12 +24,14 @@ def utc_now() -> datetime:
 
 
 class Stage(str, Enum):
-    """The four queue-coupled engine stages fixed by epic #181."""
+    """The queue-coupled engine stages. Epic #181 fixed the first four;
+    #259 adds the fifth, recover_posting."""
 
     CRAWL_SOURCE = "crawl_source"
     RESOLVE_PERSIST = "resolve_persist"
     EXTRACT_FACETS = "extract_facets"
     RECHECK_FRESHNESS = "recheck_freshness"
+    RECOVER_POSTING = "recover_posting"
 
 
 @dataclass(frozen=True)
