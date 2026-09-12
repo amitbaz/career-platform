@@ -2,21 +2,16 @@
   "name": "career-platform",
   "version": "1.0.0",
   "private": true,
-  "description": "Monorepo for the Job Hunter and Relay career platform",
+  "description": "Monorepo for the career platform's engine and shared Supabase schema",
   "license": "ISC",
   "packageManager": "pnpm@9.10.0",
   "scripts": {
-    "relay:dev": "pnpm --filter relay dev",
-    "relay:build": "pnpm --filter relay build",
-    "relay:start": "pnpm --filter relay start",
-    "relay:lint": "pnpm --filter relay lint",
-    "relay:test": "pnpm --filter relay test",
     "workspace:setup": "bash scripts/workspace-setup.sh",
     "db:key": "bash supabase/local-signing-key.sh",
     "db:test": "python3 scripts/stack_lock.py python3 scripts/pgtap_stage.py supabase test db",
     "db:reset": "python3 scripts/stack_lock.py supabase db reset",
     "job-hunter:install": "cd apps/job-hunter && python3 -m venv .venv && .venv/bin/python -m pip install -e '.[test,webhook]'",
     "job-hunter:test": "python3 scripts/stack_lock.py --shared bash -c 'cd apps/job-hunter && .venv/bin/python -m pytest -q -n auto --dist=loadgroup \"$@\"' _",
-    "test": "pnpm run relay:test && pnpm run job-hunter:test"
+    "test": "pnpm run job-hunter:test"
   }
 }

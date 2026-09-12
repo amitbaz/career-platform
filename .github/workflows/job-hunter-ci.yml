@@ -5,11 +5,17 @@ on:
     paths:
       - 'apps/job-hunter/**'
       - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
       - '.github/workflows/job-hunter-ci.yml'
   pull_request:
     paths:
       - 'apps/job-hunter/**'
       - 'supabase/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
       - '.github/workflows/job-hunter-ci.yml'
 defaults:
   run:
@@ -99,3 +105,45 @@ jobs:
           if not ok: print(f'::error::Isolation suite did not run clean ({tests} tests, {skipped} skipped, {failures} failures, {errors} errors). A skipped or uncollected test usually means the Supabase env vars never reached pytest -- that would be a false pass, not proof of isolation.')
           sys.exit(0 if ok else 1)
           "
+
+  import-lint:
+    # Import-linter contracts for the engine's module borders (ADR-0002,
+    # issue #286). apps/job-hunter/.importlinter's baseline is today's known
+    # violations; a new one anywhere else fails here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/job-hunter/pyproject.toml
+      - run: pip install -e '.[lint]'
+      - run: lint-imports --config .importlinter
+
+  pgtap:
+    # The platform's pgTAP suite, moved here from the deleted Relay CI
+    # (issue #286): it tests supabase/, not Relay, and had never belonged in
+    # Relay's workflow. Runs against a throwaway local Supabase stack;
+    # nothing touches the hosted project.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Generate a throwaway signing key
+        working-directory: .
+        run: bash supabase/local-signing-key.sh
+      - name: Start Supabase
+        working-directory: .
+        run: supabase start
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm db:test
+        working-directory: .

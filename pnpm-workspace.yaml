@@ -1,2 +1,5 @@
-packages:
-  - 'apps/relay'
+# No JS packages today: Relay is deleted (issue #286). pnpm stays as the
+# workspace for whatever JavaScript arrives next -- the mobile app or the
+# internal console (ADR-0002 section 3) -- not for the engine, which is
+# Python managed by uv.
+packages: []

@@ -20,17 +20,3 @@ def test_vercel_config_skips_builds_unaffected_by_a_commit():
     # from this directory and importing nothing outside it, so the watched path
     # list is exhaustive rather than inferred.
     assert "--allow-production" in config["ignoreCommand"]
-
-
-def test_relay_vercel_config_watches_the_paths_it_is_built_from():
-    config = json.loads(Path("../relay/vercel.json").read_text())
-
-    command = config["ignoreCommand"]
-    assert "../../scripts/vercel-ignore-build.sh" in command
-    # Relay is built from more than its own directory: the workspace lockfile
-    # and the shared schema both change what it produces.
-    for watched in ("':/pnpm-lock.yaml'", "':/supabase'"):
-        assert watched in command
-    # Relay deliberately does NOT opt production in. Its watched path list is
-    # inferred, and a missing input would silently fail to deploy a real change.
-    assert "--allow-production" not in command
