@@ -52,6 +52,47 @@ Six rules follow, and they decide most judgement calls in this repository:
    set from the tree's migrations, and fails saying so when it could not read them. If you are
    filing this under "keep the docs updated", you have the wrong half of it.
 
+## Architecture: engine, api layer, apps
+
+See [ADR-0002](docs/adr/0002-modular-engine-and-supabase-as-backend.md) for the full design and
+its reasoning; this is the summary CI actually enforces.
+
+- **Three layers meet at one database contract.** The engine (Python workers) reads sources,
+  writes the shared corpus, computes ready cards, and reads user signals back to learn. Apps
+  (mobile, internal console) reach data only through the api layer — one Postgres schema of views
+  and functions, the only schema the auto-generated REST API exposes. The engine and the apps
+  never call each other directly.
+- **Every table has exactly one writer.** Engine-owned data is written only by the engine's
+  database role; app-owned data only by users through RLS or an Edge Function acting for them.
+  The engine reads user signals through views it is granted, never by writing app tables.
+- **Module shape, inside the engine.** `api.py` is the only file another module may import — it is
+  the module's public interface. `store.py` is that module's own database access; nothing else
+  touches the database on that module's tables. Everything else is private to the module.
+- **Dependency direction.** `workers → modules → core`. Among modules, data flows downstream
+  only: `ingestion → enrichment → matching`. `measurement` may read every module but writes only
+  its own tables. `core` imports no other module.
+- **An interface is earned, never speculative.** Add one in front of an external dependency (a job
+  source, the AI provider, the clock) or a second real implementation — not "in case" for code
+  with one implementation today.
+
+**Enforcement.** `apps/job-hunter/.importlinter` runs `import-linter` in CI (job `import-lint` in
+`.github/workflows/job-hunter-ci.yml`) with contracts for the rules above that already have a
+structural signal to check: the `job_hunter.ai` and `job_hunter.sources` packages are
+protected so their internals are reached only through their `__init__.py`, source adapters are
+independent of each other, and core (`config.py`, `http.py`, `pg.py`, `circuit_breaker.py`,
+`availability.py`) imports no other module. Every contract's `ignore_imports` is today's baseline
+of existing violations — **it may only shrink**; a restructure ticket that fixes one deletes its
+entry, and a new violation anywhere else fails the build. The `job_hunter` package is still flat
+(no `core/`, `ingestion/`, `enrichment/`, `matching/` sub-packages yet — that split is step D of
+the ADR's sequencing), so the `ingestion → enrichment → matching` direction has no import graph to
+check yet and is not encoded as a contract that would silently pass without checking anything.
+
+pgTAP ownership tests (`supabase/tests/pgtap/`) assert the database side of the one-writer rule:
+only the engine role writes engine tables, app roles reach none of them, and the api schema is the
+only schema the REST API exposes.
+
+## Vocabulary
+
 Use the vocabulary in [CONTEXT.md](CONTEXT.md) — in code, tests, issues and specs. The terms
 there exist because their synonyms have already caused confusion here.
 
@@ -61,19 +102,20 @@ A single monorepo holding the whole career platform:
 
 | Path                | What it is                          | Toolchain                  |
 | ------------------- | ----------------------------------- | -------------------------- |
-| `apps/job-hunter`   | Job Hunter service                  | Python 3.12+, pytest       |
-| `apps/relay`        | Relay — legacy POC, see below       | Next.js, pnpm, vitest      |
+| `apps/job-hunter`   | Job Hunter service (the engine)     | Python 3.12+, pytest       |
 | `supabase`          | Shared schema: migrations, SQL tests| Supabase CLI               |
 
-A platform change that spans Job Hunter, Relay and the schema belongs in **one branch and one
-PR here** — that is the reason this repository exists.
+Relay, an early Next.js proof of concept, was deleted (issue #286); nothing from it was kept,
+code or schema ([product-vision.md](docs/product-vision.md) D5).
+
+A platform change that spans Job Hunter and the schema belongs in **one branch and one PR
+here** — that is the reason this repository exists.
 
 ## Per-app guidance
 
-Read the app-level guide before changing an app; they hold the real conventions:
+Read the app-level guide before changing an app; it holds the real conventions:
 
 - `apps/job-hunter/AGENTS.md`
-- `apps/relay/AGENTS.md`
 
 ## Agent skills
 
@@ -141,9 +183,10 @@ Three standing rules from the owner:
   void unless the owner re-affirms one. This removes compatibility constraints, not rigour:
   engine behaviour is still tested and measured.
 - **Nothing from Relay is kept** (2026-09-11) — not its code, not its schema. It was an early
-  proof of concept; the coach is designed fresh. Relay stays deployed for one reason only: the
-  engine reads the user's CV, cover letter and provider keys from Relay's Profile screen. Until
-  something replaces that screen, do not remove Relay or the tables behind it.
+  proof of concept; the coach is designed fresh. Relay is deleted as of issue #286 (2026-09-12):
+  the platform no longer takes user-supplied provider keys (BYOK is dropped; the platform pays
+  for AI itself), and CV/cover-letter upload will be rebuilt in the new app rather than kept on
+  Relay's Profile screen.
 - **Nothing sends an application for the user** (D2). The user always presses the final send,
   on the employer's own form.
 
@@ -184,16 +227,15 @@ Run from the repository root:
 
 ```bash
 pnpm install            # JS workspace install (pnpm only; never npm/yarn)
-pnpm relay:test         # Relay tests
-pnpm relay:lint
-pnpm relay:build
 pnpm job-hunter:test    # Job Hunter tests
-pnpm test               # both suites
+pnpm test               # same thing today; kept as the whole-repo entry point
 
 pnpm db:key             # one-time: create the local stack's signing key
 supabase start          # local Supabase stack
 pnpm db:test            # pgTAP suite against that stack
 pnpm db:reset           # rebuild the local DB from migrations (destructive)
+
+cd apps/job-hunter && lint-imports --config .importlinter   # import contracts (ADR-0002)
 ```
 
 Run pgTAP through `pnpm db:test`, not a bare `supabase test db`. It runs the suite through
@@ -529,8 +571,8 @@ request with `test` green, and the owner merges it.
 
 ## Boundaries
 
-- Keep the app boundary. Job Hunter stays Python, Relay stays TypeScript. There is no shared
-  library layer, and one should not be created without a concrete need.
+- Keep the app boundary. There is no shared library layer, and one should not be created without
+  a concrete need.
 - Supabase migrations are platform-owned. Add new migrations under `supabase/migrations`, not
   inside an app.
 - No Turborepo/Nx. pnpm workspaces is deliberately the only monorepo tooling.

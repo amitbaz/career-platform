@@ -3,7 +3,6 @@
 #
 # Everything copied here is git-ignored, so a new worktree has none of it:
 #
-#   apps/relay/.env.local          Relay's local environment
 #   apps/job-hunter/.env           Job Hunter's local environment
 #   supabase/signing_keys.json     without it `supabase start` will not boot at all,
 #                                  because config.toml sets signing_keys_path
@@ -42,7 +41,6 @@ copy() {
 }
 
 pnpm install
-copy apps/relay/.env.local
 copy apps/job-hunter/.env
 copy supabase/signing_keys.json
 

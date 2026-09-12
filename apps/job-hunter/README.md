@@ -133,7 +133,7 @@ Set these under **Settings -> Secrets and variables -> Actions** on your fork/re
 the Vercel project.** Both the workflows and the Telegram webhook are non-functional until an
 operator creates them — see [Cutover runbook](#cutover-runbook-order-matters) below.
 
-The Gemini API key, the Brave Search API key, and your CV and cover letter text are **not** repository secrets. They belong to the user a run acts for and are saved in Relay — see [CV, cover letter, and provider keys in Relay Profile](#cv-cover-letter-and-provider-keys-in-relay-profile).
+The Gemini API key, the Brave Search API key, and your CV and cover letter text are **not** repository secrets. They are per-user values read from Postgres at run time — see [CV, cover letter, and provider keys](#cv-cover-letter-and-provider-keys).
 
 ## Cutover runbook (order matters)
 
@@ -169,16 +169,21 @@ Set these under **Settings -> Secrets and variables -> Actions -> Variables** ta
 
 Each overrides only the dimension it names; the other two keep their published defaults. The bot enforces its own ceiling at 80% of whichever value is in force. Set one when your project's limits are not the published ones, or when the table in code has gone stale — and see [Gemini API key and free-tier quota setup](#gemini-api-key-and-free-tier-quota-setup) below for where to read the real numbers.
 
-## CV, cover letter, and provider keys in Relay Profile
+## CV, cover letter, and provider keys
 
-Your CV text, your cover letter text, and your Gemini and Brave Search API keys are per-user values. They are not repository secrets and are never encoded into the environment. Save them in Relay while signed in as the account whose UUID is `JOB_HUNTER_USER_ID`; every run reads the current values from Postgres.
+Your CV text, your cover letter text, and your Gemini and Brave Search API keys are per-user
+values, read from Postgres at run time rather than the environment. They used to be set through
+Relay's Profile screen; Relay is deleted (issue #286) and nothing has replaced that screen yet.
 
-- **CV and cover letter.** Open **Profile** and use **Replace source information** to save or replace your CV text (or upload a CV PDF) and the career narrative text the bot uses as its cover letter template. Relay stores both as your source documents, so replacing the text in Profile is the only step needed to change what the next run reads. Relay treats the career narrative as optional for its own features, but Job Hunter requires both: a run stops at startup with `Missing per-user Job Hunter configuration:` naming whichever of `cv` and `cover_letter` is empty.
-- **Provider keys.** The **Provider credentials** panel on the same Profile page has one control per provider. Enter a key and press **Save** (**Replace** once one is stored) to store it, or **Delete** to remove it. Stored keys are write-only: the panel shows only whether a provider is configured and when it was last updated, never the key itself.
-  - **Gemini is required.** Without a stored Gemini key a run stops at startup with `Missing per-user Job Hunter configuration: gemini`.
-  - **Brave Search is optional.** Without a stored Brave key the run skips Brave-backed source discovery and search falls back to DuckDuckGo, which needs no key. `BRAVE_MONTHLY_QUERY_LIMIT` stays an environment variable: it caps how much of a stored Brave key's monthly quota a run may spend, and configures nothing on its own.
-
-Relay's own server-side Gemini API key (see `apps/relay/.env.example`) is a separate, deployment-level setting used by Relay's interview features. It is unrelated to the per-user key above and is unchanged.
+- **Provider keys.** `config.py` still requires a stored Gemini credential at startup
+  (`Missing per-user Job Hunter configuration: gemini`) and treats Brave as optional, exactly as
+  before. For the single pre-launch user, the row already stored from before Relay's deletion
+  keeps working — deleting the app did not delete the data — but there is currently no UI to view,
+  rotate, or set one for a new user, and BYOK is being dropped in favor of the platform paying for
+  AI itself (`PLATFORM_GEMINI_API_KEY`, issue #128). See issue #293 for dropping the per-user
+  Gemini requirement in code.
+- **CV and cover letter.** Same story: the last text saved through Relay is still what a run
+  reads, but there is no UI to replace it until the new app rebuilds that screen.
 
 ## Telegram bot setup
 

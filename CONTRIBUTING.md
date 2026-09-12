@@ -1,14 +1,14 @@
 # Contributing
 
 Dev commands, per-app conventions, and repo boundaries live in [AGENTS.md](AGENTS.md) — read
-that first, both here and under `apps/job-hunter/` or `apps/relay/` for the app you're touching.
+that first, both here and under `apps/job-hunter/` for the app you're touching.
 This file covers the workflow around a change: branches, commits, issues, PRs.
 
 ## Before you start
 
-A change that spans Job Hunter, Relay, and the schema belongs in one branch and one PR — that's
-the reason this is a monorepo (see AGENTS.md). Don't split a cross-cutting change across
-separate PRs per app.
+A change that spans Job Hunter and the schema belongs in one branch and one PR — that's the
+reason this is a monorepo (see AGENTS.md). Don't split a cross-cutting change across separate
+PRs per app.
 
 ## Branches
 
@@ -18,21 +18,20 @@ Never commit directly to `main`. Branch with a `type/short-description` name, e.
 ## Commits
 
 Loosely [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `chore:`,
-`docs:`, `ci:`. An app-scoped prefix (`job-hunter:`, `relay:`) is fine in place of the type when
-the change is entirely local to that app.
+`docs:`, `ci:`. An app-scoped prefix (`job-hunter:`) is fine in place of the type when the
+change is entirely local to that app.
 
 ## Before opening a PR
 
 Run whatever this change touches:
 
 ```bash
-pnpm relay:test          # apps/relay changed
 pnpm job-hunter:test     # apps/job-hunter changed
-pnpm test                # both
+pnpm test                # same thing today; kept as the whole-repo entry point
 ```
 
-There's no separate lint gate for Job Hunter — pytest is its whole CI bar. Relay CI also runs
-lint and build.
+There's no separate lint gate for Job Hunter beyond pytest and `import-linter` (CI job
+`import-lint`, contracts in `apps/job-hunter/.importlinter`).
 
 ## Pull requests
 

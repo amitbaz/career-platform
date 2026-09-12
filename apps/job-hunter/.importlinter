@@ -1,0 +1,207 @@
+# Import contracts for the engine's module borders (ADR-0002, issue #286, step A).
+#
+# The package is still flat (`job_hunter/*.py`, no sub-packages besides `ai/` and
+# `sources/`), so these contracts cover what the current import graph can actually
+# express: the two module boundaries that already exist as real Python packages, and
+# the one layer-direction rule ("core imports no module") that names concrete,
+# already-clean files. The ingestion -> enrichment -> matching direction from
+# ADR-0002 section 3 has no structural signal to check yet -- those modules do not
+# exist as distinct packages until step D moves them -- so it is not encoded here as
+# a contract that would silently check nothing.
+#
+# `ignore_imports` under each contract is the required baseline: every entry is a
+# violation that already exists today, recorded so CI fails on a *new* one only.
+# This list may only shrink. A restructure ticket that fixes one of these imports
+# deletes its entry rather than leaving it to rot; it must never gain an entry for
+# a violation introduced after this ticket.
+
+[importlinter]
+root_packages=
+    job_hunter
+
+[importlinter:contract:core-imports-nothing]
+name = Core holds no business logic (ADR-0002 section 3: "core imports no module")
+type = forbidden
+# Direct imports only: core's job is to not *reach into* business logic itself.
+# Without this, one direct edge (e.g. into postgres_store, which imports most of
+# the package) would explode into dozens of transitive "violations" that are not
+# actually about core -- they are about postgres_store's own fan-out, which is
+# postgres_store's problem to fix in step D, not a fact about core.
+allow_indirect_imports = True
+source_modules=
+    job_hunter.config
+    job_hunter.http
+    job_hunter.pg
+    job_hunter.circuit_breaker
+    job_hunter.availability
+# job_hunter.ai is deliberately absent from forbidden_modules below. ADR-0002
+# section 3 lists the "AI client" itself as part of core ("core/ config,
+# database connection, http, AI client, clock, errors"), so config.py ->
+# job_hunter.ai (the package's own public interface) would be core importing
+# core, not core reaching into business logic. What config.py does today,
+# `from .ai.limits import free_tier_quota`, is a deep import into ai's
+# internals rather than its public interface -- that is caught by the
+# ai-api-only contract below instead, which is the rule it actually breaks.
+forbidden_modules=
+    job_hunter.__main__
+    job_hunter.aggregator_detection
+    job_hunter.ats_hosts
+    job_hunter.ats_registry
+    job_hunter.candidate_context
+    job_hunter.canonical
+    job_hunter.cli
+    job_hunter.company_facets
+    job_hunter.content_confidence
+    job_hunter.cover_letter
+    job_hunter.crawl_source
+    job_hunter.discovery
+    job_hunter.discovery_queries
+    job_hunter.engine_lab
+    job_hunter.evaluation
+    job_hunter.extract_facets_stage
+    job_hunter.facets
+    job_hunter.fetching
+    job_hunter.github_dispatch
+    job_hunter.gmail_auth
+    job_hunter.gmail_classifier
+    job_hunter.gmail_client
+    job_hunter.gmail_linkedin_cleanup
+    job_hunter.gmail_matching
+    job_hunter.gmail_models
+    job_hunter.gmail_sync
+    job_hunter.hard_blockers
+    job_hunter.hiring_scope
+    job_hunter.job_identity
+    job_hunter.market_eligibility
+    job_hunter.market_policy
+    job_hunter.matching
+    job_hunter.models
+    job_hunter.navigation_repository
+    job_hunter.normalize
+    job_hunter.pdf
+    job_hunter.pipeline
+    job_hunter.postgres_stage_queue
+    job_hunter.postgres_store
+    job_hunter.preferences
+    job_hunter.prefilter
+    job_hunter.ranking
+    job_hunter.recheck_freshness_stage
+    job_hunter.resolve_persist
+    job_hunter.search_backend
+    job_hunter.search_budget
+    job_hunter.search_profile
+    job_hunter.source_cursors
+    job_hunter.source_schedule
+    job_hunter.stage_queue
+    job_hunter.store_mapping
+    job_hunter.supabase_auth
+    job_hunter.supabase_client
+    job_hunter.telegram
+    job_hunter.telegram_navigation
+    job_hunter.telegram_webhook
+    job_hunter.watchlist
+    job_hunter.worker_runs
+    job_hunter.sources
+ignore_imports=
+    job_hunter.config -> job_hunter.gmail_models
+    job_hunter.config -> job_hunter.normalize
+    job_hunter.config -> job_hunter.models
+    # A `TYPE_CHECKING`-guarded forward reference for a type hint, not a runtime
+    # dependency -- but still a direct edge in the static import graph.
+    job_hunter.config -> job_hunter.postgres_store
+
+[importlinter:contract:ai-api-only]
+name = job_hunter.ai's internals are reached only through its public interface (api.py-only rule)
+type = protected
+protected_modules=
+    job_hunter.ai.credentials
+    job_hunter.ai.gemini
+    job_hunter.ai.limits
+    job_hunter.ai.port
+    job_hunter.ai.retry
+    job_hunter.ai.usage
+allowed_importers=
+    job_hunter.ai
+ignore_imports=
+    job_hunter.cli -> job_hunter.ai.gemini
+    job_hunter.cli -> job_hunter.ai.usage
+    job_hunter.config -> job_hunter.ai.limits
+    job_hunter.pipeline -> job_hunter.ai.usage
+
+[importlinter:contract:sources-api-only]
+name = job_hunter.sources's internals are reached only through its public interface (api.py-only rule)
+type = protected
+protected_modules=
+    job_hunter.sources.arbeitnow
+    job_hunter.sources.ashby
+    job_hunter.sources.base
+    job_hunter.sources.company_watch
+    job_hunter.sources.devjobs
+    job_hunter.sources.duckduckgo
+    job_hunter.sources.gmail_staged
+    job_hunter.sources.greenhouse
+    job_hunter.sources.hackernews
+    job_hunter.sources.himalayas
+    job_hunter.sources.jobicy
+    job_hunter.sources.learned_ats
+    job_hunter.sources.lever
+    job_hunter.sources.remoteok
+    job_hunter.sources.remotive
+    job_hunter.sources.targeted_search
+    job_hunter.sources.wellfound
+    job_hunter.sources.weworkremotely
+    job_hunter.sources.yc
+allowed_importers=
+    job_hunter.sources
+ignore_imports=
+    job_hunter.discovery -> job_hunter.sources.base
+    job_hunter.pipeline -> job_hunter.sources.learned_ats
+    job_hunter.canonical -> job_hunter.sources.ashby
+    job_hunter.canonical -> job_hunter.sources.greenhouse
+    job_hunter.canonical -> job_hunter.sources.lever
+    job_hunter.recheck_freshness_stage -> job_hunter.sources.ashby
+    job_hunter.recheck_freshness_stage -> job_hunter.sources.greenhouse
+    job_hunter.recheck_freshness_stage -> job_hunter.sources.lever
+
+[importlinter:contract:sources-module-independence]
+name = Job source adapters do not depend on each other (module independence)
+type = independence
+modules=
+    job_hunter.sources.arbeitnow
+    job_hunter.sources.ashby
+    job_hunter.sources.company_watch
+    job_hunter.sources.devjobs
+    job_hunter.sources.duckduckgo
+    job_hunter.sources.gmail_staged
+    job_hunter.sources.greenhouse
+    job_hunter.sources.hackernews
+    job_hunter.sources.himalayas
+    job_hunter.sources.jobicy
+    job_hunter.sources.learned_ats
+    job_hunter.sources.lever
+    job_hunter.sources.remoteok
+    job_hunter.sources.remotive
+    job_hunter.sources.targeted_search
+    job_hunter.sources.wellfound
+    job_hunter.sources.weworkremotely
+    job_hunter.sources.yc
+ignore_imports=
+    job_hunter.sources.company_watch -> job_hunter.sources.ashby
+    job_hunter.sources.company_watch -> job_hunter.sources.greenhouse
+    job_hunter.sources.company_watch -> job_hunter.sources.lever
+    job_hunter.sources.duckduckgo -> job_hunter.sources.targeted_search
+    job_hunter.sources.learned_ats -> job_hunter.sources.ashby
+    job_hunter.sources.learned_ats -> job_hunter.sources.greenhouse
+    job_hunter.sources.learned_ats -> job_hunter.sources.lever
+    # Root-cause edges: canonical.py and recheck_freshness_stage.py each locally
+    # import these three ATS adapters for description-fetching / re-check URLs
+    # (see the docstrings at their import sites). Ignoring the six real edges
+    # here, rather than every downstream module that reaches one of these two
+    # and would otherwise show as a transitive violation, keeps this baseline
+    # proportional to the actual coupling.
+    job_hunter.canonical -> job_hunter.sources.ashby
+    job_hunter.canonical -> job_hunter.sources.greenhouse
+    job_hunter.canonical -> job_hunter.sources.lever
+    job_hunter.recheck_freshness_stage -> job_hunter.sources.ashby
+    job_hunter.recheck_freshness_stage -> job_hunter.sources.greenhouse
+    job_hunter.recheck_freshness_stage -> job_hunter.sources.lever
