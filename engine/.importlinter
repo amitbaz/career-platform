@@ -1,0 +1,187 @@
+# Import contracts for the engine's module borders (ADR-0002, issue #286, step A).
+#
+# The package is still flat (`engine/*.py`, no sub-packages besides `ai/` and
+# `sources/`), so these contracts cover what the current import graph can actually
+# express: the two module boundaries that already exist as real Python packages, and
+# the one layer-direction rule ("core imports no module") that names concrete,
+# already-clean files. The ingestion -> enrichment -> matching direction from
+# ADR-0002 section 3 has no structural signal to check yet -- those modules do not
+# exist as distinct packages until step D moves them -- so it is not encoded here as
+# a contract that would silently check nothing.
+#
+# `ignore_imports` under each contract is the required baseline: every entry is a
+# violation that already exists today, recorded so CI fails on a *new* one only.
+# This list may only shrink. A restructure ticket that fixes one of these imports
+# deletes its entry rather than leaving it to rot; it must never gain an entry for
+# a violation introduced after this ticket.
+
+[importlinter]
+root_packages=
+    engine
+
+[importlinter:contract:core-imports-nothing]
+name = Core holds no business logic (ADR-0002 section 3: "core imports no module")
+type = forbidden
+# Direct imports only: core's job is to not *reach into* business logic itself.
+# Without this, one direct edge (e.g. into postgres_store, which imports most of
+# the package) would explode into dozens of transitive "violations" that are not
+# actually about core -- they are about postgres_store's own fan-out, which is
+# postgres_store's problem to fix in step D, not a fact about core.
+allow_indirect_imports = True
+source_modules=
+    engine.config
+    engine.http
+    engine.pg
+    engine.circuit_breaker
+    engine.availability
+# engine.ai is deliberately absent from forbidden_modules below. ADR-0002
+# section 3 lists the "AI client" itself as part of core ("core/ config,
+# database connection, http, AI client, clock, errors"), so config.py ->
+# engine.ai (the package's own public interface) would be core importing
+# core, not core reaching into business logic. What config.py does today,
+# `from .ai.limits import free_tier_quota`, is a deep import into ai's
+# internals rather than its public interface -- that is caught by the
+# ai-api-only contract below instead, which is the rule it actually breaks.
+forbidden_modules=
+    engine.__main__
+    engine.aggregator_detection
+    engine.ats_hosts
+    engine.ats_registry
+    engine.candidate_context
+    engine.canonical
+    engine.cli
+    engine.company_facets
+    engine.content_confidence
+    engine.crawl_source
+    engine.discovery
+    engine.discovery_queries
+    engine.engine_lab
+    engine.evaluation
+    engine.extract_facets_stage
+    engine.facets
+    engine.fetching
+    engine.hard_blockers
+    engine.hiring_scope
+    engine.job_identity
+    engine.market_eligibility
+    engine.market_policy
+    engine.matching
+    engine.models
+    engine.normalize
+    engine.postgres_stage_queue
+    engine.postgres_store
+    engine.preferences
+    engine.prefilter
+    engine.ranking
+    engine.recheck_freshness_stage
+    engine.resolve_persist
+    engine.search_backend
+    engine.search_budget
+    engine.search_profile
+    engine.source_cursors
+    engine.source_schedule
+    engine.stage_queue
+    engine.store_mapping
+    engine.supabase_auth
+    engine.supabase_client
+    engine.watchlist
+    engine.worker_runs
+    engine.sources
+ignore_imports=
+    engine.config -> engine.normalize
+    engine.config -> engine.models
+    # A `TYPE_CHECKING`-guarded forward reference for a type hint, not a runtime
+    # dependency -- but still a direct edge in the static import graph.
+    engine.config -> engine.postgres_store
+
+[importlinter:contract:ai-api-only]
+name = engine.ai's internals are reached only through its public interface (api.py-only rule)
+type = protected
+protected_modules=
+    engine.ai.credentials
+    engine.ai.gemini
+    engine.ai.limits
+    engine.ai.port
+    engine.ai.retry
+    engine.ai.usage
+allowed_importers=
+    engine.ai
+ignore_imports=
+    engine.cli -> engine.ai.gemini
+    engine.cli -> engine.ai.usage
+    engine.config -> engine.ai.limits
+
+[importlinter:contract:sources-api-only]
+name = engine.sources's internals are reached only through its public interface (api.py-only rule)
+type = protected
+protected_modules=
+    engine.sources.arbeitnow
+    engine.sources.ashby
+    engine.sources.base
+    engine.sources.company_watch
+    engine.sources.devjobs
+    engine.sources.duckduckgo
+    engine.sources.greenhouse
+    engine.sources.hackernews
+    engine.sources.himalayas
+    engine.sources.jobicy
+    engine.sources.learned_ats
+    engine.sources.lever
+    engine.sources.remoteok
+    engine.sources.remotive
+    engine.sources.targeted_search
+    engine.sources.wellfound
+    engine.sources.weworkremotely
+    engine.sources.yc
+allowed_importers=
+    engine.sources
+ignore_imports=
+    engine.discovery -> engine.sources.base
+    engine.canonical -> engine.sources.ashby
+    engine.canonical -> engine.sources.greenhouse
+    engine.canonical -> engine.sources.lever
+    engine.recheck_freshness_stage -> engine.sources.ashby
+    engine.recheck_freshness_stage -> engine.sources.greenhouse
+    engine.recheck_freshness_stage -> engine.sources.lever
+
+[importlinter:contract:sources-module-independence]
+name = Job source adapters do not depend on each other (module independence)
+type = independence
+modules=
+    engine.sources.arbeitnow
+    engine.sources.ashby
+    engine.sources.company_watch
+    engine.sources.devjobs
+    engine.sources.duckduckgo
+    engine.sources.greenhouse
+    engine.sources.hackernews
+    engine.sources.himalayas
+    engine.sources.jobicy
+    engine.sources.learned_ats
+    engine.sources.lever
+    engine.sources.remoteok
+    engine.sources.remotive
+    engine.sources.targeted_search
+    engine.sources.wellfound
+    engine.sources.weworkremotely
+    engine.sources.yc
+ignore_imports=
+    engine.sources.company_watch -> engine.sources.ashby
+    engine.sources.company_watch -> engine.sources.greenhouse
+    engine.sources.company_watch -> engine.sources.lever
+    engine.sources.duckduckgo -> engine.sources.targeted_search
+    engine.sources.learned_ats -> engine.sources.ashby
+    engine.sources.learned_ats -> engine.sources.greenhouse
+    engine.sources.learned_ats -> engine.sources.lever
+    # Root-cause edges: canonical.py and recheck_freshness_stage.py each locally
+    # import these three ATS adapters for description-fetching / re-check URLs
+    # (see the docstrings at their import sites). Ignoring the six real edges
+    # here, rather than every downstream module that reaches one of these two
+    # and would otherwise show as a transitive violation, keeps this baseline
+    # proportional to the actual coupling.
+    engine.canonical -> engine.sources.ashby
+    engine.canonical -> engine.sources.greenhouse
+    engine.canonical -> engine.sources.lever
+    engine.recheck_freshness_stage -> engine.sources.ashby
+    engine.recheck_freshness_stage -> engine.sources.greenhouse
+    engine.recheck_freshness_stage -> engine.sources.lever

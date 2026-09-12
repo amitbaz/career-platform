@@ -6,7 +6,7 @@
 
 <!-- Check every area this PR touches -->
 
-- [ ] `apps/job-hunter`
+- [ ] `engine`
 - [ ] `supabase` (migrations / schema)
 - [ ] CI / workflows / tooling
 - [ ] Docs only
@@ -16,7 +16,7 @@
 <!-- Commands you ran and their result. See AGENTS.md for the full command list. -->
 
 ```
-pnpm job-hunter:test    # if apps/job-hunter changed
+pnpm engine:test    # if engine changed
 ```
 
 ## Notes for the reviewer

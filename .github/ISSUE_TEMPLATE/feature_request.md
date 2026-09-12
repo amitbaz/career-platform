@@ -15,7 +15,7 @@ labels: enhancement
 
 ## Scope
 
-<!-- apps/job-hunter, apps/relay, supabase, or cross-cutting. -->
+<!-- engine, apps/relay, supabase, or cross-cutting. -->
 
 ## Desired behavior
 
