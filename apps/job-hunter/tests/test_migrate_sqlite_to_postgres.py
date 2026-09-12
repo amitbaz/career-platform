@@ -595,9 +595,16 @@ def test_company_watch_nulls_dangling_discovered_from_job_id(
     assert row["discovered_from_job_id"] is None
 
 
-def test_review_delivery_is_dropped_when_its_event_did_not_migrate(
+def test_review_deliveries_in_a_legacy_file_are_ignored(
     tmp_path, supabase_client: SupabaseClient, ingestion_database
 ):
+    """A real legacy file still has the table; the migration must not read it.
+
+    `job_hunter_review_deliveries` was dropped in #287 along with Gmail review
+    delivery, so there is no destination to write to. The legacy SQLite files
+    this script exists for were written before that and still carry the rows,
+    which makes "ignored" a property worth holding rather than an absence.
+    """
     sqlite_path = build_legacy_db(
         tmp_path,
         application_events=[],
@@ -606,7 +613,7 @@ def test_review_delivery_is_dropped_when_its_event_did_not_migrate(
 
     counts = migrate(sqlite_path, supabase_client, ingestion_database)
 
-    assert counts["review_deliveries"] == 0
+    assert "review_deliveries" not in counts
 
 
 def test_naive_legacy_timestamp_is_assumed_utc(tmp_path, supabase_client: SupabaseClient, ingestion_database, caplog):
