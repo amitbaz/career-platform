@@ -1,9 +1,5 @@
 -- Recoverable unresolved-posting enrichment (issue #259).
 --
--- Placeholder timestamp per AGENTS.md's migration-numbering rule -- issue
--- number, not a date -- renumbered to a real YYYYMMDDHHMMSS once the branch
--- is otherwise ready to merge, issued by whoever owns the board.
---
 -- job_hunter_match_state_counts (29999999000243) already classifies a posting
 -- with insufficient content_confidence as `unresolved`, correctly: missing
 -- information produces no hard block. What was missing is the other half --
